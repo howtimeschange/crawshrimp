@@ -1087,6 +1087,7 @@ const directoryListingLoading = ref({})
 const directoryListingError = ref({})
 const templateFeedback = ref({})
 const runStage = ref('')
+const ownedInstanceUid = ref('')
 const dynamicParamPatches = ref({})
 const dynamicParamProbeLoading = ref(false)
 const dynamicParamProbeError = ref('')
@@ -1152,6 +1153,19 @@ let applyingInitialTaskValues = false
 let instanceDraftSaveTimer = null
 let instanceDraftSaveTargetUid = ''
 let instanceDraftSaveParams = null
+const operatorAlertKeys = new Set()
+
+function showOperatorAttention(stage, title, message, detail = '') {
+  if (typeof window.cs?.showOperatorAlert !== 'function') return
+  const batchId = String(approvalBatch.value?.batch_id || '').trim()
+  const key = `${effectiveInstanceUid.value || props.task?.task_id || 'task'}:${batchId}:${stage}`
+  if (operatorAlertKeys.has(key)) return
+  operatorAlertKeys.add(key)
+  void window.cs.showOperatorAlert({ title, message, detail }).catch(error => {
+    operatorAlertKeys.delete(key)
+    console.warn('显示人工处理提醒失败', error)
+  })
+}
 
 function buildDefaultValues(params = []) {
   const next = {}
@@ -1420,13 +1434,17 @@ const taskParams = computed(() =>
 const hasParamProbeScript = computed(() =>
   !!String(props.task?.param_probe_script || '').trim()
 )
-const isInstanceMode = computed(() => !!String(props.instanceUid || '').trim())
+const effectiveInstanceUid = computed(() =>
+  String(props.instanceUid || ownedInstanceUid.value || '').trim()
+)
+const isInstanceMode = computed(() => !!effectiveInstanceUid.value)
 
 // 初始化默认值
 watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   if (!task) return
   if (!shouldResetTaskValues(activeTaskIdentityKey, task, adapterId)) return
   activeTaskIdentityKey = taskIdentityKey(adapterId, task)
+  ownedInstanceUid.value = ''
   dynamicParamProbeToken += 1
   dynamicParamPatches.value = {}
   dynamicParamProbeLoading.value = false
@@ -1461,9 +1479,9 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   // 异步加载该任务的历史日志
   nextTick(async () => {
     try {
-      const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id, props.instanceUid)
+      const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id, effectiveInstanceUid.value)
       if (logR.logs) logs.value = logR.logs
-      const taskStatus = await window.cs.getTaskStatus(props.adapterId, task.task_id, props.instanceUid)
+      const taskStatus = await window.cs.getTaskStatus(props.adapterId, task.task_id, effectiveInstanceUid.value)
       const live = taskStatus?.live
       const last = taskStatus?.last_run
       if (live && isTaskActiveStatus(live.status)) {
@@ -1585,7 +1603,7 @@ const previewCloudPromptLibraryTitle = computed(() =>
   selectedCloudPromptLibrary.value?.name || 'Prompt 模板预览'
 )
 const cloudPromptLibraryPreviewTemplates = computed(() =>
-  (cloudPromptLibraryDialog.value.previewTemplates || []).slice(0, 24)
+  cloudPromptLibraryDialog.value.previewTemplates || []
 )
 const aiChainAssets = computed(() =>
   (approvalBatch.value?.items || []).flatMap(item => item.assets || [])
@@ -2559,7 +2577,7 @@ function preservedTechnicalInstanceParams() {
 function scheduleInstanceDraftParamSave() {
   if (!isInstanceMode.value || !props.task || applyingInitialTaskValues || isRunning.value) return
   if (instanceDraftSaveTimer) clearTimeout(instanceDraftSaveTimer)
-  instanceDraftSaveTargetUid = String(props.instanceUid || '').trim()
+  instanceDraftSaveTargetUid = effectiveInstanceUid.value
   instanceDraftSaveParams = buildRunParams(preservedTechnicalInstanceParams())
   instanceDraftSaveTimer = setTimeout(() => {
     const targetUid = instanceDraftSaveTargetUid
@@ -2571,7 +2589,7 @@ function scheduleInstanceDraftParamSave() {
   }, 300)
 }
 
-async function saveInstanceDraftParamsNow(targetUid = String(props.instanceUid || '').trim(), paramsSnapshot = null) {
+async function saveInstanceDraftParamsNow(targetUid = effectiveInstanceUid.value, paramsSnapshot = null) {
   if (!targetUid || !isInstanceMode.value || !props.task || isRunning.value) return
   try {
     await window.cs.updateTaskInstance(targetUid, {
@@ -2580,6 +2598,22 @@ async function saveInstanceDraftParamsNow(targetUid = String(props.instanceUid |
   } catch (error) {
     console.warn('保存任务草稿参数失败', error)
   }
+}
+
+async function ensureTaskInstanceForRun(params) {
+  if (effectiveInstanceUid.value) return effectiveInstanceUid.value
+  const taskName = String(props.task?.task_name || props.task?.name || props.task?.task_id || '脚本任务').trim()
+  const created = await window.cs.createTaskInstance({
+    adapter_id: props.adapterId,
+    task_id: props.task?.task_id,
+    title: `${taskName} · ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+    params,
+  })
+  const uid = String(created?.instance_uid || '').trim()
+  if (!uid) throw new Error('任务中心实例创建失败')
+  ownedInstanceUid.value = uid
+  emit('instance-updated')
+  return uid
 }
 
 async function resolveCurrentTabId(params) {
@@ -2609,6 +2643,7 @@ function resetRunUi() {
   localLiveSnapshot.value = null
   if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
   syncingOdps.value = false
+  operatorAlertKeys.clear()
 }
 
 function applyLocalLiveStatus(status) {
@@ -2622,7 +2657,7 @@ function applyLocalLiveStatus(status) {
 async function pauseCurrentTask() {
   if (!isRunning.value || liveStatus.value !== 'running') return
   try {
-    await window.cs.pauseTask(props.adapterId, props.task.task_id, props.instanceUid)
+    await window.cs.pauseTask(props.adapterId, props.task.task_id, effectiveInstanceUid.value)
     logs.value.push(`[${now()}] 已发送暂停指令`)
     applyLocalLiveStatus({ status: 'pausing', run_id: currentRunId })
     emit('status-change', { status: 'pausing', run_id: currentRunId })
@@ -2635,7 +2670,7 @@ async function pauseCurrentTask() {
 async function resumeCurrentTask() {
   if (!isRunning.value || !['paused', 'pausing'].includes(liveStatus.value)) return
   try {
-    await window.cs.resumeTask(props.adapterId, props.task.task_id, props.instanceUid)
+    await window.cs.resumeTask(props.adapterId, props.task.task_id, effectiveInstanceUid.value)
     logs.value.push(`[${now()}] 已发送继续指令`)
     applyLocalLiveStatus({ status: 'running', run_id: currentRunId })
     emit('status-change', { status: 'running', run_id: currentRunId })
@@ -2648,7 +2683,7 @@ async function resumeCurrentTask() {
 async function stopCurrentTask() {
   if (!isRunning.value || liveStatus.value === 'stopping') return
   try {
-    await window.cs.stopTask(props.adapterId, props.task.task_id, props.instanceUid)
+    await window.cs.stopTask(props.adapterId, props.task.task_id, effectiveInstanceUid.value)
     logs.value.push(`[${now()}] 已发送停止指令`)
     applyLocalLiveStatus({ status: 'stopping', run_id: currentRunId })
     emit('status-change', { status: 'stopping', run_id: currentRunId })
@@ -2660,24 +2695,18 @@ async function stopCurrentTask() {
 
 async function startTaskRun(params, pendingMessage) {
   const currentTabId = await resolveCurrentTabId(params)
-  let r
-  if (props.instanceUid) {
-    await window.cs.updateTaskInstance(props.instanceUid, { params })
-    r = await window.cs.runTaskInstance(props.instanceUid, {
-      params,
-      current_tab_id: currentTabId,
-    })
-  } else {
-    r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
-      current_tab_id: currentTabId,
-    })
-  }
+  const runInstanceUid = await ensureTaskInstanceForRun(params)
+  await window.cs.updateTaskInstance(runInstanceUid, { params })
+  const r = await window.cs.runTaskInstance(runInstanceUid, {
+    params,
+    current_tab_id: currentTabId,
+  })
   if (!r.ok) throw new Error(r.message || JSON.stringify(r))
   logs.value.push(`[${now()}] ${pendingMessage}`)
   applyLocalLiveStatus({ status: 'running' })
   emit('status-change', { status: 'running' })
   await new Promise(res => setTimeout(res, 600))
-  const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, props.instanceUid)
+  const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, runInstanceUid)
   currentRunId = initStatus?.live?.run_id ?? initStatus?.last_run?.id ?? null
   const token = runAbortToken
   return await new Promise((resolve) => {
@@ -2698,11 +2727,20 @@ async function startTaskRun(params, pendingMessage) {
 }
 
 async function pollStatusOnce() {
-  const r = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, props.instanceUid)
+  const r = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, effectiveInstanceUid.value)
   const live = r.live
-  const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id, props.instanceUid)
+  const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id, effectiveInstanceUid.value)
 
   if (logR.logs) logs.value = logR.logs
+  const latestLogText = Array.isArray(logR.logs) ? logR.logs.slice(-30).join('\n') : ''
+  if (/等待.*登录|登录.*等待|请.*登录|未登录/.test(latestLogText)) {
+    showOperatorAttention(
+      'waiting_login',
+      '任务正在等待登录',
+      '请在浏览器中完成登录，抓虾会在登录成功后继续执行。',
+      `${props.task?.task_name || props.task?.task_id || '当前任务'}需要人工完成账号登录。`,
+    )
+  }
   if (live) {
     applyLocalLiveStatus(live)
     emit('status-change', live)
@@ -2738,7 +2776,9 @@ function scrollToBottom() {
 
 async function refreshOutputFiles() {
   if (isInstanceMode.value) {
-    const detail = await window.cs.getTaskInstance(props.instanceUid)
+    const detail = props.instanceUid
+      ? await window.cs.getTaskInstance(props.instanceUid)
+      : await window.cs.getTaskInstance(effectiveInstanceUid.value)
     const artifactFiles = (detail?.artifacts || [])
       .map(artifact => artifact?.path)
       .filter(Boolean)
@@ -3028,7 +3068,7 @@ async function runTaskAndSyncOdps() {
 async function clearLogs() {
   logs.value = []
   try {
-    await window.cs.clearTaskLogs(props.adapterId, props.task.task_id, props.instanceUid)
+    await window.cs.clearTaskLogs(props.adapterId, props.task.task_id, effectiveInstanceUid.value)
   } catch {}
 }
 
@@ -3086,6 +3126,21 @@ function openApprovalDrawer() {
 function handleApprovalBatchUpdated(payload) {
   approvalBatch.value = payload || null
   const status = String(payload?.status || '').trim()
+  if (status === 'pending_generation_confirmation') {
+    showOperatorAttention(
+      'pending_generation_confirmation',
+      '请确认提交生图任务',
+      '素材与 Prompt 已准备完成，请回到抓虾确认后再开始批量生图。',
+      '确认前不会调用生图服务；关闭提醒不会停止任务。',
+    )
+  } else if (status === 'pending_approval') {
+    showOperatorAttention(
+      'pending_approval',
+      'AI 生图完成，等待审核',
+      '本批图片已经生成完成，请回到抓虾确认或舍弃图片。',
+      '审核完成后才能继续创建天猫测图任务。',
+    )
+  }
   if (isTmallAiImageChainTask.value && aiChainActiveStep.value === 'confirm' && status && status !== aiChainGenerationConfirmationStatus) {
     aiChainActiveStep.value = 'approval'
   }
@@ -4100,7 +4155,7 @@ onUnmounted(() => {
   stopAiChainApprovalBatchPolling()
   if (instanceDraftSaveTimer) {
     clearTimeout(instanceDraftSaveTimer)
-    const targetUid = instanceDraftSaveTargetUid || String(props.instanceUid || '').trim()
+    const targetUid = instanceDraftSaveTargetUid || effectiveInstanceUid.value
     const params = instanceDraftSaveParams
     instanceDraftSaveTimer = null
     instanceDraftSaveTargetUid = ''

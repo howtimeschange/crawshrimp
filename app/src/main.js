@@ -49,6 +49,11 @@ const {
   writeAuthorizedBalaWorkspaceManifest,
 } = require('./balaWorkspaceFiles')
 const APP_METADATA = require('../package.json')
+const APP_ID = 'com.crawshrimp.app'
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId(APP_ID)
+}
 
 const BALA_WORKSPACE_MEDIA_PROTOCOL = 'bala-workspace-media'
 const LOCAL_MEDIA_PROTOCOL = 'crawshrimp-media'
@@ -2619,6 +2624,46 @@ async function getDesktopStatus() {
 }
 
 secureHandle('get-status', async () => getDesktopStatus())
+
+secureHandle('show-operator-alert', async (_, payload = {}) => {
+  const targetWindow = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getFocusedWindow()
+  const title = String(payload?.title || '抓虾需要人工处理').trim()
+  const message = String(payload?.message || '当前任务已运行到需要人工参与的步骤。').trim()
+  const detail = String(payload?.detail || '').trim()
+  if (!Notification?.isSupported?.()) {
+    return { ok: false, delivery: 'unsupported', message: '当前系统不支持桌面通知' }
+  }
+
+  const notificationOptions = {
+    title,
+    body: detail ? `${message}\n${detail}` : message,
+    silent: false,
+  }
+  if (process.platform === 'darwin') {
+    notificationOptions.subtitle = '需要人工处理'
+    notificationOptions.closeButtonText = '关闭'
+  } else if (process.platform === 'win32') {
+    notificationOptions.timeoutType = 'never'
+  }
+
+  const notification = new Notification(notificationOptions)
+  notification.on('click', () => {
+    const windowToFocus = mainWindow && !mainWindow.isDestroyed() ? mainWindow : targetWindow
+    if (!windowToFocus || windowToFocus.isDestroyed()) return
+    if (windowToFocus.isMinimized()) windowToFocus.restore()
+    windowToFocus.show()
+    windowToFocus.focus()
+  })
+  notification.show()
+  return {
+    ok: true,
+    delivery: process.platform === 'darwin'
+      ? 'macos-banner'
+      : process.platform === 'win32'
+        ? 'windows-toast'
+        : 'system-notification',
+  }
+})
 
 secureHandle('restart-backend', async () => restartBackend())
 secureHandle('open-diagnostic-log', async () => {

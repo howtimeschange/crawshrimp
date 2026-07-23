@@ -550,3 +550,59 @@ test('Tmall AI image tabs only jump to create when submit starts', () => {
   assert.match(submitStarted, /aiChainActiveStep\.value\s*=\s*'create'/)
   assert.doesNotMatch(committed, /aiChainActiveStep\.value\s*=\s*'create'/)
 })
+
+test('Tmall full-chain prompt preview does not hide templates after the first 24 rows', () => {
+  const view = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  assert.match(view, /cloudPromptLibraryPreviewTemplates/)
+  assert.doesNotMatch(view, /previewTemplates\s*\|\|\s*\[\]\)\.slice\(0,\s*24\)/)
+})
+
+test('Tmall approval decisions have explicit visual and text feedback plus batch regeneration', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+  const setStatus = functionBlock(drawer, 'setAssetStatus')
+  const markAll = functionBlock(drawer, 'markAllPending')
+  assert.match(drawer, /asset-decision-badge/)
+  assert.match(drawer, /已确认/)
+  assert.match(drawer, /已舍弃/)
+  assert.match(setStatus, /showToast/)
+  assert.match(markAll, /showToast/)
+  assert.match(drawer, /批量重生已舍弃/)
+  assert.match(drawer, /async function regenerateRejectedAssets/)
+  assert.match(drawer, /window\.cs\.regenerateTmallApprovalAsset/)
+})
+
+test('script-launched Tmall AI chain creates and runs a task-center instance', () => {
+  const view = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  assert.match(view, /const ownedInstanceUid = ref\(''\)/)
+  assert.match(view, /const effectiveInstanceUid = computed/)
+  assert.match(view, /async function ensureTaskInstanceForRun/)
+  assert.match(view, /window\.cs\.createTaskInstance/)
+  assert.match(view, /window\.cs\.runTaskInstance\(runInstanceUid/)
+})
+
+test('desktop shell uses macOS banners and Windows toast notifications for manual steps', () => {
+  const main = fs.readFileSync('app/src/main.js', 'utf8')
+  const preload = fs.readFileSync('app/src/preload.js', 'utf8')
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  const handler = main.slice(
+    main.indexOf("secureHandle('show-operator-alert'"),
+    main.indexOf("secureHandle('restart-backend'"),
+  )
+  assert.match(main, /secureHandle\('show-operator-alert'/)
+  assert.match(main, /app\.setAppUserModelId\(APP_ID\)/)
+  assert.match(handler, /new Notification/)
+  assert.match(handler, /process\.platform === 'darwin'/)
+  assert.match(handler, /\?\s*'macos-banner'/)
+  assert.match(handler, /process\.platform === 'win32'/)
+  assert.match(handler, /timeoutType = 'never'/)
+  assert.match(handler, /\?\s*'windows-toast'/)
+  assert.match(handler, /notification\.on\('click'/)
+  assert.doesNotMatch(handler, /dialog\.showMessageBox/)
+  assert.doesNotMatch(handler, /flashFrame/)
+  assert.doesNotMatch(handler, /app\.dock/)
+  assert.match(preload, /showOperatorAlert/)
+  assert.match(runner, /pending_generation_confirmation/)
+  assert.match(runner, /pending_approval/)
+  assert.match(runner, /等待.*登录|登录.*等待/)
+  assert.match(runner, /window\.cs\.showOperatorAlert/)
+})

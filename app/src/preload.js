@@ -244,6 +244,7 @@ contextBridge.exposeInMainWorld('cs', {
   getCurrentChromeTab: () => ipcRenderer.invoke('get-current-chrome-tab'),
 
   getAdapters:     () => ipcRenderer.invoke('get-adapters'),
+  showOperatorAlert: (payload) => ipcRenderer.invoke('show-operator-alert', payload || {}),
   installAdapter:  (payload) => ipcRenderer.invoke('install-adapter', payload),
   uninstallAdapter:(id) => ipcRenderer.invoke('uninstall-adapter', id),
   enableAdapter:   (id, enabled) => ipcRenderer.invoke('enable-adapter', id, enabled),

@@ -31,6 +31,14 @@
           <template v-else>
             <button type="button" class="ghost-btn" @click="markAllPending('approved')">待定全确认</button>
             <button type="button" class="ghost-btn danger" @click="markAllPending('rejected')">待定全舍弃</button>
+            <button
+              type="button"
+              class="ghost-btn regenerate"
+              :disabled="regeneratingRejected || summary.rejected <= 0"
+              @click="regenerateRejectedAssets"
+            >
+              {{ regeneratingRejected ? '批量重生中' : `批量重生已舍弃（${summary.rejected}）` }}
+            </button>
             <button type="button" class="primary-btn" :disabled="saving || submitting" @click="saveDecisions">
               {{ saving ? '保存中' : '保存审批状态' }}
             </button>
@@ -155,6 +163,12 @@
                         <small>{{ asset.prompt_name || asset.label || 'AI 图' }}</small>
                       </div>
                       <img v-else :src="imageUrlWithVersion(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
+                      <span
+                        v-if="['approved', 'rejected'].includes(asset.status)"
+                        :class="['asset-decision-badge', asset.status]"
+                      >
+                        {{ asset.status === 'approved' ? '✓ 已确认' : '× 已舍弃' }}
+                      </span>
                       <span class="asset-label">{{ asset.label || asset.filename }}</span>
                       <span class="asset-file">{{ asset.filename || asset.path || (isGeneratingAsset(asset) ? '等待 1XM 返回图片' : '') }}</span>
                       <span class="asset-status">{{ statusLabel(asset) }}</span>
@@ -456,6 +470,7 @@ const saving = ref(false)
 const submitting = ref(false)
 const generationSubmitting = ref(false)
 const regenerating = ref(false)
+const regeneratingRejected = ref(false)
 const manualGenerating = ref(false)
 const error = ref('')
 const toast = ref('')
@@ -1038,16 +1053,24 @@ function togglePromptReferenceImage(prompt, asset) {
 function setAssetStatus(item, asset, status) {
   selectAsset(item, asset)
   Object.assign(asset, { status })
+  showToast(status === 'approved' ? '已确认该图片' : '已舍弃该图片')
 }
 
 function markAllPending(status) {
+  let changed = 0
   for (const item of batch.value?.items || []) {
     for (const asset of item.assets || []) {
       if (asset.kind === 'ai' && !['approved', 'rejected'].includes(asset.status)) {
         asset.status = status
+        changed += 1
       }
     }
   }
+  if (!changed) {
+    showToast('没有待处理的 AI 图片')
+    return
+  }
+  showToast(status === 'approved' ? `已批量确认 ${changed} 张图片` : `已批量舍弃 ${changed} 张图片`)
 }
 
 function decisionsPayload() {
@@ -1722,6 +1745,51 @@ async function regenerateSelected() {
   }
 }
 
+async function regenerateRejectedAssets() {
+  if (regeneratingRejected.value) return
+  const ref = approvalRef.value
+  const rejected = (batch.value?.items || [])
+    .flatMap(item => (item.assets || []).map(asset => ({ item, asset })))
+    .filter(({ asset }) => asset.kind === 'ai' && asset.status === 'rejected' && asset.id)
+  if (!rejected.length) {
+    showToast('没有已舍弃的图片可重生')
+    return
+  }
+  regeneratingRejected.value = true
+  let completed = 0
+  let failed = 0
+  showToast(`开始批量重生 ${rejected.length} 张已舍弃图片`)
+  try {
+    for (const { asset } of rejected) {
+      asset.status = 'generating'
+      try {
+        const result = await window.cs.regenerateTmallApprovalAsset(ref.batchId, ref.token, {
+          asset_id: String(asset.id),
+          prompt: String(asset.custom_prompt || asset.prompt || ''),
+          reference_paths: plainStringArray(asset.reference_paths),
+        })
+        if (result?.detail || result?.error) throw new Error(result.detail || result.error)
+        Object.assign(asset, result.asset || {}, { status: result.asset?.status || 'pending' })
+        prepareEditableAsset(asset)
+        completed += 1
+      } catch (err) {
+        asset.status = 'rejected'
+        asset.review_note = `重生失败：${err?.message || String(err)}`
+        failed += 1
+      }
+    }
+    showToast(
+      failed
+        ? `批量重生完成：成功 ${completed} 张，失败 ${failed} 张`
+        : `批量重生完成：${completed} 张新图已进入待审批`,
+      failed > 0,
+    )
+    await reload()
+  } finally {
+    regeneratingRejected.value = false
+  }
+}
+
 function splitLines(value) {
   return String(value || '').split(/[\n\r,，、；;]+/).map(item => item.trim()).filter(Boolean)
 }
@@ -1899,6 +1967,14 @@ function showToast(message, isError = false) {
 .ghost-btn.ok {
   color: #86efac;
   border-color: rgba(74, 222, 128, .24);
+}
+.ghost-btn.regenerate {
+  color: #fdba74;
+  border-color: rgba(249, 115, 22, .38);
+}
+.ghost-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 .approval-toolbar {
   padding: 12px 22px;
@@ -2254,9 +2330,18 @@ function showToast(message, isError = false) {
 .ai-primary-card {
   background: color-mix(in srgb, var(--bg3) 92%, var(--orange) 8%);
 }
-.asset-card.approved { border-color: rgba(74, 222, 128, .42); }
-.asset-card.rejected { opacity: .58; border-color: rgba(248, 113, 113, .35); }
+.asset-card.approved {
+  border: 2px solid rgba(74, 222, 128, .88);
+  background: rgba(34, 197, 94, .10);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, .08);
+}
+.asset-card.rejected {
+  border: 2px solid rgba(248, 113, 113, .82);
+  background: rgba(239, 68, 68, .10);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, .07);
+}
 .asset-tile {
+  position: relative;
   width: 100%;
   text-align: left;
   border: 0;
@@ -2355,6 +2440,26 @@ function showToast(message, isError = false) {
 .asset-submit-mark {
   display: block;
   padding: 0 10px;
+}
+.asset-decision-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 900;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(8px);
+}
+.asset-decision-badge.approved {
+  background: rgba(22, 163, 74, .92);
+}
+.asset-decision-badge.rejected {
+  background: rgba(220, 38, 38, .92);
 }
 .asset-label {
   padding-top: 10px;

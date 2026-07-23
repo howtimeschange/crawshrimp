@@ -2745,7 +2745,7 @@ function openLightbox(item, options = {}) {
 }
 
 function closeLightbox() {
-  clearLightboxAnnotationExport()
+  resolveLightboxAnnotationExportOnClose()
   lightboxItem.value = null
   lightboxMode.value = 'preview'
   lightboxEditPrompt.value = ''
@@ -2791,6 +2791,13 @@ function clearLightboxAnnotationExport() {
   lightboxAnnotationExportTimer = null
   lightboxAnnotationExportResolve = null
   lightboxAnnotationExportReject = null
+}
+
+function resolveLightboxAnnotationExportOnClose() {
+  const resolve = lightboxAnnotationExportResolve
+  const dataUrl = lightboxAnnotationDataUrl.value
+  clearLightboxAnnotationExport()
+  if (resolve) resolve(dataUrl)
 }
 
 function captureLightboxAnnotation(dataUrl) {
@@ -3147,6 +3154,7 @@ async function submitLightboxEdit() {
     lightboxEditOperations.set(sessionKey, operation)
     errorMessage.value = ''
     const sourceItem = lightboxActiveItem.value
+    const referencePaths = [...lightboxEditReferencePaths.value]
     placeholder = appendLightboxEditPlaceholder(sourceItem, nextPrompt, { activate: false })
     const annotationDataUrl = await requestLightboxAnnotationExport()
     activateLightboxEditPlaceholder(placeholder)
@@ -3158,7 +3166,7 @@ async function submitLightboxEdit() {
       sourceItem,
       mainPath,
       prompt: nextPrompt,
-      referencePaths: [...lightboxEditReferencePaths.value],
+      referencePaths,
       annotationDataUrl,
       placeholder,
     })

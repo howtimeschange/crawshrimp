@@ -2079,6 +2079,91 @@ def run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dict
     return _run_one_xm_generation_row(row, run_params, one_xm_settings)
 
 
+def sync_generation_plan_to_ai_image_workbench(
+    plan: Mapping[str, Any],
+    *,
+    task_run_uid: str,
+    model: str,
+    image_size: str,
+    ratio: str,
+    output_format: str,
+    quality: str,
+) -> dict[str, Any]:
+    workflow = plan.get("workflow")
+    style_code = compact(getattr(workflow, "style_code", ""))
+    generation_rows = list(plan.get("generation_rows") or [])
+    generated_paths_by_index = list(plan.get("generated_paths_by_index") or [])
+    output_files: list[str] = []
+    runs: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc).isoformat()
+    for index, row in enumerate(generation_rows):
+        row = row if isinstance(row, Mapping) else {}
+        paths = generated_paths_by_index[index] if index < len(generated_paths_by_index) else []
+        paths = [compact(path) for path in (paths or []) if compact(path)]
+        output_files.extend(path for path in paths if path not in output_files)
+        prompt = compact(row.get("完整Prompt") or row.get("最终提示词"))
+        task_id = compact(row.get("1XM任务ID"))
+        runs.append({
+            "run_uid": f"{compact(task_run_uid) or 'tmall-chain'}-{style_code or 'style'}-{index + 1}",
+            "created_at": now,
+            "prompt": prompt,
+            "model_key": compact(model) or "gpt-image-2",
+            "size": compact(image_size),
+            "ratio": compact(ratio),
+            "status": "completed" if paths else "failed",
+            "task_id": task_id,
+            "poll_url": compact(row.get("1XM轮询URL")),
+            "image_urls": [
+                compact(value)
+                for value in str(row.get("生成图URL") or "").splitlines()
+                if compact(value)
+            ],
+            "output_files": paths,
+            "input_params": {
+                "main_image_path": compact(plan.get("main_origin_path")),
+                "reference_image_paths": [
+                    compact(path)
+                    for path in (row.get("参考图文件") or [])
+                    if compact(path)
+                ] if isinstance(row.get("参考图文件"), (list, tuple)) else [],
+            },
+            "error": "" if paths else compact(row.get("备注") or "未生成本地结果"),
+        })
+    completed = any(run["status"] == "completed" for run in runs)
+    first_prompt = next((run["prompt"] for run in runs if run["prompt"]), "")
+    output_dir = str(Path(output_files[0]).parent) if output_files else ""
+    job = data_sink.create_ai_image_job({
+        "title": f"天猫 AI 测图 · {style_code or '未命名款号'}",
+        "prompt": first_prompt,
+        "model_key": compact(model) or "gpt-image-2",
+        "status": "completed" if completed else "failed",
+        "output_dir": output_dir,
+        "params": {
+            "workflow": "tmall_ai_image_test_chain",
+            "style_code": style_code,
+            "task_run_uid": compact(task_run_uid),
+            "size": compact(image_size),
+            "ratio": compact(ratio),
+            "output_format": compact(output_format),
+            "quality": compact(quality),
+            "main_image_path": compact(plan.get("main_origin_path")),
+        },
+        "summary": {
+            "ok": completed,
+            "runs": runs,
+            "output_files": output_files,
+            "image_urls": [
+                url
+                for run in runs
+                for url in run.get("image_urls") or []
+            ],
+            "source": "tmall_ai_image_test_chain",
+            "source_task_run_uid": compact(task_run_uid),
+        },
+    })
+    return job
+
+
 @dataclass
 class WorkflowItem:
     row_no: int
@@ -2815,8 +2900,14 @@ SEMIR_FIND_JS = r"""
     const name = compact(filename);
     return /(^|[^0-9a-z])yz\s*0?1(?!\d)/i.test(name);
   }
+  function isCombinedYzOneAiOriginalName(filename) {
+    const name = basenameOf(filename);
+    return isYzOneBracketName(name)
+      && /&\s*o\s*[\(（]\s*0?1\s*[\)）]\s*[-_ ]?\s*ai(?:$|[-_ .])/i.test(name);
+  }
   function isDerivedMainReferenceName(filename) {
     const name = basenameOf(filename);
+    if (isCombinedYzOneAiOriginalName(name)) return false;
     return /颜色\s*ai|ai\s*[-_ ]?\d|[-_&]ai(?:$|[-_ .])|效果图|创意图|生图|生成图|生成款|改色|换色|变色|智能图/i.test(name);
   }
   function isDerivedReferenceName(filename) {
@@ -4141,6 +4232,8 @@ async def recover_tmall_submission_by_readback(
     *,
     expected_test_images: int = 0,
     reason: str = "",
+    attempts: int = 4,
+    delay_seconds: float = 2.0,
 ) -> dict[str, Any] | None:
     payload = {
         "item_id": workflow.item_id,
@@ -4148,14 +4241,21 @@ async def recover_tmall_submission_by_readback(
         "expected_test_images": max(0, int(expected_test_images or 0)),
         "reason": compact(reason),
     }
-    result = await runner.evaluate_with_reconnect(
-        js_call(TMALL_SUBMISSION_READBACK_JS, payload),
-        allow_navigation_retry=True,
-    )
-    if not result.success:
-        return None
-    data = (result.data[0] if isinstance(result.data, list) and result.data else {}) if result.data is not None else {}
-    return data if isinstance(data, Mapping) else None
+    latest: dict[str, Any] | None = None
+    total_attempts = max(1, min(10, int(attempts or 1)))
+    for attempt in range(total_attempts):
+        result = await runner.evaluate_with_reconnect(
+            js_call(TMALL_SUBMISSION_READBACK_JS, payload),
+            allow_navigation_retry=True,
+        )
+        if result.success:
+            data = (result.data[0] if isinstance(result.data, list) and result.data else {}) if result.data is not None else {}
+            latest = dict(data) if isinstance(data, Mapping) else None
+            if tmall_submission_success(latest)[0]:
+                return latest
+        if attempt + 1 < total_attempts and float(delay_seconds or 0) > 0:
+            await asyncio.sleep(float(delay_seconds))
+    return latest
 
 
 def should_recover_tmall_submit_error(error: object, previous_row: Mapping[str, Any] | None = None) -> bool:
@@ -5024,6 +5124,18 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
             for generation_row in plan["generation_rows"]:
                 generation_row["执行结果"] = "已生成计划"
                 generation_row["备注"] = "未启用 generate，未调用 1XM"
+
+    if args.generate:
+        for plan in generation_plans:
+            sync_generation_plan_to_ai_image_workbench(
+                plan,
+                task_run_uid=compact(getattr(args, "task_run_uid", "")),
+                model=compact(getattr(args, "model", "gpt-image-2")),
+                image_size=compact(getattr(args, "image_size", "")),
+                ratio=compact(getattr(args, "ratio", "")),
+                output_format=compact(getattr(args, "output_format", "")),
+                quality=compact(getattr(args, "quality", "")),
+            )
 
     for entry in workflow_results:
         if entry.get("kind") == "rows":

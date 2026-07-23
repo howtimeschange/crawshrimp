@@ -1189,6 +1189,83 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(create_rows[0]["执行结果"], "已创建/加素材/已上线")
         self.assertIn("后台回读", create_rows[0]["备注"])
 
+    def test_submit_recovery_polls_until_delayed_task_becomes_visible(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208426106201", "1056907295454", "羽绒服", "男")
+        responses = [
+            SimpleNamespace(success=True, data=[{
+                "batchPayload": {},
+                "readbackTaskSummary": {},
+                "error": "暂未回读到测图任务",
+            }]),
+            SimpleNamespace(success=True, data=[{
+                "batchPayload": {"experimentTaskId": "task-delayed"},
+                "readbackTaskSummary": {"status": "1", "testImageCount": 5, "online": True},
+                "onlineResult": {"recoveredByReadback": True},
+                "error": "",
+            }]),
+        ]
+
+        class Runner:
+            def __init__(self):
+                self.calls = 0
+
+            async def evaluate_with_reconnect(self, *_args, **_kwargs):
+                response = responses[min(self.calls, len(responses) - 1)]
+                self.calls += 1
+                return response
+
+        runner = Runner()
+        recovered = asyncio.run(module.recover_tmall_submission_by_readback(
+            runner,
+            workflow,
+            expected_test_images=5,
+            attempts=3,
+            delay_seconds=0,
+        ))
+
+        self.assertEqual(runner.calls, 2)
+        self.assertTrue(module.tmall_submission_success(recovered)[0])
+
+    def test_direct_chain_generations_are_mirrored_to_ai_image_workbench(self):
+        module = load_script()
+        from core import data_sink
+
+        with tempfile.TemporaryDirectory() as temp_dir, \
+            patch("core.runtime_paths.data_root", return_value=Path(temp_dir)):
+            data_sink.init_db()
+            plan = {
+                "workflow": module.WorkflowItem(2, "208426106201", "1056907295454", "羽绒服", "男"),
+                "main_origin_path": "/tmp/208426106201-main.png",
+                "generation_rows": [
+                    {"提示词序号": 1, "提示词字段名": "创意拍", "完整Prompt": "prompt one"},
+                    {"提示词序号": 2, "提示词字段名": "站姿", "完整Prompt": "prompt two"},
+                ],
+                "generated_paths_by_index": [
+                    ["/tmp/208426106201-ai-1.png"],
+                    ["/tmp/208426106201-ai-2.png"],
+                ],
+            }
+
+            job = module.sync_generation_plan_to_ai_image_workbench(
+                plan,
+                task_run_uid="run-direct-1",
+                model="gpt-image-2",
+                image_size="1536x2048",
+                ratio="3:4",
+                output_format="png",
+                quality="high",
+            )
+            loaded = data_sink.get_ai_image_job(job["job_uid"])
+
+        self.assertEqual(loaded["status"], "completed")
+        self.assertEqual(loaded["params"]["workflow"], "tmall_ai_image_test_chain")
+        self.assertEqual(len(loaded["summary"]["runs"]), 2)
+        self.assertEqual(
+            loaded["summary"]["output_files"],
+            ["/tmp/208426106201-ai-1.png", "/tmp/208426106201-ai-2.png"],
+        )
+
     def test_generate_approval_asset_for_item_accepts_product_item_id(self):
         module = load_script()
         captured = {}
@@ -2362,6 +2439,59 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["chosen"], "yz1.jpg")
         self.assertEqual(payload["mainCandidates"], ["yz1.jpg"])
+
+    def test_semir_main_matching_accepts_combined_yz1_ai_filename(self):
+        module = load_script()
+        code = module.js_call(module.SEMIR_FIND_JS, {
+            "style_code": "208426106201",
+            "skc_code": "",
+            "cloud_path": "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/",
+            "limit": 8,
+        })
+        node_script = f"""
+;(async () => {{
+  const code = {json.dumps(code, ensure_ascii=False)};
+  const searchItems = [{{
+    filename: 'yz(1)&o(1)-AI.png',
+    fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/模拍原图/期货/0P/中童/208426106201-AI已回齐5.22-已选/yz(1)&o(1)-AI.png',
+    ext: 'png',
+  }}];
+  const response = (payload) => ({{
+    ok: true,
+    async text() {{ return JSON.stringify(payload); }},
+  }});
+  global.fetch = async (url) => {{
+    const path = new URL(String(url), 'https://fmp.semirapp.com').pathname;
+    if (path === '/fengcloud/1/account/mount') {{
+      return response({{ list: [{{ mount_id: 'm1', name: '巴拉营运BU-商品' }}] }});
+    }}
+    if (path === '/fengcloud/2/file/search') {{
+      return response({{ list: searchItems, total: searchItems.length }});
+    }}
+    if (path.includes('/file/list') || path.includes('/file/ls')) {{
+      return response({{ list: [], total: 0 }});
+    }}
+    if (path.startsWith('/fengcloud/2/file/info')) {{
+      return response({{ url: 'https://example.com/yz1.png' }});
+    }}
+    return response({{ list: [], total: 0 }});
+  }};
+  const result = await eval(code);
+  if (!result.success) throw new Error(result.error || 'mocked semir find failed');
+  process.stdout.write(JSON.stringify({{
+    chosen: result.data[0].chosenMain && result.data[0].chosenMain.filename,
+    mainCandidates: result.data[0].mainCandidates.map((item) => item.filename),
+  }}));
+}})().catch((error) => {{
+  console.error(error && error.stack || error);
+  process.exit(1);
+}});
+"""
+        completed = subprocess.run(["node"], input=node_script, text=True, capture_output=True, check=True)
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(payload["chosen"], "yz(1)&o(1)-AI.png")
+        self.assertEqual(payload["mainCandidates"], ["yz(1)&o(1)-AI.png"])
 
     def test_semir_main_matching_prefers_yz1_with_parentheses_over_bare_yz1_and_showcase1(self):
         module = load_script()

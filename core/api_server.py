@@ -2106,12 +2106,12 @@ def _bala_video_image_threshold_bytes(run_params: Optional[dict], row: Optional[
         try:
             mb = float(raw)
         except Exception:
-            mb = 20
+            mb = 10
         return max(1, min(80, int(mb))) * 1024 * 1024
     try:
         threshold = int(float(raw))
     except Exception:
-        threshold = 20 * 1024 * 1024
+        threshold = 10 * 1024 * 1024
     return max(1, threshold)
 
 
@@ -4382,6 +4382,36 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
     )
 
 
+def _summarize_tmall_ai_chain_create_outcomes(rows: list, *, execute_mode: str) -> dict:
+    if str(execute_mode or "").strip().lower() != "direct_create":
+        return {"status": "completed", "attempted": 0, "succeeded": 0, "failed": 0, "error": ""}
+    normalized = [row for row in (rows or []) if isinstance(row, dict)]
+    styles = {
+        str(row.get("款号") or "").strip()
+        for row in normalized
+        if str(row.get("款号") or "").strip()
+    }
+    succeeded_styles = {
+        str(row.get("款号") or "").strip()
+        for row in normalized
+        if str(row.get("阶段") or "").strip() == "天猫上传/创建测图任务"
+        and str(row.get("任务ID") or "").strip()
+        and "已创建" in str(row.get("执行结果") or "")
+    }
+    attempted = len(styles)
+    succeeded = len(succeeded_styles)
+    failed = max(0, attempted - succeeded)
+    status = "completed" if attempted > 0 and failed == 0 else ("partial_failed" if succeeded > 0 else "failed")
+    error = "" if status == "completed" else f"自动审批链路未创建测图任务：成功 {succeeded} / 款号 {attempted}"
+    return {
+        "status": status,
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "error": error,
+    }
+
+
 def _tmall_local_export_run_folder_name(run_params: dict) -> str:
     started_raw = str((run_params or {}).get("__task_started_at") or "").strip()
     try:
@@ -6204,6 +6234,54 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             output_files = merge_output_file_refs([approval_board_url], output_files)
         if bala_review_board_url:
             output_files = merge_output_file_refs([bala_review_board_url], output_files)
+        tmall_chain_create_summary = _summarize_tmall_ai_chain_create_outcomes(
+            data,
+            execute_mode=str(run_params.get("execute_mode") or ""),
+        ) if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain') else {}
+        if tmall_chain_create_summary.get("status") == "failed":
+            err = str(tmall_chain_create_summary.get("error") or "自动审批链路未创建测图任务")
+            data_sink.fail_run(run_id, err, records_count=len(data), output_files=output_files)
+            if instance_uid:
+                _sync_task_instance_artifacts(instance_uid, output_files, run_id)
+                data_sink.update_task_instance(
+                    instance_uid,
+                    status="failed",
+                    current_step="create",
+                    summary={
+                        "records": len(data),
+                        "output_files": output_files,
+                        "run_id": run_id,
+                        "error": err,
+                        "create_summary": tmall_chain_create_summary,
+                    },
+                )
+            _set_live_status(live_jids, {
+                'status': 'error',
+                'run_id': run_id,
+                'adapter_id': adapter_id,
+                'task_id': task_id,
+                'instance_uid': instance_uid,
+                'records': len(data),
+                'error': err,
+                'last_seen_at': datetime.now().isoformat(),
+                'current_row': len(data),
+                'phase': 'error',
+            })
+            if schedule_uid:
+                _notify_task_schedule_result(
+                    schedule_uid=schedule_uid,
+                    instance_uid=instance_uid,
+                    run_id=run_id,
+                    status="failed",
+                    records=len(data),
+                    output_files=output_files,
+                    error=err,
+                    started_at=run_started_at,
+                    finished_at=datetime.now().isoformat(),
+                    log=log,
+                )
+            log(f"[{adapter_id}/{task_id}] Failed closed. {err}")
+            return
         data_sink.finish_run(run_id, len(data), output_files)
         if instance_uid:
             _sync_task_instance_artifacts(instance_uid, output_files, run_id)
@@ -6239,6 +6317,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 "local_board_url": approval_board_urls.get("local_board_url", ""),
                 "approval_stage": "confirm_generation" if generation_confirmation_pending else "approval",
                 "run_id": run_id,
+                "create_summary": tmall_chain_create_summary,
                 **approval_summary,
             }
             if approval_board_url:
@@ -6251,7 +6330,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             else:
                 data_sink.update_task_instance(
                     instance_uid,
-                    status="completed",
+                    status="partial_failed" if tmall_chain_create_summary.get("status") == "partial_failed" else "completed",
                     current_step="create",
                     summary=instance_summary,
                 )

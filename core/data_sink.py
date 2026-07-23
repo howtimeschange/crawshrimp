@@ -2011,14 +2011,21 @@ def finish_run(run_id: int, records_count: int, output_files: List[str]):
         conn.commit()
 
 
-def fail_run(run_id: int, error: str):
+def fail_run(run_id: int, error: str, records_count: int = 0, output_files: Optional[List[str]] = None):
     now = datetime.now().isoformat()
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='error', finished_at=?, last_seen_at=?, error=?
+            SET status='error', finished_at=?, last_seen_at=?, records_count=?, output_files=?, error=?
             WHERE id=?
-        """, (now, now, error, run_id))
+        """, (
+            now,
+            now,
+            max(0, int(records_count or 0)),
+            json.dumps(output_files or []),
+            error,
+            run_id,
+        ))
         conn.commit()
 
 

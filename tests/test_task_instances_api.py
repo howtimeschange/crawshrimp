@@ -48,6 +48,34 @@ class TaskInstancesApiTests(unittest.TestCase):
         self.assertEqual(updated["status"], "archived")
         self.assertEqual(updated["archived"], 1)
 
+    def test_direct_tmall_chain_status_fails_closed_when_no_measurement_task_was_created(self):
+        missing = api_server._summarize_tmall_ai_chain_create_outcomes([
+            {
+                "款号": "208426106201",
+                "阶段": "森马云盘找图",
+                "执行结果": "参考图不完整",
+                "备注": "缺少橱窗1/yz(1)主图原图",
+            },
+        ], execute_mode="direct_create")
+        created = api_server._summarize_tmall_ai_chain_create_outcomes([
+            {
+                "款号": "208426106201",
+                "阶段": "天猫上传/创建测图任务",
+                "任务ID": "41716301",
+                "上线结果": "已上线",
+                "页面回读": "status=1",
+                "执行结果": "已创建/加素材/已上线",
+            },
+        ], execute_mode="direct_create")
+
+        self.assertEqual(missing["status"], "failed")
+        self.assertEqual(missing["attempted"], 1)
+        self.assertEqual(missing["failed"], 1)
+        self.assertIn("未创建测图任务", missing["error"])
+        self.assertEqual(created["status"], "completed")
+        self.assertEqual(created["succeeded"], 1)
+        self.assertEqual(created["failed"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
