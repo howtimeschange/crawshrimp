@@ -917,6 +917,8 @@ def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: di
 def _resolve_task_open_mode(adapter_id: str, task_id: str, run_params: dict, task_param_ids: set[str]) -> str:
     if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews"):
         return "new"
+    if (adapter_id, task_id) == (BALA_AI_VIDEO_ADAPTER_ID, BALA_SHORT_VIDEO_BATCH_UPLOAD_TASK_ID):
+        return "new"
     return str(run_params.get('mode') or ('new' if 'mode' not in task_param_ids else 'current')).strip().lower()
 
 
@@ -2268,6 +2270,7 @@ def _semir_output_roots(runtime_dir: Path, exported_files: list, run_params: dic
 
 BALA_AI_VIDEO_ADAPTER_ID = "bala-ai-video-assistant"
 BALA_AI_FACE_BACKGROUND_TASK_ID = "bala_ai_face_background_generate"
+BALA_SHORT_VIDEO_BATCH_UPLOAD_TASK_ID = "short_video_batch_upload"
 BALA_MODEL_LIBRARY_MANIFEST = "assets/model-library/manifest.json"
 BALA_VIDEO_TEMPLATE_DIR = Path.home() / "Downloads" / "巴拉AI视频模板库"
 BALA_VIDEO_TEMPLATE_CATALOG_JSON = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.json"
@@ -5567,6 +5570,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 run_params[p.id] = p.default
 
         mode = _resolve_task_open_mode(adapter_id, task_id, run_params, task_param_ids)
+        requires_dedicated_new_tab = (
+            adapter_id == BALA_AI_VIDEO_ADAPTER_ID
+            and task_id == BALA_SHORT_VIDEO_BATCH_UPLOAD_TASK_ID
+        )
+        if requires_dedicated_new_tab:
+            run_params["mode"] = "new"
+            log("短视频批量上传使用任务专用新标签页；不会导航用户原来的操作页面")
         current_tab_id = str(runtime_options.get('current_tab_id') or '').strip()
         shop_url = str(run_params.get('shop_url') or '').strip()
         configured_entry_url = shop_url or str(task.entry_url or m.entry_url or '').strip()
@@ -5782,8 +5792,18 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 try:
                     tab = await _bridge_new_tab(open_entry_url)
                 except Exception as e:
+                    if requires_dedicated_new_tab:
+                        raise RuntimeError(
+                            "无法创建短视频批量上传专用标签页；为避免跳转原操作页面，任务已停止"
+                        ) from e
                     log(f"新建 tab 失败，尝试复用现有 tab: {e}")
                     tab = await _bridge_find_tab(open_entry_url) or await _bridge_find_tab(target_entry_url)
+            if requires_dedicated_new_tab:
+                dedicated_tab_id = str((tab or {}).get("id") or "")
+                if not dedicated_tab_id or dedicated_tab_id in new_mode_baseline_tab_ids:
+                    raise RuntimeError(
+                        "未获得新创建的短视频批量上传专用标签页；为避免跳转原操作页面，任务已停止"
+                    )
             if not tab:
                 raise RuntimeError(f"无法打开或找到目标页面：{target_entry_url}")
 

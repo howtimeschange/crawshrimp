@@ -139,6 +139,49 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             Path("adapters/bala-ai-video-assistant/templates/tmall-video-copy-template.csv").exists()
         )
 
+    def test_manifest_declares_short_video_batch_upload_task(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["id"] == "short_video_batch_upload")
+        params = {item["id"]: item for item in task["params"]}
+        output_columns = task["output"][0]["columns"]
+
+        self.assertEqual(task["name"], "短视频批量上传")
+        self.assertEqual(task["script"], "short-video-batch-upload.js")
+        self.assertIn("gg_publish/gg-video", task["entry_url"])
+        self.assertTrue(task["skip_auth"])
+        self.assertEqual(params["mode"]["default"], "new")
+        self.assertEqual(
+            params["mode"]["options"],
+            [{"value": "new", "label": "专用新标签页（固定）"}],
+        )
+        self.assertIn("不跳转原操作页面", params["mode"]["hint"])
+        self.assertEqual(params["input_file"]["type"], "file_excel")
+        self.assertTrue(params["input_file"]["required"])
+        self.assertEqual(params["video_dir"]["type"], "directory")
+        self.assertTrue(params["video_dir"]["include_file_listing"])
+        self.assertEqual(params["execute_mode"]["default"], "plan")
+        self.assertTrue(params["publish_guang"]["default"])
+        self.assertTrue(params["publish_recommend"]["default"])
+        self.assertTrue(params["bind_product"]["default"])
+        self.assertIn("光合内容ID", output_columns)
+        self.assertIn("搜推内容ID", output_columns)
+        self.assertIn("宝贝展示视频ID", output_columns)
+        self.assertIn("商品提交回执", output_columns)
+        self.assertTrue(
+            Path("adapters/bala-ai-video-assistant/short-video-batch-upload.js").is_file()
+        )
+
+    def test_short_video_batch_upload_forces_dedicated_new_tab_mode(self):
+        self.assertEqual(
+            api_server._resolve_task_open_mode(
+                "bala-ai-video-assistant",
+                "short_video_batch_upload",
+                {"mode": "current"},
+                {"mode"},
+            ),
+            "new",
+        )
+
     def test_manifest_declares_face_background_generation_task(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
 

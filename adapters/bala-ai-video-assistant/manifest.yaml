@@ -107,6 +107,97 @@ tasks:
           - 上传情况
           - 内容ID
 
+  - id: short_video_batch_upload
+    name: 短视频批量上传
+    description: 按 Excel 批量把本地视频发布到光合逛逛和千牛搜推素材，再用光合内容 ID 仅替换商品“宝贝展示”视频并提交；全程保留接口回执与刷新读回
+    script: short-video-batch-upload.js
+    entry_url: https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?ugc_scene=pc_newcreator_video&pageType=video&site=guangguang
+    tab_match_prefixes:
+      - https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video
+    skip_auth: true
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: new
+            label: 专用新标签页（固定）
+        hint: 启动任务时使用 9222 登录态创建专用标签页；光合、搜推、视频选择器、商品编辑和刷新读回都只在该标签页内流转，不跳转原操作页面。
+      - id: input_file
+        type: file_excel
+        label: 短视频批量上传模板
+        required: true
+        templates:
+          - file: templates/tmall-video-copy-template.csv
+            label: 短视频批量上传模板
+            description: 填写款号、商品 ID、视频标题、视频描述和可选定时时间；运行结果会追加三个入口的状态、内容 ID、接口回执和刷新读回。
+            version: "2026.07.23.1"
+        hint: 商品 ID 与内容 ID 会按文本输出；定时日期和时间仅用于光合逛逛发布。
+      - id: video_override_path
+        type: text
+        label: 本次测试视频路径
+        placeholder: "/Users/name/Downloads/video.mp4"
+        hint: 单视频测试时填写完整本地路径；会覆盖按款号目录匹配。
+      - id: video_dir
+        type: directory
+        label: 批量视频目录
+        include_file_listing: true
+        placeholder: 选择按款号命名的视频目录
+        hint: 未填写测试视频路径时，脚本按“款号.mp4”或唯一包含款号的文件匹配视频。
+      - id: execute_mode
+        type: select
+        label: 执行模式
+        default: plan
+        options:
+          - value: plan
+            label: 只预检任务
+          - value: live
+            label: live 真实发布并提交商品
+        hint: live 会产生真实逛逛内容、搜推素材，并提交商品“宝贝展示”视频变更。
+      - id: publish_guang
+        type: checkbox
+        label: 发布到光合逛逛
+        default: true
+        ui_span: third
+      - id: publish_recommend
+        type: checkbox
+        label: 发布到千牛搜推素材
+        default: true
+        ui_span: third
+      - id: bind_product
+        type: checkbox
+        label: 替换宝贝展示并提交
+        default: true
+        ui_span: third
+        hint: 只替换“宝贝展示”，保留“宝贝讲解”；需要光合内容 ID。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "短视频批量上传结果_{timestamp}.xlsx"
+        columns:
+          - 款号
+          - ID
+          - 视频标题
+          - 视频描述
+          - 参与活动
+          - 定时/日
+          - 定时/具体时间
+          - 上传情况
+          - 内容ID
+          - 光合发布状态
+          - 光合内容ID
+          - 光合接口回执
+          - 搜推素材状态
+          - 搜推内容ID
+          - 搜推接口回执
+          - 商品视频绑定状态
+          - 宝贝展示视频ID
+          - 商品提交回执
+          - 刷新读回
+          - 备注
+
   - id: semir_video_material_prepare
     name: 森马云盘视频素材图下载
     description: 按款号在森马云盘搜索并下载 AI 自制视频所需模拍图和商品细节图，优先最新已选/已写文件夹，默认输出本地图包不打 ZIP
