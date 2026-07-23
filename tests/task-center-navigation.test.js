@@ -353,7 +353,7 @@ test('Tmall generation confirmation board uses compact slots and inline prompt e
   assert.doesNotMatch(drawer, /class="confirmation-image-slots"/)
   assert.doesNotMatch(drawer, /class="approval-inspector"/)
   assert.doesNotMatch(drawer, /\.approval-inspector/)
-  assert.match(drawer, /grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/)
+  assert.match(drawer, /grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/)
   assert.match(drawer, /\.prompt-card-actions \.ghost-btn\.danger\s*\{[\s\S]*justify-self:\s*end/)
   assert.doesNotMatch(drawer, /\.prompt-card-actions\s*\{[\s\S]{0,140}repeat\(3, minmax\(0, 1fr\)\)/)
   assert.doesNotMatch(drawer, /class="add-generation-prompt-card" @click="openPromptEditor\(item\)"/)
@@ -378,7 +378,7 @@ test('Tmall generation confirmation keeps custom references isolated by style an
   assert.match(functionBlock(drawer, 'generationConfirmationPayload'), /reference_binding_mode:\s*String\(prompt\.reference_binding_mode/)
 })
 
-test('Tmall confirmation owns execution mode, prompt detail actions, and selected library primary copy', () => {
+test('Tmall confirmation owns execution mode, inline prompt editing, and selected library primary copy', () => {
   const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
   const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
 
@@ -388,11 +388,13 @@ test('Tmall confirmation owns execution mode, prompt detail actions, and selecte
   assert.match(drawer, /class="batch-execution-mode"/)
   assert.match(drawer, /v-model="generationExecutionMode"/)
   assert.match(functionBlock(drawer, 'generationConfirmationPayload'), /execution_mode:\s*generationExecutionMode\.value/)
-  assert.match(drawer, />查看明细<\/button>/)
-  assert.match(drawer, />修改本次<\/button>/)
+  assert.match(drawer, /v-model="prompt\.prompt_name"/)
+  assert.match(drawer, /<textarea v-model="prompt\.custom_prompt"/)
+  assert.doesNotMatch(drawer, />查看明细<\/button>/)
+  assert.doesNotMatch(drawer, />修改本次<\/button>/)
   assert.match(drawer, />重新选择<\/button>/)
-  assert.match(drawer, /class="prompt-detail-modal"/)
-  assert.match(drawer, /function openPromptDetail\(item, prompt\)/)
+  assert.doesNotMatch(drawer, /class="prompt-detail-modal"/)
+  assert.doesNotMatch(drawer, /function openPromptDetail\(item, prompt\)/)
   assert.match(drawer, /function markPromptModified\(prompt\)/)
   assert.match(functionBlock(drawer, 'selectPromptLibraryTemplate'), /original_content/)
   assert.match(functionBlock(drawer, 'selectPromptLibraryTemplate'), /modified_in_batch/)

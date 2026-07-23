@@ -310,8 +310,6 @@
                     </button>
                   </div>
                   <div class="prompt-card-actions">
-                    <button type="button" class="ghost-btn" @click="openPromptDetail(item, prompt)">查看明细</button>
-                    <button type="button" class="ghost-btn" @click="markPromptModified(prompt)">修改本次</button>
                     <button type="button" class="ghost-btn" @click="openPromptLibraryPicker(item, prompt)">重新选择</button>
                     <button type="button" class="ghost-btn danger" @click="removeGenerationPrompt(item, prompt)">删除</button>
                   </div>
@@ -440,27 +438,6 @@
         @select="selectPromptLibraryTemplate"
       />
 
-      <div v-if="promptDetail.open" class="prompt-detail-modal" @click.self="closePromptDetail">
-        <section class="prompt-detail-panel">
-          <header class="manual-modal-head">
-            <div>
-              <strong>{{ promptDetail.prompt?.prompt_name || 'Prompt 明细' }}</strong>
-              <span>{{ promptDetail.item?.style_code || '-' }} · {{ promptDetail.prompt?.source_library_name || batch?.cloud_prompt_library?.name || '当前批次' }}</span>
-            </div>
-            <button type="button" class="icon-btn" aria-label="关闭 Prompt 明细" @click="closePromptDetail">×</button>
-          </header>
-          <dl class="prompt-detail-list">
-            <div><dt>来源</dt><dd>{{ promptDetail.prompt?.source_library_name || batch?.cloud_prompt_library?.name || '批次快照' }}</dd></div>
-            <div><dt>原始 Prompt</dt><dd>{{ promptDetail.prompt?.original_content || promptDetail.prompt?.prompt || '-' }}</dd></div>
-            <div><dt>本次执行 Prompt</dt><dd>{{ promptDetail.prompt?.custom_prompt || promptDetail.prompt?.prompt || '-' }}</dd></div>
-            <div><dt>参考图</dt><dd>{{ plainStringArray(promptDetail.prompt?.reference_paths).map(referenceFileName).join('、') || '仅系统素材' }}</dd></div>
-          </dl>
-          <footer class="manual-modal-actions">
-            <button type="button" class="primary-btn" @click="closePromptDetail">关闭</button>
-          </footer>
-        </section>
-      </div>
-
       <div v-if="imagePreview.open" class="image-preview-modal" @click.self="closeImagePreview">
         <section class="image-preview-panel">
           <header class="manual-modal-head">
@@ -531,11 +508,6 @@ const promptLibraryPicker = ref({
   prompt: null,
 })
 const promptReferencePicker = ref({
-  open: false,
-  item: null,
-  prompt: null,
-})
-const promptDetail = ref({
   open: false,
   item: null,
   prompt: null,
@@ -1529,22 +1501,6 @@ function openPromptLibraryPicker(item, prompt) {
 
 function closePromptLibraryPicker() {
   promptLibraryPicker.value.open = false
-}
-
-function openPromptDetail(item, prompt) {
-  promptDetail.value = {
-    open: true,
-    item,
-    prompt,
-  }
-}
-
-function closePromptDetail() {
-  promptDetail.value = {
-    open: false,
-    item: null,
-    prompt: null,
-  }
 }
 
 function markPromptModified(prompt) {
@@ -2923,7 +2879,7 @@ function showToast(message, isError = false) {
 }
 .prompt-card-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-top: 8px;
 }
@@ -3104,7 +3060,6 @@ function showToast(message, isError = false) {
 }
 .prompt-library-picker-modal,
 .prompt-reference-picker-modal,
-.prompt-detail-modal,
 .image-preview-modal {
   position: absolute;
   inset: 0;
@@ -3113,42 +3068,6 @@ function showToast(message, isError = false) {
   display: grid;
   place-items: center;
   padding: 24px;
-}
-.prompt-detail-panel {
-  width: min(760px, 100%);
-  max-height: calc(100vh - 72px);
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
-  padding: 18px;
-}
-.prompt-detail-list {
-  display: grid;
-  gap: 10px;
-  margin: 14px 0 0;
-}
-.prompt-detail-list > div {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  gap: 12px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 10px 12px;
-}
-.prompt-detail-list dt {
-  color: var(--text3);
-  font-size: 11px;
-  font-weight: 800;
-}
-.prompt-detail-list dd {
-  margin: 0;
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 .prompt-reference-picker-panel {
   width: min(780px, 100%);
