@@ -1,6 +1,6 @@
 id: tmall-ops-assistant
 name: 天猫运营助手
-version: 0.1.3
+version: 0.1.5
 author: codex
 description: "天猫商品评价抓取、商品编辑页素材预检与运营批量处理"
 entry_url: https://detail.tmall.com/item.htm

@@ -53,6 +53,7 @@ from core.cloud_machine_agent import CloudMachineAgent
 from core import adapter_loader
 from core import ai_image_service
 from core import ai_video_generation_service
+from core import llm_gateway
 from core import data_sink
 from core import notifier
 from core import odps_sync
@@ -2865,6 +2866,12 @@ def _finalize_bala_ai_video_assistant_outputs(
     runtime_artifact_dir: str,
     log,
 ) -> list[str]:
+    if task_id == "tmall_video_copy_generate":
+        return _finalize_video_copy_outputs(
+            exported_files=exported_files,
+            run_params=run_params,
+            log=log,
+        )
     if task_id != "semir_video_material_prepare":
         return [str(path) for path in (runtime_files or []) + (exported_files or []) if str(path or "").strip()]
 
@@ -3997,6 +4004,101 @@ async def _apply_tmall_ai_image_generation(data_rows: list, run_params: dict, wa
     return patched_rows
 
 
+async def _apply_video_copy_generation(data_rows: list, run_params: dict, wait_for_control, log) -> list:
+    source_rows = [
+        (index, row)
+        for index, row in enumerate(data_rows or [])
+        if isinstance(row, dict) and row.get("__generate_video_copy")
+    ]
+    if not source_rows:
+        return data_rows
+
+    model_id = str(run_params.get("model_id") or "").strip()
+    concurrency = max(1, min(3, int(run_params.get("generation_concurrency") or 3)))
+    semaphore = asyncio.Semaphore(concurrency)
+    generated_by_index: dict[int, list[dict]] = {}
+    log(
+        f"[llm] 准备使用 {model_id or '设置中的默认模型'} 为 {len(source_rows)} 个商品"
+        f"生成短视频标题和文案，并发上限 {concurrency}"
+    )
+
+    def public_row(source: dict) -> dict:
+        return {
+            "款号": str(source.get("款号") or "").strip(),
+            "ID": str(source.get("ID") or "").strip(),
+            "视频标题": "",
+            "视频描述": "",
+            "参与活动": str(source.get("参与活动") or ""),
+            "定时/日": str(source.get("定时/日") or ""),
+            "定时/具体时间": str(source.get("定时/具体时间") or ""),
+            "上传情况": str(source.get("上传情况") or ""),
+            "内容ID": str(source.get("内容ID") or ""),
+        }
+
+    async def generate_one(source_index: int, source: dict, ordinal: int) -> tuple[int, list[dict]]:
+        async with semaphore:
+            base = public_row(source)
+            try:
+                copies, route = await asyncio.to_thread(
+                    llm_gateway.generate_video_copies,
+                    product_title=str(source.get("__product_title") or ""),
+                    image_urls=list(source.get("__main_image_urls") or []),
+                    model_id=model_id,
+                )
+                rows = [
+                    {
+                        **base,
+                        "视频标题": copy["video_title"],
+                        "视频描述": copy["video_description"],
+                        "上传情况": "",
+                    }
+                    for copy in copies
+                ]
+                log(
+                    f"[llm] 已生成 {ordinal}/{len(source_rows)}："
+                    f"{base['款号'] or base['ID']}（{route.model_id}，{len(rows)} 个方案）"
+                )
+                return source_index, rows
+            except Exception as exc:
+                safe_error = str(exc or "未知错误").strip()[:500]
+                log(f"[llm][warn] 生成失败 {ordinal}/{len(source_rows)}：{base['款号'] or base['ID']}：{safe_error}")
+                return source_index, [{
+                    **base,
+                    "视频标题": "",
+                    "视频描述": "",
+                    "上传情况": f"生成失败：{safe_error}",
+                }]
+
+    tasks = [
+        asyncio.create_task(generate_one(source_index, source, ordinal))
+        for ordinal, (source_index, source) in enumerate(source_rows, start=1)
+    ]
+    for completed, task in enumerate(asyncio.as_completed(tasks), start=1):
+        source_index, generated = await task
+        generated_by_index[source_index] = generated
+        first = generated[0] if generated else {}
+        await wait_for_control({
+            "records": completed,
+            "shared": {
+                "total_rows": len(source_rows),
+                "current_exec_no": completed,
+                "current_buyer_id": str(first.get("款号") or first.get("ID") or ""),
+                "current_store": "AI 生成视频标题和文案",
+                "generation_total_jobs": len(source_rows),
+                "generation_completed_jobs": completed,
+            },
+            "phase": "llm_video_copy_generate",
+        })
+
+    output_rows: list[dict] = []
+    for index, row in enumerate(data_rows or []):
+        if index in generated_by_index:
+            output_rows.extend(generated_by_index[index])
+        elif isinstance(row, dict):
+            output_rows.append(public_row(row))
+    return output_rows
+
+
 def _task_file_param_path(run_params: dict, key: str, default: str = "") -> str:
     value = (run_params or {}).get(key)
     if isinstance(value, dict):
@@ -4717,6 +4819,88 @@ def _finalize_tmall_packaging_upload_outputs(
             runtime_files_to_cleanup.append(str(source))
     _cleanup_semir_runtime_artifacts(runtime_files_to_cleanup, package_root)
     _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+    return final_refs
+
+
+def _style_video_copy_workbook(path: Path) -> None:
+    from openpyxl import load_workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    workbook = load_workbook(path)
+    try:
+        sheet = workbook.active
+        sheet.title = "Sheet1"
+        yellow = PatternFill(fill_type="solid", fgColor="FFFF00")
+        expected_headers = [
+            "款号",
+            "ID",
+            "视频标题",
+            "视频描述",
+            "参与活动",
+            "定时/日",
+            "定时/具体时间",
+            "上传情况",
+            "内容ID",
+        ]
+        for column, header in enumerate(expected_headers, start=1):
+            cell = sheet.cell(row=1, column=column)
+            cell.value = header
+            cell.fill = yellow
+            cell.font = Font(name="微软雅黑", size=10, bold=True, color="000000")
+            cell.alignment = Alignment(
+                horizontal="left" if header in {"视频标题", "视频描述"} else "center",
+                vertical="center",
+            )
+        sheet.row_dimensions[1].height = 30
+        widths = {
+            "A": 18,
+            "B": 22,
+            "C": 32,
+            "D": 72,
+            "E": 18,
+            "F": 16,
+            "G": 22,
+            "H": 30,
+            "I": 18,
+        }
+        for column, width in widths.items():
+            sheet.column_dimensions[column].width = width
+        for row in range(2, sheet.max_row + 1):
+            for column in ("A", "B", "I"):
+                sheet[f"{column}{row}"].number_format = "@"
+            sheet[f"C{row}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            sheet[f"D{row}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            sheet[f"H{row}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            sheet.row_dimensions[row].height = 72
+        sheet.freeze_panes = "A2"
+        workbook.save(path)
+    finally:
+        workbook.close()
+
+
+def _finalize_video_copy_outputs(
+    exported_files: list,
+    run_params: dict,
+    log,
+) -> list[str]:
+    final_refs: list[str] = []
+    output_dir = str((run_params or {}).get("output_dir") or "").strip()
+    target_root = Path(output_dir).expanduser() if output_dir else None
+    if target_root:
+        target_root.mkdir(parents=True, exist_ok=True)
+
+    for file_ref in exported_files or []:
+        source = Path(str(file_ref or "")).expanduser()
+        if not source.is_file():
+            continue
+        if source.suffix.lower() == ".xlsx":
+            _style_video_copy_workbook(source)
+        if target_root:
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            final_refs.append(str(copied))
+        else:
+            final_refs.append(str(source))
+    log(f"巴拉短视频文案结果表已按批量上传模板整理：{len(final_refs)} 个文件")
     return final_refs
 
 
@@ -5787,7 +5971,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     )
                     return merge_output_file_refs(packaged_refs)
                 except Exception as package_error:
-                    log(f"[warn] 巴拉AI视频素材后处理失败，回退到原始输出: {package_error}")
+                    log(f"[warn] 巴拉AI视频任务后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
             if adapter_id == 'plm-ops-assistant' and task_id == 'size_chart_downloader':
@@ -5986,6 +6170,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             raw_count = len(data)
         if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_generation'):
             data = await _apply_tmall_ai_image_generation(data, run_params, wait_for_control, log)
+            raw_count = len(data)
+        if (adapter_id, task_id) == (BALA_AI_VIDEO_ADAPTER_ID, 'tmall_video_copy_generate'):
+            data = await _apply_video_copy_generation(data, run_params, wait_for_control, log)
             raw_count = len(data)
         if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain'):
             data = await _apply_tmall_ai_image_test_chain(run_params, runtime_artifact_dir, wait_for_control, log)
@@ -10682,6 +10869,7 @@ _AI_VIDEO_PRIVATE_SETTING_FIELDS = frozenset({
     "bailian_upload_api_key",
     "bailian_uploads_url",
 })
+_LLM_PRIVATE_SETTING_FIELDS = frozenset({"api_key"})
 
 
 def _public_settings() -> dict:
@@ -10691,11 +10879,19 @@ def _public_settings() -> dict:
     ai = public.get("ai") if isinstance(public.get("ai"), dict) else {}
     source_ai = saved.get("ai") if isinstance(saved.get("ai"), dict) else {}
     source_video = source_ai.get("video") if isinstance(source_ai.get("video"), dict) else {}
+    source_llm = source_ai.get("llm") if isinstance(source_ai.get("llm"), dict) else {}
     ai["video"] = {
         "seedance_configured": bool(str(source_video.get("seedance_api_key") or "").strip()),
         "happyhorse_configured": bool(str(source_video.get("bailian_api_key") or "").strip()),
         "bailian_upload_configured": bool(str(source_video.get("bailian_upload_api_key") or "").strip()),
     }
+    public_llm = {
+        key: value
+        for key, value in source_llm.items()
+        if key not in _LLM_PRIVATE_SETTING_FIELDS
+    }
+    public_llm["configured"] = bool(str(source_llm.get("api_key") or "").strip())
+    ai["llm"] = public_llm
     public["ai"] = ai
     return public
 
@@ -10707,6 +10903,11 @@ def _safe_settings_write_patch(cfg: dict) -> dict:
         dotted = f"ai.video.{field}"
         if dotted in patch and not str(patch.get(dotted) or "").strip():
             patch.pop(dotted, None)
+    for field in _LLM_PRIVATE_SETTING_FIELDS:
+        dotted = f"ai.llm.{field}"
+        if dotted in patch and not str(patch.get(dotted) or "").strip():
+            patch.pop(dotted, None)
+    patch.pop("ai.llm.configured", None)
     ai = patch.get("ai") if isinstance(patch.get("ai"), dict) else None
     video = ai.get("video") if isinstance(ai, dict) and isinstance(ai.get("video"), dict) else None
     if isinstance(video, dict):
@@ -10717,6 +10918,12 @@ def _safe_settings_write_patch(cfg: dict) -> dict:
         video.pop("seedance_configured", None)
         video.pop("happyhorse_configured", None)
         video.pop("bailian_upload_configured", None)
+    llm = ai.get("llm") if isinstance(ai, dict) and isinstance(ai.get("llm"), dict) else None
+    if isinstance(llm, dict):
+        for field in _LLM_PRIVATE_SETTING_FIELDS:
+            if field in llm and not str(llm.get(field) or "").strip():
+                llm.pop(field, None)
+        llm.pop("configured", None)
     return patch
 
 

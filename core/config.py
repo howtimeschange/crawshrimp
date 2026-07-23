@@ -37,6 +37,13 @@ DEFAULT_CONFIG = {
             "bailian_upload_api_key": "",
             "bailian_uploads_url": "https://dashscope.aliyuncs.com/api/v1/uploads",
         },
+        "llm": {
+            "api_key": "",
+            "overseas_openai_base_url": "https://ai-aigw.semir.com/overseas-openai-vip/v1",
+            "overseas_anthropic_base_url": "https://ai-aigw.semir.com/overseas-anthropic-vip",
+            "domestic_base_url": "https://ai-aigw.semir.com/bailian-codingplan/v1",
+            "default_model": "gpt-5.6-terra",
+        },
     },
     "cloud_approval": {
         "base_url": "",

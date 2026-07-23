@@ -25,6 +25,15 @@ class AiSettingsConfigTests(unittest.TestCase):
         self.assertEqual(video["bailian_upload_api_key"], "")
         self.assertEqual(video["bailian_uploads_url"], "https://dashscope.aliyuncs.com/api/v1/uploads")
 
+    def test_default_config_exposes_llm_routes_without_a_real_secret(self):
+        llm = DEFAULT_CONFIG["ai"]["llm"]
+
+        self.assertEqual(llm["api_key"], "")
+        self.assertEqual(llm["overseas_openai_base_url"], "https://ai-aigw.semir.com/overseas-openai-vip/v1")
+        self.assertEqual(llm["overseas_anthropic_base_url"], "https://ai-aigw.semir.com/overseas-anthropic-vip")
+        self.assertEqual(llm["domestic_base_url"], "https://ai-aigw.semir.com/bailian-codingplan/v1")
+        self.assertEqual(llm["default_model"], "gpt-5.6-terra")
+
     def test_save_config_expands_dotted_settings_keys(self):
         with patch("core.config._config_path") as config_path:
             import tempfile

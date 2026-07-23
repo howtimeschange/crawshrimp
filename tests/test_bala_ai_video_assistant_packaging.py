@@ -81,6 +81,53 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(params["max_image_mb"]["default"], 20)
         self.assertNotIn("auto_zip_package", params)
 
+    def test_manifest_declares_ai_video_copy_generation_task(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["id"] == "tmall_video_copy_generate")
+        params = {item["id"]: item for item in task["params"]}
+        output = task["output"][0]
+        model_ids = [item["value"] for item in params["model_id"]["options"]]
+
+        self.assertEqual(manifest["version"], "0.1.1")
+        self.assertEqual(task["name"], "AI生成视频标题和文案")
+        self.assertEqual(task["script"], "tmall-video-copy-generate.js")
+        self.assertIn("myseller.taobao.com/home.htm/SellManage/on_sale", task["entry_url"])
+        self.assertTrue(task["skip_auth"])
+        self.assertEqual(params["mode"]["default"], "current")
+        self.assertEqual(params["input_file"]["type"], "file_excel")
+        self.assertTrue(params["input_file"]["required"])
+        self.assertEqual(
+            params["input_file"]["templates"][0]["file"],
+            "templates/tmall-video-copy-template.csv",
+        )
+        self.assertEqual(params["model_id"]["default"], "")
+        self.assertEqual(
+            model_ids,
+            [
+                "",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5",
+                "claude-opus-4-8",
+                "claude-sonnet-5",
+                "gemini-3.1-pro-preview",
+                "gemini-3.5-flash",
+                "qwen3.8-max-preview",
+                "qwen3.7-plus",
+                "deepseek-v4-pro",
+                "glm-5.2",
+                "kimi-k2.7-code",
+            ],
+        )
+        self.assertEqual(
+            output["columns"],
+            ["款号", "ID", "视频标题", "视频描述", "参与活动", "定时/日", "定时/具体时间", "上传情况", "内容ID"],
+        )
+        self.assertTrue(
+            Path("adapters/bala-ai-video-assistant/templates/tmall-video-copy-template.csv").exists()
+        )
+
     def test_manifest_declares_face_background_generation_task(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
 

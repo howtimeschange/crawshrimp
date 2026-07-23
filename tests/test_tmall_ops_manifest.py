@@ -28,7 +28,11 @@ class TmallOpsManifestTests(unittest.TestCase):
         output_columns = task["output"][0]["columns"]
 
         self.assertEqual(manifest["id"], "tmall-ops-assistant")
-        self.assertEqual(manifest["version"], "0.1.3")
+        self.assertEqual(manifest["version"], "0.1.5")
+        self.assertNotIn(
+            "tmall_video_copy_generate",
+            {item["id"] for item in manifest["tasks"]},
+        )
         self.assertEqual(task["name"], "天猫包装图片上传")
         self.assertEqual(task["script"], "tmall-packaging-upload.js")
         self.assertEqual(task["entry_url"], "https://fmp.semirapp.com/web/index#/home/file")

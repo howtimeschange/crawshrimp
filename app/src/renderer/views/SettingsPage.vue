@@ -452,6 +452,68 @@
           </div>
         </section>
 
+        <section v-else-if="activePanelId === 'ai-llm'" key="ai-llm" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">AI 文本与多模态</p>
+              <h3>文本大模型网关</h3>
+            </div>
+            <span :class="['badge', isLlmConfigured(cfg) ? 'on' : 'off']">
+              {{ isLlmConfigured(cfg) ? '已配置' : '未配置' }}
+            </span>
+          </div>
+
+          <div class="panel-layout">
+            <div class="form-stack">
+              <div class="field">
+                <label>共享 API Key</label>
+                <input
+                  v-model="cfg[LLM_API_KEY_FIELD]"
+                  class="input"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="输入网关 API Key"
+                  @focus="selectInputText"
+                />
+                <p class="field-hint">三个兼容网关共用同一个 Key；保存后只显示“已配置”，不会把密钥读回页面。</p>
+              </div>
+              <div class="field">
+                <label>海外 OpenAI 兼容 Base URL</label>
+                <input v-model="cfg['ai.llm.overseas_openai_base_url']" class="input" />
+                <p class="field-hint">GPT 与 Gemini 模型使用此地址。</p>
+              </div>
+              <div class="field">
+                <label>海外 Anthropic 兼容 Base URL</label>
+                <input v-model="cfg['ai.llm.overseas_anthropic_base_url']" class="input" />
+                <p class="field-hint">Claude 模型使用此地址。</p>
+              </div>
+              <div class="field">
+                <label>国内 OpenAI 兼容 Base URL</label>
+                <input v-model="cfg['ai.llm.domestic_base_url']" class="input" />
+                <p class="field-hint">Qwen、DeepSeek、GLM 与 Kimi 模型使用此地址。</p>
+              </div>
+              <div class="field">
+                <label>默认模型</label>
+                <select v-model="cfg['ai.llm.default_model']" class="select">
+                  <option v-for="model in LLM_MODELS" :key="model.value" :value="model.value">
+                    {{ model.label }}
+                  </option>
+                </select>
+              </div>
+              <PanelActions panel-id="ai-llm" @save="savePanel('ai-llm')" />
+            </div>
+            <div class="side-note">
+              <strong>运行时路由</strong>
+              <div class="key-states">
+                <span :class="['key-pill', isLlmConfigured(cfg) ? 'on' : 'off']">KEY</span>
+                <span class="key-pill neutral">OPENAI</span>
+                <span class="key-pill neutral">ANTHROPIC</span>
+              </div>
+              <p>适配器只提交模型 ID、商品标题和图片；Base URL 与密钥由本机后端在运行时读取，不进入任务参数、Excel 或日志。</p>
+            </div>
+          </div>
+        </section>
+
         <section v-else-if="activePanelId === 'ai-video'" key="ai-video" class="panel">
           <div class="panel-head">
             <div>
@@ -692,6 +754,16 @@ import {
   clearWrittenAiVideoFields,
   isAiVideoCredentialConfigured,
 } from '../utils/aiVideoSettings.mjs'
+import {
+  LLM_API_KEY_FIELD,
+  LLM_DEFAULTS,
+  LLM_MASKED_CREDENTIAL_VALUE,
+  LLM_MODELS,
+  LLM_PANEL_FIELDS,
+  buildLlmSettingsPatch,
+  clearWrittenLlmSettings,
+  isLlmConfigured,
+} from '../utils/llmSettings.mjs'
 
 const OFFICIAL_RELEASE_URL = 'https://github.com/howtimeschange/crawshrimp/releases/latest'
 
@@ -742,6 +814,7 @@ const aiVideoKeyFields = [
   'ai.video.bailian_api_key',
   'ai.video.bailian_upload_api_key',
 ]
+const llmKeyFields = [LLM_API_KEY_FIELD]
 const aiVideoConnectionHints = {
   'ai.video.seedance_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.seedance_base_url']}；输入新值才会覆盖。`,
   'ai.video.bailian_region': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_region']}；输入新值才会覆盖。`,
@@ -796,9 +869,10 @@ const menuGroups = [
     id: 'ai',
     icon: '●',
     label: 'AI 能力',
-    desc: '图片 / 视频模型',
+    desc: '图片 / 文本 / 视频模型',
     children: [
       { id: 'ai-1xm', label: '1XM 图片模型', statusKeys: ai1xmKeyFields },
+      { id: 'ai-llm', label: '文本大模型', statusKeys: llmKeyFields },
       { id: 'ai-video', label: '视频模型', statusKeys: aiVideoKeyFields },
     ],
   },
@@ -818,6 +892,7 @@ const panelFields = {
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
   'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
+  'ai-llm': [...LLM_PANEL_FIELDS],
   'ai-video': ['ai.video.seedance_api_key', 'ai.video.seedance_base_url', 'ai.video.bailian_api_key', 'ai.video.bailian_workspace_id', 'ai.video.bailian_region', 'ai.video.bailian_base_url', 'ai.video.bailian_upload_api_key', 'ai.video.bailian_uploads_url'],
   'cloud-approval': ['cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
 }
@@ -932,6 +1007,10 @@ function flattenSettings(source, prefix = '', target = {}) {
 function normalizedSettings(raw) {
   const flat = flattenSettings(raw || {})
   if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://api.1xm.ai/v1'
+  for (const [key, value] of Object.entries(LLM_DEFAULTS)) {
+    if (!flat[key]) flat[key] = value
+  }
+  flat[LLM_API_KEY_FIELD] = isLlmConfigured(flat) ? LLM_MASKED_CREDENTIAL_VALUE : ''
   // Provider connection fields are write-only. Never retain a value returned
   // by an older backend, and never synthesize defaults that could overwrite it.
   for (const key of AI_VIDEO_WRITE_ONLY_FIELDS) flat[key] = ''
@@ -975,6 +1054,7 @@ function selectInputText(event) {
 
 function isFieldConfigured(key) {
   if (aiVideoKeyFields.includes(key)) return isAiVideoCredentialConfigured(cfg.value, key)
+  if (key === LLM_API_KEY_FIELD) return isLlmConfigured(cfg.value)
   return String(cfg.value[key] || '').trim().length > 0
 }
 
@@ -1003,6 +1083,7 @@ async function browseDir() {
 
 function buildPatch(panelId) {
   if (panelId === 'ai-video') return buildWriteOnlyAiVideoPatch(cfg.value)
+  if (panelId === 'ai-llm') return buildLlmSettingsPatch(cfg.value)
   const keys = panelFields[panelId] || []
   return keys.reduce((patch, key) => {
     patch[key] = key === 'cloud_approval.capabilities'
@@ -1045,6 +1126,11 @@ async function savePanel(panelId, options = {}) {
     if (panelId === 'ai-video') {
       clearWrittenAiVideoFields(cfg.value, patch)
       clearWrittenAiVideoFields(savedCfg.value, patch)
+    } else if (panelId === 'ai-llm') {
+      clearWrittenLlmSettings(cfg.value, patch)
+      clearWrittenLlmSettings(savedCfg.value, patch)
+      savedCfg.value = { ...savedCfg.value, ...patch }
+      clearWrittenLlmSettings(savedCfg.value, patch)
     } else {
       savedCfg.value = { ...savedCfg.value, ...patch }
     }

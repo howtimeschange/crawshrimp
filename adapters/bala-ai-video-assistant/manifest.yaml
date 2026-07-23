@@ -1,8 +1,8 @@
 id: bala-ai-video-assistant
 name: 巴拉 AI 视频助手
-version: 0.1.0
+version: 0.1.1
 author: codex
-description: "巴拉 AI 自制视频链路的素材准备、AI 换图、图生视频、剪辑与发布自动化助手"
+description: "巴拉 AI 自制视频链路的视频文案、素材准备、AI 换图、图生视频、剪辑与发布自动化助手"
 entry_url: https://fmp.semirapp.com/web/index#/home/file
 tab_match_prefixes:
   - https://fmp.semirapp.com/
@@ -12,6 +12,101 @@ auth:
   login_url: https://fmp.semirapp.com/web/index#/home/file
 
 tasks:
+  - id: tmall_video_copy_generate
+    name: AI生成视频标题和文案
+    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，调用设置中的文本大模型生成3组小红书视频标题与约30秒文案，并按短视频批量上传模板导出
+    script: tmall-video-copy-generate.js
+    entry_url: https://myseller.taobao.com/home.htm/SellManage/on_sale?current=1&pageSize=20
+    tab_match_prefixes:
+      - https://myseller.taobao.com/home.htm/SellManage/on_sale
+      - https://sell.publish.tmall.com/tmall/
+      - https://login.taobao.com/
+    skip_auth: true
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前千牛页面（推荐）
+          - value: new
+            label: 全新页面
+        hint: 默认复用当前已登录的 9222 千牛浏览器；脚本只读取商品标题和主图，不修改或提交商品。
+      - id: input_file
+        type: file_excel
+        label: 短视频批量上传模板
+        required: true
+        templates:
+          - file: templates/tmall-video-copy-template.csv
+            label: 短视频批量上传模板
+            description: 至少填写“ID”列；“款号”可留空并从商品编辑页自动读取。每个商品会生成3行候选标题与视频描述，其余上传字段保持为空。
+            version: "2026.07.23.1"
+        hint: 支持你现有的“短视频批量上传模板1.xlsx”；必须包含“ID”列，“款号”可留空并从商品编辑页自动读取。商品 ID 会按文本处理，避免 Excel 科学计数法。
+      - id: model_id
+        type: select
+        label: 文案生成模型
+        default: ""
+        options:
+          - value: ""
+            label: 使用设置中的默认模型（推荐）
+          - value: gpt-5.6-sol
+            label: 海外 · GPT-5.6 Sol
+          - value: gpt-5.6-terra
+            label: 海外 · GPT-5.6 Terra（推荐）
+          - value: gpt-5.6-luna
+            label: 海外 · GPT-5.6 Luna
+          - value: gpt-5.5
+            label: 海外 · GPT-5.5
+          - value: claude-opus-4-8
+            label: 海外 · Claude Opus 4.8
+          - value: claude-sonnet-5
+            label: 海外 · Claude Sonnet 5
+          - value: gemini-3.1-pro-preview
+            label: 海外 · Gemini 3.1 Pro Preview
+          - value: gemini-3.5-flash
+            label: 海外 · Gemini 3.5 Flash
+          - value: qwen3.8-max-preview
+            label: 国内 · Qwen 3.8 Max Preview
+          - value: qwen3.7-plus
+            label: 国内 · Qwen 3.7 Plus
+          - value: deepseek-v4-pro
+            label: 国内 · DeepSeek V4 Pro
+          - value: glm-5.2
+            label: 国内 · GLM 5.2
+          - value: kimi-k2.7-code
+            label: 国内 · Kimi K2.7 Code
+        hint: 可使用“设置 → AI 能力 → 文本大模型”的默认模型，也可在本次任务中覆盖；海外 Claude 模型走 Anthropic 兼容地址，其他海外模型走 OpenAI 兼容地址，国内模型走百炼 CodingPlan 兼容地址。
+      - id: output_dir
+        type: directory
+        label: Excel 导出目录
+        placeholder: 点击选择导出目录
+        hint: 可选；留空则保存在抓虾任务数据目录。
+        ui_span: half
+      - id: generation_concurrency
+        type: number
+        label: 并发生成数
+        default: 3
+        min: 1
+        max: 3
+        step: 1
+        hidden: true
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "短视频批量上传模板_已生成_{timestamp}.xlsx"
+        columns:
+          - 款号
+          - ID
+          - 视频标题
+          - 视频描述
+          - 参与活动
+          - 定时/日
+          - 定时/具体时间
+          - 上传情况
+          - 内容ID
+
   - id: semir_video_material_prepare
     name: 森马云盘视频素材图下载
     description: 按款号在森马云盘搜索并下载 AI 自制视频所需模拍图和商品细节图，优先最新已选/已写文件夹，默认输出本地图包不打 ZIP
