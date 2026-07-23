@@ -208,7 +208,13 @@ async function loadPromptLibraryTemplates(libraryId) {
   }
   error.value = ''
   templates.value = (selectedLibrary.templates || [])
-    .map(template => ({ ...template, source_label: selectedLibrary.source_label || '本地' }))
+    .map(template => ({
+      ...template,
+      source_label: selectedLibrary.source_label || '本地',
+      source_library_id: String(selectedLibrary.id || ''),
+      source_library_name: String(selectedLibrary.name || ''),
+      source_library_source: String(selectedLibrary.source_type || ''),
+    }))
   category.value = ''
   templatesLoading.value = false
 }

@@ -24,6 +24,17 @@
         </div>
         <div class="approval-bulk">
           <template v-if="isGenerationConfirmation">
+            <div class="batch-execution-mode">
+              <span>整批执行模式</span>
+              <label>
+                <input v-model="generationExecutionMode" type="radio" value="approval_then_create" />
+                生图后人工审批
+              </label>
+              <label>
+                <input v-model="generationExecutionMode" type="radio" value="direct_create" />
+                生图后直接创建测试任务
+              </label>
+            </div>
             <button type="button" class="primary-btn submit" :disabled="generationSubmitting || generationPromptCount <= 0" @click="submitGenerationConfirmation">
               {{ generationSubmitting ? '生图中' : '确认提交生图任务' }}
             </button>
@@ -270,7 +281,7 @@
                   class="generation-prompt-card"
                 >
                   <header class="generation-prompt-head">
-                    <input v-model="prompt.prompt_name" class="prompt-name-input" placeholder="Prompt 名称" />
+                    <input v-model="prompt.prompt_name" class="prompt-name-input" placeholder="Prompt 名称" @input="markPromptModified(prompt)" />
                     <label class="prompt-count-field">
                       <span>生图张数</span>
                       <input
@@ -279,11 +290,11 @@
                         min="1"
                         max="8"
                         step="1"
-                        @change="prompt.image_count = normalizeGenerationImageCount(prompt.image_count)"
+                        @change="prompt.image_count = normalizeGenerationImageCount(prompt.image_count); markPromptModified(prompt)"
                       />
                     </label>
                   </header>
-                  <textarea v-model="prompt.custom_prompt" placeholder="确认或修改本条生图 Prompt"></textarea>
+                  <textarea v-model="prompt.custom_prompt" placeholder="确认或修改本条生图 Prompt" @input="markPromptModified(prompt)"></textarea>
                   <div class="prompt-reference-toggle-row compact">
                     <div class="prompt-reference-summary">
                       <span>已选 {{ promptExtraReferenceCount(item, prompt) }} 张</span>
@@ -299,7 +310,9 @@
                     </button>
                   </div>
                   <div class="prompt-card-actions">
-                    <button type="button" class="ghost-btn" @click="openPromptLibraryPicker(item, prompt)">从 Prompt 库选择</button>
+                    <button type="button" class="ghost-btn" @click="openPromptDetail(item, prompt)">查看明细</button>
+                    <button type="button" class="ghost-btn" @click="markPromptModified(prompt)">修改本次</button>
+                    <button type="button" class="ghost-btn" @click="openPromptLibraryPicker(item, prompt)">重新选择</button>
                     <button type="button" class="ghost-btn danger" @click="removeGenerationPrompt(item, prompt)">删除</button>
                   </div>
                   <div class="prompt-card-status">
@@ -427,6 +440,27 @@
         @select="selectPromptLibraryTemplate"
       />
 
+      <div v-if="promptDetail.open" class="prompt-detail-modal" @click.self="closePromptDetail">
+        <section class="prompt-detail-panel">
+          <header class="manual-modal-head">
+            <div>
+              <strong>{{ promptDetail.prompt?.prompt_name || 'Prompt 明细' }}</strong>
+              <span>{{ promptDetail.item?.style_code || '-' }} · {{ promptDetail.prompt?.source_library_name || batch?.cloud_prompt_library?.name || '当前批次' }}</span>
+            </div>
+            <button type="button" class="icon-btn" aria-label="关闭 Prompt 明细" @click="closePromptDetail">×</button>
+          </header>
+          <dl class="prompt-detail-list">
+            <div><dt>来源</dt><dd>{{ promptDetail.prompt?.source_library_name || batch?.cloud_prompt_library?.name || '批次快照' }}</dd></div>
+            <div><dt>原始 Prompt</dt><dd>{{ promptDetail.prompt?.original_content || promptDetail.prompt?.prompt || '-' }}</dd></div>
+            <div><dt>本次执行 Prompt</dt><dd>{{ promptDetail.prompt?.custom_prompt || promptDetail.prompt?.prompt || '-' }}</dd></div>
+            <div><dt>参考图</dt><dd>{{ plainStringArray(promptDetail.prompt?.reference_paths).map(referenceFileName).join('、') || '仅系统素材' }}</dd></div>
+          </dl>
+          <footer class="manual-modal-actions">
+            <button type="button" class="primary-btn" @click="closePromptDetail">关闭</button>
+          </footer>
+        </section>
+      </div>
+
       <div v-if="imagePreview.open" class="image-preview-modal" @click.self="closeImagePreview">
         <section class="image-preview-panel">
           <header class="manual-modal-head">
@@ -450,6 +484,12 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
+import {
+  applyCustomReferenceDefaults,
+  markPromptReferenceSelection,
+  removeReferencePathFromPrompts,
+  restorePromptReferencePaths,
+} from '../utils/tmallAiApproval.js'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -495,6 +535,12 @@ const promptReferencePicker = ref({
   item: null,
   prompt: null,
 })
+const promptDetail = ref({
+  open: false,
+  item: null,
+  prompt: null,
+})
+const generationExecutionMode = ref('approval_then_create')
 const manualGenerate = ref({
   open: false,
   item: null,
@@ -869,6 +915,10 @@ function prepareReferenceAsset(asset) {
 
 function prepareEditableBatch(payload) {
   const confirmation = String(payload?.status || '').trim() === 'pending_generation_confirmation'
+  const batchMode = String(payload?.execution_mode || payload?.run_params?.execute_mode || '').trim()
+  if (batchMode === 'direct_create' || batchMode === 'approval_then_create') {
+    generationExecutionMode.value = batchMode
+  }
   for (const item of payload?.items || []) {
     for (const asset of item?.assets || []) {
       prepareReferenceAsset(asset)
@@ -878,6 +928,10 @@ function prepareEditableBatch(payload) {
       if (!String(prompt.custom_prompt || '').trim()) {
         prompt.custom_prompt = String(prompt.prompt || prompt.generation_row?.完整Prompt || prompt.generation_row?.最终提示词 || '')
       }
+      if (!String(prompt.original_content || '').trim()) {
+        prompt.original_content = String(prompt.prompt || prompt.custom_prompt || '')
+      }
+      prompt.modified_in_batch = Boolean(prompt.modified_in_batch)
       prompt.image_count = normalizeGenerationImageCount(
         prompt.image_count
           ?? prompt.generation_row?.['生成数量']
@@ -886,8 +940,13 @@ function prepareEditableBatch(payload) {
       )
       prompt.reference_paths = plainStringArray(prompt.reference_paths?.length ? prompt.reference_paths : prompt.generation_row?.参考图文件)
       if (confirmation) {
-        prompt.reference_paths = normalizePromptReferencePaths(item, prompt)
+        prompt.reference_paths = restorePromptReferencePaths(
+          prompt,
+          String(itemMainAsset(item)?.path || item?.origin_path || '').trim(),
+          itemReferenceAssets(item),
+        )
       }
+      prompt.reference_binding_mode = String(prompt.reference_binding_mode || 'automatic')
     }
   }
 }
@@ -964,17 +1023,6 @@ function normalizeGenerationImageCount(value, fallback = 1) {
   return Math.min(8, Math.max(1, count))
 }
 
-function normalizePromptReferencePaths(item, prompt) {
-  const refs = plainStringArray(prompt?.reference_paths)
-  const mainPath = String(itemMainAsset(item)?.path || item?.origin_path || '').trim()
-  const selectedReferences = refs.filter(path => path && path !== mainPath)
-  const initiallySelectedReferences = selectedReferences.filter(path => {
-    const asset = itemReferenceAssets(item).find(row => row.path === path)
-    return Boolean(asset?.use_for_generation)
-  })
-  return Array.from(new Set([mainPath, ...initiallySelectedReferences].filter(Boolean))).slice(0, MAX_CONFIRMATION_IMAGES)
-}
-
 function submitImagePathKey(path) {
   return String(path || '').trim().replace(/\\/g, '/')
 }
@@ -1040,14 +1088,14 @@ function togglePromptReferenceImage(prompt, asset) {
   if (!path) return
   const current = plainStringArray(prompt.reference_paths)
   if (current.includes(path)) {
-    prompt.reference_paths = current.filter(item => item !== path)
+    Object.assign(prompt, markPromptReferenceSelection(prompt, current.filter(item => item !== path)))
     return
   }
   if (current.length >= MAX_CONFIRMATION_IMAGES) {
     showToast(`单条 Prompt 最多选择 ${MAX_CONFIRMATION_IMAGES} 张图`, true)
     return
   }
-  prompt.reference_paths = [...current, path]
+  Object.assign(prompt, markPromptReferenceSelection(prompt, [...current, path]))
 }
 
 function setAssetStatus(item, asset, status) {
@@ -1159,6 +1207,7 @@ function activeGenerationPrompts(item) {
 
 function generationConfirmationPayload() {
   return {
+    execution_mode: generationExecutionMode.value,
     items: (batch.value?.items || []).map(item => {
       const main = itemMainAsset(item)
       const references = itemReferenceAssets(item)
@@ -1176,6 +1225,8 @@ function generationConfirmationPayload() {
           path: String(asset.path || ''),
           filename: String(asset.filename || referenceFileName(asset.path)),
           use_for_generation: false,
+          custom_upload: Boolean(asset.custom_upload),
+          source_label: String(asset.source_label || (asset.custom_upload ? '自定义参考图' : '系统抓取素材')),
         })),
         generation_prompts: activeGenerationPrompts(item).map((prompt, index) => ({
           id: String(prompt.id || ''),
@@ -1184,8 +1235,16 @@ function generationConfirmationPayload() {
           prompt_group: String(prompt.prompt_group || ''),
           prompt: String(prompt.custom_prompt || prompt.prompt || ''),
           custom_prompt: String(prompt.custom_prompt || ''),
+          original_content: String(prompt.original_content || prompt.prompt || ''),
+          modified_in_batch: Boolean(prompt.modified_in_batch),
+          source_prompt_id: String(prompt.source_prompt_id || ''),
+          source_library_id: String(prompt.source_library_id || batch.value?.cloud_prompt_library?.id || ''),
+          source_library_name: String(prompt.source_library_name || batch.value?.cloud_prompt_library?.name || ''),
+          source_library_source: String(prompt.source_library_source || batch.value?.cloud_prompt_library?.source || ''),
           image_count: normalizeGenerationImageCount(prompt.image_count),
           reference_paths: plainStringArray(prompt.reference_paths).slice(0, MAX_CONFIRMATION_IMAGES),
+          reference_binding_mode: String(prompt.reference_binding_mode || 'automatic'),
+          use_custom_references: Boolean(prompt.use_custom_references),
           status: String(prompt.status || 'pending'),
           generation_row: cloneForIpcPayload(prompt.generation_row || {}),
         })),
@@ -1386,9 +1445,7 @@ function clearItemReference(item, asset) {
   const removedPath = String(asset.path || '').trim()
   if (String(item.detail_reference_path || '').trim() === removedPath) item.detail_reference_path = ''
   item.assets = (item.assets || []).filter(row => row.id !== asset.id)
-  for (const prompt of item.generation_prompts || []) {
-    prompt.reference_paths = plainStringArray(prompt.reference_paths).filter(path => path !== removedPath)
-  }
+  item.generation_prompts = removeReferencePathFromPrompts(item.generation_prompts, removedPath)
 }
 
 function createReferenceAsset(item, path, index = 1) {
@@ -1399,6 +1456,8 @@ function createReferenceAsset(item, path, index = 1) {
     slot: 'reference',
     status: 'reference',
     use_for_generation: false,
+    custom_upload: true,
+    source_label: '自定义参考图',
     path,
     filename: referenceFileName(path),
     updated_at: new Date().toISOString(),
@@ -1422,6 +1481,10 @@ async function addItemReferenceImage(item) {
     const remaining = Math.max(0, MAX_CONFIRMATION_IMAGES - itemImageCount(item))
     const assets = importedPaths.slice(0, remaining).map((path, index) => createReferenceAsset(item, path, index + 1))
     item.assets = [...(item.assets || []), ...assets]
+    item.generation_prompts = applyCustomReferenceDefaults(
+      item.generation_prompts,
+      assets.map(asset => asset.path),
+    )
     if (!String(item.detail_reference_path || '').trim() && assets[0]?.path) {
       item.detail_reference_path = assets[0].path
     }
@@ -1468,6 +1531,27 @@ function closePromptLibraryPicker() {
   promptLibraryPicker.value.open = false
 }
 
+function openPromptDetail(item, prompt) {
+  promptDetail.value = {
+    open: true,
+    item,
+    prompt,
+  }
+}
+
+function closePromptDetail() {
+  promptDetail.value = {
+    open: false,
+    item: null,
+    prompt: null,
+  }
+}
+
+function markPromptModified(prompt) {
+  if (!prompt) return
+  prompt.modified_in_batch = true
+}
+
 function selectPromptLibraryTemplate(template) {
   const item = promptLibraryPicker.value.item
   const prompt = promptLibraryPicker.value.prompt
@@ -1484,6 +1568,12 @@ function selectPromptLibraryTemplate(template) {
     prompt.prompt_group = String(template?.group_name || prompt.prompt_group || '')
     prompt.prompt = promptText
     prompt.custom_prompt = promptText
+    prompt.original_content = promptText
+    prompt.modified_in_batch = false
+    prompt.source_prompt_id = String(template?.template_id || template?.id || '')
+    prompt.source_library_id = String(template?.source_library_id || '')
+    prompt.source_library_name = String(template?.source_library_name || '')
+    prompt.source_library_source = String(template?.source_library_source || '')
     prompt.image_count = normalizeGenerationImageCount(prompt.image_count, 1)
   } else {
     addGenerationPrompt(item, {
@@ -1867,6 +1957,28 @@ function showToast(message, isError = false) {
 }
 .approval-drawer.embedded .approval-toolbar {
   padding: 9px 14px;
+}
+.batch-execution-mode {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 800;
+}
+.batch-execution-mode > span {
+  color: var(--text);
+}
+.batch-execution-mode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.batch-execution-mode input {
+  accent-color: var(--orange);
 }
 .approval-drawer.collapsed {
   width: min(520px, calc(100vw - 28px));
@@ -2811,7 +2923,7 @@ function showToast(message, isError = false) {
 }
 .prompt-card-actions {
   display: grid;
-  grid-template-columns: minmax(124px, 1fr) 64px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-top: 8px;
 }
@@ -2992,6 +3104,7 @@ function showToast(message, isError = false) {
 }
 .prompt-library-picker-modal,
 .prompt-reference-picker-modal,
+.prompt-detail-modal,
 .image-preview-modal {
   position: absolute;
   inset: 0;
@@ -3000,6 +3113,42 @@ function showToast(message, isError = false) {
   display: grid;
   place-items: center;
   padding: 24px;
+}
+.prompt-detail-panel {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
+  padding: 18px;
+}
+.prompt-detail-list {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+}
+.prompt-detail-list > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+.prompt-detail-list dt {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 800;
+}
+.prompt-detail-list dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .prompt-reference-picker-panel {
   width: min(780px, 100%);
@@ -3296,6 +3445,7 @@ function showToast(message, isError = false) {
   .style-head { flex-direction: column; }
   .style-actions { justify-content: flex-start; }
   .generation-confirm-board { grid-template-columns: 1fr; }
+  .prompt-card-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .manual-image-columns { grid-template-columns: 1fr; }
   .submit-result-row { grid-template-columns: 1fr; }
 }

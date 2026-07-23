@@ -1,7 +1,9 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from core import api_server, data_sink
 
@@ -75,6 +77,83 @@ class TaskInstancesApiTests(unittest.TestCase):
         self.assertEqual(created["status"], "completed")
         self.assertEqual(created["succeeded"], 1)
         self.assertEqual(created["failed"], 0)
+
+    def test_direct_generation_background_job_creates_real_measurement_tasks(self):
+        batch = {
+            "batch_id": "batch-direct",
+            "execution_mode": "direct_create",
+            "status": "generating",
+            "items": [],
+        }
+        generation_result = {
+            "ok": True,
+            "generated": 2,
+            "failed": 0,
+            "status": "pending_approval",
+            "batch": batch,
+        }
+        create_result = {
+            "ok": True,
+            "status": "created",
+            "attempted": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "rows": [{"任务ID": "41716301"}],
+        }
+        module = SimpleNamespace(
+            submit_generation_confirmation_batch=Mock(return_value=generation_result),
+            approve_generated_assets_for_direct_create=Mock(return_value=2),
+            upload_approved_tmall_batch=AsyncMock(return_value=create_result),
+            save_approval_batch=Mock(),
+        )
+
+        with patch.object(api_server, "_load_tmall_ai_image_chain_module", return_value=module), \
+             patch.object(api_server, "_update_tmall_generation_task_instance") as update_generation, \
+             patch.object(api_server, "_update_tmall_submission_task_instance") as update_submission:
+            asyncio.run(api_server._run_tmall_generation_confirmation_job("batch-direct", batch))
+
+        module.approve_generated_assets_for_direct_create.assert_called_once_with(batch)
+        module.upload_approved_tmall_batch.assert_awaited_once()
+        update_submission.assert_called_once_with("batch-direct", create_result)
+        update_generation.assert_not_called()
+
+    def test_direct_generation_keeps_generation_success_when_task_creation_fails(self):
+        batch = {
+            "batch_id": "batch-direct-failed",
+            "execution_mode": "direct_create",
+            "status": "pending_approval",
+            "generation_status": "succeeded",
+            "items": [],
+        }
+        generation_result = {
+            "ok": True,
+            "generated": 2,
+            "failed": 0,
+            "status": "pending_approval",
+            "batch": batch,
+        }
+        module = SimpleNamespace(
+            submit_generation_confirmation_batch=Mock(return_value=generation_result),
+            approve_generated_assets_for_direct_create=Mock(return_value=2),
+            upload_approved_tmall_batch=AsyncMock(side_effect=RuntimeError("天猫创建接口超时")),
+            save_approval_batch=Mock(),
+        )
+
+        with patch.object(api_server, "_load_tmall_ai_image_chain_module", return_value=module), \
+             patch.object(api_server, "_update_tmall_generation_task_instance") as update_generation, \
+             patch.object(api_server, "_update_tmall_submission_task_instance") as update_submission:
+            asyncio.run(api_server._run_tmall_generation_confirmation_job("batch-direct-failed", batch))
+
+        self.assertEqual(batch["status"], "create_failed")
+        self.assertEqual(batch["generation_status"], "succeeded")
+        self.assertEqual(batch["approval_status"], "not_required")
+        self.assertEqual(batch["test_task_status"], "failed")
+        module.save_approval_batch.assert_called_once_with(batch)
+        update_generation.assert_not_called()
+        failure_result = update_submission.call_args.args[1]
+        self.assertEqual(failure_result["status"], "create_failed")
+        self.assertEqual(failure_result["failed"], 1)
+        self.assertIn("天猫创建接口超时", failure_result["error"])
 
 
 if __name__ == "__main__":

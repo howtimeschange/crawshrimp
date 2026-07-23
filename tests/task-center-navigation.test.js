@@ -353,7 +353,7 @@ test('Tmall generation confirmation board uses compact slots and inline prompt e
   assert.doesNotMatch(drawer, /class="confirmation-image-slots"/)
   assert.doesNotMatch(drawer, /class="approval-inspector"/)
   assert.doesNotMatch(drawer, /\.approval-inspector/)
-  assert.match(drawer, /grid-template-columns:\s*minmax\(124px, 1fr\) 64px/)
+  assert.match(drawer, /grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/)
   assert.match(drawer, /\.prompt-card-actions \.ghost-btn\.danger\s*\{[\s\S]*justify-self:\s*end/)
   assert.doesNotMatch(drawer, /\.prompt-card-actions\s*\{[\s\S]{0,140}repeat\(3, minmax\(0, 1fr\)\)/)
   assert.doesNotMatch(drawer, /class="add-generation-prompt-card" @click="openPromptEditor\(item\)"/)
@@ -362,6 +362,40 @@ test('Tmall generation confirmation board uses compact slots and inline prompt e
   assert.doesNotMatch(drawer, /promptEditor/)
   assert.doesNotMatch(drawer, /prompt-editor-modal/)
   assert.doesNotMatch(drawer, /prompt-editor-panel/)
+})
+
+test('Tmall generation confirmation keeps custom references isolated by style and respects manual prompt bindings', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+
+  assert.match(drawer, /applyCustomReferenceDefaults/)
+  assert.match(drawer, /markPromptReferenceSelection/)
+  assert.match(drawer, /removeReferencePathFromPrompts/)
+  assert.match(functionBlock(drawer, 'createReferenceAsset'), /custom_upload:\s*true/)
+  assert.match(functionBlock(drawer, 'addItemReferenceImage'), /item\.generation_prompts = applyCustomReferenceDefaults/)
+  assert.match(functionBlock(drawer, 'togglePromptReferenceImage'), /markPromptReferenceSelection/)
+  assert.match(functionBlock(drawer, 'clearItemReference'), /removeReferencePathFromPrompts/)
+  assert.match(functionBlock(drawer, 'generationConfirmationPayload'), /custom_upload:\s*Boolean\(asset\.custom_upload\)/)
+  assert.match(functionBlock(drawer, 'generationConfirmationPayload'), /reference_binding_mode:\s*String\(prompt\.reference_binding_mode/)
+})
+
+test('Tmall confirmation owns execution mode, prompt detail actions, and selected library primary copy', () => {
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+
+  assert.match(functionBlock(runner, 'isParamVisibleInForm'), /isTmallAiImageChainTask\.value && param\?\.id === 'execute_mode'/)
+  assert.match(runner, /<strong>\{\{ cloudPromptLibrarySelectionLabel \}\}<\/strong>/)
+  assert.match(runner, /更换 Prompt 库/)
+  assert.match(drawer, /class="batch-execution-mode"/)
+  assert.match(drawer, /v-model="generationExecutionMode"/)
+  assert.match(functionBlock(drawer, 'generationConfirmationPayload'), /execution_mode:\s*generationExecutionMode\.value/)
+  assert.match(drawer, />查看明细<\/button>/)
+  assert.match(drawer, />修改本次<\/button>/)
+  assert.match(drawer, />重新选择<\/button>/)
+  assert.match(drawer, /class="prompt-detail-modal"/)
+  assert.match(drawer, /function openPromptDetail\(item, prompt\)/)
+  assert.match(drawer, /function markPromptModified\(prompt\)/)
+  assert.match(functionBlock(drawer, 'selectPromptLibraryTemplate'), /original_content/)
+  assert.match(functionBlock(drawer, 'selectPromptLibraryTemplate'), /modified_in_batch/)
 })
 
 test('Tmall generation confirmation submit shows generation progress immediately', () => {
@@ -514,6 +548,17 @@ test('Tmall AI image create step polls approval batch after drawer unmounts', ()
   assert.match(runner, /refreshAiChainApprovalBatch\(\{ preferCreateStep: false \}\)/)
 })
 
+test('Tmall direct-create mode automatically advances from generation into create results', () => {
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+
+  assert.match(runner, /const aiChainCreateStartedStatuses = new Set/)
+  assert.match(runner, /payload\?\.execution_mode \|\| payload\?\.run_params\?\.execute_mode/)
+  assert.match(runner, /executionMode === 'direct_create'/)
+  assert.match(runner, /aiChainCreateStartedStatuses\.has\(status\)/)
+  assert.match(runner, /aiChainActiveStep\.value = 'create'/)
+  assert.match(runner, /startAiChainApprovalBatchPolling\(\)/)
+})
+
 test('Tmall approval submit distinguishes append and rerun interactions', () => {
   const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
 
@@ -537,7 +582,7 @@ test('Tmall AI image create results expose compact detail links', () => {
   }
 })
 
-test('Tmall AI image tabs only jump to create when submit starts', () => {
+test('Tmall AI image tabs jump to create for manual submit or direct-create lifecycle', () => {
   const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
   const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
   const batchUpdated = functionBlock(runner, 'handleApprovalBatchUpdated')
@@ -546,7 +591,9 @@ test('Tmall AI image tabs only jump to create when submit starts', () => {
 
   assert.match(drawer, /submit-started/)
   assert.match(runner, /@submit-started="handleApprovalSubmitStarted"/)
-  assert.doesNotMatch(batchUpdated, /aiChainActiveStep\.value\s*=\s*'create'/)
+  assert.match(batchUpdated, /executionMode === 'direct_create'/)
+  assert.match(batchUpdated, /aiChainCreateStartedStatuses\.has\(status\)/)
+  assert.match(batchUpdated, /aiChainActiveStep\.value\s*=\s*'create'/)
   assert.match(submitStarted, /aiChainActiveStep\.value\s*=\s*'create'/)
   assert.doesNotMatch(committed, /aiChainActiveStep\.value\s*=\s*'create'/)
 })
@@ -605,4 +652,27 @@ test('desktop shell uses macOS banners and Windows toast notifications for manua
   assert.match(runner, /pending_approval/)
   assert.match(runner, /等待.*登录|登录.*等待/)
   assert.match(runner, /window\.cs\.showOperatorAlert/)
+})
+
+test('operator notifications carry a task target and reopen the matching Tmall workflow stage', () => {
+  const main = fs.readFileSync('app/src/main.js', 'utf8')
+  const preload = fs.readFileSync('app/src/preload.js', 'utf8')
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  const handler = main.slice(
+    main.indexOf("secureHandle('show-operator-alert'"),
+    main.indexOf("secureHandle('restart-backend'"),
+  )
+
+  assert.match(handler, /taskInstanceId/)
+  assert.match(handler, /batchId/)
+  assert.match(handler, /stage/)
+  assert.match(handler, /webContents\.send\('operator-alert-open'/)
+  assert.match(preload, /onOperatorAlertOpen/)
+  assert.match(preload, /ipcRenderer\.on\('operator-alert-open'/)
+  assert.match(preload, /removeListener\('operator-alert-open'/)
+  assert.match(runner, /target:\s*\{[\s\S]*taskInstanceId:[\s\S]*batchId:[\s\S]*stage/)
+  assert.match(runner, /function handleOperatorAlertOpen/)
+  assert.match(runner, /window\.cs\.onOperatorAlertOpen\(handleOperatorAlertOpen\)/)
+  assert.match(runner, /removeOperatorAlertOpenListener/)
+  assert.match(runner, /aiChainActiveStep\.value = targetStep/)
 })

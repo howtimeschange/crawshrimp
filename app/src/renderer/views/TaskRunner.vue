@@ -46,8 +46,8 @@
             <template v-if="isCloudPromptLibraryParam(param)">
               <div class="cloud-prompt-library-control">
                 <button type="button" class="cloud-prompt-library-trigger" @click="openCloudPromptLibraryDialog">
-                  <span>{{ cloudPromptLibrarySelectionLabel }}</span>
-                  <strong>选择 Prompt 库</strong>
+                  <strong>{{ cloudPromptLibrarySelectionLabel }}</strong>
+                  <span>{{ cloudPromptLibrarySelectionMeta }}</span>
                 </button>
                 <button
                   v-if="values.cloud_prompt_library_id"
@@ -1153,6 +1153,7 @@ let applyingInitialTaskValues = false
 let instanceDraftSaveTimer = null
 let instanceDraftSaveTargetUid = ''
 let instanceDraftSaveParams = null
+let removeOperatorAlertOpenListener = null
 const operatorAlertKeys = new Set()
 
 function showOperatorAttention(stage, title, message, detail = '') {
@@ -1161,10 +1162,40 @@ function showOperatorAttention(stage, title, message, detail = '') {
   const key = `${effectiveInstanceUid.value || props.task?.task_id || 'task'}:${batchId}:${stage}`
   if (operatorAlertKeys.has(key)) return
   operatorAlertKeys.add(key)
-  void window.cs.showOperatorAlert({ title, message, detail }).catch(error => {
+  void window.cs.showOperatorAlert({
+    title,
+    message,
+    detail,
+    target: {
+      taskInstanceId: String(effectiveInstanceUid.value || '').trim(),
+      batchId: batchId,
+      stage: stage,
+    },
+  }).catch(error => {
     operatorAlertKeys.delete(key)
     console.warn('显示人工处理提醒失败', error)
   })
+}
+
+function operatorAlertTargetStep(stage) {
+  const normalized = String(stage || '').trim()
+  if (normalized === 'pending_generation_confirmation') return 'confirm'
+  if (normalized === 'pending_approval') return 'approval'
+  if (['creating', 'created', 'create_failed', 'partial_failed'].includes(normalized)) return 'create'
+  return 'config'
+}
+
+function handleOperatorAlertOpen(payload = {}) {
+  const taskInstanceId = String(payload?.taskInstanceId || '').trim()
+  const currentInstanceId = String(effectiveInstanceUid.value || '').trim()
+  if (taskInstanceId && currentInstanceId && taskInstanceId !== currentInstanceId) return
+  if (!isTmallAiImageChainTask.value) return
+  const batchId = String(payload?.batchId || '').trim()
+  const currentBatchId = String(approvalBatch.value?.batch_id || '').trim()
+  if (batchId && currentBatchId && batchId !== currentBatchId) return
+  const targetStep = operatorAlertTargetStep(payload?.stage)
+  aiChainActiveStep.value = targetStep
+  if (targetStep === 'create') startAiChainApprovalBatchPolling()
 }
 
 function buildDefaultValues(params = []) {
@@ -1599,6 +1630,11 @@ const cloudPromptLibrarySelectionLabel = computed(() =>
   String(values.value.cloud_prompt_library_name || '').trim()
     || (values.value.cloud_prompt_library_id ? `已选择库 #${values.value.cloud_prompt_library_id}` : '未选择 Prompt 库')
 )
+const cloudPromptLibrarySelectionMeta = computed(() => {
+  if (!values.value.cloud_prompt_library_id) return '选择 Prompt 库'
+  const source = String(values.value.cloud_prompt_library_source || '').trim() === 'local' ? '本地库' : '云端库'
+  return `${source} · 更换 Prompt 库`
+})
 const previewCloudPromptLibraryTitle = computed(() =>
   selectedCloudPromptLibrary.value?.name || 'Prompt 模板预览'
 )
@@ -1668,7 +1704,7 @@ const aiChainSubmitProgressText = computed(() => {
   if (['partial_failed', 'create_failed'].includes(aiChainCreateStatus.value)) return '提交完成，存在失败款'
   return aiChainCreateSummary.value
 })
-const aiChainCreateStartedStatuses = new Set(['submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
+const aiChainCreateStartedStatuses = new Set(['creating', 'submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
 const aiChainCreateTerminalStatuses = new Set(['created', 'partial_failed', 'create_failed'])
 const aiChainGenerationConfirmationStatus = 'pending_generation_confirmation'
 const aiChainWorkflowStatuses = new Set([aiChainGenerationConfirmationStatus, 'pending_approval', 'submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
@@ -1736,7 +1772,7 @@ const aiChainSteps = computed(() => {
         ? '已生成确认批次'
         : isRunning.value
           ? '任务执行中'
-          : '填写导入表、提示词库和执行模式',
+          : '填写导入表、Prompt 来源和生图参数',
       state: lifecycle.confirmationStarted ? 'done' : 'active',
     },
     {
@@ -2402,6 +2438,7 @@ function isParamVisibleByRule(param) {
 
 function isParamVisibleInForm(param) {
   if (param?.hidden) return false
+  if (isTmallAiImageChainTask.value && param?.id === 'execute_mode') return false
   if (autoPrecheckFlow.value && param?.id === 'execute_mode') return false
   return isParamVisibleByRule(param)
 }
@@ -3126,6 +3163,8 @@ function openApprovalDrawer() {
 function handleApprovalBatchUpdated(payload) {
   approvalBatch.value = payload || null
   const status = String(payload?.status || '').trim()
+  const executionMode = String(payload?.execution_mode || payload?.run_params?.execute_mode || '').trim()
+  const testTaskStatus = String(payload?.test_task_status || '').trim()
   if (status === 'pending_generation_confirmation') {
     showOperatorAttention(
       'pending_generation_confirmation',
@@ -3133,13 +3172,22 @@ function handleApprovalBatchUpdated(payload) {
       '素材与 Prompt 已准备完成，请回到抓虾确认后再开始批量生图。',
       '确认前不会调用生图服务；关闭提醒不会停止任务。',
     )
-  } else if (status === 'pending_approval') {
+  } else if (status === 'pending_approval' && executionMode !== 'direct_create') {
     showOperatorAttention(
       'pending_approval',
       'AI 生图完成，等待审核',
       '本批图片已经生成完成，请回到抓虾确认或舍弃图片。',
       '审核完成后才能继续创建天猫测图任务。',
     )
+  }
+  if (
+    isTmallAiImageChainTask.value
+    && executionMode === 'direct_create'
+    && (aiChainCreateStartedStatuses.has(status) || testTaskStatus === 'creating')
+  ) {
+    aiChainActiveStep.value = 'create'
+    startAiChainApprovalBatchPolling()
+    return
   }
   if (isTmallAiImageChainTask.value && aiChainActiveStep.value === 'confirm' && status && status !== aiChainGenerationConfirmationStatus) {
     aiChainActiveStep.value = 'approval'
@@ -4146,6 +4194,9 @@ onMounted(() => {
   void refreshCloudApprovalBaseUrl()
   loadPdfCropSavedTemplates()
   applyDefaultPdfCropTemplatesToValues()
+  if (typeof window.cs?.onOperatorAlertOpen === 'function') {
+    removeOperatorAlertOpenListener = window.cs.onOperatorAlertOpen(handleOperatorAlertOpen)
+  }
   document.addEventListener('pointerdown', handleDocumentPointerDown)
   document.addEventListener('keydown', handleDocumentKeydown)
 })
@@ -4162,6 +4213,8 @@ onUnmounted(() => {
     instanceDraftSaveParams = null
     void saveInstanceDraftParamsNow(targetUid, params)
   }
+  if (typeof removeOperatorAlertOpenListener === 'function') removeOperatorAlertOpenListener()
+  removeOperatorAlertOpenListener = null
   stopPdfCropInteraction()
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('keydown', handleDocumentKeydown)
@@ -4530,11 +4583,11 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .cloud-prompt-library-trigger span {
+  margin-top: 3px;
   color: var(--text3);
   font-size: 11px;
 }
 .cloud-prompt-library-trigger strong {
-  margin-top: 3px;
   color: var(--text);
   font-size: 13px;
 }

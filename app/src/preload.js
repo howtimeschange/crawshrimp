@@ -245,6 +245,11 @@ contextBridge.exposeInMainWorld('cs', {
 
   getAdapters:     () => ipcRenderer.invoke('get-adapters'),
   showOperatorAlert: (payload) => ipcRenderer.invoke('show-operator-alert', payload || {}),
+  onOperatorAlertOpen: (cb) => {
+    const listener = (_, payload) => cb(payload || {})
+    ipcRenderer.on('operator-alert-open', listener)
+    return () => ipcRenderer.removeListener('operator-alert-open', listener)
+  },
   installAdapter:  (payload) => ipcRenderer.invoke('install-adapter', payload),
   uninstallAdapter:(id) => ipcRenderer.invoke('uninstall-adapter', id),
   enableAdapter:   (id, enabled) => ipcRenderer.invoke('enable-adapter', id, enabled),

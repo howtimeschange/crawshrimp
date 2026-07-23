@@ -159,11 +159,11 @@ def normalize_chain_execution_mode(value: object) -> dict[str, bool | str]:
     if mode not in CHAIN_EXECUTION_MODES:
         raise ValueError(f"天猫AI测图全链路只支持执行模式：{', '.join(CHAIN_EXECUTION_MODES)}")
     approval_required = mode == "approval_then_create"
-    confirm_generation = approval_required
+    confirm_generation = True
     return {
         "mode": mode,
         "confirm_generation": confirm_generation,
-        "generate": not confirm_generation,
+        "generate": False,
         "approval_required": approval_required,
         "live_upload": not approval_required,
         "live_create": not approval_required,
@@ -439,9 +439,13 @@ def generation_prompt_from_row(
         "prompt_group": compact(generation_row.get("提示词分组")),
         "prompt": prompt_text,
         "custom_prompt": "",
+        "original_content": prompt_text,
+        "modified_in_batch": False,
         "image_count": image_count,
         "reference_paths": reference_paths,
         "reference_labels": [Path(path).name for path in reference_paths],
+        "reference_binding_mode": "automatic",
+        "use_custom_references": False,
         "status": "pending",
         "generation_row": json_safe(generation_row),
     }
@@ -505,6 +509,9 @@ def write_generation_confirmation_batch(
         created_at=created_at,
     )
     batch["status"] = GENERATION_CONFIRMATION_STATUS
+    batch["generation_status"] = "pending"
+    batch["approval_status"] = "not_required_yet"
+    batch["test_task_status"] = "not_started"
     batch["generation_prompt_total"] = generation_confirmation_prompt_total(batch.get("items") or [])
     batch["approval_message"] = (
         f"天猫AI测图待确认提交生图批次 {batch.get('batch_id')} 已准备完成，"
@@ -827,10 +834,13 @@ def write_approval_batch(
     created_at: str = "",
 ) -> dict[str, Any]:
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    params = json_safe(dict(run_params or {}))
+    execution_mode = str(normalize_chain_execution_mode(params.get("execute_mode"))["mode"])
     batch_id = safe_token(batch_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}", "batch")
     token = compact(token) or secrets.token_urlsafe(24)
     board_url = f"{approval_base_url(base_url)}/tmall-ai-image-approval/{batch_id}?token={token}"
     batch = {
+        "schema_version": 2,
         "batch_id": batch_id,
         "token": token,
         "status": "pending_approval",
@@ -839,10 +849,21 @@ def write_approval_batch(
         "task_id": TASK_ID,
         "task_instance_uid": compact((run_params or {}).get("task_instance_uid")),
         "task_run_uid": compact((run_params or {}).get("task_run_uid")),
+        "execution_mode": execution_mode,
+        "cloud_prompt_library": {
+            "id": compact(params.get("cloud_prompt_library_id")),
+            "name": compact(params.get("cloud_prompt_library_name")),
+            "source": compact(params.get("cloud_prompt_library_source")) or (
+                "cloud" if compact(params.get("cloud_prompt_library_id")) else ""
+            ),
+        },
+        "generation_status": "succeeded",
+        "approval_status": "pending" if execution_mode == "approval_then_create" else "not_required",
+        "test_task_status": "not_started",
         "artifact_dir": str(artifact_dir),
         "board_url": board_url,
         "items": json_safe(list(items or [])),
-        "run_params": json_safe(dict(run_params or {})),
+        "run_params": params,
     }
     batch["approval_message"] = render_approval_message_template(
         str((run_params or {}).get("approval_message_template") or ""),
@@ -955,6 +976,7 @@ def _sync_confirmation_reference_assets(item: dict[str, Any], reference_assets: 
                 "source_label": compact(asset.get("source_label")) or "款色参考图",
                 "slot": "reference",
                 "use_for_generation": bool(asset.get("use_for_generation")),
+                "custom_upload": bool(asset.get("custom_upload")),
             },
         ))
     item["assets"] = next_assets
@@ -962,7 +984,20 @@ def _sync_confirmation_reference_assets(item: dict[str, Any], reference_assets: 
         item["detail_reference_path"] = reference_paths[0]
 
 
-def update_generation_confirmation(batch: dict[str, Any], items: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def update_generation_confirmation(
+    batch: dict[str, Any],
+    items: Iterable[Mapping[str, Any]],
+    *,
+    execution_mode: object = "",
+) -> dict[str, Any]:
+    if compact(execution_mode):
+        mode = str(normalize_chain_execution_mode(execution_mode)["mode"])
+        batch["execution_mode"] = mode
+        run_params = batch.setdefault("run_params", {})
+        if not isinstance(run_params, dict):
+            run_params = dict(run_params or {})
+            batch["run_params"] = run_params
+        run_params["execute_mode"] = mode
     for patch in items or []:
         if not isinstance(patch, Mapping):
             continue
@@ -1276,6 +1311,15 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
         completed = succeeded_prompts + failures
         now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         batch["status"] = "generating" if status == "running" else ("pending_approval" if generated else "generation_failed")
+        batch["generation_status"] = (
+            "running" if status == "running"
+            else "partial_success" if generated and failures
+            else "succeeded" if generated
+            else "failed"
+        )
+        if status != "running":
+            execution_mode = compact(batch.get("execution_mode") or run_params.get("execute_mode")) or "approval_then_create"
+            batch["approval_status"] = "pending" if generated and execution_mode == "approval_then_create" else "not_required"
         batch["generation_summary"] = {
             "requested": requested_images,
             "requested_prompts": len(jobs),
@@ -1380,6 +1424,28 @@ def approval_asset_matches_batch_run(batch: Mapping[str, Any], asset: Mapping[st
     generation_run_uid = compact(generation_row.get("__task_run_uid"))
     known_run_uid = asset_run_uid or generation_run_uid
     return known_run_uid == batch_run_uid
+
+
+def approve_generated_assets_for_direct_create(batch: dict[str, Any]) -> int:
+    approved = 0
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        for asset in item.get("assets") or []:
+            if (
+                not isinstance(asset, dict)
+                or compact(asset.get("kind")) != "ai"
+                or not compact(asset.get("path"))
+                or not approval_asset_matches_batch_run(batch, asset)
+            ):
+                continue
+            asset["status"] = "approved"
+            approved += 1
+    batch["approval_status"] = "not_required"
+    batch["test_task_status"] = "creating"
+    batch["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    save_approval_batch(batch)
+    return approved
 
 
 def tmall_submit_row_is_online_success(row: Mapping[str, Any]) -> bool:
@@ -4334,6 +4400,9 @@ def submit_progress_message_for_plan(plan: Mapping[str, Any], workflow: Workflow
 
 async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[str, Any]:
     log = log or (lambda _message: None)
+    batch["test_task_status"] = "creating"
+    if compact(batch.get("execution_mode")) == "approval_then_create":
+        batch["approval_status"] = "completed"
     previous_latest_rows = latest_submit_rows_by_style(batch)
     previous_success_rows = successful_submit_rows_by_style(batch)
     plans = selected_upload_plan_from_approval_batch(batch)
@@ -4373,6 +4442,7 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
     if not plans:
         status = "created"
         batch["status"] = status
+        batch["test_task_status"] = "succeeded"
         batch["submitted_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         audit_path, excel_path = write_submit_result_artifacts(
             batch,
@@ -4538,6 +4608,9 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
     else:
         status = "create_failed"
     batch["status"] = status
+    batch["test_task_status"] = "succeeded" if status == "created" else (
+        "partial_success" if status == "partial_failed" else "failed"
+    )
     batch["submitted_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     batch["submit_result_rows"] = json_safe(result_rows)
     audit_path, excel_path = write_submit_result_artifacts(

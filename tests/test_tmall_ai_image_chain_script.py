@@ -43,8 +43,8 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertTrue(approval["approval_required"])
         self.assertFalse(approval["live_upload"])
         self.assertFalse(approval["live_create"])
-        self.assertTrue(direct["generate"])
-        self.assertFalse(direct["confirm_generation"])
+        self.assertFalse(direct["generate"])
+        self.assertTrue(direct["confirm_generation"])
         self.assertFalse(direct["approval_required"])
         self.assertTrue(direct["live_upload"])
         self.assertTrue(direct["live_create"])
@@ -482,6 +482,73 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             html = Path(batch["board_path"]).read_text(encoding="utf-8")
             self.assertIn("确认提交生图任务", html)
             self.assertIn("保留主商品", html)
+
+    def test_generation_confirmation_batch_snapshots_execution_mode_and_prompt_library(self):
+        module = load_script()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = module.write_generation_confirmation_batch(
+                Path(temp_dir),
+                [],
+                run_params={
+                    "execute_mode": "direct_create",
+                    "cloud_prompt_library_id": "library-42",
+                    "cloud_prompt_library_name": "鞋品创意拍模板库",
+                    "cloud_prompt_library_source": "cloud",
+                },
+            )
+
+        self.assertEqual(batch["schema_version"], 2)
+        self.assertEqual(batch["execution_mode"], "direct_create")
+        self.assertEqual(batch["cloud_prompt_library"], {
+            "id": "library-42",
+            "name": "鞋品创意拍模板库",
+            "source": "cloud",
+        })
+        self.assertEqual(batch["generation_status"], "pending")
+        self.assertEqual(batch["approval_status"], "not_required_yet")
+        self.assertEqual(batch["test_task_status"], "not_started")
+
+    def test_generation_confirmation_update_persists_batch_execution_mode(self):
+        module = load_script()
+        batch = {
+            "status": module.GENERATION_CONFIRMATION_STATUS,
+            "run_params": {"execute_mode": "approval_then_create"},
+            "items": [],
+        }
+
+        with patch.object(module, "save_approval_batch"):
+            updated = module.update_generation_confirmation(
+                batch,
+                [],
+                execution_mode="direct_create",
+            )
+
+        self.assertEqual(updated["execution_mode"], "direct_create")
+        self.assertEqual(updated["run_params"]["execute_mode"], "direct_create")
+
+    def test_direct_create_approves_only_generated_assets_from_current_batch_run(self):
+        module = load_script()
+        batch = {
+            "task_run_uid": "run-current",
+            "execution_mode": "direct_create",
+            "items": [{
+                "assets": [
+                    {"id": "source", "kind": "origin", "status": "reference", "path": "/main.jpg"},
+                    {"id": "current", "kind": "ai", "status": "pending", "path": "/ai-current.jpg", "task_run_uid": "run-current"},
+                    {"id": "old", "kind": "ai", "status": "pending", "path": "/ai-old.jpg", "task_run_uid": "run-old"},
+                ],
+            }],
+        }
+
+        with patch.object(module, "save_approval_batch"):
+            approved = module.approve_generated_assets_for_direct_create(batch)
+
+        self.assertEqual(approved, 1)
+        self.assertEqual(batch["items"][0]["assets"][1]["status"], "approved")
+        self.assertEqual(batch["items"][0]["assets"][2]["status"], "pending")
+        self.assertEqual(batch["approval_status"], "not_required")
+        self.assertEqual(batch["test_task_status"], "creating")
 
     def test_write_approval_batch_creates_board_and_renders_message_template(self):
         module = load_script()

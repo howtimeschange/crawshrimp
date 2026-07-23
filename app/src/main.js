@@ -2630,6 +2630,11 @@ secureHandle('show-operator-alert', async (_, payload = {}) => {
   const title = String(payload?.title || '抓虾需要人工处理').trim()
   const message = String(payload?.message || '当前任务已运行到需要人工参与的步骤。').trim()
   const detail = String(payload?.detail || '').trim()
+  const notificationTarget = {
+    taskInstanceId: String(payload?.target?.taskInstanceId || '').trim(),
+    batchId: String(payload?.target?.batchId || '').trim(),
+    stage: String(payload?.target?.stage || '').trim(),
+  }
   if (!Notification?.isSupported?.()) {
     return { ok: false, delivery: 'unsupported', message: '当前系统不支持桌面通知' }
   }
@@ -2653,6 +2658,7 @@ secureHandle('show-operator-alert', async (_, payload = {}) => {
     if (windowToFocus.isMinimized()) windowToFocus.restore()
     windowToFocus.show()
     windowToFocus.focus()
+    windowToFocus.webContents.send('operator-alert-open', notificationTarget)
   })
   notification.show()
   return {

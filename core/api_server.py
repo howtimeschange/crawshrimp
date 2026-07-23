@@ -8877,6 +8877,7 @@ class TmallApprovalGenerateRequest(BaseModel):
 
 class TmallApprovalGenerationConfirmRequest(BaseModel):
     items: List[dict] = []
+    execution_mode: str = ""
 
 
 def _update_tmall_generation_task_instance(batch_id: str, result: dict) -> None:
@@ -8902,11 +8903,56 @@ def _update_tmall_generation_task_instance(batch_id: str, result: dict) -> None:
     )
 
 
+def _update_tmall_submission_task_instance(batch_id: str, result: dict) -> None:
+    instance = data_sink.find_task_instance_by_approval_batch_id(batch_id)
+    if not instance:
+        return
+    failed = int(result.get("failed") or 0)
+    attempted = int(result.get("attempted") or 0)
+    succeeded = int(result.get("succeeded") or 0)
+    status = "completed" if attempted > 0 and failed == 0 and succeeded == attempted else "partial_failed"
+    result_path = str(result.get("excel_path") or result.get("result_path") or "").strip()
+    audit_path = str(result.get("audit_path") or "").strip()
+    summary = _parse_json_object(instance.get("summary_json"))
+    summary_files = list(summary.get("output_files") or [])
+    if result_path and result_path not in summary_files:
+        summary_files.append(result_path)
+    test_task_status = "succeeded" if status == "completed" else ("partial_success" if succeeded > 0 else "failed")
+    summary.update({
+        "approval_batch_id": batch_id,
+        "submit_status": result.get("status"),
+        "test_task_status": test_task_status,
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "submitted": int(result.get("submitted") or succeeded),
+        "result_path": result_path,
+        "result_excel_path": result_path,
+        "audit_result_path": audit_path,
+        "output_files": summary_files,
+    })
+    if result.get("error"):
+        summary["error"] = str(result.get("error"))
+    data_sink.update_task_instance(
+        instance["instance_uid"],
+        status=status,
+        current_step="create",
+        summary=summary,
+    )
+    if result_path:
+        data_sink.add_task_instance_artifact(
+            instance["instance_uid"],
+            kind=_task_instance_artifact_kind(result_path),
+            label=Path(result_path).name,
+            path=result_path,
+            meta={"approval_batch_id": batch_id},
+        )
+
+
 async def _run_tmall_generation_confirmation_job(batch_id: str, batch: dict) -> None:
     module = _load_tmall_ai_image_chain_module()
     try:
         result = await asyncio.to_thread(module.submit_generation_confirmation_batch, batch, log=logger.info)
-        _update_tmall_generation_task_instance(batch_id, result)
     except Exception as exc:
         logger.exception("Tmall AI image generation confirmation job failed: %s", batch_id)
         try:
@@ -8930,6 +8976,46 @@ async def _run_tmall_generation_confirmation_job(batch_id: str, batch: dict) -> 
             "generated": 0,
             "failed": 1,
         })
+        return
+
+    result_batch = result.get("batch") if isinstance(result, dict) else None
+    if not isinstance(result_batch, dict):
+        result_batch = batch
+    run_params = result_batch.get("run_params") if isinstance(result_batch.get("run_params"), dict) else {}
+    execution_mode = str(result_batch.get("execution_mode") or run_params.get("execute_mode") or "").strip()
+    generated = int(result.get("generated") or 0) if isinstance(result, dict) else 0
+    if execution_mode != "direct_create" or generated <= 0:
+        _update_tmall_generation_task_instance(batch_id, result)
+        return
+
+    try:
+        approved = int(module.approve_generated_assets_for_direct_create(result_batch) or 0)
+        if approved <= 0:
+            raise RuntimeError("生图已完成，但当前批次没有可用于创建测图任务的新图片")
+        create_result = await module.upload_approved_tmall_batch(result_batch, log=logger.info)
+    except Exception as exc:
+        logger.exception("Tmall AI image automatic test-task creation failed: %s", batch_id)
+        result_batch["status"] = "create_failed"
+        result_batch["approval_status"] = "not_required"
+        result_batch["test_task_status"] = "failed"
+        result_batch["updated_at"] = datetime.now().isoformat()
+        result_batch["submit_progress"] = {
+            **dict(result_batch.get("submit_progress") or {}),
+            "status": "failed",
+            "message": str(exc),
+        }
+        module.save_approval_batch(result_batch)
+        _update_tmall_submission_task_instance(batch_id, {
+            "ok": False,
+            "status": "create_failed",
+            "attempted": 1,
+            "succeeded": 0,
+            "failed": 1,
+            "error": str(exc),
+        })
+        return
+
+    _update_tmall_submission_task_instance(batch_id, create_result)
 
 
 def _safe_tmall_generation_confirmation_items(batch: dict, items: list[dict]) -> list[dict]:
@@ -9132,8 +9218,12 @@ async def submit_tmall_ai_image_generation_confirmation(batch_id: str, req: Tmal
     module = _load_tmall_ai_image_chain_module()
     try:
         safe_items = _safe_tmall_generation_confirmation_items(batch, list(req.items or []))
-        if safe_items:
-            batch = module.update_generation_confirmation(batch, safe_items)
+        if safe_items or str(req.execution_mode or "").strip():
+            batch = module.update_generation_confirmation(
+                batch,
+                safe_items,
+                execution_mode=req.execution_mode,
+            )
         batch = module.prepare_generation_confirmation_placeholders(batch)
         _update_tmall_generation_task_instance(batch_id, {
             "status": "generating",
@@ -9164,43 +9254,7 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
         result = await module.upload_approved_tmall_batch(batch, log=logger.info)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
-    instance = data_sink.find_task_instance_by_approval_batch_id(batch_id)
-    if instance:
-        failed = int(result.get("failed") or 0)
-        attempted = int(result.get("attempted") or 0)
-        status = "completed" if attempted > 0 and failed == 0 else "partial_failed"
-        result_path = str(result.get("excel_path") or result.get("result_path") or "").strip()
-        audit_path = str(result.get("audit_path") or "").strip()
-        summary = _parse_json_object(instance.get("summary_json"))
-        summary_files = list(summary.get("output_files") or [])
-        if result_path and result_path not in summary_files:
-            summary_files.append(result_path)
-        summary.update({
-            "approval_batch_id": batch_id,
-            "submit_status": result.get("status"),
-            "attempted": attempted,
-            "succeeded": int(result.get("succeeded") or 0),
-            "failed": failed,
-            "submitted": int(result.get("submitted") or 0),
-            "result_path": result_path,
-            "result_excel_path": result_path,
-            "audit_result_path": audit_path,
-            "output_files": summary_files,
-        })
-        data_sink.update_task_instance(
-            instance["instance_uid"],
-            status=status,
-            current_step="create",
-            summary=summary,
-        )
-        if result_path:
-            data_sink.add_task_instance_artifact(
-                instance["instance_uid"],
-                kind=_task_instance_artifact_kind(result_path),
-                label=Path(result_path).name,
-                path=result_path,
-                meta={"approval_batch_id": batch_id},
-            )
+    _update_tmall_submission_task_instance(batch_id, result)
     return result
 
 
