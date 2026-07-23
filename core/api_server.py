@@ -110,6 +110,7 @@ RUNTIME_CLEANUP_TASKS = {
     ("mop-ops-assistant", "cloud_folder_download"),
     ("semir-cloud-drive", "batch_ai_generate"),
     ("semir-cloud-drive", "batch_image_download"),
+    ("semir-cloud-drive", "shein_image_package_download"),
     ("semir-cloud-drive", "tmall_material_match_buy"),
     ("semir-cloud-drive", "tmall_material_new_624"),
     ("bala-ai-video-assistant", "semir_video_material_prepare"),
@@ -3349,6 +3350,98 @@ def _finalize_semir_tmall_material_match_buy_outputs(
     return final_refs
 
 
+def _semir_shein_package_parts(value: str, fallback_code: str, fallback_name: str) -> list[str]:
+    parts = [
+        _safe_local_name(part, "")
+        for part in str(value or "").replace("\\", "/").split("/")
+        if str(part or "").strip() and str(part or "").strip() not in {".", ".."}
+    ]
+    if parts:
+        return parts
+    return [
+        _safe_local_name(fallback_code, "未分类"),
+        _safe_local_name(fallback_name, "file"),
+    ]
+
+
+def _finalize_semir_shein_image_package_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    output_root, target_root, exported_refs = _semir_output_roots(runtime_dir, exported_files, run_params)
+    final_root = target_root or output_root
+    final_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"SHEIN图包_{timestamp}",
+        f"SHEIN图包_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+
+    successful_rows: list[tuple[dict, Path]] = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    zip_path: Optional[Path] = None
+    if successful_rows:
+        package_started_at = time.monotonic()
+        packaged_bytes = 0
+        for row, local_path in successful_rows:
+            relative_parts = _semir_shein_package_parts(
+                row.get("__package_relative_path") or row.get("ZIP内路径") or "",
+                row.get("款号") or "未分类",
+                row.get("文件名") or local_path.name,
+            )
+            target = package_root.joinpath(*relative_parts)
+            relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+            try:
+                packaged_bytes += relocated.stat().st_size
+            except OSError:
+                pass
+
+        zip_path = _ensure_unique_local_path(final_root / f"{package_root.name}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for file_path in sorted(package_root.rglob("*")):
+                if not file_path.is_file():
+                    continue
+                archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+        log(
+            "Semir SHEIN package created: "
+            f"{zip_path} ({len(successful_rows)} files, {packaged_bytes} bytes, "
+            f"{time.monotonic() - package_started_at:.1f}s)"
+        )
+
+    final_refs: list[str] = []
+    if zip_path and zip_path.is_file():
+        final_refs.append(str(zip_path))
+
+    if target_root:
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            final_refs.append(str(copied))
+    else:
+        final_refs.extend(exported_refs)
+
+    _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+    return final_refs
+
+
 def _finalize_semir_cloud_drive_outputs(
     task_id: str,
     data_rows: list,
@@ -3359,6 +3452,16 @@ def _finalize_semir_cloud_drive_outputs(
     log,
 ) -> list[str]:
     if task_id != "batch_image_download":
+        if task_id == "shein_image_package_download":
+            return _finalize_semir_shein_image_package_outputs(
+                data_rows=data_rows,
+                runtime_files=runtime_files,
+                exported_files=exported_files,
+                run_params=run_params,
+                runtime_artifact_dir=runtime_artifact_dir,
+                log=log,
+            )
+
         if task_id in {"tmall_material_match_buy", "tmall_material_new_624"}:
             return _finalize_semir_tmall_material_match_buy_outputs(
                 data_rows=data_rows,

@@ -1,6 +1,6 @@
 id: semir-cloud-drive
 name: 森马云盘图片工具
-version: 0.1.2
+version: 0.1.3
 author: codex
 description: "森马云盘素材图批量检索下载，并串联豆包/Gemini 自动生图"
 entry_url: https://fmp.semirapp.com/web/index#/home/file
@@ -97,6 +97,65 @@ tasks:
           - 云盘路径
           - 下载结果
           - 本地文件
+          - 备注
+  - id: shein_image_package_download
+    name: SHEIN 图包下载
+    description: 按款号在森马云盘指定范围内定位同名文件夹，递归下载完整目录并合并导出一个 ZIP 图包
+    script: shein-image-package-download.js
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+      - id: cloud_path
+        type: text
+        label: 森马云盘搜索范围
+        required: true
+        default: "海外业务中心-数字业务部//0-balabala+minibla视觉/3-海外（♦️运营用）/3-主图1340x1785/"
+        placeholder: "海外业务中心-数字业务部//0-balabala+minibla视觉/3-海外（♦️运营用）/3-主图1340x1785/"
+        hint: 支持“挂载点//目录/子目录”或直接粘贴森马云盘文件夹地址；只会采用该范围内与款号完全同名的文件夹
+        quick_fill_options:
+          - 海外业务中心-数字业务部//0-balabala+minibla视觉/3-海外（♦️运营用）/3-主图1340x1785/
+      - id: style_codes
+        type: textarea
+        label: 款号
+        rows: 10
+        required: true
+        placeholder: "一行一个，例如：\n208326120201\n208326102001"
+        hint: 支持换行、空格、逗号或顿号分隔；重复款号会自动去重
+      - id: export_folder
+        type: directory
+        label: ZIP 导出目录
+        required: true
+        placeholder: "点击选择 ZIP 保存目录"
+        hint: 完整图包 ZIP 和下载结果表会保存到该目录
+        ui_span: third
+      - id: package_name
+        type: text
+        label: ZIP 包名称
+        default: SHEIN图包
+        ui_span: third
+        placeholder: "例如：SHEIN图包_26Q3"
+        hint: 同名文件已存在时会自动追加序号，不会覆盖原文件
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "SHEIN图包下载结果_{timestamp}.xlsx"
+        columns:
+          - 款号
+          - 款号文件夹
+          - 文件名
+          - 云盘路径
+          - ZIP内路径
+          - 文件大小
+          - 下载结果
           - 备注
   - id: tmall_material_match_buy
     name: 森马-天猫素材批量爬取-搭配购

@@ -718,6 +718,72 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(packaged_images), 2)
 
+    def test_shein_image_package_preserves_style_folder_tree_in_one_zip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+            export_dir = base / "exports"
+
+            first = runtime_dir / "download-a.jpg"
+            second = runtime_dir / "download-b.jpg"
+            first.write_bytes(b"first-image")
+            second.write_bytes(b"second-image")
+            exported = base / "SHEIN图包下载结果.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_semir_cloud_drive_outputs(
+                task_id="shein_image_package_download",
+                data_rows=[
+                    {
+                        "款号": "208326120201",
+                        "文件名": "20832612020100312_1.jpg",
+                        "云盘路径": "root/208326120201/20832612020100312/20832612020100312_1.jpg",
+                        "ZIP内路径": "208326120201/20832612020100312/20832612020100312_1.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(first),
+                        "__package_relative_path": "208326120201/20832612020100312/20832612020100312_1.jpg",
+                    },
+                    {
+                        "款号": "231326108202",
+                        "文件名": "23132610820251144_1.jpg",
+                        "云盘路径": "root/231326108202/23132610820251144/23132610820251144_1.jpg",
+                        "ZIP内路径": "231326108202/23132610820251144/23132610820251144_1.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(second),
+                        "__package_relative_path": "231326108202/23132610820251144/23132610820251144_1.jpg",
+                    },
+                ],
+                runtime_files=[str(first), str(second)],
+                exported_files=[str(exported)],
+                run_params={
+                    "package_name": "SHEIN图包测试",
+                    "export_folder": str(export_dir),
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(len(result), 2)
+            zip_path = Path(result[0])
+            self.assertEqual(zip_path.parent, export_dir)
+            self.assertTrue(zip_path.is_file())
+            self.assertTrue(Path(result[1]).is_file())
+            self.assertFalse(runtime_dir.exists())
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+
+            with zipfile.ZipFile(zip_path) as archive:
+                names = archive.namelist()
+                self.assertIn(
+                    "SHEIN图包测试/208326120201/20832612020100312/20832612020100312_1.jpg",
+                    names,
+                )
+                self.assertIn(
+                    "SHEIN图包测试/231326108202/23132610820251144/23132610820251144_1.jpg",
+                    names,
+                )
+
     def test_orphaned_active_run_cleanup_removes_semir_runtime_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
