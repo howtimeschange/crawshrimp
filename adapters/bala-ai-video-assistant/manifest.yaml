@@ -134,43 +134,38 @@ tasks:
             description: 填写款号、商品 ID、视频标题、视频描述和可选定时时间；运行结果会追加三个入口的状态、内容 ID、接口回执和刷新读回。
             version: "2026.07.23.1"
         hint: 商品 ID 与内容 ID 会按文本输出；定时日期和时间仅用于光合逛逛发布。
-      - id: video_override_path
-        type: text
-        label: 本次测试视频路径
-        placeholder: "/Users/name/Downloads/video.mp4"
-        hint: 单视频测试时填写完整本地路径；会覆盖按款号目录匹配。
       - id: video_dir
         type: directory
         label: 批量视频目录
         include_file_listing: true
         placeholder: 选择按款号命名的视频目录
-        hint: 未填写测试视频路径时，脚本按“款号.mp4”或唯一包含款号的文件匹配视频。
+        hint: 脚本按“款号.mp4”或唯一包含款号的文件匹配视频。
       - id: execute_mode
         type: select
         label: 执行模式
-        default: plan
+        default: live
         options:
-          - value: plan
-            label: 只预检任务
           - value: live
-            label: live 真实发布并提交商品
-        hint: live 会产生真实逛逛内容、搜推素材，并提交商品“宝贝展示”视频变更。
-      - id: publish_guang
+            label: 真实执行（默认）
+          - value: plan
+            label: 仅检查表格和视频
+        hint: 真实执行会创建逛逛内容和搜推素材，并提交商品“宝贝展示”视频变更。
+      - id: publish_targets
         type: checkbox
-        label: 发布到光合逛逛
-        default: true
-        ui_span: third
-      - id: publish_recommend
-        type: checkbox
-        label: 发布到千牛搜推素材
-        default: true
-        ui_span: third
-      - id: bind_product
-        type: checkbox
-        label: 替换宝贝展示并提交
-        default: true
-        ui_span: third
-        hint: 只替换“宝贝展示”，保留“宝贝讲解”；需要光合内容 ID。
+        label: 发布流程
+        default:
+          - guang
+          - recommend
+          - product
+        options:
+          - value: guang
+            label: 发布逛逛内容
+          - value: recommend
+            label: 发布搜推素材
+          - value: product
+            label: 更新商品宝贝展示
+        ui_span: full
+        hint: 默认依次执行三个步骤。更新商品时只替换“宝贝展示”，保留“宝贝讲解”；需要本次发布或表格已有的光合内容 ID。
     trigger:
       type: manual
     output:

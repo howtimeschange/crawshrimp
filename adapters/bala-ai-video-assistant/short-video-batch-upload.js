@@ -56,6 +56,14 @@
     return !['0', 'false', 'off', 'no', '否'].includes(compact(value).toLowerCase())
   }
 
+  function publishTargetEnabled(rawParams, target, legacyKey, fallback = true) {
+    if (Array.isArray(rawParams?.publish_targets)) {
+      const selected = new Set(rawParams.publish_targets.map(value => compact(value).toLowerCase()))
+      return selected.has(target)
+    }
+    return checkboxEnabled(rawParams?.[legacyKey], fallback)
+  }
+
   function extensionOf(path) {
     const match = compact(path).split(/[?#]/)[0].match(/\.([a-zA-Z0-9]+)$/)
     return match ? match[1].toLowerCase() : ''
@@ -215,9 +223,9 @@
         schedule_at: scheduleAt,
         video_path: videoPath,
         existing_content_id: existingContentId,
-        publish_guang: checkboxEnabled(rawParams.publish_guang, true),
-        publish_recommend: checkboxEnabled(rawParams.publish_recommend, true),
-        bind_product: checkboxEnabled(rawParams.bind_product, true),
+        publish_guang: publishTargetEnabled(rawParams, 'guang', 'publish_guang', true),
+        publish_recommend: publishTargetEnabled(rawParams, 'recommend', 'publish_recommend', true),
+        bind_product: publishTargetEnabled(rawParams, 'product', 'bind_product', true),
       })
     })
     return { jobs, invalidRows }
@@ -1117,6 +1125,7 @@
       normalizeJobs,
       parseScheduleTimestamp,
       matchVideoPath,
+      publishTargetEnabled,
       normalizeContentId,
       extractContentId,
       extractContentIdFromCapture,

@@ -77,9 +77,7 @@ test('short video upload parses the reference template and Shanghai schedule', a
   const parsed = helpers.normalizeJobs({
     input_file: { rows: [inputRow()] },
     video_override_path: '/Users/test/6ec7e3d213229297.mp4',
-    publish_guang: true,
-    publish_recommend: true,
-    bind_product: true,
+    publish_targets: ['guang', 'recommend', 'product'],
   })
 
   assert.equal(parsed.invalidRows.length, 0)
@@ -111,9 +109,7 @@ test('short video upload plan mode returns all three planned entry states', asyn
       execute_mode: 'plan',
       input_file: { rows: [inputRow()] },
       video_override_path: '/Users/test/6ec7e3d213229297.mp4',
-      publish_guang: true,
-      publish_recommend: true,
-      bind_product: true,
+      publish_targets: ['guang', 'recommend', 'product'],
     },
   })
 
@@ -180,6 +176,29 @@ test('short video upload keeps the Excel description and uses API submission pat
   assert.doesNotMatch(SCRIPT_SOURCE, /window\.fetch/)
   assert.doesNotMatch(SCRIPT_SOURCE, /captureOfficialPublishRequest/)
   assert.doesNotMatch(SCRIPT_SOURCE, /captureProductSubmitRequest/)
+})
+
+test('short video upload maps the publish flow group and keeps legacy booleans compatible', async () => {
+  const helpers = await loadExports()
+  const grouped = helpers.normalizeJobs({
+    input_file: { rows: [inputRow()] },
+    video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+    publish_targets: ['guang', 'product'],
+  }).jobs[0]
+  const legacy = helpers.normalizeJobs({
+    input_file: { rows: [inputRow()] },
+    video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+    publish_guang: false,
+    publish_recommend: true,
+    bind_product: false,
+  }).jobs[0]
+
+  assert.equal(grouped.publish_guang, true)
+  assert.equal(grouped.publish_recommend, false)
+  assert.equal(grouped.bind_product, true)
+  assert.equal(legacy.publish_guang, false)
+  assert.equal(legacy.publish_recommend, true)
+  assert.equal(legacy.bind_product, false)
 })
 
 test('short video upload produces the platform MD5 publish token without a click handler', async () => {

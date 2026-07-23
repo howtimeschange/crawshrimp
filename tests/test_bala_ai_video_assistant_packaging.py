@@ -157,12 +157,25 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertIn("不跳转原操作页面", params["mode"]["hint"])
         self.assertEqual(params["input_file"]["type"], "file_excel")
         self.assertTrue(params["input_file"]["required"])
+        self.assertNotIn("video_override_path", params)
         self.assertEqual(params["video_dir"]["type"], "directory")
         self.assertTrue(params["video_dir"]["include_file_listing"])
-        self.assertEqual(params["execute_mode"]["default"], "plan")
-        self.assertTrue(params["publish_guang"]["default"])
-        self.assertTrue(params["publish_recommend"]["default"])
-        self.assertTrue(params["bind_product"]["default"])
+        self.assertEqual(params["execute_mode"]["default"], "live")
+        self.assertEqual(params["execute_mode"]["options"][0]["value"], "live")
+        self.assertEqual(params["publish_targets"]["type"], "checkbox")
+        self.assertEqual(params["publish_targets"]["default"], ["guang", "recommend", "product"])
+        self.assertEqual(
+            params["publish_targets"]["options"],
+            [
+                {"value": "guang", "label": "发布逛逛内容"},
+                {"value": "recommend", "label": "发布搜推素材"},
+                {"value": "product", "label": "更新商品宝贝展示"},
+            ],
+        )
+        self.assertEqual(params["publish_targets"]["ui_span"], "full")
+        self.assertNotIn("publish_guang", params)
+        self.assertNotIn("publish_recommend", params)
+        self.assertNotIn("bind_product", params)
         self.assertIn("光合内容ID", output_columns)
         self.assertIn("搜推内容ID", output_columns)
         self.assertIn("宝贝展示视频ID", output_columns)
