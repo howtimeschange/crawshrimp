@@ -54,6 +54,7 @@ from core import adapter_loader
 from core import ai_image_service
 from core import ai_video_generation_service
 from core import llm_gateway
+from core import shenhui_shoe_packaging
 from core import data_sink
 from core import notifier
 from core import odps_sync
@@ -117,6 +118,7 @@ RUNTIME_CLEANUP_TASKS = {
     ("bala-ai-video-assistant", "semir_video_material_prepare"),
     ("bala-ai-video-assistant", "bala_ai_face_background_generate"),
     ("shenhui-new-arrival", "prepare_upload_package"),
+    ("shenhui-new-arrival", "prepare_shoe_upload_package"),
     ("tiktok-ops-assistant", "creator_video_download"),
     ("tmall-ops-assistant", "tmall_packaging_upload"),
 }
@@ -2986,6 +2988,43 @@ def _finalize_bala_ai_video_assistant_outputs(
     return final_refs
 
 
+def _prepare_shenhui_shoe_package_rows(
+    *,
+    data_rows: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[dict]:
+    output_root = Path(runtime_artifact_dir) / "shoe-packages"
+    category_file = run_params.get("shoe_category_file")
+    shoe_categories = None
+    if isinstance(category_file, dict) and (
+        category_file.get("path") or category_file.get("rows")
+    ):
+        shoe_categories = shenhui_shoe_packaging.parse_shoe_category_rows(
+            category_file.get("rows")
+        )
+        log(f"鞋品品类 Excel 已读取 {len(shoe_categories)} 个款号")
+    report_rows, package_roots = shenhui_shoe_packaging.prepare_shoe_packages(
+        data_rows=data_rows,
+        output_root=output_root,
+        model_id=str(run_params.get("model_id") or "qwen3.8-max-preview").strip()
+        or "qwen3.8-max-preview",
+        shoe_categories=shoe_categories,
+        analyze_color_label=(
+            False
+            if run_params.get("__shoe_pose_benchmark")
+            else None
+        ),
+        log=log,
+    )
+    run_params["__shenhui_shoe_package_refs"] = [
+        str(package_roots[key])
+        for key in sorted(package_roots)
+    ]
+    return report_rows
+
+
 def _finalize_shenhui_new_arrival_outputs(
     task_id: str,
     data_rows: list,
@@ -3003,6 +3042,46 @@ def _finalize_shenhui_new_arrival_outputs(
             runtime_artifact_dir=runtime_artifact_dir,
             log=log,
         )
+
+    if task_id == "prepare_shoe_upload_package":
+        runtime_dir = Path(runtime_artifact_dir)
+        package_refs = [
+            Path(str(path)).expanduser()
+            for path in (run_params.get("__shenhui_shoe_package_refs") or [])
+            if str(path or "").strip()
+        ]
+        package_refs = [path for path in package_refs if path.is_dir()]
+        export_folder = str(run_params.get("export_folder") or "").strip()
+        if export_folder:
+            target_root = Path(export_folder).expanduser()
+        else:
+            target_root = _default_output_root_for_runtime(runtime_dir, exported_files)
+        target_root.mkdir(parents=True, exist_ok=True)
+
+        final_refs: list[str] = []
+        for package_path in package_refs:
+            target = target_root / package_path.name
+            if _is_within_directory(package_path, runtime_dir):
+                relocated = _move_dir_to_unique_target(package_path, target)
+            else:
+                relocated = _ensure_unique_local_dir(target)
+                shutil.copytree(package_path, relocated)
+            final_refs.append(str(relocated))
+            log(f"Shenhui shoe package moved to output folder: {relocated}")
+
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            if export_folder:
+                copied = _copy_file_to_unique_target(source, target_root / source.name)
+                final_refs.append(str(copied))
+            else:
+                final_refs.append(str(source))
+
+        _cleanup_shenhui_runtime_artifacts(runtime_files, None, None)
+        _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+        return final_refs
 
     if task_id != "prepare_upload_package":
         return [str(path) for path in (runtime_files or []) + (exported_files or []) if str(path or "").strip()]
@@ -6229,6 +6308,16 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             raw_count = len(data)
         if (adapter_id, task_id) == (BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_FACE_BACKGROUND_TASK_ID):
             data = await _apply_bala_ai_face_background_generate(run_params, wait_for_control, log)
+            raw_count = len(data)
+        if (adapter_id, task_id) == ("shenhui-new-arrival", "prepare_shoe_upload_package"):
+            await wait_for_control({"records": len(data), "phase": "鞋品姿势识别与命名"})
+            data = await asyncio.to_thread(
+                _prepare_shenhui_shoe_package_rows,
+                data_rows=data,
+                run_params=run_params,
+                runtime_artifact_dir=runtime_artifact_dir,
+                log=log,
+            )
             raw_count = len(data)
         deduped_count = len(data)
         log(f"Script complete. Records: {raw_count}")

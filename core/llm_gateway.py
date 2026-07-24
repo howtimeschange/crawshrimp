@@ -4,8 +4,13 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -99,7 +104,7 @@ def route_for_model(model_id: str, config: dict | None = None) -> LlmRoute:
     if selected not in SUPPORTED_MODELS:
         raise LlmConfigurationError(f"不支持的文本模型：{selected}")
 
-    api_key = _compact(llm.get("api_key"))
+    api_key = _compact(os.environ.get("CRAWSHRIMP_LLM_API_KEY")) or _compact(llm.get("api_key"))
     if not api_key:
         raise LlmConfigurationError("请先在设置 → AI 能力 → 文本大模型中配置 API Key")
 
@@ -143,7 +148,13 @@ def _anthropic_endpoint(base_url: str) -> str:
     return f"{base}/v1/messages"
 
 
-def _post_json(url: str, payload: dict, headers: dict[str, str], timeout: int = 120) -> dict:
+def _post_json(
+    url: str,
+    payload: dict,
+    headers: dict[str, str],
+    timeout: float = 120,
+    total_timeout: float | None = None,
+) -> dict:
     secret_values = [
         value
         for header_value in headers.values()
@@ -157,20 +168,97 @@ def _post_json(url: str, payload: dict, headers: dict[str, str], timeout: int = 
             text = text.replace(secret, "[REDACTED]")
         return text
 
-    request = Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise LlmGatewayError(f"文本模型接口返回 HTTP {exc.code}：{safe(raw)[:300]}") from exc
-    except (URLError, TimeoutError, OSError) as exc:
-        raise LlmGatewayError(f"文本模型接口连接失败：{safe(exc)}") from exc
+    if total_timeout is None:
+        request = Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", **headers},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise LlmGatewayError(f"文本模型接口返回 HTTP {exc.code}：{safe(raw)[:300]}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise LlmGatewayError(f"文本模型接口连接失败：{safe(exc)}") from exc
+    else:
+        curl = shutil.which("curl")
+        if not curl:
+            raise LlmGatewayError("文本模型接口连接失败：未找到 curl，无法执行总时长限制")
+        payload_path = ""
+        header_path = ""
+        response_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(prefix="crawshrimp-llm-payload-", suffix=".json", delete=False) as handle:
+                payload_path = handle.name
+                handle.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            with tempfile.NamedTemporaryFile(
+                prefix="crawshrimp-llm-headers-",
+                suffix=".txt",
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+            ) as handle:
+                header_path = handle.name
+                for key, value in {"Content-Type": "application/json", **headers}.items():
+                    handle.write(f"{key}: {value}\n")
+            with tempfile.NamedTemporaryFile(prefix="crawshrimp-llm-response-", suffix=".json", delete=False) as handle:
+                response_path = handle.name
+            for path in (payload_path, header_path, response_path):
+                os.chmod(path, 0o600)
+
+            try:
+                completed = subprocess.run(
+                    [
+                        curl,
+                        "--silent",
+                        "--show-error",
+                        "--request",
+                        "POST",
+                        "--connect-timeout",
+                        str(max(float(timeout), 0.001)),
+                        "--max-time",
+                        str(max(float(total_timeout), 0.001)),
+                        "--header",
+                        f"@{header_path}",
+                        "--data-binary",
+                        f"@{payload_path}",
+                        "--output",
+                        response_path,
+                        "--write-out",
+                        "%{http_code}",
+                        url,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=max(float(total_timeout), 0.001) + 5,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise LlmGatewayError(
+                    f"文本模型接口连接失败：请求超过总时长 {float(total_timeout):g} 秒"
+                ) from exc
+            raw = Path(response_path).read_text(encoding="utf-8", errors="replace")
+            if completed.returncode != 0:
+                detail = safe(completed.stderr).strip()
+                if completed.returncode == 28:
+                    detail = f"请求超过总时长 {float(total_timeout):g} 秒"
+                raise LlmGatewayError(f"文本模型接口连接失败：{detail or 'curl 请求失败'}")
+            try:
+                status_code = int(completed.stdout.strip() or "0")
+            except ValueError:
+                status_code = 0
+            if status_code >= 400:
+                raise LlmGatewayError(f"文本模型接口返回 HTTP {status_code}：{safe(raw)[:300]}")
+        finally:
+            for path in (payload_path, header_path, response_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -185,6 +273,23 @@ def _normalize_image_url(value: Any) -> str:
     if url.startswith("//"):
         url = f"https:{url}"
     return url
+
+
+def _multimodal_image_reference(value: Any, max_bytes: int = 10 * 1024 * 1024) -> str:
+    reference = _normalize_image_url(value)
+    if reference.startswith(("https://", "http://", "data:image/")):
+        return reference
+    path = Path(reference).expanduser()
+    if not path.is_file():
+        raise LlmGatewayError(f"本地图片不存在：{path}")
+    size = path.stat().st_size
+    if size > max_bytes:
+        raise LlmGatewayError(f"本地图片超过 10MB：{path.name}")
+    media_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    if not media_type.startswith("image/"):
+        media_type = "image/jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
 
 
 def _download_image_data(url: str, timeout: int = 30, max_bytes: int = 10 * 1024 * 1024) -> tuple[str, str]:
@@ -233,6 +338,32 @@ def _openai_request(route: LlmRoute, product_title: str, image_urls: list[str], 
         _endpoint(route.base_url, "chat/completions"),
         payload,
         {"Authorization": f"Bearer {route.api_key}"},
+    )
+
+
+def _generic_openai_json_request(
+    route: LlmRoute,
+    system_prompt: str,
+    user_prompt: str,
+    image_references: list[str],
+) -> dict:
+    content: list[dict[str, Any]] = [{"type": "text", "text": _compact(user_prompt)}]
+    content.extend({
+        "type": "image_url",
+        "image_url": {"url": reference, "detail": "high"},
+    } for reference in image_references)
+    return _post_json(
+        _endpoint(route.base_url, "chat/completions"),
+        {
+            "model": route.model_id,
+            "messages": [
+                {"role": "system", "content": _compact(system_prompt)},
+                {"role": "user", "content": content},
+            ],
+        },
+        {"Authorization": f"Bearer {route.api_key}"},
+        timeout=240,
+        total_timeout=240,
     )
 
 
@@ -366,3 +497,58 @@ def generate_video_copies(
                 raise
             correction = str(exc)
     raise LlmResponseError("文本模型输出未通过校验")
+
+
+def generate_multimodal_json(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    image_inputs: list[str],
+    model_id: str = "",
+    fallback_model_ids: list[str] | None = None,
+    config: dict | None = None,
+    request_openai: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_openai_json_request,
+) -> tuple[Any, LlmRoute]:
+    """Call an OpenAI-compatible multimodal route and parse its JSON response."""
+
+    system = _compact(system_prompt)
+    prompt = _compact(user_prompt)
+    if not system:
+        raise LlmResponseError("多模态识别系统提示词为空")
+    if not prompt:
+        raise LlmResponseError("多模态识别任务提示词为空")
+    references = [
+        _multimodal_image_reference(value)
+        for value in image_inputs
+        if _compact(value)
+    ][:10]
+    if not references:
+        raise LlmResponseError("未提供可识别的图片")
+
+    model_ids = [model_id, *(fallback_model_ids or [])]
+    model_ids = list(dict.fromkeys(_compact(value) for value in model_ids if _compact(value)))
+    if not model_ids:
+        model_ids = [""]
+
+    # A configured fallback replaces the same-model retry. This prevents a
+    # single slow provider route from consuming two full timeout windows.
+    attempts = model_ids if len(model_ids) > 1 else [model_ids[0], model_ids[0]]
+    last_error: LlmGatewayError | None = None
+    for attempt_index, current_model_id in enumerate(attempts):
+        route = route_for_model(current_model_id, config=config)
+        if route.protocol != "openai":
+            raise LlmConfigurationError("当前通用多模态 JSON 识别仅支持 OpenAI 兼容模型")
+        try:
+            response = request_openai(route, system, prompt, references)
+            return _parse_json_text(_response_text(response)), route
+        except LlmGatewayError as exc:
+            last_error = exc
+            retryable = (
+                "连接失败" in str(exc)
+                or "timed out" in str(exc).lower()
+                or "http 429" in str(exc).lower()
+                or re.search(r"http 5\d\d", str(exc), flags=re.IGNORECASE)
+            )
+            if attempt_index == len(attempts) - 1 or not retryable:
+                raise
+    raise last_error or LlmGatewayError("文本模型接口调用失败")

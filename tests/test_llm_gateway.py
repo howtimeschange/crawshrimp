@@ -1,6 +1,12 @@
 import asyncio
+import json
+import os
+import socket
 import tempfile
+import threading
+import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -54,6 +60,13 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(domestic.protocol, "openai")
         self.assertEqual(domestic.base_url, "https://domestic.example/v1")
 
+    def test_runtime_environment_key_can_be_used_without_persisting_it_in_config(self):
+        config = self.config()
+        config["ai"]["llm"]["api_key"] = ""
+        with patch.dict(os.environ, {"CRAWSHRIMP_LLM_API_KEY": "runtime-only-key"}):
+            route = llm_gateway.route_for_model("qwen3.8-max-preview", config)
+        self.assertEqual(route.api_key, "runtime-only-key")
+
     def test_response_validation_rejects_price_or_promotional_benefits(self):
         payload = valid_scripts()
         payload["scripts"][0]["video_description"] += "现在领券更优惠。"
@@ -80,6 +93,121 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(len(copies), 3)
         self.assertEqual(len(calls), 2)
         self.assertIn("3个视频方案", calls[1])
+
+    def test_generic_multimodal_json_uses_local_images_with_domestic_qwen_route(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "shoe.jpg"
+            image_path.write_bytes(b"\xff\xd8\xff\xdbfake-jpeg")
+            calls = []
+
+            def fake_openai(route, system_prompt, user_prompt, images):
+                calls.append((route, system_prompt, user_prompt, images))
+                return {
+                    "choices": [{
+                        "message": {
+                            "content": '{"shoe_category":"运动","slots":{"o":"GD005292.jpg"}}'
+                        }
+                    }]
+                }
+
+            payload, route = llm_gateway.generate_multimodal_json(
+                system_prompt="识别鞋品姿势",
+                user_prompt="只返回 JSON",
+                image_inputs=[str(image_path)],
+                model_id="qwen3.8-max-preview",
+                config=self.config(),
+                request_openai=fake_openai,
+            )
+
+        self.assertEqual(route.model_id, "qwen3.8-max-preview")
+        self.assertEqual(payload["shoe_category"], "运动")
+        self.assertEqual(payload["slots"]["o"], "GD005292.jpg")
+        self.assertEqual(calls[0][1:3], ("识别鞋品姿势", "只返回 JSON"))
+        self.assertTrue(calls[0][3][0].startswith("data:image/jpeg;base64,"))
+
+    def test_generic_multimodal_json_retries_once_after_transient_gateway_error(self):
+        calls = []
+
+        def flaky_openai(route, system_prompt, user_prompt, images):
+            calls.append(route.model_id)
+            if len(calls) == 1:
+                raise llm_gateway.LlmGatewayError("文本模型接口连接失败：timed out")
+            return {"choices": [{"message": {"content": '{"ok":true}'}}]}
+
+        payload, _route = llm_gateway.generate_multimodal_json(
+            system_prompt="识别鞋品姿势",
+            user_prompt="只返回 JSON",
+            image_inputs=["data:image/jpeg;base64,/9j/2Q=="],
+            model_id="qwen3.8-max-preview",
+            config=self.config(),
+            request_openai=flaky_openai,
+        )
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(len(calls), 2)
+
+    def test_generic_multimodal_json_switches_to_fallback_model_after_timeout(self):
+        calls = []
+
+        def flaky_openai(route, system_prompt, user_prompt, images):
+            calls.append(route.model_id)
+            if route.model_id == "qwen3.8-max-preview":
+                raise llm_gateway.LlmGatewayError("文本模型接口连接失败：timed out")
+            return {"choices": [{"message": {"content": '{"ok":true}'}}]}
+
+        payload, route = llm_gateway.generate_multimodal_json(
+            system_prompt="识别鞋品姿势",
+            user_prompt="只返回 JSON",
+            image_inputs=["data:image/jpeg;base64,/9j/2Q=="],
+            model_id="qwen3.8-max-preview",
+            fallback_model_ids=["qwen3.7-plus"],
+            config=self.config(),
+            request_openai=flaky_openai,
+        )
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(route.model_id, "qwen3.7-plus")
+        self.assertEqual(calls, ["qwen3.8-max-preview", "qwen3.7-plus"])
+
+    def test_post_json_enforces_total_deadline_when_response_keeps_dripping_bytes(self):
+        payload = json.dumps({"ok": True}).encode("utf-8")
+
+        class SlowDripHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                for byte in payload:
+                    try:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, socket.timeout):
+                        break
+                    time.sleep(0.05)
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), SlowDripHandler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(llm_gateway.LlmGatewayError, "总时长"):
+                llm_gateway._post_json(
+                    f"http://127.0.0.1:{server.server_port}/slow",
+                    {"ping": True},
+                    {},
+                    timeout=0.1,
+                    total_timeout=0.2,
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=1)
+
+        self.assertLess(time.monotonic() - started, 1.0)
 
 
 class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):

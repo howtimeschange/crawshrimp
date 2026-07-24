@@ -9,13 +9,61 @@ import yaml
 from core.api_server import (
     _cleanup_orphaned_runtime_artifacts,
     _finalize_shenhui_new_arrival_outputs,
+    _prepare_shenhui_shoe_package_rows,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "adapters" / "shenhui-new-arrival" / "manifest.yaml"
+SHOE_PACKAGING_PATH = ROOT / "core" / "shenhui_shoe_packaging.py"
 
 
 class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
+    def test_shoe_packaging_core_is_separate_from_clothing_packaging(self):
+        self.assertTrue(SHOE_PACKAGING_PATH.is_file())
+
+    def test_manifest_declares_separate_shoe_upload_package_task(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        task = next(
+            item
+            for item in manifest["tasks"]
+            if item["id"] == "prepare_shoe_upload_package"
+        )
+
+        self.assertEqual(task["name"], "【鞋品】整理深绘上新图包")
+        self.assertEqual(task["script"], "prepare-shoe-upload-package.js")
+        self.assertFalse(task["skip_auth"])
+        params = {item["id"]: item for item in task["params"]}
+        self.assertEqual(params["item_codes"]["type"], "textarea")
+        self.assertEqual(params["shoe_cloud_path"]["type"], "text")
+        self.assertEqual(params["shoe_category_file"]["type"], "file_excel")
+        self.assertEqual(
+            params["shoe_category_file"]["template_file"],
+            "assets/鞋品品类映射模板.xlsx",
+        )
+        self.assertEqual(params["model_id"]["default"], "qwen3.8-max-preview")
+        self.assertIn(
+            "qwen3.7-plus",
+            [option["value"] for option in params["model_id"]["options"]],
+        )
+        self.assertTrue(
+            {
+                "deepseek-v4-pro",
+                "glm-5.2",
+                "kimi-k2.7-code",
+            }.issubset(
+                {
+                    option["value"]
+                    for option in params["model_id"]["options"]
+                }
+            )
+        )
+        self.assertEqual(params["export_folder"]["type"], "directory")
+
+        output_columns = task["output"][0]["columns"]
+        self.assertIn("品类来源", output_columns)
+        self.assertIn("规则槽位", output_columns)
+        self.assertIn("规则告警", output_columns)
+
     def test_manifest_declares_deepdraw_upload_task_with_fail_closed_controls(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
         task = next(item for item in manifest["tasks"] if item["id"] == "upload_to_deepdraw")
@@ -130,6 +178,112 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             self.assertFalse(model_file.exists())
             self.assertFalse(yq_file.exists())
             self.assertFalse((runtime_dir / "深绘测试图包").exists())
+
+    def test_finalize_shoe_outputs_copies_finished_style_folder_and_result_excel(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            package_dir = runtime_dir / "shoe-packages" / "204326141005"
+            color_dir = package_dir / "1.白紫色调00317"
+            export_dir = base / "downloads"
+            color_dir.mkdir(parents=True)
+            (package_dir / "tmz (1).jpg").write_bytes(b"tmz")
+            (color_dir / "o.jpg").write_bytes(b"poster")
+            (color_dir / "yk1.jpg").write_bytes(b"detail")
+            exported = base / "深绘鞋品上新图包整理结果.xlsx"
+            exported.write_bytes(b"excel")
+            raw_download = runtime_dir / "raw.jpg"
+            raw_download.write_bytes(b"raw")
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="prepare_shoe_upload_package",
+                data_rows=[],
+                runtime_files=[str(raw_download)],
+                exported_files=[str(exported)],
+                run_params={
+                    "export_folder": str(export_dir),
+                    "__shenhui_shoe_package_refs": [str(package_dir)],
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            output_package = export_dir / "204326141005"
+            self.assertEqual(
+                {Path(path) for path in result},
+                {
+                    output_package,
+                    export_dir / "深绘鞋品上新图包整理结果.xlsx",
+                },
+            )
+            self.assertTrue((output_package / "tmz (1).jpg").is_file())
+            self.assertTrue((output_package / "1.白紫色调00317" / "o.jpg").is_file())
+            self.assertTrue((output_package / "1.白紫色调00317" / "yk1.jpg").is_file())
+            self.assertFalse(raw_download.exists())
+
+    def test_prepare_shoe_rows_registers_generated_package_before_excel_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime"
+            package_root = runtime_dir / "shoe-packages" / "204326141005"
+            package_root.mkdir(parents=True)
+            run_params = {
+                "model_id": "qwen3.8-max-preview",
+                "shoe_category_file": {
+                    "rows": [
+                        {"款号": "208326146209", "品类": "宝宝鞋"},
+                        {"款号": "204325141014", "品类": "公主鞋"},
+                    ]
+                },
+            }
+            expected_rows = [{
+                "输入款号": "204326141005",
+                "规则槽位": "o",
+                "规则告警": "",
+            }]
+
+            with patch(
+                "core.api_server.shenhui_shoe_packaging.prepare_shoe_packages",
+                return_value=(expected_rows, {"204326141005": package_root}),
+            ) as prepare:
+                result = _prepare_shenhui_shoe_package_rows(
+                    data_rows=[{"输入款号": "204326141005"}],
+                    run_params=run_params,
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+            self.assertEqual(result, expected_rows)
+            self.assertEqual(
+                run_params["__shenhui_shoe_package_refs"],
+                [str(package_root)],
+            )
+            self.assertEqual(
+                prepare.call_args.kwargs["model_id"],
+                "qwen3.8-max-preview",
+            )
+            self.assertEqual(
+                prepare.call_args.kwargs["shoe_categories"],
+                {
+                    "208326146209": "婴童",
+                    "204325141014": "休闲",
+                },
+            )
+
+            run_params["__shoe_pose_benchmark"] = True
+            with patch(
+                "core.api_server.shenhui_shoe_packaging.prepare_shoe_packages",
+                return_value=(expected_rows, {"204326141005": package_root}),
+            ) as benchmark_prepare:
+                _prepare_shenhui_shoe_package_rows(
+                    data_rows=[{"输入款号": "204326141005"}],
+                    run_params=run_params,
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+            self.assertIs(
+                benchmark_prepare.call_args.kwargs["analyze_color_label"],
+                False,
+            )
 
     def test_finalize_outputs_creates_style_zips_when_auto_zip_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
