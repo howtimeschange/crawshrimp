@@ -109,11 +109,42 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertIn("tmz5/wpz5 都必须完整展示两只鞋", prompt)
         self.assertIn("禁止鞋垫、单鞋、单独鞋底、局部特写", prompt)
 
+    def test_prompt_spells_out_shared_pose_three_and_snow_pose_four(self):
+        prompt = shenhui_shoe_packaging._shoe_selection_prompt(
+            "208426141211",
+            "00377",
+            {"I01": "candidate.jpg"},
+            "雪地",
+        )
+
+        self.assertIn("tmz3/wpz3", prompt)
+        self.assertIn("单只鞋竖立或悬立", prompt)
+        self.assertIn("不能选择正常平放的侧视图", prompt)
+        self.assertIn("tmz4/wpz4 必须按品类区分", prompt)
+        self.assertIn("运动是后侧斜悬且鞋底朝镜头", prompt)
+        self.assertIn("休闲是完整后侧面", prompt)
+        self.assertIn("鞋口和内里绒毛局部特写", prompt)
+        self.assertIn("婴童是单鞋后侧角度", prompt)
+        self.assertIn("不能选择拉链、鞋帮外侧或普通侧面特写", prompt)
+
     def test_ai_angle_images_are_preserved_but_not_used_as_pose_candidates(self):
         self.assertFalse(
             shenhui_shoe_packaging._is_pose_selection_candidate(
                 "208326146209-00317+Ai角度图2.png"
             )
+        )
+        self.assertFalse(
+            shenhui_shoe_packaging._is_pose_selection_candidate(
+                "208426141211-00377.jpg"
+            )
+        )
+        self.assertFalse(
+            shenhui_shoe_packaging._is_pose_matching_candidate(
+                "208426141211-00377.jpg"
+            )
+        )
+        self.assertFalse(
+            shenhui_shoe_packaging._is_pose_selection_candidate("yk2.jpg")
         )
         self.assertTrue(
             shenhui_shoe_packaging._is_pose_selection_candidate("GUDG5998.jpg")
@@ -525,6 +556,583 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertTrue(any("运动第1姿势" in item for item in corrections))
         self.assertTrue(any("yq3" in item for item in corrections))
 
+    def test_quality_rules_repair_sports_pose_four_from_flat_side_view(self):
+        features = {
+            "flat-side.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=2.12,
+                bounding_coverage=0.26,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "rear-outsole-angle.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=0.90,
+                bounding_coverage=0.23,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose3-vertical.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=0.52,
+                bounding_coverage=0.05,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "pose3-vertical.jpg",
+            "tmz4": "flat-side.jpg",
+            "wpz": [
+                "pose1.jpg",
+                "pose2.jpg",
+                "pose3-vertical.jpg",
+                "flat-side.jpg",
+            ],
+            "yq": [],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "运动",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz4"], "rear-outsole-angle.jpg")
+        self.assertEqual(ruled["wpz"][3], "rear-outsole-angle.jpg")
+        self.assertTrue(any("运动第4姿势" in item for item in corrections))
+
+    def test_quality_rules_repair_leisure_pose_four_to_rear_side_view(self):
+        features = {
+            "wrong-front-angle.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=0.84,
+                bounding_coverage=0.21,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "rear-side-view.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.55,
+                bounding_coverage=0.078,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "outer-side-view.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=2.11,
+                bounding_coverage=0.19,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose3-vertical.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=0.57,
+                bounding_coverage=0.044,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "pose3-vertical.jpg",
+            "tmz4": "wrong-front-angle.jpg",
+            "wpz": [
+                "pose1.jpg",
+                "pose2.jpg",
+                "pose3-vertical.jpg",
+                "wrong-front-angle.jpg",
+            ],
+            "yq": ["pose2.jpg", "outsole.jpg", "outer-side-view.jpg"],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "休闲",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz4"], "rear-side-view.jpg")
+        self.assertEqual(ruled["wpz"][3], "rear-side-view.jpg")
+        self.assertEqual(ruled["yq"][2], "outer-side-view.jpg")
+        self.assertTrue(any("休闲第4姿势" in item for item in corrections))
+
+    def test_quality_rules_separate_baby_pose_four_from_shared_yq_three(self):
+        features = {
+            "wrong-outer-side.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.62,
+                bounding_coverage=0.20,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "rear-side-view.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.26,
+                bounding_coverage=0.097,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose3-vertical.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=0.66,
+                bounding_coverage=0.061,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "pose3-vertical.jpg",
+            "tmz4": "wrong-outer-side.jpg",
+            "wpz": [
+                "pose1.jpg",
+                "pose2.jpg",
+                "pose3-vertical.jpg",
+                "wrong-outer-side.jpg",
+            ],
+            "yq": ["pose2.jpg", "outsole.jpg", "rear-side-view.jpg"],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "婴童",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz4"], "rear-side-view.jpg")
+        self.assertEqual(ruled["wpz"][3], "rear-side-view.jpg")
+        self.assertEqual(ruled["yq"][2], "wrong-outer-side.jpg")
+        self.assertTrue(any("婴童第4姿势" in item for item in corrections))
+        self.assertTrue(any("yq3" in item for item in corrections))
+
+    def test_quality_rules_repair_fixed_yq_one_and_outsole_for_baby_shoes(self):
+        features = {
+            "pose2-front-and-sole.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.40,
+                bounding_coverage=0.11,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose3-vertical.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=0.66,
+                bounding_coverage=0.06,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "wrong-yq1.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.05,
+                bounding_coverage=0.17,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "wrong-side-copy.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.62,
+                bounding_coverage=0.20,
+                background_luma=255.0,
+                valid=True,
+            ),
+            "yk2.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.97,
+                bounding_coverage=0.15,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "outer-side.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.26,
+                bounding_coverage=0.10,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+            if name != "yk2.jpg"
+        }
+        outsole_entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "pose3-vertical.jpg",
+            "tmz5": "",
+            "wpz": [
+                "pose1.jpg",
+                "pose2-front-and-sole.jpg",
+                "pose3-vertical.jpg",
+                "outer-side.jpg",
+                "pose5.jpg",
+                "box.jpg",
+            ],
+            "yq": [
+                "wrong-yq1.jpg",
+                "wrong-side-copy.jpg",
+                "outer-side.jpg",
+            ],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "婴童",
+                    slots,
+                    entries,
+                    outsole_entries_by_name=outsole_entries,
+                )
+            )
+
+        self.assertEqual(ruled["yq"][0], "pose2-front-and-sole.jpg")
+        self.assertEqual(ruled["yq"][1], "yk2.jpg")
+        self.assertTrue(any("yq1" in item for item in corrections))
+        self.assertTrue(any("yq2" in item for item in corrections))
+
+    def test_quality_rules_repair_baby_pose_three_from_flat_side_view(self):
+        empty = Image.new("1", (128, 128), 0)
+        vertical = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(vertical).polygon(
+            [
+                (43, 12),
+                (69, 8),
+                (83, 39),
+                (74, 69),
+                (91, 115),
+                (57, 120),
+                (48, 70),
+            ],
+            fill=1,
+        )
+        front = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(front).rectangle((34, 28, 94, 106), fill=1)
+        features = {
+            "flat-side.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=empty,
+                aspect_ratio=1.62,
+                bounding_coverage=0.20,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "vertical.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=vertical,
+                aspect_ratio=0.66,
+                bounding_coverage=0.06,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "front-facing.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=front,
+                aspect_ratio=0.63,
+                bounding_coverage=0.06,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "flat-side.jpg",
+            "tmz5": "",
+            "wpz": [
+                "slot1.jpg",
+                "slot2.jpg",
+                "flat-side.jpg",
+                "slot4.jpg",
+                "",
+                "box.jpg",
+            ],
+            "yq": [],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "婴童",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz3"], "vertical.jpg")
+        self.assertEqual(ruled["wpz"][2], "vertical.jpg")
+        self.assertTrue(any("第3姿势" in item for item in corrections))
+
+    def test_quality_rules_choose_side_vertical_pose_over_front_vertical_pose(self):
+        side_vertical = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(side_vertical).polygon(
+            [
+                (43, 12),
+                (69, 8),
+                (83, 39),
+                (74, 69),
+                (91, 115),
+                (57, 120),
+                (48, 70),
+            ],
+            fill=1,
+        )
+        front_vertical = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(front_vertical).ellipse((42, 8, 86, 120), fill=1)
+        features = {
+            "side-vertical.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=side_vertical,
+                aspect_ratio=0.58,
+                bounding_coverage=0.05,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "front-vertical.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=front_vertical,
+                aspect_ratio=0.56,
+                bounding_coverage=0.055,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+
+        for category in ("运动", "婴童"):
+            slots = {
+                "tmz3": "front-vertical.jpg",
+                "tmz5": "",
+                "wpz": [
+                    "slot1.jpg",
+                    "slot2.jpg",
+                    "front-vertical.jpg",
+                    "slot4.jpg",
+                    "",
+                    "box.jpg",
+                ],
+                "yq": [],
+                "yx": "",
+            }
+            with self.subTest(category=category), patch.object(
+                shenhui_shoe_packaging,
+                "_binary_pose_feature",
+                side_effect=lambda path: features[Path(path).name],
+            ):
+                ruled, corrections = (
+                    shenhui_shoe_packaging._apply_selection_quality_rules(
+                        category,
+                        slots,
+                        entries,
+                    )
+                )
+
+            self.assertEqual(ruled["tmz3"], "side-vertical.jpg")
+            self.assertEqual(ruled["wpz"][2], "side-vertical.jpg")
+            self.assertTrue(
+                any("外侧竖立图" in item for item in corrections)
+            )
+
+    def test_quality_rules_repair_snow_pose_three_pair_and_lining_closeup(self):
+        vertical = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(vertical).ellipse((44, 7, 83, 121), fill=1)
+        wrong = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(wrong).rectangle((20, 38, 108, 92), fill=1)
+        features = {
+            "pose3-wrong.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=wrong,
+                aspect_ratio=0.66,
+                bounding_coverage=0.13,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose3-gray.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=vertical,
+                aspect_ratio=0.68,
+                bounding_coverage=0.054,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose3-white.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=vertical.copy(),
+                aspect_ratio=0.65,
+                bounding_coverage=0.065,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "zipper-closeup.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=wrong,
+                aspect_ratio=1.12,
+                bounding_coverage=0.61,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "lining-closeup.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=vertical,
+                aspect_ratio=1.23,
+                bounding_coverage=0.38,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "pose3-wrong.jpg",
+            "tmz4": "zipper-closeup.jpg",
+            "tmz5": "",
+            "wpz": [
+                "slot1.jpg",
+                "slot2.jpg",
+                "pose3-wrong.jpg",
+                "zipper-closeup.jpg",
+                "",
+                "box.jpg",
+            ],
+            "yq": [],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "雪地",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz3"], "pose3-white.jpg")
+        self.assertEqual(ruled["wpz"][2], "pose3-gray.jpg")
+        self.assertEqual(ruled["tmz4"], "lining-closeup.jpg")
+        self.assertEqual(ruled["wpz"][3], "lining-closeup.jpg")
+        self.assertTrue(any("第3姿势" in item for item in corrections))
+        self.assertTrue(any("鞋口内里" in item for item in corrections))
+
+    def test_quality_rules_repair_snow_pose_one_from_prebuilt_vertical_angle(self):
+        features = {
+            "prebuilt-white-angle.jpg": (
+                shenhui_shoe_packaging._BinaryPoseFeature(
+                    mask=None,
+                    aspect_ratio=0.49,
+                    bounding_coverage=0.057,
+                    background_luma=255.0,
+                    valid=True,
+                )
+            ),
+            "front-oblique-boot.jpg": (
+                shenhui_shoe_packaging._BinaryPoseFeature(
+                    mask=None,
+                    aspect_ratio=0.67,
+                    bounding_coverage=0.145,
+                    background_luma=242.0,
+                    valid=True,
+                )
+            ),
+            "pose3-vertical.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=0.53,
+                bounding_coverage=0.05,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "rear-outsole-angle.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=0.78,
+                bounding_coverage=0.18,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz1": "prebuilt-white-angle.jpg",
+            "tmz3": "pose3-vertical.jpg",
+            "tmz5": "",
+            "wpz": [
+                "prebuilt-white-angle.jpg",
+                "pose2.jpg",
+                "pose3-vertical.jpg",
+                "pose4.jpg",
+                "",
+                "box.jpg",
+            ],
+            "yq": [],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "雪地",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz1"], "front-oblique-boot.jpg")
+        self.assertEqual(ruled["wpz"][0], "front-oblique-boot.jpg")
+        self.assertTrue(any("雪地第1姿势" in item for item in corrections))
+
     def test_label_ocr_uses_stable_qwen_model_during_pose_model_benchmarks(self):
         self.assertEqual(
             shenhui_shoe_packaging.SHOE_LABEL_OCR_MODEL,
@@ -769,6 +1377,19 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                         "__shoe_original_filename": name,
                     })
 
+            uncolored_source = source_root / "uncolored-800_800(天猫)1.jpg"
+            Image.new("RGB", (120, 160), (30, 90, 180)).save(uncolored_source)
+            rows.append({
+                "输入款号": "204326141005",
+                "颜色": "",
+                "原文件名": "800_800(天猫)1.jpg",
+                "云盘路径": "鞋品/204326141005-已写/800_800(天猫)1.jpg",
+                "下载结果": "已下载",
+                "本地文件": str(uncolored_source),
+                "__shoe_color_code": "",
+                "__shoe_original_filename": "800_800(天猫)1.jpg",
+            })
+
             analyzer_calls = []
             label_calls = []
 
@@ -858,6 +1479,10 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             self.assertTrue((package_root / "wpt30.白紫色调00317.png").is_file())
             self.assertTrue((package_root / "tmt.png").is_file())
             self.assertTrue((package_root / "tmq.jpg").is_file())
+            self.assertEqual(
+                (package_root / "原图" / "800_800(天猫)1.jpg").read_bytes(),
+                uncolored_source.read_bytes(),
+            )
             self.assertFalse((package_root / "1.白紫色调00317" / "yk (1).jpg").exists())
             self.assertFalse((package_root / "1.白紫色调00317" / "yq (4).jpg").exists())
             self.assertFalse((package_root / "2.米白10301" / "yk1.jpg").exists())
@@ -885,6 +1510,17 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             warning_rows = [row for row in report_rows if row.get("规则告警")]
             self.assertEqual(len(warning_rows), 1)
             self.assertEqual(warning_rows[0]["颜色"], "米白10301")
+            uncolored_rows = [
+                row
+                for row in report_rows
+                if row.get("原文件名") == "800_800(天猫)1.jpg"
+                and row.get("处理动作") == "保留网盘全部原始图片"
+            ]
+            self.assertEqual(len(uncolored_rows), 1)
+            self.assertEqual(
+                uncolored_rows[0]["输出文件名"],
+                "原图/800_800(天猫)1.jpg",
+            )
             self.assertIn("允许缺少 yx.jpg", warning_rows[0]["规则告警"])
 
 

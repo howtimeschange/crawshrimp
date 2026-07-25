@@ -288,6 +288,7 @@ SHOE_LABEL_OCR_MODEL = "qwen3.7-plus"
 SHOE_CROSS_COLOR_MAX_DISTANCE = 0.32
 SHOE_WHITE_BACKGROUND_LUMA = 249.5
 SHOE_YX_MAX_FOREGROUND_COVERAGE = 0.65
+SHOE_POSE3_SIDE_ASYMMETRY_MARGIN = 0.006
 
 SHOE_POSE5_FEATURE_RULES = {
     "运动": {
@@ -337,10 +338,28 @@ def _qwen_fallback_model_ids(model_id: str) -> list[str]:
     }.get(_text(model_id), [])
 
 
-def _is_pose_selection_candidate(filename: str) -> bool:
-    """Keep generated AI angle assets for delivery, not for slot selection."""
+def _is_pose_matching_candidate(filename: str) -> bool:
+    """Exclude prebuilt channel/AI angles from pose analysis while preserving them."""
 
-    return not re.search(r"ai\s*角度图", _text(filename), flags=re.IGNORECASE)
+    stem = Path(_text(filename)).stem
+    return (
+        not re.search(r"ai\s*角度图", stem, flags=re.IGNORECASE)
+        and not re.fullmatch(r"\d{12}-\d{5}", stem)
+    )
+
+
+def _is_pose_selection_candidate(filename: str) -> bool:
+    """Keep named details out of the model prompt and ordinary pose slots."""
+
+    stem = Path(_text(filename)).stem
+    return (
+        _is_pose_matching_candidate(filename)
+        and not re.match(
+            r"^yk\s*(?:[\(（]\s*)?\d+",
+            stem,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _original_asset_relative_targets(
@@ -463,6 +482,24 @@ def _binary_pose_distance(
     )
 
 
+def _binary_pose_horizontal_asymmetry(feature: _BinaryPoseFeature | None) -> float:
+    """Measure whether a vertical shoe shows a side instead of a frontal view."""
+
+    if not feature or not feature.valid or feature.mask is None:
+        return 0.0
+
+    from PIL import ImageChops, ImageOps, ImageStat
+
+    mask = feature.mask.convert("1")
+    mirrored = ImageOps.mirror(mask)
+    return (
+        ImageStat.Stat(
+            ImageChops.logical_xor(mask, mirrored).convert("L")
+        ).mean[0]
+        / 255
+    )
+
+
 def _rank_binary_contour_matches(
     anchor_path: Path | str,
     candidates: list[dict[str, Any]],
@@ -582,6 +619,8 @@ def _apply_selection_quality_rules(
     category: str,
     slots: dict[str, Any],
     entries_by_name: dict[str, dict[str, Any]],
+    *,
+    outsole_entries_by_name: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Repair deterministic pose/background mistakes after model selection."""
 
@@ -590,8 +629,11 @@ def _apply_selection_quality_rules(
     corrections: list[str] = []
     feature_cache: dict[str, _BinaryPoseFeature] = {}
 
-    def feature_for(name: str) -> _BinaryPoseFeature | None:
-        entry = entries_by_name.get(_text(name))
+    def feature_for(
+        name: str,
+        source_entries: dict[str, dict[str, Any]] | None = None,
+    ) -> _BinaryPoseFeature | None:
+        entry = (source_entries or entries_by_name).get(_text(name))
         path = entry.get("path") if isinstance(entry, dict) else None
         if not path:
             return None
@@ -620,7 +662,446 @@ def _apply_selection_quality_rules(
     yq = _selection_list(slots, "yq")
     ruled["yq"] = yq
 
+    # yq1 is not category-specific: it is the same front-shoe plus rear-outsole
+    # composition as main-image pose 2. Reusing the already selected pose keeps
+    # the fixed yq sequence deterministic even when the model mistakes a
+    # multi-shoe top view for the reference composition.
+    if len(yq) >= 1 and len(wpz) >= 2 and yq[0] != wpz[1]:
+        previous_yq1 = yq[0]
+        yq[0] = wpz[1]
+        corrections.append(
+            f"yq1 固定姿势已纠正：{previous_yq1} -> {yq[0]}"
+        )
+
+    def valid_yq2_outsole(pose: _BinaryPoseFeature | None) -> bool:
+        return bool(
+            pose
+            and 1.75 <= pose.aspect_ratio <= 2.70
+            and 0.08 <= pose.bounding_coverage <= 0.40
+            and pose.background_luma >= 235.0
+        )
+
+    outsole_entries = outsole_entries_by_name or entries_by_name
+    current_yq2_feature = (
+        feature_for(yq[1], outsole_entries)
+        if len(yq) >= 2
+        else None
+    )
+    if (
+        len(yq) >= 2
+        and current_yq2_feature is not None
+        and not valid_yq2_outsole(current_yq2_feature)
+    ):
+        occupied = {
+            _text(value)
+            for value in [
+                *wpz,
+                yq[0],
+                *yq[2:],
+                ruled.get("yx"),
+                *[ruled.get(f"tmz{index}") for index in range(1, 6)],
+            ]
+            if _text(value)
+        }
+        eligible_outsoles = [
+            (filename, pose)
+            for filename in outsole_entries
+            if filename not in occupied
+            for pose in [feature_for(filename, outsole_entries)]
+            if valid_yq2_outsole(pose)
+        ]
+        if eligible_outsoles:
+            target_aspect, target_coverage = {
+                "运动": (2.30, 0.24),
+                "休闲": (2.35, 0.19),
+                "雪地": (1.98, 0.15),
+                "婴童": (1.98, 0.15),
+            }.get(_text(category), (2.10, 0.18))
+            previous_yq2 = yq[1]
+            replacement, _replacement_feature = min(
+                eligible_outsoles,
+                key=lambda item: (
+                    abs(item[1].background_luma - 242.0) / 255.0,
+                    abs(item[1].aspect_ratio - target_aspect)
+                    + abs(item[1].bounding_coverage - target_coverage) * 2.0,
+                    item[0].lower(),
+                ),
+            )
+            yq[1] = replacement
+            corrections.append(
+                f"yq2 完整鞋底已纠正：{previous_yq2} -> {replacement}"
+            )
+
+    def valid_pose3(pose: _BinaryPoseFeature | None) -> bool:
+        return bool(
+            pose
+            and 0.45 <= pose.aspect_ratio <= 0.82
+            and pose.bounding_coverage <= 0.10
+        )
+
+    if len(wpz) >= 3:
+        current_wpz3 = wpz[2]
+        current_tmz3 = _text(ruled.get("tmz3")) or current_wpz3
+        eligible_pose3 = [
+            (filename, pose)
+            for filename in entries_by_name
+            for pose in [feature_for(filename)]
+            if valid_pose3(pose)
+        ]
+
+        # Sports and baby-shoe shoots can contain two near-identical vertical
+        # candidates: a frontal shoe and the outer-side profile required by
+        # the template. The outer-side silhouette is less left/right
+        # symmetric. Only use that signal when the candidate gap is clear.
+        if _text(category) in {"运动", "婴童"} and len(eligible_pose3) >= 2:
+            pose3_by_asymmetry = sorted(
+                (
+                    (
+                        _binary_pose_horizontal_asymmetry(pose),
+                        filename,
+                    )
+                    for filename, pose in eligible_pose3
+                ),
+                key=lambda item: (-item[0], item[1].lower()),
+            )
+            best_asymmetry, best_filename = pose3_by_asymmetry[0]
+            second_asymmetry = pose3_by_asymmetry[1][0]
+            if (
+                best_asymmetry - second_asymmetry
+                >= SHOE_POSE3_SIDE_ASYMMETRY_MARGIN
+                and (
+                    current_wpz3 != best_filename
+                    or current_tmz3 != best_filename
+                )
+            ):
+                wpz[2] = best_filename
+                ruled["tmz3"] = best_filename
+                corrections.append(
+                    "第3姿势外侧竖立图已纠正："
+                    f"{current_wpz3} -> {best_filename}"
+                )
+                current_wpz3 = best_filename
+                current_tmz3 = best_filename
+
+        if (
+            not valid_pose3(feature_for(current_wpz3))
+            or not valid_pose3(feature_for(current_tmz3))
+        ):
+            occupied = {
+                _text(value)
+                for value in [
+                    *wpz[:2],
+                    *wpz[3:],
+                    *yq,
+                    ruled.get("yx"),
+                    *[
+                        ruled.get(f"tmz{index}")
+                        for index in (1, 2, 4, 5)
+                    ],
+                ]
+                if _text(value)
+            }
+            unoccupied_pose3 = [
+                (filename, pose)
+                for filename, pose in eligible_pose3
+                if filename not in occupied
+            ]
+            if unoccupied_pose3:
+                replacement, replacement_feature = min(
+                    unoccupied_pose3,
+                    key=lambda item: (
+                        abs(item[1].aspect_ratio - 0.68)
+                        + abs(item[1].bounding_coverage - 0.055) * 2.0,
+                        item[0].lower(),
+                    ),
+                )
+                wpz[2] = replacement
+                ruled["tmz3"] = replacement
+
+                paired_variants = [
+                    (
+                        filename,
+                        _binary_pose_distance(replacement_feature, pose),
+                    )
+                    for filename, pose in eligible_pose3
+                    if filename != replacement
+                ]
+                paired_variants = [
+                    item
+                    for item in paired_variants
+                    if item[1] <= 0.04
+                ]
+                if paired_variants:
+                    ruled["tmz3"] = min(
+                        paired_variants,
+                        key=lambda item: (item[1], item[0].lower()),
+                    )[0]
+                corrections.append(
+                    "第3姿势竖立图已纠正："
+                    f"{current_wpz3} -> {replacement}"
+                )
+
+    if _text(category) == "雪地" and wpz:
+        current_wpz1 = wpz[0]
+        current_tmz1 = _text(ruled.get("tmz1")) or current_wpz1
+
+        def valid_snow_pose1(pose: _BinaryPoseFeature | None) -> bool:
+            return bool(
+                pose
+                and 0.58 <= pose.aspect_ratio <= 0.75
+                and 0.10 <= pose.bounding_coverage <= 0.18
+                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+            )
+
+        if (
+            not valid_snow_pose1(feature_for(current_wpz1))
+            or not valid_snow_pose1(feature_for(current_tmz1))
+        ):
+            occupied = {
+                _text(value)
+                for value in [
+                    *wpz[1:],
+                    *yq,
+                    ruled.get("yx"),
+                    *[ruled.get(f"tmz{index}") for index in range(2, 6)],
+                ]
+                if _text(value)
+            }
+            eligible_pose1 = [
+                (filename, pose)
+                for filename in entries_by_name
+                if filename not in occupied
+                for pose in [feature_for(filename)]
+                if valid_snow_pose1(pose)
+            ]
+            if eligible_pose1:
+                replacement, _replacement_feature = min(
+                    eligible_pose1,
+                    key=lambda item: (
+                        abs(item[1].aspect_ratio - 0.67)
+                        + abs(item[1].bounding_coverage - 0.145) * 2.0,
+                        item[0].lower(),
+                    ),
+                )
+                wpz[0] = replacement
+                ruled["tmz1"] = replacement
+                corrections.append(
+                    "雪地第1姿势正常斜前方单靴已纠正："
+                    f"{current_wpz1} -> {replacement}"
+                )
+
+    if _text(category) == "雪地" and len(wpz) >= 4:
+        current_wpz4 = wpz[3]
+        current_tmz4 = _text(ruled.get("tmz4")) or current_wpz4
+
+        def valid_snow_pose4(pose: _BinaryPoseFeature | None) -> bool:
+            return bool(
+                pose
+                and 0.90 <= pose.aspect_ratio <= 1.50
+                and 0.25 <= pose.bounding_coverage <= 0.50
+            )
+
+        if (
+            not valid_snow_pose4(feature_for(current_wpz4))
+            or not valid_snow_pose4(feature_for(current_tmz4))
+        ):
+            occupied = {
+                _text(value)
+                for value in [
+                    *wpz[:3],
+                    *wpz[4:],
+                    *yq,
+                    ruled.get("yx"),
+                    *[
+                        ruled.get(f"tmz{index}")
+                        for index in (1, 2, 3, 5)
+                    ],
+                ]
+                if _text(value)
+            }
+            eligible_pose4 = [
+                (filename, pose)
+                for filename in entries_by_name
+                if filename not in occupied
+                for pose in [feature_for(filename)]
+                if valid_snow_pose4(pose)
+            ]
+            if eligible_pose4:
+                replacement, _replacement_feature = min(
+                    eligible_pose4,
+                    key=lambda item: (
+                        abs(item[1].aspect_ratio - 1.23)
+                        + abs(item[1].bounding_coverage - 0.38) * 2.0,
+                        item[0].lower(),
+                    ),
+                )
+                wpz[3] = replacement
+                ruled["tmz4"] = replacement
+                corrections.append(
+                    "雪地第4姿势鞋口内里特写已纠正："
+                    f"{current_wpz4} -> {replacement}"
+                )
+
+    if _text(category) == "休闲" and len(wpz) >= 4:
+        current_wpz4 = wpz[3]
+        current_tmz4 = _text(ruled.get("tmz4")) or current_wpz4
+
+        def valid_leisure_pose4(pose: _BinaryPoseFeature | None) -> bool:
+            return bool(
+                pose
+                and 1.35 <= pose.aspect_ratio <= 1.75
+                and 0.05 <= pose.bounding_coverage <= 0.11
+                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+            )
+
+        if (
+            not valid_leisure_pose4(feature_for(current_wpz4))
+            or not valid_leisure_pose4(feature_for(current_tmz4))
+        ):
+            occupied = {
+                _text(value)
+                for value in [
+                    *wpz[:3],
+                    *wpz[4:],
+                    *yq,
+                    ruled.get("yx"),
+                    *[
+                        ruled.get(f"tmz{index}")
+                        for index in (1, 2, 3, 5)
+                    ],
+                ]
+                if _text(value)
+            }
+            eligible_pose4 = [
+                (filename, pose)
+                for filename in entries_by_name
+                if filename not in occupied
+                for pose in [feature_for(filename)]
+                if valid_leisure_pose4(pose)
+            ]
+            if eligible_pose4:
+                replacement, _replacement_feature = min(
+                    eligible_pose4,
+                    key=lambda item: (
+                        abs(item[1].aspect_ratio - 1.55)
+                        + abs(item[1].bounding_coverage - 0.078) * 2.0,
+                        item[0].lower(),
+                    ),
+                )
+                wpz[3] = replacement
+                ruled["tmz4"] = replacement
+                corrections.append(
+                    "休闲第4姿势后侧完整侧面已纠正："
+                    f"{current_wpz4} -> {replacement}"
+                )
+
+    if _text(category) == "婴童" and len(wpz) >= 4:
+        current_wpz4 = wpz[3]
+        current_tmz4 = _text(ruled.get("tmz4")) or current_wpz4
+
+        def valid_baby_pose4(pose: _BinaryPoseFeature | None) -> bool:
+            return bool(
+                pose
+                and 1.05 <= pose.aspect_ratio <= 1.35
+                and 0.06 <= pose.bounding_coverage <= 0.12
+                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+            )
+
+        if (
+            not valid_baby_pose4(feature_for(current_wpz4))
+            or not valid_baby_pose4(feature_for(current_tmz4))
+        ):
+            # A model commonly swaps the baby-shoe rear-side pose with yq3.
+            # Keep the current yq3 available here; the shared yq3 rule below
+            # will then recover the released complete outer-side image.
+            occupied = {
+                _text(value)
+                for value in [
+                    *wpz[:3],
+                    *wpz[4:],
+                    *yq[:2],
+                    ruled.get("yx"),
+                    *[
+                        ruled.get(f"tmz{index}")
+                        for index in (1, 2, 3, 5)
+                    ],
+                ]
+                if _text(value)
+            }
+            eligible_pose4 = [
+                (filename, pose)
+                for filename in entries_by_name
+                if filename not in occupied
+                for pose in [feature_for(filename)]
+                if valid_baby_pose4(pose)
+            ]
+            if eligible_pose4:
+                replacement, _replacement_feature = min(
+                    eligible_pose4,
+                    key=lambda item: (
+                        abs(item[1].aspect_ratio - 1.22)
+                        + abs(item[1].bounding_coverage - 0.09) * 2.0,
+                        item[0].lower(),
+                    ),
+                )
+                wpz[3] = replacement
+                ruled["tmz4"] = replacement
+                corrections.append(
+                    "婴童第4姿势后侧角度已纠正："
+                    f"{current_wpz4} -> {replacement}"
+                )
+
     if _text(category) == "运动":
+        current_pose4 = wpz[3] if len(wpz) >= 4 else _text(ruled.get("tmz4"))
+        current_pose4_feature = feature_for(current_pose4)
+
+        def valid_sports_pose4(pose: _BinaryPoseFeature | None) -> bool:
+            return bool(
+                pose
+                and 0.82 <= pose.aspect_ratio <= 1.05
+                and 0.15 <= pose.bounding_coverage <= 0.32
+                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+            )
+
+        if current_pose4 and not valid_sports_pose4(current_pose4_feature):
+            occupied = {
+                _text(value)
+                for value in [
+                    *wpz[:3],
+                    *wpz[4:],
+                    *yq,
+                    ruled.get("yx"),
+                    *[
+                        ruled.get(f"tmz{index}")
+                        for index in (1, 2, 3, 5)
+                    ],
+                ]
+                if _text(value)
+            }
+            eligible_pose4 = [
+                (filename, pose)
+                for filename in entries_by_name
+                if filename not in occupied
+                for pose in [feature_for(filename)]
+                if valid_sports_pose4(pose)
+            ]
+            if eligible_pose4:
+                replacement, _replacement_feature = min(
+                    eligible_pose4,
+                    key=lambda item: (
+                        abs(item[1].aspect_ratio - 0.90)
+                        + abs(item[1].bounding_coverage - 0.23) * 2.0,
+                        item[0].lower(),
+                    ),
+                )
+                ruled["tmz4"] = replacement
+                if len(wpz) >= 4:
+                    wpz[3] = replacement
+                corrections.append(
+                    f"运动第4姿势后侧鞋底角度已纠正："
+                    f"{current_pose4} -> {replacement}"
+                )
+
         current_pose1 = wpz[0] if wpz else _text(ruled.get("tmz1"))
         current_pose1_feature = feature_for(current_pose1)
 
@@ -666,49 +1147,55 @@ def _apply_selection_quality_rules(
                     f"运动第1姿势已纠正：{current_pose1} -> {replacement}"
                 )
 
-        current_yq3 = yq[2] if len(yq) >= 3 else ""
-        current_yq3_feature = feature_for(current_yq3)
+    current_yq3 = yq[2] if len(yq) >= 3 else ""
+    current_yq3_feature = feature_for(current_yq3)
+    yq3_target = {
+        "运动": (2.10, 0.26),
+        "休闲": (2.10, 0.19),
+        "雪地": (1.60, 0.19),
+        "婴童": (1.58, 0.17),
+    }.get(_text(category), (1.80, 0.20))
 
-        def valid_sports_yq3(pose: _BinaryPoseFeature | None) -> bool:
-            return bool(
-                pose
-                and 1.55 <= pose.aspect_ratio <= 2.50
-                and 0.15 <= pose.bounding_coverage <= 0.45
-                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-            )
+    def valid_shared_yq3(pose: _BinaryPoseFeature | None) -> bool:
+        return bool(
+            pose
+            and 1.45 <= pose.aspect_ratio <= 2.50
+            and 0.10 <= pose.bounding_coverage <= 0.45
+            and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+        )
 
-        if current_yq3 and not valid_sports_yq3(current_yq3_feature):
-            occupied = {
-                _text(value)
-                for value in [
-                    *wpz,
-                    *yq[:2],
-                    ruled.get("yx"),
-                    *[ruled.get(f"tmz{index}") for index in range(1, 6)],
-                ]
-                if _text(value)
-            }
-            eligible_yq3 = [
-                (filename, pose)
-                for filename in entries_by_name
-                if filename not in occupied
-                for pose in [feature_for(filename)]
-                if valid_sports_yq3(pose)
+    if current_yq3 and not valid_shared_yq3(current_yq3_feature):
+        occupied = {
+            _text(value)
+            for value in [
+                *wpz,
+                *yq[:2],
+                ruled.get("yx"),
+                *[ruled.get(f"tmz{index}") for index in range(1, 6)],
             ]
-            if eligible_yq3:
-                replacement, _replacement_feature = min(
-                    eligible_yq3,
-                    key=lambda item: (
-                        abs(item[1].aspect_ratio - 2.10)
-                        + abs(item[1].bounding_coverage - 0.26) * 2.0,
-                        item[0].lower(),
-                    ),
-                )
-                yq[2] = replacement
-                corrections.append(
-                    f"运动 yq3 完整外侧面已纠正："
-                    f"{current_yq3} -> {replacement}"
-                )
+            if _text(value)
+        }
+        eligible_yq3 = [
+            (filename, pose)
+            for filename in entries_by_name
+            if filename not in occupied
+            for pose in [feature_for(filename)]
+            if valid_shared_yq3(pose)
+        ]
+        if eligible_yq3:
+            replacement, _replacement_feature = min(
+                eligible_yq3,
+                key=lambda item: (
+                    abs(item[1].aspect_ratio - yq3_target[0])
+                    + abs(item[1].bounding_coverage - yq3_target[1]) * 2.0,
+                    item[0].lower(),
+                ),
+            )
+            yq[2] = replacement
+            corrections.append(
+                f"yq3 固定完整外侧面已纠正："
+                f"{current_yq3} -> {replacement}"
+            )
 
     if len(wpz) < 5:
         return ruled, corrections
@@ -994,6 +1481,13 @@ def _shoe_selection_prompt(
 1. tmz1..tmz5 是天猫5张主图，匹配该品类模板第1至5姿势；第5张必须白底。
    所有品类的 tmz2/wpz2 都必须是：前方一只完整鞋正常展示，后方另一只完整鞋的鞋底朝向镜头。
    禁止选择两只鞋同向、并排、悬空的图，也禁止鞋垫、单鞋、单独鞋底或局部特写。
+   所有品类的 tmz3/wpz3 都必须是单只鞋竖立或悬立、鞋身近似纵向的姿势；
+   必须展示鞋子的完整外侧轮廓，鞋头不能正对镜头；不能选择“鞋头朝镜头”的正面竖立图，
+   也不能选择正常平放的侧视图、普通斜前方单鞋图，或复用 tmz1/wpz1、yq3。
+   tmz4/wpz4 必须按品类区分：运动是后侧斜悬且鞋底朝镜头；休闲是完整后侧面；
+   雪地是鞋口和内里绒毛局部特写；婴童是单鞋后侧角度。
+   雪地第4姿势不能选择拉链、鞋帮外侧或普通侧面特写；
+   婴童第4姿势不能误用 yq3 的完整外侧面。
 2. wpz 共6张，wpz1..wpz4 与天猫前4张姿势相同；wpz5 与 tmz5 姿势相同但必须灰底；wpz6 必须是带款号和颜色标签的鞋盒图。
    tmz5/wpz5 都必须完整展示两只鞋，并严格匹配当前品类模板第5姿势；禁止鞋垫、单鞋、单独鞋底、局部特写或鞋盒。
 3. o 是每个颜色必需的海报图：运动类固定复用 wpz2 的“前方一只鞋+后方一只鞋底朝镜头”姿势；休闲、雪地、婴童固定复用各自 wpz5 的品类摆放姿势。程序会按品类强制覆盖。
@@ -1370,6 +1864,7 @@ def prepare_shoe_packages(
         raise ShoeSelectionError(f"鞋品 yq 参考模板不存在：{yq_reference_image}")
 
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    uncolored_originals_by_style: dict[str, list[dict[str, Any]]] = {}
     for row in data_rows or []:
         if not isinstance(row, dict) or _text(row.get("下载结果")) != "已下载":
             continue
@@ -1379,13 +1874,17 @@ def prepare_shoe_packages(
         style_code = _text(row.get("输入款号") or row.get("__shenhui_group_code"))
         color_code = _text(row.get("__shoe_color_code") or row.get("颜色"))
         filename = _text(row.get("__shoe_original_filename") or row.get("原文件名") or local_path.name)
-        if not style_code or not color_code or not filename:
+        if not style_code or not filename:
             continue
-        grouped.setdefault(style_code, {}).setdefault(color_code, []).append({
+        entry = {
             "path": local_path,
             "filename": filename,
             "row": row,
-        })
+        }
+        if not color_code:
+            uncolored_originals_by_style.setdefault(style_code, []).append(entry)
+            continue
+        grouped.setdefault(style_code, {}).setdefault(color_code, []).append(entry)
     if not grouped:
         raise ShoeSelectionError("没有可用于鞋品选图的已下载图片")
 
@@ -1413,9 +1912,14 @@ def prepare_shoe_packages(
                 entry["filename"]: entry
                 for entry in entries
             }
-            selection_entries = [
+            pose_matching_entries = [
                 entry
                 for entry in entries
+                if _is_pose_matching_candidate(entry["filename"])
+            ]
+            selection_entries = [
+                entry
+                for entry in pose_matching_entries
                 if _is_pose_selection_candidate(entry["filename"])
             ]
             if not selection_entries:
@@ -1428,7 +1932,7 @@ def prepare_shoe_packages(
                 matched_slots, worst_distance = _match_slots_from_anchor_color(
                     anchor_slots=anchor_slots,
                     anchor_entries=anchor_selection_entries,
-                    target_entries=selection_entries,
+                    target_entries=pose_matching_entries,
                 )
                 if worst_distance <= SHOE_CROSS_COLOR_MAX_DISTANCE:
                     payload = {
@@ -1523,10 +2027,19 @@ def prepare_shoe_packages(
             if named_yx:
                 slots["yx"] = named_yx
 
+            pose_entries_by_name = {
+                entry["filename"]: entry
+                for entry in selection_entries
+            }
+            outsole_entries_by_name = {
+                entry["filename"]: entry
+                for entry in pose_matching_entries
+            }
             slots, quality_corrections = _apply_selection_quality_rules(
                 category,
                 slots,
-                entries_by_name,
+                pose_entries_by_name,
+                outsole_entries_by_name=outsole_entries_by_name,
             )
             for correction in quality_corrections:
                 log(f"鞋品确定性校验：{style_code}-{color_code}，{correction}")
@@ -1535,7 +2048,7 @@ def prepare_shoe_packages(
             _validate_selection_sources(style_code, color_name, slots, entries_by_name)
             if anchor_slots is None:
                 anchor_slots = dict(slots)
-                anchor_selection_entries = list(selection_entries)
+                anchor_selection_entries = list(pose_matching_entries)
                 anchor_category = category
             if label_analyzer:
                 wpz_sources = _selection_list(slots, "wpz")
@@ -1715,6 +2228,28 @@ def prepare_shoe_packages(
                     "品类来源": selections_by_color[color_name].get("shoe_category_source") or "",
                     "备注": "460x460",
                 })
+
+        uncolored_originals = uncolored_originals_by_style.get(style_code, [])
+        uncolored_targets = _original_asset_relative_targets(uncolored_originals)
+        for entry, relative_target in zip(uncolored_originals, uncolored_targets):
+            target = package_root / "原图" / relative_target
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(entry["path"]), target)
+            source_row = entry["row"]
+            report_rows.append({
+                "输入款号": style_code,
+                "颜色": "",
+                "原文件名": entry["filename"],
+                "云盘路径": _text(source_row.get("云盘路径")),
+                "规则槽位": "原始素材",
+                "输出文件名": str(target.relative_to(package_root)),
+                "处理动作": "保留网盘全部原始图片",
+                "下载结果": "已下载",
+                "本地文件": str(target),
+                "规则告警": "",
+                "品类来源": selections_by_color[color_order[0]].get("shoe_category_source") or "",
+                "备注": "原网盘文件未标注色号，保留在款号根目录的原图文件夹",
+            })
 
         for warning in warnings:
             report_rows.append({
