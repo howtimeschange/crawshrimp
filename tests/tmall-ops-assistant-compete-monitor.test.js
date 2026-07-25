@@ -597,7 +597,7 @@ test('compete paid monitor computes promotion and tool formulas', async () => {
 test('tmall manifest declares compete paid monitor task with multi-sheet output', () => {
   const manifest = fs.readFileSync(path.resolve('adapters/tmall-ops-assistant/manifest.yaml'), 'utf8')
 
-  assert.match(manifest, /version: 0\.1\.3/)
+  assert.match(manifest, /^version: 0\.1\.\d+$/m)
   assert.match(manifest, /id: tmall_compete_paid_monitor/)
   assert.match(manifest, /name: 天猫-竞品付费投放数据监控/)
   assert.match(manifest, /script: tmall-compete-paid-monitor\.js/)

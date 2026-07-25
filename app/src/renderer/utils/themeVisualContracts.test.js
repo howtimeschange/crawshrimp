@@ -30,6 +30,7 @@ test('light theme uses Taobao orange with a separate accessible text tone', () =
 
   assert.match(lightThemeRule, /--orange-rgb:\s*255,\s*80,\s*0;/)
   assert.match(lightThemeRule, /--orange:\s*#FF5000;/i)
+  assert.match(lightThemeRule, /--on-orange:\s*#24242b;/i)
   assert.match(lightThemeRule, /--orange-text:\s*#BD3C00;/i)
   assert.match(lightThemeRule, /--orange-hover:\s*#E94700;/i)
   assert.match(lightThemeRule, /--text3:\s*#626470;/i)

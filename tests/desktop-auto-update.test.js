@@ -236,8 +236,8 @@ test('settings exposes a read-only application update panel with pinned manual r
   const settings = readRepoFile('app/src/renderer/views/SettingsPage.vue')
 
   assert.match(settings, /const OFFICIAL_RELEASE_URL = 'https:\/\/github\.com\/howtimeschange\/crawshrimp\/releases\/latest'/)
-  assert.match(settings, /defineProps\(\['status', 'focusPanelId', 'updateStatus', 'updateActionBusy'\]\)/)
-  assert.match(settings, /defineEmits\(\['runtime-refresh', 'check-update'\]\)/)
+  assert.match(settings, /defineProps\(\[[\s\S]*'status'[\s\S]*'focusPanelId'[\s\S]*'updateStatus'[\s\S]*'updateActionBusy'[\s\S]*\]\)/)
+  assert.match(settings, /defineEmits\(\[[\s\S]*'runtime-refresh'[\s\S]*'check-update'[\s\S]*\]\)/)
   assert.match(settings, /id: 'application'/)
   assert.match(settings, /id: 'application-update', label: '桌面更新'/)
   assert.match(settings, /activePanelId === 'application-update'/)

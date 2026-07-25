@@ -126,7 +126,11 @@ class TmallAiImageApprovalApiTests(unittest.TestCase):
             "submit_progress": {"status": "running", "total": 1, "image_total": 2},
         }
         module = SimpleNamespace(
-            update_generation_confirmation=lambda batch, items: {**batch, "items": items},
+            update_generation_confirmation=lambda batch, items, execution_mode="": {
+                **batch,
+                "items": items,
+                "execution_mode": execution_mode,
+            },
             prepare_generation_confirmation_placeholders=lambda batch: prepared_batch,
         )
 

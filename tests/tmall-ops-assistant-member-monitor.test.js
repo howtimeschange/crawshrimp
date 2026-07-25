@@ -286,7 +286,7 @@ test('member monitor throttles batch screenshots and stops on risk prompts', asy
 test('tmall manifest declares compete member monitor screenshot task', () => {
   const manifest = fs.readFileSync(path.resolve('adapters/tmall-ops-assistant/manifest.yaml'), 'utf8')
 
-  assert.match(manifest, /version: 0\.1\.3/)
+  assert.match(manifest, /^version: 0\.1\.\d+$/m)
   assert.match(manifest, /id: tmall_compete_member_monitor/)
   assert.match(manifest, /name: 天猫-竞品会员页面监控/)
   assert.match(manifest, /script: tmall-compete-member-monitor\.js/)

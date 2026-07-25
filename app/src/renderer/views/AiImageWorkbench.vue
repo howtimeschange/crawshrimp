@@ -5544,7 +5544,7 @@ button.active,
   min-height: 42px;
   border-color: var(--orange);
   background: var(--orange);
-  color: #fff;
+  color: var(--on-orange);
 }
 
 .aiw-primary-action.loading {
@@ -5564,7 +5564,7 @@ button.active,
   padding: 0 13px;
   border-color: var(--orange);
   background: var(--orange);
-  color: #fff;
+  color: var(--on-orange);
 }
 
 .aiw-ghost {

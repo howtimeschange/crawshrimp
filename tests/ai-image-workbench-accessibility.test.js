@@ -49,7 +49,7 @@ test('result cards avoid nested button semantics and announce dynamic status', (
 })
 
 test('primary controls meet contrast and all motion respects reduced-motion preference', () => {
-  assert.match(workbench, /\.aiw-primary-action,[\s\S]*background:\s*#c94d16;/)
+  assert.match(workbench, /\.aiw-primary-action,[\s\S]*background:\s*var\(--orange\);[\s\S]*color:\s*var\(--on-orange\);/)
   assert.match(workbench, /@media \(prefers-reduced-motion: reduce\)[\s\S]*animation-duration:\s*0\.01ms !important;/)
   assert.match(workbench, /@media \(prefers-reduced-motion: reduce\)[\s\S]*transition-duration:\s*0\.01ms !important;/)
 })

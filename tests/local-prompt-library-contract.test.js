@@ -98,8 +98,8 @@ test('LocalPromptLibrary active secondary buttons do not look disabled', () => {
   const disabledRule = view.match(/\.lpl-primary:disabled,\n\.lpl-secondary:disabled\s*\{([\s\S]*?)\n\}/)?.[1] || ''
 
   assert.match(secondaryRule, /color:\s*var\(--text\)/)
-  assert.match(secondaryRule, /background:\s*rgba\(255,\s*255,\s*255,\s*\.08\)/)
-  assert.match(secondaryRule, /border-color:\s*rgba\(255,\s*255,\s*255,\s*\.18\)/)
+  assert.match(secondaryRule, /background:\s*var\(--bg3\)/)
+  assert.match(secondaryRule, /border-color:\s*var\(--border\)/)
   assert.match(secondaryRule, /font-weight:\s*700/)
   assert.match(disabledRule, /opacity:\s*\.55/)
 })
