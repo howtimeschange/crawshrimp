@@ -18,6 +18,21 @@ test('AI video workflow only applies inert as a real boolean while a modal is op
   assert.doesNotMatch(templateSource, /:inert="hasOpenModal \? '' : null"/)
 })
 
+test('AI video workflow clears a missing persisted workspace and asks for a replacement', () => {
+  const source = readView('AiVideoWorkflow.vue')
+  const recoveryStart = source.indexOf('function clearMissingWorkspacePath')
+  const recoveryEnd = source.indexOf('async function flushWorkspaceManifest', recoveryStart)
+  const recoverySource = source.slice(recoveryStart, recoveryEnd)
+
+  assert.match(source, /function isMissingWorkspacePathError\(error\)/)
+  assert.match(source, /\\bENOENT\\b\|no such file or directory/)
+  assert.match(recoverySource, /workspaceDir\.value = ''/)
+  assert.match(recoverySource, /persistWorkspaceDir\(''\)/)
+  assert.match(recoverySource, /materialWorkspaceRequired\.value = true/)
+  assert.match(recoverySource, /上次使用的工作区目录已不存在，请重新选择工作区目录。/)
+  assert.match(source, /if \(clearMissingWorkspacePath\(targetWorkspace, error\)\) return false/)
+})
+
 test('AI video settings keep provider advanced fields folded and expose dedicated OSS upload config', () => {
   const settings = readView('SettingsPage.vue')
 

@@ -558,7 +558,7 @@ provide('repairCoreService', repairCoreService)
   --orange-bg: rgba(var(--orange-rgb), 0.1);
   --orange-hover: #E94700;
   --orange-strong: #CC4000;
-  --on-orange: #24242b;
+  --on-orange: #ffffff;
   --bg: #f7f7f8;
   --bg2: #ffffff;
   --bg3: #efeff1;

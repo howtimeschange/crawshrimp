@@ -4023,8 +4023,8 @@ onUnmounted(() => {
   padding: 0 8px;
   border-radius: 999px;
   background: rgba(20, 20, 24, 0.82);
-  border: 1px solid var(--border);
-  color: var(--text2);
+  border: 1px solid rgba(255, 255, 255, .22);
+  color: rgba(255, 255, 255, .84);
   font-size: 11px;
   font-weight: 750;
   display: inline-flex;
@@ -4032,9 +4032,9 @@ onUnmounted(() => {
 }
 
 .avg-library-tile.selected .avg-library-check {
-  color: var(--orange-text);
-  border-color: var(--orange-line);
-  background: var(--orange-soft);
+  color: var(--on-orange);
+  border-color: var(--orange);
+  background: var(--orange);
 }
 
 .avg-library-state,
@@ -4068,12 +4068,12 @@ onUnmounted(() => {
 .avg-thumb-loading strong,
 .avg-thumb-fallback strong {
   font-size: 13px;
-  color: var(--text);
+  color: #fff;
 }
 
 .avg-thumb-loading span,
 .avg-thumb-fallback span {
-  color: var(--text3);
+  color: rgba(255, 255, 255, .72);
   font-size: 11px;
   line-height: 1.4;
   max-width: 92%;
@@ -4120,19 +4120,20 @@ onUnmounted(() => {
   padding: 0 8px;
   border-radius: 8px;
   background: rgba(20, 20, 24, 0.82);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, .22);
+  color: rgba(255, 255, 255, .84);
   font-size: 11px;
   font-weight: 800;
 }
 
-.avg-status-chip.queued { color: var(--text2); }
-.avg-status-chip.running { color: var(--yellow); border-color: rgba(250, 204, 21, 0.38); }
-.avg-status-chip.completed { color: var(--green); border-color: rgba(74, 222, 128, 0.34); }
-.avg-status-chip.downloading { color: var(--blue); border-color: rgba(96, 165, 250, 0.34); }
-.avg-status-chip.needs_config { color: var(--orange-text); border-color: var(--orange-line); }
+.avg-status-chip.queued { color: rgba(255, 255, 255, .84); }
+.avg-status-chip.running { color: #fbbf24; border-color: rgba(251, 191, 36, .5); }
+.avg-status-chip.completed { color: #4ade80; border-color: rgba(74, 222, 128, .45); }
+.avg-status-chip.downloading { color: #60a5fa; border-color: rgba(96, 165, 250, .45); }
+.avg-status-chip.needs_config { color: #ffb182; border-color: rgba(var(--orange-rgb), .55); }
 .avg-status-chip.cancelled,
-.avg-status-chip.expired { color: var(--text3); }
-.avg-status-chip.failed { color: var(--red); border-color: rgba(248, 113, 113, 0.34); }
+.avg-status-chip.expired { color: rgba(255, 255, 255, .68); }
+.avg-status-chip.failed { color: #f87171; border-color: rgba(248, 113, 113, .48); }
 
 .avg-stage-note {
   position: absolute;
@@ -4140,10 +4141,10 @@ onUnmounted(() => {
   bottom: 9px;
   max-width: calc(100% - 18px);
   padding: 5px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, .18);
   border-radius: 8px;
   background: rgba(20, 20, 24, 0.84);
-  color: var(--text2);
+  color: rgba(255, 255, 255, .78);
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4532,6 +4533,7 @@ select:focus-visible {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: rgba(20, 20, 24, 0.9);
+  color: #fff;
   text-align: center;
   box-shadow: 0 18px 40px var(--shadow);
 }
@@ -4543,7 +4545,7 @@ select:focus-visible {
   font-size: 14px;
 }
 .avg-modal-state-overlay span {
-  color: var(--text2);
+  color: rgba(255, 255, 255, .72);
   font-size: 12px;
   line-height: 1.5;
 }

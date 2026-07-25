@@ -5248,11 +5248,11 @@ onUnmounted(() => {
 }
 .progress-stage-card-primary .progress-stage-card-percent,
 .progress-stage-card-primary .progress-stage-card-status {
-  color: #ffb182;
+  color: var(--orange-text);
 }
 .progress-stage-card-secondary .progress-stage-card-percent,
 .progress-stage-card-secondary .progress-stage-card-status {
-  color: #b9c4ff;
+  color: var(--blue);
 }
 .progress-stage-card-meta {
   display: flex;

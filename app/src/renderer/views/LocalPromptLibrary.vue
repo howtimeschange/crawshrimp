@@ -726,7 +726,7 @@ onUpdated(resizePromptTextareas)
 .lpl-notice.warning {
   border-color: rgba(251, 191, 36, .38);
   background: rgba(251, 191, 36, .08);
-  color: #fde68a;
+  color: var(--yellow);
 }
 
 .lpl-source-badge {

@@ -9,9 +9,16 @@
       <div class="aiv-top-actions">
         <button type="button" class="aiv-ghost" @click="openOutputDir">打开输出目录</button>
       </div>
-      <p v-if="workspacePersistenceError" class="aiv-workspace-persistence-error" role="alert">
-        {{ workspacePersistenceError }}
-      </p>
+      <div v-if="workspacePersistenceError" class="aiv-workspace-persistence-error" role="alert">
+        <div class="aiv-workspace-persistence-copy">
+          <strong>工作区恢复信息未保存</strong>
+          <span>{{ workspacePersistenceError }}</span>
+        </div>
+        <details>
+          <summary>查看详情</summary>
+          <code>{{ workspacePersistenceDetail || workspacePersistenceError }}</code>
+        </details>
+      </div>
     </header>
 
     <nav class="aiv-stepper" role="tablist" aria-label="AI 视频工作流步骤">
@@ -2020,6 +2027,7 @@ const workspaceDir = ref(loadStoredWorkspaceDir())
 const materialOutputDir = workspaceDir
 const videoOutputDir = workspaceDir
 const workspacePersistenceError = ref('')
+const workspacePersistenceDetail = ref('')
 let workspaceManifestWriteTimer = null
 
 const activeStep = ref('materials')
@@ -2499,6 +2507,29 @@ function scheduleWorkspaceManifestPersist() {
   }, 450)
 }
 
+function workspacePersistenceErrorMessage(error) {
+  return String(error?.message || error || '').trim()
+}
+
+function isMissingWorkspacePathError(error) {
+  return /\bENOENT\b|no such file or directory/i.test(workspacePersistenceErrorMessage(error))
+}
+
+function clearMissingWorkspacePath(targetWorkspace, error) {
+  if (workspaceDir.value !== targetWorkspace || !isMissingWorkspacePathError(error)) return false
+  if (workspaceManifestWriteTimer) {
+    clearTimeout(workspaceManifestWriteTimer)
+    workspaceManifestWriteTimer = null
+  }
+  workspaceDir.value = ''
+  videoTaskDraft.outputDir = ''
+  persistWorkspaceDir('')
+  materialWorkspaceRequired.value = true
+  workspacePersistenceError.value = '上次使用的工作区目录已不存在，请重新选择工作区目录。'
+  workspacePersistenceDetail.value = workspacePersistenceErrorMessage(error)
+  return true
+}
+
 async function flushWorkspaceManifest(workspace = workspaceDir.value) {
   const targetWorkspace = String(workspace || '').trim()
   if (!targetWorkspace) return false
@@ -2507,16 +2538,22 @@ async function flushWorkspaceManifest(workspace = workspaceDir.value) {
     workspaceManifestWriteTimer = null
   }
   if (typeof window.cs?.writeBalaWorkspaceManifest !== 'function') {
-    workspacePersistenceError.value = '当前运行环境无法保存工作区恢复清单；请在 Electron 客户端中继续操作。'
+    workspacePersistenceError.value = '当前运行环境无法保存恢复信息，请在抓虾桌面客户端中继续操作。'
+    workspacePersistenceDetail.value = 'writeBalaWorkspaceManifest is unavailable'
     return false
   }
   try {
     await window.cs.writeBalaWorkspaceManifest(targetWorkspace, workspaceRecoveryManifest())
-    if (workspaceDir.value === targetWorkspace) workspacePersistenceError.value = ''
+    if (workspaceDir.value === targetWorkspace) {
+      workspacePersistenceError.value = ''
+      workspacePersistenceDetail.value = ''
+    }
     return true
   } catch (error) {
     if (workspaceDir.value === targetWorkspace) {
-      workspacePersistenceError.value = `工作区恢复清单未保存：${error?.message || String(error)}`
+      if (clearMissingWorkspacePath(targetWorkspace, error)) return false
+      workspacePersistenceError.value = '恢复信息保存失败，请检查工作区目录或本机存储权限后重试。'
+      workspacePersistenceDetail.value = workspacePersistenceErrorMessage(error)
     }
     return false
   }
@@ -2529,11 +2566,16 @@ async function restoreWorkspaceManifest(workspace = workspaceDir.value) {
     const snapshot = await window.cs.readBalaWorkspaceManifest(targetWorkspace)
     if (!snapshot) return false
     const restored = restoreWorkspaceVideoManifest(snapshot, targetWorkspace)
-    if (restored) workspacePersistenceError.value = ''
+    if (restored) {
+      workspacePersistenceError.value = ''
+      workspacePersistenceDetail.value = ''
+    }
     return restored
   } catch (error) {
     if (workspaceDir.value === targetWorkspace) {
-      workspacePersistenceError.value = `工作区恢复清单不可用：${error?.message || String(error)}`
+      if (clearMissingWorkspacePath(targetWorkspace, error)) return false
+      workspacePersistenceError.value = '恢复信息读取失败，请重新选择工作区目录后重试。'
+      workspacePersistenceDetail.value = workspacePersistenceErrorMessage(error)
     }
     return false
   }
@@ -2547,7 +2589,8 @@ function persistWorkspaceState() {
     registry.workspaces[workspaceDir.value] = workspaceSnapshot()
     localStorage.setItem(BALA_AI_VIDEO_WORKSPACE_STATE_STORAGE_KEY, JSON.stringify(registry))
   } catch (error) {
-    workspacePersistenceError.value = `浏览器缓存未保存：${error?.message || String(error)}`
+    workspacePersistenceError.value = '本机缓存保存失败，请检查应用存储权限。'
+    workspacePersistenceDetail.value = workspacePersistenceErrorMessage(error)
   }
   scheduleWorkspaceManifestPersist()
 }
@@ -7457,22 +7500,73 @@ function localFileUrl(path) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
 .aiv-workspace-persistence-error {
-  position: absolute;
-  z-index: 2;
-  right: 22px;
-  bottom: 8px;
-  max-width: min(640px, calc(100% - 44px));
+  width: 100%;
+  min-width: 0;
   margin: 0;
-  padding: 5px 8px;
-  border: 1px solid rgba(248, 113, 113, .36);
-  border-radius: 6px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--red) 34%, var(--border));
+  border-radius: 8px;
   color: var(--red);
-  background: rgba(127, 29, 29, .26);
-  font-size: 12px;
+  background: color-mix(in srgb, var(--red) 8%, var(--bg2));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
   line-height: 1.45;
+}
+
+.aiv-workspace-persistence-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.aiv-workspace-persistence-copy strong {
+  flex: 0 0 auto;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.aiv-workspace-persistence-copy span {
+  min-width: 0;
+  color: var(--text2);
+}
+
+.aiv-workspace-persistence-error details {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.aiv-workspace-persistence-error summary {
+  color: var(--red);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.aiv-workspace-persistence-error code {
+  position: absolute;
+  z-index: 8;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(620px, calc(100vw - 72px));
+  max-height: 180px;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text2);
+  background: var(--tooltip-bg);
+  box-shadow: 0 16px 36px var(--shadow);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .aiv-kicker {
@@ -9889,8 +9983,9 @@ function localFileUrl(path) {
   bottom: 0;
   z-index: 5;
   border-top-color: rgba(var(--orange-rgb), 0.22);
-  background: linear-gradient(180deg, rgba(31, 31, 31, 0.92), var(--bg2));
-  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--bg2) 94%, transparent);
+  box-shadow: 0 -10px 28px var(--shadow);
+  backdrop-filter: blur(14px) saturate(1.1);
 }
 
 .aiv-review-summary-badges {
@@ -9915,12 +10010,12 @@ function localFileUrl(path) {
 
 .aiv-review-toolbar {
   padding: 10px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, .09);
+  border-bottom: 1px solid var(--subtle-border);
   display: grid;
   grid-template-columns: minmax(160px, 1fr) 128px auto;
   gap: 8px;
   align-items: center;
-  background: linear-gradient(90deg, rgba(255, 255, 255, .012), transparent 65%);
+  background: linear-gradient(90deg, var(--soft-fill), transparent 65%);
 }
 
 .aiv-review-toolbar-actions {
@@ -10073,11 +10168,11 @@ function localFileUrl(path) {
   margin-left: auto;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(255, 255, 255, .26);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   color: var(--text3);
-  background: rgba(255, 255, 255, .035);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+  background: var(--soft-fill);
+  box-shadow: inset 0 1px 0 var(--soft-fill-hover);
   cursor: pointer;
   transition: border-color .16s ease, color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .16s ease;
 }
@@ -10163,7 +10258,7 @@ function localFileUrl(path) {
   min-height: 18px;
   padding: 1px 6px;
   border-radius: 999px;
-  color: var(--text);
+  color: #fff;
   background: rgba(12, 12, 16, 0.78);
   font-size: 10px;
   font-style: normal;
@@ -11273,10 +11368,18 @@ function localFileUrl(path) {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: #111116;
+  background: var(--bg2);
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--shadow-soft);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+.aiv-result-card:hover,
+.aiv-result-card:focus-within {
+  border-color: rgba(var(--orange-rgb), .38);
+  box-shadow: 0 18px 38px var(--shadow);
+  transform: translateY(-2px);
 }
 
 .aiv-result-preview {
@@ -11336,7 +11439,7 @@ function localFileUrl(path) {
 .aiv-result-spinner {
   width: 28px;
   height: 28px;
-  border: 2px solid rgba(255, 255, 255, 0.12);
+  border: 2px solid var(--border-strong);
   border-top-color: var(--orange);
   border-radius: 50%;
   animation: aiv-result-spin 0.8s linear infinite;
@@ -11363,8 +11466,8 @@ function localFileUrl(path) {
   padding: 11px 12px 12px;
   display: grid;
   gap: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, rgba(30, 30, 38, 0.98), rgba(18, 18, 23, 0.98));
+  border-top: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--bg2), var(--bg3));
 }
 
 .aiv-result-copy header,
@@ -11394,8 +11497,8 @@ function localFileUrl(path) {
 
 .aiv-result-clear {
   margin-left: auto;
-  color: #f6b29f;
-  border-color: rgba(244, 118, 74, 0.42);
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 42%, var(--border));
 }
 
 .aiv-preview-modal-panel {
@@ -11530,13 +11633,13 @@ function localFileUrl(path) {
 }
 
 .aiv-preview-canvas-status strong {
-  color: var(--text);
+  color: #fff;
   font-size: 11px;
 }
 
 .aiv-preview-canvas-status span {
   margin-top: 2px;
-  color: var(--text3);
+  color: rgba(255, 255, 255, .72);
   font-size: 10px;
 }
 
@@ -11612,22 +11715,31 @@ function localFileUrl(path) {
   line-height: 1.4;
 }
 
-.aiv-image-annotation-toolbar button,
+.aiv-image-annotation-toolbar button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 7px;
+  color: #fff;
+  background: rgba(20, 20, 24, .88);
+  font-size: 11px;
+}
+
 .aiv-image-editor-actions button {
   min-height: 28px;
   padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: 7px;
   color: var(--text2);
-  background: rgba(20, 20, 24, .88);
+  background: var(--bg3);
   font-size: 11px;
 }
 
 .aiv-image-annotation-toolbar button.active,
 .aiv-image-editor-actions button.active {
   border-color: var(--orange);
-  color: var(--orange-text);
-  background: var(--orange-bg);
+  color: var(--on-orange);
+  background: var(--orange);
 }
 
 .aiv-preview-history-strip {
@@ -12714,9 +12826,9 @@ function localFileUrl(path) {
   min-height: 20px;
   padding: 2px 7px;
   border-radius: 999px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, .22);
   background: rgba(20, 20, 24, 0.88);
-  color: var(--text2);
+  color: rgba(255, 255, 255, .84);
   font-size: 10px;
   font-weight: 700;
   pointer-events: none;

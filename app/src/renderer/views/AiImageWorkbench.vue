@@ -4687,7 +4687,7 @@ function localFileUrl(path) {
   gap: 8px;
   padding: 18px;
   background: rgba(166, 48, 48, 0.12);
-  color: #ffb3a7;
+  color: var(--red);
   text-align: center;
 }
 
@@ -4699,7 +4699,7 @@ function localFileUrl(path) {
 }
 
 .aiw-failed-preview small {
-  color: #ffd1c2;
+  color: var(--red);
   font-size: 11px;
 }
 
@@ -4713,9 +4713,9 @@ function localFileUrl(path) {
 
 .aiw-failed-actions button {
   min-height: 34px;
-  border-color: rgba(255, 179, 167, 0.24);
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
+  border-color: color-mix(in srgb, var(--red) 34%, var(--border));
+  background: color-mix(in srgb, var(--red) 8%, var(--bg2));
+  color: var(--red);
   font-size: 11px;
 }
 
@@ -5449,7 +5449,7 @@ function localFileUrl(path) {
 }
 
 .aiw-inline-error {
-  color: #ffb3a7;
+  color: var(--red);
   font-size: 12px;
   line-height: 1.5;
 }

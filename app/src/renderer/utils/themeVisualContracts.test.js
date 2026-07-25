@@ -30,7 +30,7 @@ test('light theme uses Taobao orange with a separate accessible text tone', () =
 
   assert.match(lightThemeRule, /--orange-rgb:\s*255,\s*80,\s*0;/)
   assert.match(lightThemeRule, /--orange:\s*#FF5000;/i)
-  assert.match(lightThemeRule, /--on-orange:\s*#24242b;/i)
+  assert.match(lightThemeRule, /--on-orange:\s*#ffffff;/i)
   assert.match(lightThemeRule, /--orange-text:\s*#BD3C00;/i)
   assert.match(lightThemeRule, /--orange-hover:\s*#E94700;/i)
   assert.match(lightThemeRule, /--text3:\s*#626470;/i)
@@ -99,6 +99,49 @@ test('AI video material inputs and directory picker use semantic theme surfaces'
     cssRule(source, '.aiv-material-stage .aiv-material-source-tabs'),
     /border-color:\s*var\(--border\);/,
   )
+})
+
+test('AI video review and result pages stay on semantic surfaces in light mode', () => {
+  const source = readRendererFile('views/AiVideoWorkflow.vue')
+  const persistenceRule = cssRule(source, '.aiv-workspace-persistence-error')
+  const stickyActionsRule = cssRule(source, '.aiv-review-sticky-actions')
+  const resultCardRule = cssRule(source, '.aiv-result-card')
+  const resultCopyRule = cssRule(source, '.aiv-result-copy')
+
+  assert.match(source, /工作区恢复信息未保存/)
+  assert.match(source, /<summary>查看详情<\/summary>/)
+  assert.match(persistenceRule, /background:\s*color-mix\(in srgb, var\(--red\) 8%, var\(--bg2\)\);/)
+  assert.match(stickyActionsRule, /background:\s*color-mix\(in srgb, var\(--bg2\) 94%, transparent\);/)
+  assert.doesNotMatch(stickyActionsRule, /rgba\(31,\s*31,\s*31/)
+  assert.match(resultCardRule, /background:\s*var\(--bg2\);/)
+  assert.doesNotMatch(resultCardRule, /#111116/i)
+  assert.match(resultCopyRule, /background:\s*linear-gradient\(180deg, var\(--bg2\), var\(--bg3\)\);/)
+  assert.doesNotMatch(resultCopyRule, /rgba\(30,\s*30,\s*38/)
+})
+
+test('state-specific cards and overlays keep readable colors in light mode', () => {
+  const imageSource = readRendererFile('views/AiImageWorkbench.vue')
+  const workflowSource = readRendererFile('views/AiVideoWorkflow.vue')
+  const generationSource = readRendererFile('views/AiVideoGenerationWorkbench.vue')
+  const promptSource = readRendererFile('views/LocalPromptLibrary.vue')
+  const runnerSource = readRendererFile('views/TaskRunner.vue')
+  const approvalSource = readRendererFile('views/TmallAiApprovalDrawer.vue')
+
+  assert.match(cssRule(imageSource, '.aiw-failed-preview'), /color:\s*var\(--red\);/)
+  assert.match(cssRule(imageSource, '.aiw-failed-actions button'), /color:\s*var\(--red\);/)
+  assert.match(cssRule(promptSource, '.lpl-notice.warning'), /color:\s*var\(--yellow\);/)
+  assert.match(cssRule(workflowSource, '.aiv-ai-status-badge'), /color:\s*#fff;/)
+  assert.match(cssRule(workflowSource, '.aiv-vtask-card-status'), /color:\s*rgba\(255,\s*255,\s*255,\s*\.84\);/)
+  assert.match(cssRule(generationSource, '.avg-library-check'), /color:\s*rgba\(255,\s*255,\s*255,\s*\.84\);/)
+  assert.equal(
+    cssRules(generationSource, '.avg-stage-note').some(rule => /color:\s*rgba\(255,\s*255,\s*255,\s*\.78\);/.test(rule)),
+    true,
+  )
+  assert.match(
+    cssRule(runnerSource, '.progress-stage-card-primary .progress-stage-card-percent,\n.progress-stage-card-primary .progress-stage-card-status'),
+    /color:\s*var\(--orange-text\);/,
+  )
+  assert.match(cssRule(approvalSource, '.ghost-btn.regenerate'), /color:\s*var\(--orange-text\);/)
 })
 
 test('prompt and material picker surfaces do not reintroduce fixed dark panels', () => {

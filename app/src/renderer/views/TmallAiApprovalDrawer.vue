@@ -2037,7 +2037,7 @@ function showToast(message, isError = false) {
   border-color: rgba(74, 222, 128, .24);
 }
 .ghost-btn.regenerate {
-  color: #fdba74;
+  color: var(--orange-text);
   border-color: rgba(249, 115, 22, .38);
 }
 .ghost-btn:disabled {
