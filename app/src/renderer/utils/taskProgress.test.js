@@ -83,6 +83,49 @@ test('tmall material new 6.24 uses Semir batch download progress in task runner'
   assert.equal(summary.tracks[1].main, '1 / 2 个文件')
 })
 
+test('shoe upload package shows independent download and organize progress tracks', () => {
+  const config = resolveTaskProgressConfig('shenhui-new-arrival', 'prepare_shoe_upload_package')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'shenhui-new-arrival',
+    taskId: 'prepare_shoe_upload_package',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: '鞋品姿势识别与命名',
+      buyer_id: '204326141005',
+      download_total: 462,
+      download_completed: 462,
+      download_success: 462,
+      download_failed: 0,
+      download_started: true,
+      download_active: false,
+      organize_total: 10,
+      organize_completed: 4,
+      organize_active: true,
+      organize_current_style: '204325141014',
+      organize_current_color: '黑色90001',
+      organize_stage: '复制命名',
+    },
+  })
+
+  assert.equal(summary.title, '鞋品图包进度')
+  assert.equal(summary.ariaLabel, '鞋品图包下载和整理进度')
+  assert.equal(summary.tracks.length, 2)
+  assert.equal(summary.tracks[0].title, '下载进度')
+  assert.equal(summary.tracks[0].main, '462 / 462 个文件')
+  assert.equal(summary.tracks[0].percentLabel, '100%')
+  assert.equal(summary.tracks[1].title, '整理进度')
+  assert.equal(summary.tracks[1].main, '4 / 10 个款色')
+  assert.equal(summary.tracks[1].percentLabel, '40%')
+  assert.match(summary.tracks[1].detail, /204325141014/)
+  assert.match(summary.tracks[1].detail, /黑色90001/)
+  assert.equal(summary.tracks[1].status, '复制命名')
+})
+
 test('tiktok creator video download uses two-stage progress in task runner', () => {
   const config = resolveTaskProgressConfig('tiktok-ops-assistant', 'creator_video_download')
   assert.equal(config.mode, 'enhanced')

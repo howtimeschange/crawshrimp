@@ -62,6 +62,36 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         response_body = b"".join(item.get("body", b"") for item in messages if item["type"] == "http.response.body")
         return AsgiResponse(status_code, response_body)
 
+    async def test_live_progress_persists_shoe_organize_fields_between_events(self):
+        run_control = {}
+        progress = api_server._build_live_progress(
+            {
+                "kind": "shoe_organize_progress",
+                "phase": "鞋品姿势识别与命名",
+                "organize_total": 10,
+                "organize_completed": 4,
+                "organize_active": True,
+                "organize_current_style": "204325141014",
+                "organize_current_color": "黑色90001",
+                "organize_stage": "复制命名",
+            },
+            run_control=run_control,
+        )
+
+        self.assertEqual(progress["organize_total"], 10)
+        self.assertEqual(progress["organize_completed"], 4)
+        self.assertTrue(progress["organize_active"])
+        self.assertEqual(progress["organize_current_style"], "204325141014")
+        self.assertEqual(progress["organize_current_color"], "黑色90001")
+        self.assertEqual(progress["organize_stage"], "复制命名")
+
+        persisted = api_server._build_live_progress(
+            {"kind": "heartbeat"},
+            run_control=run_control,
+        )
+        self.assertEqual(persisted["organize_completed"], 4)
+        self.assertEqual(persisted["organize_stage"], "复制命名")
+
     async def test_backend_instance_lock_windows_locks_first_byte(self):
         positions = []
 

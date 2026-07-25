@@ -119,13 +119,17 @@ test('shoe color code is read from the folder above the size folder', async () =
   )
 })
 
-test('shoe task init builds a single shoe source from the configured cloud path', async () => {
+test('shoe task init builds a single shoe source from the category file codes', async () => {
   const result = await runScript({
     params: {
       shoe_cloud_path: '巴拉营运BU-商品//巴拉货控/平拍原图/全域/小程序/鞋品/',
-      item_codes: '204326141005',
-      folder_scan_depth: 4,
-      download_concurrency: 8,
+      shoe_category_file: {
+        rows: [
+          { 款号: '204326141005', 品类: '运动' },
+          { 款号: '204326141005', 品类: '运动' },
+          { 款号: '204325141014.0', 品类: '婴童' },
+        ],
+      },
     },
     fetch: async (url) => {
       if (String(url).includes('/fengcloud/1/account/mount')) {
@@ -148,4 +152,20 @@ test('shoe task init builds a single shoe source from the configured cloud path'
     '巴拉货控/平拍原图/全域/小程序/鞋品',
   )
   assert.deepEqual([...result.meta.shared.source_types], ['shoe'])
+  assert.deepEqual([...result.meta.shared.target_codes], ['204326141005', '204325141014'])
+  assert.equal(result.meta.shared.folder_scan_depth, 4)
+  assert.equal(result.meta.shared.download_concurrency, 8)
+})
+
+test('shoe task init requires category file codes', async () => {
+  const result = await runScript({
+    params: {
+      shoe_cloud_path: '巴拉营运BU-商品//巴拉货控/平拍原图/全域/小程序/鞋品/',
+      shoe_category_file: { rows: [] },
+    },
+    fetch: async () => ({ ok: true, json: async () => ({}) }),
+  })
+
+  assert.equal(result.success, false)
+  assert.match(String(result.error || ''), /款号品类表/)
 })

@@ -593,6 +593,18 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
             run_control['shared_progress'] = dict(shared_state)
     else:
         shared_state = dict(incoming_shared or {})
+    organize_keys = (
+        'organize_total',
+        'organize_completed',
+        'organize_active',
+        'organize_current_style',
+        'organize_current_color',
+        'organize_stage',
+    )
+    if run_control is not None:
+        for key in organize_keys:
+            if key in payload:
+                run_control[key] = payload.get(key)
     total_rows = _int_from_mapping(shared_state, 'total_rows', _int_from_mapping(run_control, 'total_rows') if run_control else 0)
     current_exec_no = _int_from_mapping(shared_state, 'current_exec_no')
     current_row_no = _int_from_mapping(shared_state, 'current_row_no')
@@ -627,6 +639,13 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
     download_speed_bps = _int_from_mapping(run_control, 'download_speed_bps') if run_control else _int_from_mapping(payload, 'download_speed_bps')
     download_bytes_completed = _int_from_mapping(run_control, 'download_bytes_completed') if run_control else _int_from_mapping(payload, 'download_bytes_completed')
     download_total_bytes = _int_from_mapping(run_control, 'download_total_bytes') if run_control else _int_from_mapping(payload, 'download_total_bytes')
+    organize_source = run_control if run_control is not None else payload
+    organize_total = _int_from_mapping(organize_source, 'organize_total')
+    organize_completed = _int_from_mapping(organize_source, 'organize_completed')
+    organize_active = bool((organize_source or {}).get('organize_active'))
+    organize_current_style = _str_from_mapping(organize_source, 'organize_current_style')
+    organize_current_color = _str_from_mapping(organize_source, 'organize_current_color')
+    organize_stage = _str_from_mapping(organize_source, 'organize_stage')
 
     if run_control and total_rows:
         run_control['total_rows'] = total_rows
@@ -672,6 +691,12 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
         "download_speed_bps": download_speed_bps,
         "download_bytes_completed": download_bytes_completed,
         "download_total_bytes": download_total_bytes,
+        "organize_total": organize_total,
+        "organize_completed": organize_completed,
+        "organize_active": organize_active,
+        "organize_current_style": organize_current_style,
+        "organize_current_color": organize_current_color,
+        "organize_stage": organize_stage,
         "list_total_rows": _int_from_mapping(shared_state, 'list_total_rows'),
         "list_completed_rows": _int_from_mapping(shared_state, 'list_completed_rows'),
         "list_total_batches": _int_from_mapping(shared_state, 'list_total_batches'),
@@ -2994,6 +3019,7 @@ def _prepare_shenhui_shoe_package_rows(
     run_params: dict,
     runtime_artifact_dir: str,
     log,
+    progress=None,
 ) -> list[dict]:
     output_root = Path(runtime_artifact_dir) / "shoe-packages"
     category_file = run_params.get("shoe_category_file")
@@ -3017,6 +3043,7 @@ def _prepare_shenhui_shoe_package_rows(
             else None
         ),
         log=log,
+        progress=progress,
     )
     run_params["__shenhui_shoe_package_refs"] = [
         str(package_roots[key])
@@ -5501,6 +5528,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'download_speed_bps': progress['download_speed_bps'],
             'download_bytes_completed': progress['download_bytes_completed'],
             'download_total_bytes': progress['download_total_bytes'],
+            'organize_total': progress['organize_total'],
+            'organize_completed': progress['organize_completed'],
+            'organize_active': progress['organize_active'],
+            'organize_current_style': progress['organize_current_style'],
+            'organize_current_color': progress['organize_current_color'],
+            'organize_stage': progress['organize_stage'],
             'list_total_rows': progress['list_total_rows'],
             'list_completed_rows': progress['list_completed_rows'],
             'list_total_batches': progress['list_total_batches'],
@@ -6311,12 +6344,28 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             raw_count = len(data)
         if (adapter_id, task_id) == ("shenhui-new-arrival", "prepare_shoe_upload_package"):
             await wait_for_control({"records": len(data), "phase": "鞋品姿势识别与命名"})
+            event_loop = asyncio.get_running_loop()
+
+            def report_shoe_organize_progress(progress_payload):
+                event_payload = {
+                    "kind": "shoe_organize_progress",
+                    "records": len(data),
+                    "phase": "鞋品姿势识别与命名",
+                    **dict(progress_payload or {}),
+                }
+                future = asyncio.run_coroutine_threadsafe(
+                    wait_for_control(event_payload),
+                    event_loop,
+                )
+                future.result()
+
             data = await asyncio.to_thread(
                 _prepare_shenhui_shoe_package_rows,
                 data_rows=data,
                 run_params=run_params,
                 runtime_artifact_dir=runtime_artifact_dir,
                 log=log,
+                progress=report_shoe_organize_progress,
             )
             raw_count = len(data)
         deduped_count = len(data)

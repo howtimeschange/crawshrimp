@@ -103,6 +103,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
   Object.freeze({
+    adapterId: 'shenhui-new-arrival',
+    taskId: 'prepare_shoe_upload_package',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
+  Object.freeze({
     adapterId: 'tiktok-ops-assistant',
     taskId: 'creator_video_download',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
@@ -433,6 +438,10 @@ function isTmallAiImageTestChainTask(adapterId, taskId) {
 
 function isShenhuiPrepareUploadPackageTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'shenhui-new-arrival' && normalizeKeyPart(taskId) === 'prepare_upload_package'
+}
+
+function isShenhuiShoeUploadPackageTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'shenhui-new-arrival' && normalizeKeyPart(taskId) === 'prepare_shoe_upload_package'
 }
 
 function isTiktokCreatorVideoDownloadTask(adapterId, taskId) {
@@ -1362,6 +1371,136 @@ function buildShenhuiPrepareUploadPackageProgress(live = {}, liveStatus = '', is
   }
 }
 
+function buildShenhuiShoeUploadPackageProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const downloadTotal = toInt(live?.download_total)
+  const downloadCompletedRaw = toInt(live?.download_completed)
+  const downloadCompleted = downloadTotal > 0 ? Math.min(downloadCompletedRaw, downloadTotal) : downloadCompletedRaw
+  const downloadSuccess = toInt(live?.download_success)
+  const downloadFailed = toInt(live?.download_failed)
+  const downloadActive = Boolean(live?.download_active)
+  const downloadStarted = Boolean(live?.download_started) || downloadTotal > 0
+  const downloadPercent = downloadTotal > 0
+    ? clampPercent((downloadCompleted / downloadTotal) * 100)
+    : 0
+  const downloadSpeed = formatSpeed(live?.download_speed_bps)
+  const downloadCurrentLabel = String(live?.download_current_label || '').trim()
+  const downloadLastLabel = String(live?.download_last_label || '').trim()
+
+  const organizeTotal = toInt(live?.organize_total)
+  const organizeCompletedRaw = toInt(live?.organize_completed)
+  const organizeCompleted = organizeTotal > 0 ? Math.min(organizeCompletedRaw, organizeTotal) : organizeCompletedRaw
+  const organizeActive = Boolean(live?.organize_active)
+  const organizeStage = String(live?.organize_stage || '').trim()
+  const organizeStyle = String(live?.organize_current_style || live?.buyer_id || '').trim()
+  const organizeColor = String(live?.organize_current_color || '').trim()
+  const organizeStarted = organizeActive || organizeTotal > 0 || Boolean(organizeStage)
+  const organizePercent = organizeTotal > 0
+    ? clampPercent((organizeCompleted / organizeTotal) * 100)
+    : 0
+
+  const downloadComplete = downloadTotal > 0 && downloadCompleted >= downloadTotal && !downloadActive
+  const organizeComplete = organizeTotal > 0 && organizeCompleted >= organizeTotal && !organizeActive
+  const searchTotal = toInt(live?.search_total_codes) || toInt(live?.total)
+  const searchCompleted = toInt(live?.search_completed_codes)
+  const downloadCaption = [
+    searchTotal > 0 && !downloadStarted ? `已找款 ${Math.min(searchCompleted, searchTotal)}/${searchTotal}` : '',
+    downloadSuccess > 0 ? `成功 ${downloadSuccess}` : '',
+    downloadFailed > 0 ? `失败 ${downloadFailed}` : '',
+    downloadSpeed,
+  ].filter(Boolean).join(' · ')
+  const downloadDetail = downloadCurrentLabel
+    ? `正在下载 ${downloadCurrentLabel}`
+    : downloadLastLabel
+      ? `最近文件 ${downloadLastLabel}`
+      : ''
+  const organizeDetail = [
+    organizeStyle ? `款号 ${organizeStyle}` : '',
+    organizeColor ? `颜色 ${organizeColor}` : '',
+  ].filter(Boolean).join(' · ')
+
+  const tracks = [
+    buildTrack({
+      id: 'shenhui-shoe-download',
+      title: '下载进度',
+      main: downloadTotal > 0
+        ? `${downloadCompleted} / ${downloadTotal} 个文件`
+        : downloadStarted
+          ? '正在汇总下载结果'
+          : '正在查找待下载图片',
+      percentValue: downloadPercent,
+      percentLabel: downloadTotal > 0 ? `${downloadPercent}%` : '准备中',
+      caption: downloadCaption || (downloadStarted ? '下载任务已开始' : '找到图片后自动下载'),
+      detail: downloadDetail,
+      status: downloadComplete ? '已完成' : downloadActive ? '下载中' : downloadStarted ? '准备中' : '找款中',
+      tone: 'primary',
+      state: downloadComplete ? 'complete' : 'active',
+      indeterminate: downloadTotal <= 0,
+      ariaLabel: '鞋品图片下载进度',
+      ariaText: [downloadTotal > 0 ? `${downloadCompleted}/${downloadTotal} 个文件` : '准备中', downloadCaption, downloadDetail].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'shenhui-shoe-organize',
+      title: '整理进度',
+      main: organizeTotal > 0
+        ? `${organizeCompleted} / ${organizeTotal} 个款色`
+        : organizeStarted
+          ? '正在计算整理任务'
+          : '下载完成后自动开始',
+      percentValue: organizePercent,
+      percentLabel: organizeTotal > 0 ? `${organizePercent}%` : '待开始',
+      caption: organizeStage || (organizeStarted ? '正在准备整理图包' : '等待全部原图下载完成'),
+      detail: organizeDetail,
+      status: organizeComplete ? '已完成' : organizeActive ? (organizeStage || '整理中') : organizeStarted ? (organizeStage || '准备中') : '待开始',
+      tone: 'secondary',
+      state: organizeComplete ? 'complete' : organizeStarted ? 'active' : 'pending',
+      indeterminate: organizeStarted && organizeTotal <= 0,
+      ariaLabel: '鞋品图包整理进度',
+      ariaText: [organizeTotal > 0 ? `${organizeCompleted}/${organizeTotal} 个款色` : '待开始', organizeStage, organizeDetail].filter(Boolean).join('，'),
+    }),
+  ]
+
+  const overallPercent = organizeStarted
+    ? clampPercent(50 + organizePercent * 0.5)
+    : clampPercent(downloadPercent * 0.5)
+  const main = organizeStarted
+    ? (organizeStage || '整理图包')
+    : downloadActive
+      ? '下载图片'
+      : '查找并下载图片'
+
+  return {
+    title: '鞋品图包进度',
+    main,
+    percentValue: overallPercent,
+    percentLabel: main,
+    completed: organizeCompleted,
+    completedText: organizeCompleted > 0 ? `已整理 ${organizeCompleted} 个款色` : '',
+    batchText: '',
+    rowText: '',
+    targetText: organizeStyle ? `款号 ${organizeStyle}` : '',
+    storeText: '',
+    phaseText: organizeStage ? `阶段 ${organizeStage}` : '',
+    indeterminate: false,
+    ariaLabel: '鞋品图包下载和整理进度',
+    ariaText: [main, downloadTotal > 0 ? `下载 ${downloadCompleted}/${downloadTotal}` : '', organizeTotal > 0 ? `整理 ${organizeCompleted}/${organizeTotal}` : ''].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      downloadTotal > 0 ? `下载 ${downloadCompleted}/${downloadTotal}` : '',
+      organizeTotal > 0 ? `整理 ${organizeCompleted}/${organizeTotal}` : '',
+      organizeStyle ? `款号 ${organizeStyle}` : '',
+      organizeColor ? `颜色 ${organizeColor}` : '',
+    ]),
+    tracks,
+    sub: [
+      main,
+      downloadFailed > 0 ? `下载失败 ${downloadFailed} 个` : '',
+      organizeDetail,
+    ].filter(Boolean).join(' · ') || statusLabel,
+  }
+}
+
 function isSemirAiSearchPhase(phase) {
   return ['semir_plan_code', 'semir_ensure_search', 'semir_collect_code', 'semir_finalize_downloads', 'build_job_queue'].includes(normalizeKeyPart(phase))
 }
@@ -1556,6 +1695,9 @@ export function buildTaskRunnerProgressSummary({
   }
   if (config.mode === 'enhanced' && isShenhuiPrepareUploadPackageTask(adapterId, taskId)) {
     return buildShenhuiPrepareUploadPackageProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isShenhuiShoeUploadPackageTask(adapterId, taskId)) {
+    return buildShenhuiShoeUploadPackageProgress(live, liveStatus, isRunning)
   }
   if (config.mode === 'enhanced' && isTiktokCreatorVideoDownloadTask(adapterId, taskId)) {
     return buildTiktokCreatorVideoDownloadProgress(live, liveStatus, isRunning)

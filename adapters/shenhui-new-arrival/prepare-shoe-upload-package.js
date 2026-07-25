@@ -7,6 +7,7 @@
   const SEARCH_SCOPE = '["filename", "tag"]'
   const SEARCH_PAGE_SIZE = 100
   const FOLDER_PAGE_SIZE = 200
+  const DEFAULT_FOLDER_SCAN_DEPTH = 4
   const DEFAULT_DOWNLOAD_CONCURRENCY = 8
   const MIN_DOWNLOAD_CONCURRENCY = 1
   const MAX_DOWNLOAD_CONCURRENCY = 32
@@ -65,6 +66,32 @@
       deduped.push(value)
     }
     return deduped
+  }
+
+  function normalizeStyleCode(value) {
+    let text = compact(value)
+    if (/^\d+\.0$/.test(text)) text = text.slice(0, -2)
+    return text
+  }
+
+  function extractCodesFromCategoryFile(rawValue) {
+    const rows = Array.isArray(rawValue?.rows)
+      ? rawValue.rows
+      : Array.isArray(rawValue)
+        ? rawValue
+        : []
+    const codes = []
+    const seen = new Set()
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue
+      const code = normalizeStyleCode(
+        row['款号'] ?? row['style_code'] ?? row['item_code'] ?? row['输入款号'] ?? '',
+      )
+      if (!code || seen.has(code)) continue
+      seen.add(code)
+      codes.push(code)
+    }
+    return codes
   }
 
   function normalizeFullpathKey(value) {
@@ -278,8 +305,11 @@
   }
 
   function normalizeFolderScanDepth(rawValue) {
+    if (rawValue === undefined || rawValue === null || String(rawValue).trim() === '') {
+      return DEFAULT_FOLDER_SCAN_DEPTH
+    }
     const parsed = Number(rawValue)
-    if (!Number.isFinite(parsed)) return 3
+    if (!Number.isFinite(parsed)) return DEFAULT_FOLDER_SCAN_DEPTH
     return Math.max(0, Math.min(8, Math.floor(parsed)))
   }
 
@@ -1008,6 +1038,7 @@
       deriveBroadSourcePrefix,
       isWithinBroadSourceScope,
       normalizeDuplicateMode,
+      extractCodesFromCategoryFile,
       normalizeFolderScanDepth,
       normalizeDownloadConcurrency,
       normalizeSourceTypes,
@@ -1035,9 +1066,10 @@
     if (phase === 'init' || phase === 'main') {
       const sourceTypes = ['shoe']
       const shoePath = parseCloudPath(params.shoe_cloud_path)
-      const manualCodes = normalizeCodes(params.item_codes)
-      const codes = manualCodes
-      if (!codes.length) throw new Error('请至少输入一个鞋品款号')
+      const codes = extractCodesFromCategoryFile(params.shoe_category_file)
+      if (!codes.length) {
+        throw new Error('请上传款号品类表，并至少包含一个有效“款号”')
+      }
 
       const resolvedMounts = {}
       async function mountForPath(pathConfig) {
@@ -1059,8 +1091,9 @@
       }
 
       const duplicateMode = 'first_per_path'
-      const folderScanDepth = normalizeFolderScanDepth(params.folder_scan_depth)
-      const downloadConcurrency = normalizeDownloadConcurrency(params.download_concurrency)
+      // UI 不再暴露这两项；始终使用脚本默认值（深度 4 / 并发 8）
+      const folderScanDepth = normalizeFolderScanDepth(DEFAULT_FOLDER_SCAN_DEPTH)
+      const downloadConcurrency = normalizeDownloadConcurrency(DEFAULT_DOWNLOAD_CONCURRENCY)
       const folderSourceConfig = sourceConfigs.shoe
 
       return nextPhase('ensure_folder', 0, {

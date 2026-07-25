@@ -244,41 +244,17 @@ tasks:
         hint: 填写鞋品平拍原图上级目录；脚本会搜索款号文件夹并递归下载各颜色素材
         quick_fill_options:
           - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/全域/小程序/鞋品/
-      - id: item_codes
-        type: textarea
-        label: 鞋品款号
-        rows: 6
-        required: true
-        placeholder: "一行一个，例如：\n204326141005"
-        hint: 支持一次整理多个 12 位鞋品款号
       - id: shoe_category_file
         type: file_excel
         label: 款号品类表
-        required: false
-        hint: 可选；上传含“款号、品类”两列的 Excel。表内品类优先于模型识别，未上传或款号未匹配时使用模型兜底并在结果中告警
+        required: true
+        hint: 必填；上传含“款号、品类”两列的 Excel/CSV。脚本按表内款号批量整理，表内品类优先于模型识别
         template_file: assets/鞋品品类映射模板.xlsx
         template_label: 下载鞋品品类模板
-      - id: folder_scan_depth
-        type: number
-        label: 款号文件夹扫描层级
-        default: 4
-        min: 1
-        max: 8
-        step: 1
-        ui_span: third
-      - id: download_concurrency
-        type: number
-        label: 下载并发数
-        default: 8
-        min: 1
-        max: 32
-        step: 1
-        ui_span: third
       - id: model_id
         type: select
         label: 鞋品姿势识别模型
         default: qwen3.8-max-preview
-        ui_span: third
         options:
           - value: qwen3.8-max-preview
             label: Qwen 3.8 Max Preview（推荐）

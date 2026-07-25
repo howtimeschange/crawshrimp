@@ -1392,6 +1392,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
             analyzer_calls = []
             label_calls = []
+            progress_events = []
 
             def fake_analyzer(**kwargs):
                 analyzer_calls.append(kwargs)
@@ -1444,6 +1445,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 analyze_color=fake_analyzer,
                 analyze_color_label=fake_label_analyzer,
                 log=lambda _message: None,
+                progress=progress_events.append,
             )
 
             package_root = package_roots["204326141005"]
@@ -1479,6 +1481,20 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             self.assertTrue((package_root / "wpt30.白紫色调00317.png").is_file())
             self.assertTrue((package_root / "tmt.png").is_file())
             self.assertTrue((package_root / "tmq.jpg").is_file())
+            self.assertEqual(progress_events[0]["organize_total"], 2)
+            self.assertEqual(progress_events[0]["organize_completed"], 0)
+            self.assertTrue(progress_events[0]["organize_active"])
+            self.assertTrue(
+                any(
+                    event["organize_stage"] == "识别姿势"
+                    and event["organize_current_style"] == "204326141005"
+                    and event["organize_current_color"] == "00317"
+                    for event in progress_events
+                )
+            )
+            self.assertEqual(progress_events[-1]["organize_completed"], 2)
+            self.assertEqual(progress_events[-1]["organize_stage"], "整理完成")
+            self.assertFalse(progress_events[-1]["organize_active"])
             self.assertEqual(
                 (package_root / "原图" / "800_800(天猫)1.jpg").read_bytes(),
                 uncolored_source.read_bytes(),

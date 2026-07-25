@@ -1852,6 +1852,7 @@ def prepare_shoe_packages(
     reference_image: Path | str = SHOE_REFERENCE_IMAGE,
     yq_reference_image: Path | str = SHOE_YQ_REFERENCE_IMAGE,
     log=lambda _message: None,
+    progress=None,
 ) -> tuple[list[dict[str, Any]], dict[str, Path]]:
     """Analyze downloaded shoe images, copy selected slots, and build report rows."""
 
@@ -1888,6 +1889,28 @@ def prepare_shoe_packages(
     if not grouped:
         raise ShoeSelectionError("没有可用于鞋品选图的已下载图片")
 
+    organize_total = sum(len(colors) for colors in grouped.values())
+    organize_completed = 0
+
+    def report_progress(
+        stage: str,
+        *,
+        style_code: str = "",
+        color_code: str = "",
+        active: bool = True,
+    ) -> None:
+        if progress is None:
+            return
+        progress({
+            "organize_total": organize_total,
+            "organize_completed": organize_completed,
+            "organize_active": active,
+            "organize_current_style": style_code,
+            "organize_current_color": color_code,
+            "organize_stage": stage,
+        })
+
+    report_progress("准备整理")
     analyzer = analyze_color or _default_analyze_color
     label_analyzer = analyze_color_label
     if label_analyzer is None and analyze_color is None:
@@ -1908,6 +1931,11 @@ def prepare_shoe_packages(
         anchor_category = ""
 
         for color_code, entries in colors.items():
+            report_progress(
+                "识别姿势",
+                style_code=style_code,
+                color_code=color_code,
+            )
             entries_by_name = {
                 entry["filename"]: entry
                 for entry in entries
@@ -2107,6 +2135,11 @@ def prepare_shoe_packages(
         package_root = output_root / style_code
         package_roots[style_code] = package_root
 
+        report_progress(
+            "生成命名计划",
+            style_code=style_code,
+            color_code=color_order[0] if color_order else "",
+        )
         for assignment in assignments:
             color_name = assignment["color"]
             source_name = assignment["source"]
@@ -2133,6 +2166,11 @@ def prepare_shoe_packages(
             })
 
         for color_index, color_name in enumerate(color_order, start=1):
+            report_progress(
+                "复制命名",
+                style_code=style_code,
+                color_code=color_name,
+            )
             folder = package_root / f"{color_index}.{color_name}"
             entries_by_name = entries_by_color_name[color_name]
             original_entries = original_entries_by_color_name[color_name]
@@ -2228,6 +2266,12 @@ def prepare_shoe_packages(
                     "品类来源": selections_by_color[color_name].get("shoe_category_source") or "",
                     "备注": "460x460",
                 })
+            organize_completed += 1
+            report_progress(
+                "款色完成",
+                style_code=style_code,
+                color_code=color_name,
+            )
 
         uncolored_originals = uncolored_originals_by_style.get(style_code, [])
         uncolored_targets = _original_asset_relative_targets(uncolored_originals)
@@ -2289,4 +2333,5 @@ def prepare_shoe_packages(
 
     if analysis_root.exists():
         shutil.rmtree(analysis_root, ignore_errors=True)
+    report_progress("整理完成", active=False)
     return report_rows, package_roots

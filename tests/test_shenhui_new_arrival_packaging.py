@@ -33,9 +33,12 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         self.assertEqual(task["script"], "prepare-shoe-upload-package.js")
         self.assertFalse(task["skip_auth"])
         params = {item["id"]: item for item in task["params"]}
-        self.assertEqual(params["item_codes"]["type"], "textarea")
+        self.assertNotIn("item_codes", params)
+        self.assertNotIn("folder_scan_depth", params)
+        self.assertNotIn("download_concurrency", params)
         self.assertEqual(params["shoe_cloud_path"]["type"], "text")
         self.assertEqual(params["shoe_category_file"]["type"], "file_excel")
+        self.assertTrue(params["shoe_category_file"].get("required"))
         self.assertEqual(
             params["shoe_category_file"]["template_file"],
             "assets/鞋品品类映射模板.xlsx",
@@ -240,6 +243,8 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 "规则槽位": "o",
                 "规则告警": "",
             }]
+            progress_events = []
+            progress_callback = progress_events.append
 
             with patch(
                 "core.api_server.shenhui_shoe_packaging.prepare_shoe_packages",
@@ -250,6 +255,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                     run_params=run_params,
                     runtime_artifact_dir=str(runtime_dir),
                     log=lambda _: None,
+                    progress=progress_callback,
                 )
 
             self.assertEqual(result, expected_rows)
@@ -267,6 +273,10 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                     "208326146209": "婴童",
                     "204325141014": "休闲",
                 },
+            )
+            self.assertIs(
+                prepare.call_args.kwargs["progress"],
+                progress_callback,
             )
 
             run_params["__shoe_pose_benchmark"] = True
