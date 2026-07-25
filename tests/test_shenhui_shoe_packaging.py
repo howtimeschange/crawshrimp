@@ -119,20 +119,35 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             shenhui_shoe_packaging._is_pose_selection_candidate("GUDG5998.jpg")
         )
 
-    def test_original_asset_preservation_includes_gd_gudg_and_ai_angles(self):
-        for filename in (
-            "GD005154.jpg",
-            "GUDG5998.jpg",
-            "208326146209-00317+Ai角度图2.png",
-        ):
-            with self.subTest(filename=filename):
-                self.assertTrue(
-                    shenhui_shoe_packaging._is_preserved_original_asset(filename)
-                )
-        self.assertFalse(
-            shenhui_shoe_packaging._is_preserved_original_asset(
-                "208326146209-00317.jpg"
-            )
+    def test_original_asset_targets_keep_source_folder_for_duplicate_names(self):
+        entries = [
+            {
+                "filename": "204325141014-90001+Ai角度图1.png",
+                "row": {
+                    "云盘路径": "鞋品/204325141014/90001/30/204325141014-90001+Ai角度图1.png"
+                },
+            },
+            {
+                "filename": "204325141014-90001+Ai角度图1.png",
+                "row": {
+                    "云盘路径": "鞋品/204325141014/90001/36/204325141014-90001+Ai角度图1.png"
+                },
+            },
+            {
+                "filename": "00044152.jpg",
+                "row": {"云盘路径": "鞋品/204325141014/90001/30/00044152.jpg"},
+            },
+        ]
+
+        targets = shenhui_shoe_packaging._original_asset_relative_targets(entries)
+
+        self.assertEqual(
+            targets,
+            [
+                Path("30/204325141014-90001+Ai角度图1.png"),
+                Path("36/204325141014-90001+Ai角度图1.png"),
+                Path("00044152.jpg"),
+            ],
         )
 
     def test_binary_contour_match_ranks_same_pose_ahead_of_different_pose(self):
@@ -649,12 +664,12 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 1), "wpz (1).jpg")
         self.assertEqual(shenhui_shoe_packaging.output_filename("tmz", 5), "tmz (5).jpg")
 
-    def test_channel_assets_match_example_canvas_sizes(self):
+    def test_channel_assets_keep_original_dimensions_and_png_bytes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = root / "204326141005-00317+Ai角度图1.png"
-            image = Image.new("RGBA", (212, 400), (0, 0, 0, 0))
-            ImageDraw.Draw(image).rectangle((40, 30, 180, 390), fill=(10, 100, 180, 255))
+            image = Image.new("RGBA", (640, 360), (0, 0, 0, 0))
+            ImageDraw.Draw(image).rectangle((90, 80, 560, 300), fill=(10, 100, 180, 255))
             image.save(source)
 
             outputs = shenhui_shoe_packaging._create_ai_channel_assets(
@@ -663,13 +678,15 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 color_name="白紫色调00317",
             )
 
+            self.assertEqual(outputs["wpt30"].read_bytes(), source.read_bytes())
+            self.assertEqual(outputs["jdt_png"].read_bytes(), source.read_bytes())
             with Image.open(outputs["wpt30"]) as wpt30:
-                self.assertEqual(wpt30.size, (424, 800))
+                self.assertEqual(wpt30.size, (640, 360))
             with Image.open(outputs["jdt_png"]) as jdt_png:
-                self.assertEqual(jdt_png.size, (800, 800))
+                self.assertEqual(jdt_png.size, (640, 360))
                 self.assertEqual(jdt_png.mode, "RGBA")
             with Image.open(outputs["jdt_jpg"]) as jdt_jpg:
-                self.assertEqual(jdt_jpg.size, (800, 800))
+                self.assertEqual(jdt_jpg.size, (640, 360))
 
     def test_each_color_requires_o_but_missing_yx_is_only_a_report_warning(self):
         with self.assertRaisesRegex(
@@ -827,6 +844,13 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                     package_root
                     / "1.白紫色调00317"
                     / "GD-00317-raw.jpg"
+                ).is_file()
+            )
+            self.assertTrue(
+                (
+                    package_root
+                    / "1.白紫色调00317"
+                    / "00317-1.jpg"
                 ).is_file()
             )
             self.assertTrue((package_root / "jdt.白紫色调00317.png").is_file())

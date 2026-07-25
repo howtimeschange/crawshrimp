@@ -6,7 +6,7 @@ import re
 import shutil
 import warnings
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from core import llm_gateway
@@ -343,14 +343,34 @@ def _is_pose_selection_candidate(filename: str) -> bool:
     return not re.search(r"ai\s*角度图", _text(filename), flags=re.IGNORECASE)
 
 
-def _is_preserved_original_asset(filename: str) -> bool:
-    """Keep photographer originals plus generated AI angle assets in color folders."""
+def _original_asset_relative_targets(
+    entries: list[dict[str, Any]],
+) -> list[Path]:
+    """Build lossless output paths without overwriting cloud files with the same name."""
 
-    name = _text(filename)
-    return bool(
-        re.match(r"^(?:GD|GUDG)", name, flags=re.IGNORECASE)
-        or re.search(r"\+Ai角度图", name, flags=re.IGNORECASE)
-    )
+    filename_counts: dict[str, int] = {}
+    for entry in entries:
+        filename = Path(_text(entry.get("filename"))).name
+        filename_counts[filename] = filename_counts.get(filename, 0) + 1
+
+    targets: list[Path] = []
+    used_targets: set[Path] = set()
+    for entry_index, entry in enumerate(entries, start=1):
+        filename = Path(_text(entry.get("filename"))).name
+        if filename_counts.get(filename, 0) > 1:
+            cloud_path = _text((entry.get("row") or {}).get("云盘路径")).replace("\\", "/")
+            source_folder = PurePosixPath(cloud_path).parent.name or f"来源{entry_index}"
+            target = Path(source_folder) / filename
+        else:
+            target = Path(filename)
+
+        if target in used_targets:
+            target = target.with_name(
+                f"{target.stem} ({entry_index}){target.suffix}"
+            )
+        used_targets.add(target)
+        targets.append(target)
+    return targets
 
 
 @dataclass(frozen=True)
@@ -1204,17 +1224,12 @@ def _create_ai_channel_assets(
         "jdt_png": package_root / f"jdt.{color_name}.png",
         "jdt_jpg": package_root / f"jdt.{color_name}.jpg",
     }
+    shutil.copy2(source, outputs["wpt30"])
+    shutil.copy2(source, outputs["jdt_png"])
     with Image.open(source) as opened:
-        angle = ImageOps.exif_transpose(opened).convert("RGBA").resize(
-            (424, 800),
-            Image.Resampling.LANCZOS,
-        )
-    angle.save(outputs["wpt30"], format="PNG", optimize=True)
-    canvas = Image.new("RGBA", (800, 800), (255, 255, 255, 0))
-    canvas.alpha_composite(angle, ((800 - 424) // 2, 0))
-    canvas.save(outputs["jdt_png"], format="PNG", optimize=True)
-    flattened = Image.new("RGB", canvas.size, "white")
-    flattened.paste(canvas, mask=canvas.getchannel("A"))
+        angle = ImageOps.exif_transpose(opened).convert("RGBA")
+    flattened = Image.new("RGB", angle.size, "white")
+    flattened.paste(angle, mask=angle.getchannel("A"))
     flattened.save(outputs["jdt_jpg"], format="JPEG", quality=95, optimize=True)
     return outputs
 
@@ -1386,6 +1401,7 @@ def prepare_shoe_packages(
         forced_category = (shoe_categories or {}).get(style_code, "")
         selections_by_color: dict[str, dict[str, Any]] = {}
         entries_by_color_name: dict[str, dict[str, dict[str, Any]]] = {}
+        original_entries_by_color_name: dict[str, list[dict[str, Any]]] = {}
         color_order: list[str] = []
         category_warning = ""
         anchor_slots: dict[str, Any] | None = None
@@ -1557,6 +1573,7 @@ def prepare_shoe_packages(
             slots["shoe_category_source"] = category_source
             selections_by_color[color_name] = slots
             entries_by_color_name[color_name] = entries_by_name
+            original_entries_by_color_name[color_name] = entries
             color_order.append(color_name)
             log(
                 f"鞋品姿势识别完成：{style_code}-{color_name}，"
@@ -1605,10 +1622,11 @@ def prepare_shoe_packages(
         for color_index, color_name in enumerate(color_order, start=1):
             folder = package_root / f"{color_index}.{color_name}"
             entries_by_name = entries_by_color_name[color_name]
-            for filename, entry in entries_by_name.items():
-                if not _is_preserved_original_asset(filename):
-                    continue
-                target = folder / filename
+            original_entries = original_entries_by_color_name[color_name]
+            original_targets = _original_asset_relative_targets(original_entries)
+            for entry, relative_target in zip(original_entries, original_targets):
+                filename = entry["filename"]
+                target = folder / relative_target
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(Path(entry["path"]), target)
                 source_row = entry["row"]
@@ -1619,7 +1637,7 @@ def prepare_shoe_packages(
                     "云盘路径": _text(source_row.get("云盘路径")),
                     "规则槽位": "原始素材",
                     "输出文件名": str(target.relative_to(package_root)),
-                    "处理动作": "保留原始 GD/AI 角度图",
+                    "处理动作": "保留网盘全部原始图片",
                     "下载结果": "已下载",
                     "本地文件": str(target),
                     "规则告警": "",
@@ -1655,7 +1673,7 @@ def prepare_shoe_packages(
                     "本地文件": str(target),
                     "规则告警": "",
                     "品类来源": selections_by_color[color_name].get("shoe_category_source") or "",
-                    "备注": "jdt 800x800；wpt30 424x800",
+                    "备注": "保持 Ai角度图1 原始尺寸和比例；PNG 为原文件字节复制",
                 })
 
             if color_index == 1:
@@ -1673,7 +1691,7 @@ def prepare_shoe_packages(
                     "本地文件": str(tmt_target),
                     "规则告警": "",
                     "品类来源": selections_by_color[color_name].get("shoe_category_source") or "",
-                    "备注": "800x800 透明底",
+                    "备注": "保持 Ai角度图1 原始尺寸和比例",
                 })
                 wpz_sources = _selection_list(selections_by_color[color_name], "wpz")
                 box_entry = entries_by_name[wpz_sources[5]]

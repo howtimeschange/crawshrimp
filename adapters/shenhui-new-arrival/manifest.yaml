@@ -223,7 +223,7 @@ tasks:
 
   - id: prepare_shoe_upload_package
     name: 【鞋品】整理深绘上新图包
-    description: 按鞋品品类与颜色选取天猫、唯品会、颜色图、海报、实物展示、细节和功能图，保留 GD/AI 原图并生成 jdt、wpt30、tmt、tmq 渠道素材
+    description: 按鞋品品类与颜色选取天猫、唯品会、颜色图、海报、实物展示、细节和功能图，保留网盘全部原图并生成保持原尺寸的 jdt、wpt30、tmt 及 tmq 渠道素材
     script: prepare-shoe-upload-package.js
     skip_auth: false
     params:
