@@ -95,6 +95,40 @@ class OneXMImageClientTests(unittest.TestCase):
             "https://proxy.example/t/proxy-token/v1/images/tasks/task_proxy",
         )
 
+    def test_default_client_uses_cloudflare_proxy_base_url(self):
+        transport = FakeTransport([
+            (202, {
+                "id": "task_default_proxy",
+                "status": "queued",
+                "poll_url": "https://api.1xm.ai/v1/images/tasks/task_default_proxy",
+                "poll_after": 0,
+            }),
+            (200, {
+                "id": "task_default_proxy",
+                "status": "succeeded",
+                "data": [{"url": "https://img.1xm.ai/generated/task_default_proxy_0.png"}],
+            }),
+        ])
+        client = OneXMImageClient("unit-key", transport=transport)
+
+        result = run_image_task_until_done(
+            client,
+            {"model": "gpt-image-2", "prompt": "default proxy", "size": "1024x1024", "n": 1},
+            idempotency_key="order_default_proxy",
+            poll_timeout_seconds=30,
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            transport.calls[0]["url"],
+            "https://one-xm-proxy.crawshrimp.com/v1/images/tasks",
+        )
+        self.assertEqual(
+            transport.calls[1]["url"],
+            "https://one-xm-proxy.crawshrimp.com/v1/images/tasks/task_default_proxy",
+        )
+
     def test_non_ascii_idempotency_key_is_normalized_for_http_headers(self):
         transport = FakeTransport([
             (202, {

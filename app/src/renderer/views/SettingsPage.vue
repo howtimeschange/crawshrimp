@@ -437,7 +437,7 @@
                 <label>1XM Base URL</label>
                 <input
                   v-model="cfg['ai.1xm.base_url']"
-                  placeholder="https://api.1xm.ai/v1"
+                  placeholder="https://one-xm-proxy.crawshrimp.com/v1"
                   class="input"
                 />
               </div>
@@ -1074,7 +1074,7 @@ function flattenSettings(source, prefix = '', target = {}) {
 
 function normalizedSettings(raw) {
   const flat = flattenSettings(raw || {})
-  if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://api.1xm.ai/v1'
+  if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://one-xm-proxy.crawshrimp.com/v1'
   for (const [key, value] of Object.entries(LLM_DEFAULTS)) {
     if (!flat[key]) flat[key] = value
   }

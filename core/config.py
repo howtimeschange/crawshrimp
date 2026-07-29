@@ -5,6 +5,9 @@ from typing import Any
 
 from core import runtime_paths
 
+LEGACY_ONE_XM_BASE_URL = "https://api.1xm.ai/v1"
+DEFAULT_ONE_XM_BASE_URL = "https://one-xm-proxy.crawshrimp.com/v1"
+
 DEFAULT_CONFIG = {
     "chrome": {
         "cdp_port": 9222,
@@ -21,7 +24,7 @@ DEFAULT_CONFIG = {
     },
     "ai": {
         "1xm": {
-            "base_url": "https://api.1xm.ai/v1",
+            "base_url": DEFAULT_ONE_XM_BASE_URL,
             "gpt_image_2k_key": "",
             "gpt_image_4k_key": "",
             "gemini_3_1_flash_image_preview_key": "",
@@ -99,6 +102,14 @@ def _config_path() -> Path:
     return runtime_paths.data_root() / "config.json"
 
 
+def _apply_config_migrations(cfg: dict) -> dict:
+    ai = cfg.get("ai")
+    one_xm = ai.get("1xm") if isinstance(ai, dict) else None
+    if isinstance(one_xm, dict) and str(one_xm.get("base_url") or "").strip().rstrip("/") == LEGACY_ONE_XM_BASE_URL:
+        one_xm["base_url"] = DEFAULT_ONE_XM_BASE_URL
+    return cfg
+
+
 def load_config() -> dict:
     path = _config_path()
     if not path.exists():
@@ -106,7 +117,7 @@ def load_config() -> dict:
         return DEFAULT_CONFIG.copy()
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    return _deep_merge(DEFAULT_CONFIG, _expand_dotted_keys(data))
+    return _apply_config_migrations(_deep_merge(DEFAULT_CONFIG, _expand_dotted_keys(data)))
 
 
 def save_config(cfg: dict) -> None:

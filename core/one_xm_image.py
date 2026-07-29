@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 
-DEFAULT_BASE_URL = "https://api.1xm.ai/v1"
+UPSTREAM_BASE_URL = "https://api.1xm.ai/v1"
+DEFAULT_BASE_URL = "https://one-xm-proxy.crawshrimp.com/v1"
 SUCCESS_STATUSES = {"success", "succeeded", "completed", "complete"}
 FAILED_STATUSES = {"failed", "failure", "error", "cancelled", "canceled"}
 FINAL_STATUSES = SUCCESS_STATUSES | FAILED_STATUSES
@@ -109,12 +110,12 @@ def _join_url(base_url: str, path: str) -> str:
 def _route_default_poll_url_through_base(base_url: str, poll_url: str) -> str:
     target = _compact(poll_url)
     normalized_base = _normalize_base_url(base_url)
-    default_base = _normalize_base_url(DEFAULT_BASE_URL)
+    upstream_base = _normalize_base_url(UPSTREAM_BASE_URL)
     if (
-        target.startswith(f"{default_base}/")
-        and normalized_base != default_base
+        target.startswith(f"{upstream_base}/")
+        and normalized_base != upstream_base
     ):
-        return f"{normalized_base}/{target[len(default_base):].lstrip('/')}"
+        return f"{normalized_base}/{target[len(upstream_base):].lstrip('/')}"
     return target
 
 
