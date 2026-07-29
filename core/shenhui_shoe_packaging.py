@@ -379,6 +379,7 @@ SHOE_CROSS_COLOR_MAX_DISTANCE = 0.32
 SHOE_WHITE_BACKGROUND_LUMA = 249.5
 SHOE_YX_MAX_FOREGROUND_COVERAGE = 0.65
 SHOE_POSE3_SIDE_ASYMMETRY_MARGIN = 0.006
+SHOE_POSE1_MIN_SCORE_IMPROVEMENT = 0.08
 
 SHOE_POSE5_FEATURE_RULES = {
     "运动": {
@@ -466,6 +467,20 @@ def _is_named_yk_filename(filename: str) -> bool:
     )
 
 
+def _bare_yk_index(filename: str) -> int | None:
+    match = re.fullmatch(r"([1-9]\d?)", Path(_text(filename)).stem)
+    return int(match.group(1)) if match else None
+
+
+def _is_yk_source_filename(filename: str) -> bool:
+    return _named_yk_index(filename) is not None or _bare_yk_index(filename) is not None
+
+
+def _yk_source_index(filename: str) -> int | None:
+    named = _named_yk_index(filename)
+    return named if named is not None else _bare_yk_index(filename)
+
+
 def _named_yk_index(filename: str) -> int | None:
     match = re.match(
         r"^yk\s*(?:[\(（]\s*)?(\d+)",
@@ -482,7 +497,7 @@ def _yk_output_sources(sources: list[str]) -> list[tuple[int, str]]:
     used: set[int] = set()
     fallback_index = 1
     for source in sources:
-        explicit_index = _named_yk_index(source)
+        explicit_index = _yk_source_index(source)
         if explicit_index is not None:
             if explicit_index in used:
                 continue
@@ -497,10 +512,13 @@ def _yk_output_sources(sources: list[str]) -> list[tuple[int, str]]:
 
 
 def _named_yk_sort_key(filename: str) -> tuple[int, int, str]:
-    index = _named_yk_index(filename)
+    index = _yk_source_index(filename)
     stem = Path(_text(filename)).stem
-    canonical = bool(re.fullmatch(rf"yk\s*{index}", stem, flags=re.IGNORECASE)) if index else False
-    return (index if index is not None else 9999, 0 if canonical else 1, filename.lower())
+    canonical = bool(
+        re.fullmatch(rf"yk\s*{index}", stem, flags=re.IGNORECASE)
+    ) if index else False
+    priority = 0 if canonical else 1 if _bare_yk_index(filename) is not None else 2
+    return (index if index is not None else 9999, priority, filename.lower())
 
 
 def _is_reserved_shoe_output_filename(filename: str) -> bool:
@@ -522,12 +540,9 @@ def _is_reserved_shoe_output_filename(filename: str) -> bool:
 
 
 def _is_pose_selection_candidate(filename: str) -> bool:
-    """Keep named details out of the model prompt and ordinary pose slots."""
+    """Keep every usable original eligible for pose selection."""
 
-    return (
-        _is_pose_matching_candidate(filename)
-        and not _is_named_yk_filename(filename)
-    )
+    return _is_pose_matching_candidate(filename)
 
 
 def _original_asset_relative_targets(
@@ -1064,40 +1079,63 @@ def _apply_selection_quality_rules(
                 and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
             )
 
+        occupied = {
+            _text(value)
+            for value in [
+                *wpz[1:],
+                *yq,
+                ruled.get("yx"),
+                *[ruled.get(f"tmz{index}") for index in range(2, 6)],
+            ]
+            if _text(value)
+        }
+        eligible_pose1 = [
+            (filename, pose)
+            for filename in entries_by_name
+            if filename not in occupied
+            for pose in [feature_for(filename)]
+            if valid_shared_pose1(pose)
+        ]
+
+        def pose1_score(pose: _BinaryPoseFeature) -> float:
+            return (
+                abs(pose.aspect_ratio - target_aspect)
+                + abs(pose.bounding_coverage - target_coverage) * 2.0
+            )
+
         if (
             current_wpz1_feature is not None
             and current_tmz1_feature is not None
-            and (
-                not valid_shared_pose1(current_wpz1_feature)
-                or not valid_shared_pose1(current_tmz1_feature)
-            )
+            and eligible_pose1
         ):
-            occupied = {
-                _text(value)
-                for value in [
-                    *wpz[1:],
-                    *yq,
-                    ruled.get("yx"),
-                    *[ruled.get(f"tmz{index}") for index in range(2, 6)],
-                ]
-                if _text(value)
-            }
-            eligible_pose1 = [
-                (filename, pose)
-                for filename in entries_by_name
-                if filename not in occupied
-                for pose in [feature_for(filename)]
-                if valid_shared_pose1(pose)
-            ]
-            if eligible_pose1:
-                replacement, _replacement_feature = min(
-                    eligible_pose1,
-                    key=lambda item: (
-                        abs(item[1].aspect_ratio - target_aspect)
-                        + abs(item[1].bounding_coverage - target_coverage) * 2.0,
-                        item[0].lower(),
-                    ),
+            replacement, replacement_feature = min(
+                eligible_pose1,
+                key=lambda item: (
+                    pose1_score(item[1]),
+                    item[0].lower(),
+                ),
+            )
+            current_valid = (
+                valid_shared_pose1(current_wpz1_feature)
+                and valid_shared_pose1(current_tmz1_feature)
+            )
+            current_score = max(
+                (
+                    pose1_score(pose)
+                    for pose in (current_wpz1_feature, current_tmz1_feature)
+                    if pose is not None
+                ),
+                default=float("inf"),
+            )
+            should_replace = (
+                not current_valid
+                or (
+                    replacement not in {current_wpz1, current_tmz1}
+                    and current_score - pose1_score(replacement_feature)
+                    >= SHOE_POSE1_MIN_SCORE_IMPROVEMENT
                 )
+            )
+            if should_replace:
                 wpz[0] = replacement
                 ruled["tmz1"] = replacement
                 corrections.append(
@@ -1370,6 +1408,37 @@ def _apply_selection_quality_rules(
     if len(wpz) < 5:
         return ruled, corrections
 
+    preferred_leisure_tmz5 = ""
+    previous_leisure_tmz5 = _text(ruled.get("tmz5"))
+    if _text(category) == "休闲":
+        leisure_tmz5_candidates = [
+            (filename, pose)
+            for filename in entries_by_name
+            for pose in [feature_for(filename)]
+            if (
+                pose
+                and pose.valid
+                and 1.20 <= pose.aspect_ratio <= 1.65
+                and 0.22 <= pose.bounding_coverage <= 0.42
+                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+            )
+        ]
+        if leisure_tmz5_candidates:
+            preferred_leisure_tmz5, _preferred_feature = min(
+                leisure_tmz5_candidates,
+                key=lambda item: (
+                    abs(item[1].aspect_ratio - 1.44)
+                    + abs(item[1].bounding_coverage - 0.34) * 2.0,
+                    item[0].lower(),
+                ),
+            )
+            ruled["tmz5"] = preferred_leisure_tmz5
+            if preferred_leisure_tmz5 != previous_leisure_tmz5:
+                corrections.append(
+                    "休闲第5张主图双鞋斜前方姿势已纠正："
+                    f"{previous_leisure_tmz5} -> {preferred_leisure_tmz5}"
+                )
+
     groups: dict[str, list[tuple[str, _BinaryPoseFeature]]] = {}
     for filename in entries_by_name:
         current_feature = feature_for(filename)
@@ -1447,9 +1516,9 @@ def _apply_selection_quality_rules(
             ),
         )
 
-    previous_tmz5 = _text(ruled.get("tmz5"))
+    previous_tmz5 = previous_leisure_tmz5 or _text(ruled.get("tmz5"))
     previous_wpz5 = wpz[4]
-    ruled["tmz5"] = selected_group["white_name"]
+    ruled["tmz5"] = preferred_leisure_tmz5 or selected_group["white_name"]
     wpz[4] = selected_group["gray_name"]
     if _copy_variant_key(previous_wpz5) != selected_group["key"]:
         corrections.append(
@@ -1457,8 +1526,11 @@ def _apply_selection_quality_rules(
             f"{previous_wpz5} -> {selected_group['gray_name']}"
         )
     if (
+        not preferred_leisure_tmz5
+        and (
         previous_tmz5 != ruled["tmz5"]
         or previous_wpz5 != wpz[4]
+        )
     ):
         corrections.append(
             "tmz5/wpz5 白底/灰底已按同一姿势成对校正："
@@ -1611,8 +1683,24 @@ def _shoe_selection_prompt(
     color_code: str,
     candidate_ids: dict[str, str],
     shoe_category: str = "",
+    *,
+    candidate_sheet_count: int = 1,
 ) -> str:
     candidate_text = "\n".join(f"{key}={value}" for key, value in candidate_ids.items())
+    candidate_sheet_count = max(1, int(candidate_sheet_count))
+    if candidate_sheet_count == 1:
+        image_order = (
+            "第一张图是带编号的本色候选原图，第二张图是鞋品主图姿势模板，"
+            "第三张图是新版主图1参考姿势，第四张图是 yq 三姿势参考模板。"
+        )
+    else:
+        reference_start = candidate_sheet_count + 1
+        image_order = (
+            f"前{candidate_sheet_count}张图都是带编号的本色候选原图；"
+            f"第{reference_start}张图是鞋品主图姿势模板，"
+            f"第{reference_start + 1}张图是新版主图1参考姿势，"
+            f"第{reference_start + 2}张图是 yq 三姿势参考模板。"
+        )
     forced_category = _text(shoe_category)
     forced_rule = ""
     if forced_category:
@@ -1643,7 +1731,7 @@ def _shoe_selection_prompt(
         )
     return f"""款号：{style_code}
 色码：{color_code}
-第一张图是带编号的本色候选原图，第二张图是鞋品主图姿势模板，第三张图是新版主图1参考姿势，第四张图是 yq 三姿势参考模板。
+{image_order}
 模板四列从左到右依次为：雪地、运动、婴童、休闲；每列从上到下是主图姿势1至5。
 {forced_rule}
 
@@ -1666,7 +1754,7 @@ def _shoe_selection_prompt(
 3. o 是主推色必需的海报图：运动类固定复用 wpz2 的“前方一只鞋+后方一只鞋底朝镜头”姿势；休闲、雪地、婴童固定复用主推色 wpz5 的品类摆放姿势。程序会按品类强制覆盖，非主推色不输出 o.jpg。
    wpz5 必须是该品类模板第5姿势的灰底版本，不能误用白底副本。
 4. yq 必须且只能返回3张，按第四张参考模板从左到右依次匹配：斜前方鞋+后方鞋底、完整鞋底平铺、完整外侧面。不要把 AI 角度图、颜色图或其他展示图放进 yq。
-5. yk 不用选择，程序只保留主推色云盘中已经命名为 yk1..ykN 的细节图；细节有几张就输出几张，非主推色不输出 yk。
+5. yk 不用选择，程序会合并主推色云盘中的 1.jpg..N.jpg 和主推色云盘中已经命名为 yk1..ykN 的细节图；细节有几张就输出几张，非主推色不输出 yk。
    yx 只允许选择“鞋子主体与一张或多张功能吊牌/功能卡同框”的完整展示图。
    单独鞋垫、单独吊牌、鞋盒、普通鞋子图或局部特写都不是 yx；找不到合格图片必须返回空字符串。
 6. tms 不用选择，程序会按“12位款号-5位色码”文件名确定。
@@ -1755,6 +1843,7 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
         kwargs["color_code"],
         candidate_ids,
         kwargs.get("shoe_category") or "",
+        candidate_sheet_count=len(contact_sheets),
     )
     image_inputs = [
         *contact_sheets,
@@ -1923,8 +2012,6 @@ def _create_ai_channel_assets(
     package_root: Path | str,
     color_name: str,
 ) -> dict[str, Path]:
-    from PIL import Image, ImageOps
-
     source = Path(source)
     package_root = Path(package_root)
     package_root.mkdir(parents=True, exist_ok=True)
@@ -1932,15 +2019,9 @@ def _create_ai_channel_assets(
     outputs = {
         "wpt30": package_root / f"wpt30.{safe_color_name}.png",
         "jdt_png": package_root / f"jdt.{safe_color_name}.png",
-        "jdt_jpg": package_root / f"jdt.{safe_color_name}.jpg",
     }
     shutil.copy2(source, outputs["wpt30"])
     shutil.copy2(source, outputs["jdt_png"])
-    with Image.open(source) as opened:
-        angle = ImageOps.exif_transpose(opened).convert("RGBA")
-    flattened = Image.new("RGB", angle.size, "white")
-    flattened.paste(angle, mask=angle.getchannel("A"))
-    flattened.save(outputs["jdt_jpg"], format="JPEG", quality=95, optimize=True)
     return outputs
 
 
@@ -2308,15 +2389,15 @@ def prepare_shoe_packages(
             if exact_tms:
                 slots["tms"] = exact_tms
 
-            named_yk = sorted(
+            yk_sources = sorted(
                 (
                     filename
                     for filename in entries_by_name
-                    if _is_named_yk_filename(filename)
+                    if _is_yk_source_filename(filename)
                 ),
                 key=_named_yk_sort_key,
             )
-            slots["yk"] = named_yk
+            slots["yk"] = yk_sources
             slots["yq"] = _selection_list(slots, "yq")[:3]
 
             named_yx = next(
@@ -2456,7 +2537,13 @@ def prepare_shoe_packages(
             original_targets = _original_asset_relative_targets(original_entries)
             for entry, relative_target in zip(original_entries, original_targets):
                 filename = entry["filename"]
-                if _is_reserved_shoe_output_filename(filename):
+                if (
+                    _is_reserved_shoe_output_filename(filename)
+                    or (
+                        color_index == 1
+                        and _bare_yk_index(filename) is not None
+                    )
+                ):
                     continue
                 target = folder / relative_target
                 target.parent.mkdir(parents=True, exist_ok=True)

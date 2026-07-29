@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from openpyxl import Workbook, load_workbook
 
 from core.api_server import (
     _cleanup_orphaned_runtime_artifacts,
@@ -39,6 +40,13 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         self.assertEqual(params["shoe_cloud_path"]["type"], "text")
         self.assertEqual(params["shoe_category_file"]["type"], "file_excel")
         self.assertTrue(params["shoe_category_file"].get("required"))
+        self.assertEqual(params["mode"]["default"], "new")
+        mode_options = {
+            option["value"]: option["label"]
+            for option in params["mode"]["options"]
+        }
+        self.assertEqual(mode_options["current"], "当前页面")
+        self.assertEqual(mode_options["new"], "全新页面（推荐）")
         self.assertEqual(
             params["shoe_category_file"]["template_file"],
             "assets/鞋品品类映射模板.xlsx",
@@ -115,6 +123,13 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
 
         prepare_task = next(item for item in manifest["tasks"] if item["id"] == "prepare_upload_package")
         prepare_params = {item["id"]: item for item in prepare_task["params"]}
+        self.assertEqual(prepare_params["mode"]["default"], "new")
+        prepare_mode_options = {
+            option["value"]: option["label"]
+            for option in prepare_params["mode"]["options"]
+        }
+        self.assertEqual(prepare_mode_options["current"], "当前页面")
+        self.assertEqual(prepare_mode_options["new"], "全新页面（推荐）")
         self.assertEqual(prepare_params["image_source_type"]["type"], "radio")
         self.assertEqual(prepare_params["image_source_type"]["default"], "all")
         self.assertEqual(
@@ -198,13 +213,23 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             (color_dir / "o.jpg").write_bytes(b"poster")
             (color_dir / "yk1.jpg").write_bytes(b"detail")
             exported = base / "深绘鞋品上新图包整理结果.xlsx"
-            exported.write_bytes(b"excel")
+            data_rows = [{
+                "输入款号": "204326141005",
+                "下载结果": "已下载",
+                "本地文件": str(package_dir / "tmz (1).jpg"),
+            }]
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(list(data_rows[0]))
+            sheet.append(list(data_rows[0].values()))
+            workbook.save(exported)
+            workbook.close()
             raw_download = runtime_dir / "raw.jpg"
             raw_download.write_bytes(b"raw")
 
             result = _finalize_shenhui_new_arrival_outputs(
                 task_id="prepare_shoe_upload_package",
-                data_rows=[],
+                data_rows=data_rows,
                 runtime_files=[str(raw_download)],
                 exported_files=[str(exported)],
                 run_params={
@@ -227,6 +252,15 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             self.assertTrue((output_package / "1.白紫色调00317" / "o.jpg").is_file())
             self.assertTrue((output_package / "1.白紫色调00317" / "yk1.jpg").is_file())
             self.assertFalse(raw_download.exists())
+            expected_path = str(output_package / "tmz (1).jpg")
+            self.assertEqual(data_rows[0]["本地文件"], expected_path)
+            workbook = load_workbook(
+                export_dir / "深绘鞋品上新图包整理结果.xlsx",
+                read_only=True,
+                data_only=True,
+            )
+            self.assertEqual(workbook.active["C2"].value, expected_path)
+            workbook.close()
 
     def test_prepare_shoe_rows_registers_generated_package_before_excel_export(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1945,21 +1945,27 @@ def _cleanup_semir_runtime_artifacts(runtime_files: list, package_root: Optional
         logger.debug("Failed to clean semir package root %s", package_root, exc_info=True)
 
 
-def _rewrite_bala_material_summary_excels(exported_files: list, data_rows: list, log) -> None:
+def _rewrite_summary_excel_local_paths(
+    exported_files: list,
+    data_rows: list,
+    log,
+    *,
+    context: str,
+) -> None:
     rows = [row for row in (data_rows or []) if isinstance(row, dict)]
     if not rows:
         return
     try:
         from openpyxl import load_workbook
     except Exception as exc:
-        raise RuntimeError("openpyxl 不可用，无法刷新巴拉素材结果表最终路径") from exc
+        raise RuntimeError(f"openpyxl 不可用，无法刷新{context}结果表最终路径") from exc
 
     for raw_path in exported_files or []:
         path = Path(str(raw_path or "")).expanduser()
         if path.suffix.lower() != ".xlsx":
             continue
         if not path.is_file():
-            raise RuntimeError(f"巴拉素材结果表不存在，无法刷新本地文件路径: {path}")
+            raise RuntimeError(f"{context}结果表不存在，无法刷新本地文件路径: {path}")
         workbook = None
         try:
             workbook = load_workbook(path)
@@ -1981,14 +1987,51 @@ def _rewrite_bala_material_summary_excels(exported_files: list, data_rows: list,
                     sheet.cell(row=header_row + offset, column=path_column).value = str(row.get("本地文件") or "")
                 changed = True
             if not changed:
-                raise RuntimeError(f"巴拉素材结果表缺少本地文件列: {path}")
+                raise RuntimeError(f"{context}结果表缺少本地文件列: {path}")
             workbook.save(path)
-            log(f"Bala video material Excel paths refreshed: {path}")
+            log(f"{context} Excel paths refreshed: {path}")
         except Exception as exc:
-            raise RuntimeError(f"巴拉素材结果表最终路径刷新失败: {path}: {exc}") from exc
+            raise RuntimeError(f"{context}结果表最终路径刷新失败: {path}: {exc}") from exc
         finally:
             if workbook is not None:
                 workbook.close()
+
+
+def _rewrite_bala_material_summary_excels(exported_files: list, data_rows: list, log) -> None:
+    _rewrite_summary_excel_local_paths(
+        exported_files,
+        data_rows,
+        log,
+        context="Bala video material",
+    )
+
+
+def _rewrite_shenhui_shoe_summary_excels(exported_files: list, data_rows: list, log) -> None:
+    _rewrite_summary_excel_local_paths(
+        exported_files,
+        data_rows,
+        log,
+        context="Shenhui shoe package",
+    )
+
+
+def _rewrite_rows_under_moved_directory(
+    data_rows: list,
+    source_root: Path,
+    target_root: Path,
+) -> None:
+    source_root = source_root.resolve(strict=False)
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        raw_path = str(row.get("本地文件") or "").strip()
+        if not raw_path:
+            continue
+        try:
+            relative = Path(raw_path).expanduser().resolve(strict=False).relative_to(source_root)
+        except Exception:
+            continue
+        row["本地文件"] = str(target_root / relative)
 
 
 def _cleanup_shenhui_runtime_artifacts(runtime_files: list, package_root: Optional[Path], work_dir: Optional[Path]) -> None:
@@ -3121,9 +3164,15 @@ def _finalize_shenhui_new_arrival_outputs(
             else:
                 relocated = _ensure_unique_local_dir(target)
                 shutil.copytree(package_path, relocated)
+            _rewrite_rows_under_moved_directory(
+                data_rows,
+                package_path,
+                relocated,
+            )
             final_refs.append(str(relocated))
             log(f"Shenhui shoe package moved to output folder: {relocated}")
 
+        _rewrite_shenhui_shoe_summary_excels(exported_files, data_rows, log)
         for file_path in exported_files or []:
             source = Path(str(file_path or "")).expanduser()
             if not source.is_file():
