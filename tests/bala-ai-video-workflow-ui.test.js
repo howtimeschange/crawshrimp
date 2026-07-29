@@ -1436,6 +1436,49 @@ test('precise image edits archive the generated result inside the selected works
   assert.match(editSource, /previewPath:\s*localOutputPath/)
 })
 
+test('precise image edit modal keeps the same operation boundaries as batch AI edits', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+  const openStart = source.indexOf('function openImageEditor')
+  const openEnd = source.indexOf('function openImagePreview', openStart)
+  const openSource = source.slice(openStart, openEnd)
+  const actionStart = source.indexOf('function setPreviewEditAction')
+  const actionEnd = source.indexOf('function openImageEditor', actionStart)
+  const actionSource = source.slice(actionStart, actionEnd)
+  const promptStart = source.indexOf('function editPromptText')
+  const promptEnd = source.indexOf('function previewEditPromptText', promptStart)
+  const promptSource = source.slice(promptStart, promptEnd)
+  const editStart = source.indexOf('async function runPreviewImageEdit')
+  const editEnd = source.indexOf('function providerLabel', editStart)
+  const editSource = source.slice(editStart, editEnd)
+
+  assert.match(templateSource, /@click="setPreviewEditAction\(action\.id\)"/)
+  assert.match(templateSource, /{{ previewEditPromptLabel }}/)
+  assert.match(templateSource, /:placeholder="previewEditPromptPlaceholder"/)
+  assert.match(source, /const previewEditActionPrompts = reactive\(\{ \.\.\.AI_ACTION_PROMPT_DEFAULTS \}\)/)
+  assert.match(actionSource, /previewEditActionPrompts\[previewEditAction\.value\] = String\(previewEditPrompt\.value \|\| ''\)/)
+  assert.match(actionSource, /previewEditPrompt\.value = previewPromptForAction\(previewEditAction\.value\)/)
+  assert.match(openSource, /Object\.assign\(previewEditActionPrompts, \{ \.\.\.AI_ACTION_PROMPT_DEFAULTS, \.\.\.aiActionPrompts \}\)/)
+  assert.match(openSource, /const assetPrompt = previewAssetPrompt\(asset, operationType\)/)
+  assert.doesNotMatch(openSource, /asset\?\.meta \|\| aiPrompt\.value/)
+
+  assert.match(promptSource, /face_swap:[\s\S]*编辑范围只限人物脸部区域[\s\S]*禁止替换背景或场景/)
+  assert.match(promptSource, /background_swap:[\s\S]*编辑范围只限背景\/场景[\s\S]*禁止改脸、换衣服、改变姿势/)
+  assert.match(promptSource, /outfit_swap:[\s\S]*编辑范围只限服装商品区域[\s\S]*禁止换脸、替换背景、改变姿势/)
+  assert.match(promptSource, /pose_swap:[\s\S]*编辑范围以人物身体姿态为主[\s\S]*禁止换脸、换衣服、替换背景/)
+
+  assert.match(editSource, /const operationType = normalizePreviewEditAction\(previewEditAction\.value\)/)
+  assert.match(editSource, /if \(operationType === 'background_swap' && !promptInstruction\)/)
+  assert.match(editSource, /if \(operationType === 'pose_swap' && !promptInstruction\)/)
+  assert.match(editSource, /operation_type:\s*operationType/)
+  assert.match(editSource, /background_prompt:\s*operationType === 'background_swap' \? promptInstruction : ''/)
+  assert.match(editSource, /pose_prompt:\s*operationType === 'pose_swap' \? promptInstruction : ''/)
+  assert.match(editSource, /prompt_extra:\s*promptExtra/)
+  assert.match(editSource, /garment_image_paths:\s*operationType === 'outfit_swap' \? garmentPaths : \[\]/)
+  assert.match(editSource, /outfit_reference_image_paths:\s*operationType === 'outfit_swap' \? outfitPaths : \[\]/)
+  assert.match(editSource, /variant_reference_image_paths:\s*operationType === 'outfit_swap' \? variantPaths : \[\]/)
+})
+
 test('review workspace includes originals and every non-deleted AI result', () => {
   assert.equal(typeof balaWorkflow.buildBalaReviewWorkspaceStyles, 'function')
   const styles = balaWorkflow.buildBalaReviewWorkspaceStyles([{

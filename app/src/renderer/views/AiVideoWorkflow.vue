@@ -1133,7 +1133,7 @@
                 role="tab"
                 :aria-selected="previewEditAction === action.id"
                 :class="{ active: previewEditAction === action.id }"
-                @click="previewEditAction = action.id"
+                @click="setPreviewEditAction(action.id)"
               >
                 <component :is="aiActionIcons[action.id]" aria-hidden="true" />
                 <span>{{ action.shortTitle }}</span>
@@ -1197,10 +1197,10 @@
             </section>
             <label class="aiv-field">
               <span class="aiv-field-heading">
-                <span>当前图片修改 Prompt</span>
+                <span>{{ previewEditPromptLabel }}</span>
                 <small>{{ previewEditPrompt.length }} 字</small>
               </span>
-              <textarea v-model="previewEditPrompt" rows="6" placeholder="描述只针对当前图片的修改要求"></textarea>
+              <textarea v-model="previewEditPrompt" rows="6" :placeholder="previewEditPromptPlaceholder"></textarea>
             </label>
             <button v-if="previewEditAction === 'pose_swap'" type="button" class="aiv-ghost wide" @click="promptLibraryTarget = 'preview'; promptLibraryOpen = true">从 Prompt 库选择</button>
             <div v-if="previewEditError" class="aiv-inline-error">{{ previewEditError }}</div>
@@ -2181,7 +2181,20 @@ const AI_ACTION_PROMPT_DEFAULTS = {
   outfit_swap: '仅替换服装商品；保留原人物脸部、姿势、背景、构图和光线，服装按参考图保持版型、颜色、图案和材质。',
   pose_swap: '',
 }
+const AI_ACTION_PROMPT_LABELS = {
+  face_swap: '换脸补充要求',
+  background_swap: '背景 Prompt',
+  outfit_swap: '换装补充要求',
+  pose_swap: '姿势 Prompt',
+}
+const AI_ACTION_PROMPT_PLACEHOLDERS = {
+  face_swap: '可选，例如：只替换脸部，保留原背景、姿势、构图和服装细节',
+  background_swap: '例如：干净明亮的儿童服装棚拍场景，柔和自然光，背景简洁高级',
+  outfit_swap: '可选，例如：衣服贴合身体姿势，保留原背景和人物表情，无文字、无水印',
+  pose_swap: '例如：让模特自然侧身站立，双手轻松放在身体两侧，保持服装展示清晰',
+}
 const aiActionPrompts = reactive({ ...AI_ACTION_PROMPT_DEFAULTS })
+const previewEditActionPrompts = reactive({ ...AI_ACTION_PROMPT_DEFAULTS })
 const aiPrompt = computed({
   get: () => String(aiActionPrompts[activeAction.value] || ''),
   set: value => {
@@ -2285,18 +2298,12 @@ const aiActionIcons = {
 const activeActionConfig = computed(() => aiActions.find(action => action.id === activeAction.value) || aiActions[0])
 const activeActionTitle = computed(() => activeActionConfig.value.title)
 const activeActionDetail = computed(() => activeActionConfig.value.detail)
-const activePromptLabel = computed(() => {
-  if (activeAction.value === 'background_swap') return '背景 Prompt'
-  if (activeAction.value === 'outfit_swap') return '换装补充要求'
-  if (activeAction.value === 'pose_swap') return '姿势 Prompt'
-  return '换脸补充要求'
-})
-const activePromptPlaceholder = computed(() => {
-  if (activeAction.value === 'background_swap') return '例如：干净明亮的儿童服装棚拍场景，柔和自然光，背景简洁高级'
-  if (activeAction.value === 'outfit_swap') return '可选，例如：衣服贴合身体姿势，保留原背景和人物表情，无文字、无水印'
-  if (activeAction.value === 'pose_swap') return '例如：让模特自然侧身站立，双手轻松放在身体两侧，保持服装展示清晰'
-  return '可选，例如：只替换脸部，保留原背景、姿势、构图和服装细节'
-})
+const promptLabelForAction = operationType => AI_ACTION_PROMPT_LABELS[normalizeOperationType(operationType)] || AI_ACTION_PROMPT_LABELS.face_swap
+const promptPlaceholderForAction = operationType => AI_ACTION_PROMPT_PLACEHOLDERS[normalizeOperationType(operationType)] || AI_ACTION_PROMPT_PLACEHOLDERS.face_swap
+const activePromptLabel = computed(() => promptLabelForAction(activeAction.value))
+const activePromptPlaceholder = computed(() => promptPlaceholderForAction(activeAction.value))
+const previewEditPromptLabel = computed(() => promptLabelForAction(previewEditAction.value))
+const previewEditPromptPlaceholder = computed(() => promptPlaceholderForAction(previewEditAction.value))
 
 const styleWorkspaces = reactive([])
 
@@ -6692,6 +6699,33 @@ function assetStatusLabel(status) {
   return '素材'
 }
 
+function normalizePreviewEditAction(value = '', fallback = 'background_swap') {
+  const normalized = normalizeOperationType(value || fallback)
+  return aiActions.some(action => action.id === normalized) ? normalized : fallback
+}
+
+function previewPromptForAction(operationType) {
+  const action = normalizePreviewEditAction(operationType)
+  return String(previewEditActionPrompts[action] ?? aiActionPrompts[action] ?? '').trim()
+}
+
+function previewAssetPrompt(asset = {}, operationType = '') {
+  const prompt = String(asset?.prompt || asset?.promptInstruction || '').trim()
+  if (prompt) return prompt
+  const rawOperation = String(asset?.operationType || asset?.operation_type || asset?.action || '').trim()
+  if (rawOperation && normalizeOperationType(rawOperation) === operationType) {
+    return String(asset?.meta || '').trim()
+  }
+  return ''
+}
+
+function setPreviewEditAction(actionId = '') {
+  previewEditActionPrompts[previewEditAction.value] = String(previewEditPrompt.value || '')
+  previewEditAction.value = normalizePreviewEditAction(actionId)
+  previewEditPrompt.value = previewPromptForAction(previewEditAction.value)
+  previewEditError.value = ''
+}
+
 function openImageEditor(asset, styleCode = '', sourceAsset = null) {
   lastFocusedElement.value = document.activeElement
   const source = sourceAsset || (asset?.versions ? asset : null)
@@ -6710,8 +6744,12 @@ function openImageEditor(asset, styleCode = '', sourceAsset = null) {
     history,
   }
   previewHistoryIndex.value = selectedIndex
-  previewEditAction.value = asset?.operationType || activeAction.value || 'background_swap'
-  previewEditPrompt.value = String(asset?.prompt || asset?.meta || aiPrompt.value || '').trim()
+  const operationType = normalizePreviewEditAction(asset?.operationType || asset?.operation_type || asset?.action || activeAction.value)
+  Object.assign(previewEditActionPrompts, { ...AI_ACTION_PROMPT_DEFAULTS, ...aiActionPrompts })
+  previewEditAction.value = operationType
+  const assetPrompt = previewAssetPrompt(asset, operationType)
+  if (assetPrompt) previewEditActionPrompts[operationType] = assetPrompt
+  previewEditPrompt.value = previewPromptForAction(operationType)
   previewEditError.value = ''
   previewAnnotationTool.value = ''
   previewAnnotationClearNonce.value += 1
@@ -6770,12 +6808,38 @@ function requestPreviewAnnotationExport() {
 function editPromptText(operationType, instruction = '') {
   const requirement = String(instruction || '').trim()
   const prefixes = {
-    face_swap: '替换人物面部为参考模特，严格保留服装款式、颜色、纹理和画面构图。',
-    outfit_swap: '根据服装与搭配参考图完成换装，严格保留人物身份、姿势和场景。',
-    background_swap: '只修改画面背景，严格保留人物、服装款式、颜色和姿势。',
-    pose_swap: '只调整人物姿势，严格保留人物身份、服装款式、颜色和背景。',
+    face_swap: [
+      '请基于输入的童装商品模拍图进行真实电商照片级局部换脸编辑。',
+      '编辑范围只限人物脸部区域：替换脸部五官、年龄气质和表情；不要重绘整张图。',
+      '必须保留原始背景/场景、地面/墙面/天空、道具/椅子/台座、身体姿态、主体构图、拍摄角度、裁切比例、光线阴影、童装商品、版型、颜色、图案、材质和穿搭关系。',
+      '参考所选巴拉 AI 模特头像素材，让新脸自然贴合原图角度、光线、肤色和清晰度。',
+      '禁止替换背景或场景，禁止新增海边、户外、树木、天空、道具、文字、水印、Logo、吊牌、合格证或多余人物。',
+      '输出应尽量与原图除脸部外保持一致，真实摄影质感，不要拼贴感。',
+    ].join('\n'),
+    background_swap: [
+      '请基于输入的童装商品模拍图进行真实电商照片级局部换背景编辑。',
+      '编辑范围只限背景/场景：按下方背景 Prompt 替换原背景。',
+      '必须完整保留人物主体、脸部五官、发型、肤色、身体姿态、手脚位置、服装商品、版型、颜色、图案、材质、穿搭关系、主体轮廓、裁切比例和镜头视角。',
+      '新背景需要与原人物光线、阴影、透视、景深和地面接触关系自然融合，符合儿童服装商业图。',
+      '禁止改脸、换衣服、改变姿势、改变商品颜色或图案，禁止出现文字、水印、Logo、吊牌、合格证或多余人物。',
+    ].join('\n'),
+    outfit_swap: [
+      '请基于输入的童装模特图进行真实电商照片级局部换装编辑。',
+      '编辑范围只限服装商品区域：将服装参考图中的童装自然穿到原模特身上。',
+      '必须保留原图人物脸部、发型、年龄气质、身体姿态、手脚位置、背景/场景、道具、主体构图、镜头视角、裁切比例和整体光线。',
+      '严格按照服装图保留商品版型、颜色、图案、材质、领口/袖口/下摆/裤型等结构细节，并让衣服贴合原身体姿势和透视。',
+      '搭配参考图用于理解穿搭关系；同款不同色图用于理解版型结构，不得直接改变成参考图场景。',
+      '禁止换脸、替换背景、改变姿势、改变人物比例，禁止出现文字、水印、Logo、吊牌、合格证或多余人物。',
+    ].join('\n'),
+    pose_swap: [
+      '请基于输入的童装商品模拍图进行真实电商照片级局部姿势调整。',
+      '编辑范围以人物身体姿态为主：按下方姿势 Prompt 调整动作。',
+      '必须保留人物脸部身份和年龄气质、童装商品、版型、颜色、图案、材质、穿搭层次、背景/场景、道具、镜头视角、裁切比例和整体光线。',
+      '姿势调整要符合儿童自然身体比例和衣服受力褶皱，手脚完整，关节合理，商品展示清晰。',
+      '禁止换脸、换衣服、替换背景、改变商品颜色或图案，禁止出现文字、水印、Logo、吊牌、合格证或多余人物。',
+    ].join('\n'),
   }
-  return [prefixes[operationType], requirement].filter(Boolean).join('\n')
+  return [prefixes[normalizePreviewEditAction(operationType)], requirement ? `补充要求：${requirement}` : ''].filter(Boolean).join('\n')
 }
 
 function previewEditPromptText() {
@@ -6816,7 +6880,11 @@ async function runPreviewImageEdit() {
   if (previewEditBusy.value) return
   const current = activePreviewHistoryItem.value
   const mainPath = String(current?.path || current?.previewPath || previewImage.value?.path || '').trim()
-  const prompt = previewEditPromptText()
+  const operationType = normalizePreviewEditAction(previewEditAction.value)
+  previewEditAction.value = operationType
+  const promptInstruction = String(previewEditPrompt.value || '').trim()
+  previewEditActionPrompts[operationType] = promptInstruction
+  const prompt = editPromptText(operationType, promptInstruction)
   if (!mainPath) {
     previewEditError.value = '当前图片没有可用于修改的本地文件'
     return
@@ -6829,15 +6897,23 @@ async function runPreviewImageEdit() {
     previewEditError.value = '请填写当前图片的修改要求'
     return
   }
+  if (operationType === 'background_swap' && !promptInstruction) {
+    previewEditError.value = 'AI 换背景需要填写背景 Prompt'
+    return
+  }
+  if (operationType === 'pose_swap' && !promptInstruction) {
+    previewEditError.value = 'AI 换姿势需要填写姿势 Prompt'
+    return
+  }
   if (!ensureAiImageModelSelected()) {
     previewEditError.value = '尚未配置可用生图模型，请先到设置页配置 1XM 图片模型'
     return
   }
-  if (previewEditAction.value === 'face_swap' && !selectedModel.value) {
+  if (operationType === 'face_swap' && !selectedModel.value) {
     previewEditError.value = 'AI 换脸需要先选择模特'
     return
   }
-  if (previewEditAction.value === 'outfit_swap' && !garmentImagePaths.value.length) {
+  if (operationType === 'outfit_swap' && !garmentImagePaths.value.length) {
     previewEditError.value = 'AI 换装需要至少选择一张服装图'
     return
   }
@@ -6845,31 +6921,44 @@ async function runPreviewImageEdit() {
   previewEditError.value = ''
   try {
     const generation = resolveSelectedAiImageGenerationParams()
+    const garmentPaths = [...new Set(garmentImagePaths.value.filter(Boolean))]
+    const outfitPaths = [...new Set(outfitReferencePaths.value.filter(Boolean))]
+    const variantPaths = [...new Set(variantReferencePaths.value.filter(Boolean))]
+    const promptExtra = ['background_swap', 'pose_swap'].includes(operationType) ? '' : promptInstruction
+    const jobParams = {
+      workflow: BALA_AI_IMAGE_TASK_ID,
+      surface: 'ai-video-workflow',
+      workspace_dir: workspaceDir.value,
+      size: generation.size,
+      quality: generation.quality || 'high',
+      response_format: generation.outputFormat,
+      n: 1,
+      model_key_tier: generation.modelKeyTier,
+      main_image_path: mainPath,
+      operation_type: operationType,
+      prompt_instruction: promptInstruction,
+      background_prompt: operationType === 'background_swap' ? promptInstruction : '',
+      garment_image_paths: operationType === 'outfit_swap' ? garmentPaths : [],
+      outfit_reference_image_paths: operationType === 'outfit_swap' ? outfitPaths : [],
+      variant_reference_image_paths: operationType === 'outfit_swap' ? variantPaths : [],
+      pose_prompt: operationType === 'pose_swap' ? promptInstruction : '',
+      prompt_extra: promptExtra,
+      reference_image_paths: [],
+    }
     const annotationDataUrl = previewAnnotationTool.value
       ? await requestPreviewAnnotationExport()
       : ''
     const created = await window.cs.createAiImageJob({
       title: `${previewImage.value?.styleCode || 'AI 视频'} · 大图修改`,
       prompt,
-      model_key: generation.modelKey,
-      status: 'draft',
-      output_dir: workspaceDir.value,
-      params: {
-        workflow: BALA_AI_IMAGE_TASK_ID,
-        surface: 'ai-video-workflow',
-        workspace_dir: workspaceDir.value,
-        size: generation.size,
-        quality: generation.quality || 'high',
-        response_format: generation.outputFormat,
-        n: 1,
-        model_key_tier: generation.modelKeyTier,
-        main_image_path: mainPath,
-        reference_image_paths: [],
-      },
-      summary: {
-        workflow: BALA_AI_IMAGE_TASK_ID,
-        surface: 'ai-video-workflow',
-        workspace_dir: workspaceDir.value,
+        model_key: generation.modelKey,
+        status: 'draft',
+        output_dir: workspaceDir.value,
+        params: jobParams,
+        summary: {
+          workflow: BALA_AI_IMAGE_TASK_ID,
+          surface: 'ai-video-workflow',
+          workspace_dir: workspaceDir.value,
       },
     })
     const jobUid = String(created?.job_uid || '').trim()
@@ -6879,27 +6968,18 @@ async function runPreviewImageEdit() {
       const path = await materializePreviewReference(jobUid, annotationDataUrl, 'bala-video-annotation.png')
       if (path) references.push(path)
     }
-    if (previewEditAction.value === 'face_swap' && selectedModel.value?.imageUrl) {
+    if (operationType === 'face_swap' && selectedModel.value?.imageUrl) {
       const path = await materializePreviewReference(jobUid, selectedModel.value.imageUrl, 'bala-video-model-reference.png')
       if (path) references.push(path)
     }
-    if (previewEditAction.value === 'outfit_swap') {
-      references.push(...garmentImagePaths.value, ...outfitReferencePaths.value, ...variantReferencePaths.value)
+    if (operationType === 'outfit_swap') {
+      references.push(...garmentPaths, ...outfitPaths, ...variantPaths)
     }
     await window.cs.updateAiImageJob(jobUid, {
       prompt,
       status: 'draft',
       params: {
-        ...created.params,
-        workflow: BALA_AI_IMAGE_TASK_ID,
-        surface: 'ai-video-workflow',
-        workspace_dir: workspaceDir.value,
-        size: generation.size,
-        quality: generation.quality || 'high',
-        response_format: generation.outputFormat,
-        n: 1,
-        model_key_tier: generation.modelKeyTier,
-        main_image_path: mainPath,
+        ...jobParams,
         reference_image_paths: [...new Set(references.filter(Boolean))],
       },
     })
@@ -6914,11 +6994,17 @@ async function runPreviewImageEdit() {
     source.versions = Array.isArray(source.versions) ? source.versions : []
     const version = {
       id: `${jobUid}-${output.runUid || Date.now()}`,
-      action: aiActions.find(action => action.id === previewEditAction.value)?.title || 'AI 修改',
-      operationType: previewEditAction.value,
+      action: aiActions.find(action => action.id === operationType)?.title || 'AI 修改',
+      operationType,
       label: `大图修改 ${source.versions.length + 1}`,
       meta: prompt,
       prompt,
+      promptInstruction,
+      backgroundPrompt: operationType === 'background_swap' ? promptInstruction : '',
+      posePrompt: operationType === 'pose_swap' ? promptInstruction : '',
+      garmentImagePaths: operationType === 'outfit_swap' ? garmentPaths : [],
+      outfitReferencePaths: operationType === 'outfit_swap' ? outfitPaths : [],
+      variantReferencePaths: operationType === 'outfit_swap' ? variantPaths : [],
       selected: false,
       status: 'pending',
       progress: 100,
