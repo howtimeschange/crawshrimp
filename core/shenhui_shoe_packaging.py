@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from core import llm_gateway
+from core import llm_gateway, ocr_service
 
 
 class ShoeSelectionError(ValueError):
@@ -109,18 +109,39 @@ def resolve_style_category(
     return category, "模型兜底", warning
 
 
-def output_filename(slot: str, index: int | None = None) -> str:
+def _png_or_jpg_suffix(source_filename: Any, fallback: str = ".jpg") -> str:
+    suffix = Path(_text(source_filename)).suffix.lower()
+    return ".png" if suffix == ".png" else fallback
+
+
+def _safe_path_component(value: Any, fallback: str = "未命名") -> str:
+    text = re.sub(r'[\\/:*?"<>|]+', "_", _text(value))
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text or fallback
+
+
+def output_filename(
+    slot: str,
+    index: int | None = None,
+    source_filename: Any = None,
+) -> str:
     normalized = _text(slot).lower()
-    if normalized in {"o", "tms", "yx"}:
-        return f"{normalized}.jpg"
+    if normalized == "o":
+        return "o.jpg"
+    if normalized in {"tms", "yx"}:
+        return f"{normalized}{_png_or_jpg_suffix(source_filename)}"
     if normalized == "yk":
         if not index:
             raise ShoeSelectionError("yk 输出必须提供序号")
         return f"yk{index}.jpg"
-    if normalized in {"tmz", "wpz", "yq"}:
+    if normalized in {"tmz", "yq"}:
         if not index:
             raise ShoeSelectionError(f"{normalized} 输出必须提供序号")
         return f"{normalized} ({index}).jpg"
+    if normalized == "wpz":
+        if not index:
+            raise ShoeSelectionError("wpz 输出必须提供序号")
+        return f"wpz ({index if index <= 4 else index + 10}).jpg"
     raise ShoeSelectionError(f"不支持的鞋品输出槽位：{slot}")
 
 
@@ -196,6 +217,33 @@ def _selection_list(slots: dict[str, Any], slot: str) -> list[str]:
     return values
 
 
+def _promoted_color(
+    selections_by_color: dict[str, dict[str, Any]],
+    color_order: list[str],
+) -> str:
+    return next(
+        (
+            color
+            for color in color_order
+            if _selection_list(selections_by_color.get(color) or {}, "yk")
+        ),
+        color_order[0] if color_order else "",
+    )
+
+
+def _promoted_color_first(
+    selections_by_color: dict[str, dict[str, Any]],
+    color_order: list[str],
+) -> list[str]:
+    promoted = _promoted_color(selections_by_color, color_order)
+    if not promoted:
+        return color_order
+    return [
+        promoted,
+        *[color for color in color_order if color != promoted],
+    ]
+
+
 def build_output_assignments(
     selections_by_color: dict[str, dict[str, Any]],
     color_order: list[str] | None = None,
@@ -208,10 +256,12 @@ def build_output_assignments(
     order.extend(color for color in selections_by_color if color not in order)
     if not order:
         raise ShoeSelectionError("未识别到鞋品颜色")
+    order = _promoted_color_first(selections_by_color, order)
 
-    for color in order:
-        if not _text((selections_by_color.get(color) or {}).get("o")):
-            raise ShoeSelectionError(f"{color} 未识别到必需的 o.jpg 海报姿势")
+    main_color = order[0]
+    main_slots = selections_by_color.get(main_color) or {}
+    if not _text(main_slots.get("o")):
+        raise ShoeSelectionError(f"{main_color} 未识别到必需的 o.jpg 海报姿势")
 
     assignments: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
@@ -229,22 +279,29 @@ def build_output_assignments(
 
     for color_index, color in enumerate(order, start=1):
         slots = selections_by_color.get(color) or {}
-        folder = f"{color_index}.{color}"
+        folder = f"{color_index}.{_safe_path_component(color)}"
 
-        for slot in ("tms", "o"):
+        for slot in ("tms",):
             source = _text(slots.get(slot))
             if not source:
-                if slot == "o":
-                    raise ShoeSelectionError(f"{color} 未识别到必需的 o.jpg 海报姿势")
                 continue
             assignments.append({
                 "color": color,
                 "slot": slot,
                 "source": source,
-                "output_path": f"{folder}/{output_filename(slot)}",
+                "output_path": f"{folder}/{output_filename(slot, source_filename=source)}",
             })
 
-        for slot in ("wpz", "yq", "yk"):
+        if color == main_color:
+            source = _text(slots.get("o"))
+            assignments.append({
+                "color": color,
+                "slot": "o",
+                "source": source,
+                "output_path": f"{folder}/{output_filename('o')}",
+            })
+
+        for slot in ("wpz", "yq"):
             for index, source in enumerate(_selection_list(slots, slot), start=1):
                 assignments.append({
                     "color": color,
@@ -253,13 +310,22 @@ def build_output_assignments(
                     "output_path": f"{folder}/{output_filename(slot, index)}",
                 })
 
+        if color == main_color:
+            for index, source in _yk_output_sources(_selection_list(slots, "yk")):
+                assignments.append({
+                    "color": color,
+                    "slot": f"yk{index}",
+                    "source": source,
+                    "output_path": f"{folder}/{output_filename('yk', index)}",
+                })
+
         yx_source = _text(slots.get("yx"))
         if yx_source:
             assignments.append({
                 "color": color,
                 "slot": "yx",
                 "source": yx_source,
-                "output_path": f"{folder}/{output_filename('yx')}",
+                "output_path": f"{folder}/{output_filename('yx', source_filename=yx_source)}",
             })
         else:
             warnings.append({
@@ -277,6 +343,13 @@ SHOE_REFERENCE_IMAGE = (
     / "assets"
     / "shoe-main-image-template-small.jpg"
 )
+SHOE_POSE1_REFERENCE_IMAGE = (
+    Path(__file__).resolve().parents[1]
+    / "adapters"
+    / "shenhui-new-arrival"
+    / "assets"
+    / "shoe-main-pose1-template.jpg"
+)
 SHOE_YQ_REFERENCE_IMAGE = (
     Path(__file__).resolve().parents[1]
     / "adapters"
@@ -285,6 +358,23 @@ SHOE_YQ_REFERENCE_IMAGE = (
     / "shoe-yq-template.jpg"
 )
 SHOE_LABEL_OCR_MODEL = "qwen3.7-plus"
+SHOE_POSE_MULTI_MODEL_ID = "multi-model"
+SHOE_POSE_DEFAULT_MODEL = "gpt-5.5"
+SHOE_POSE_MODEL_CANDIDATES = (
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "qwen3.8-max-preview",
+    "qwen3.7-plus",
+    "deepseek-v4-pro",
+    "glm-5.2",
+    "kimi-k2.7-code",
+)
 SHOE_CROSS_COLOR_MAX_DISTANCE = 0.32
 SHOE_WHITE_BACKGROUND_LUMA = 249.5
 SHOE_YX_MAX_FOREGROUND_COVERAGE = 0.65
@@ -338,6 +428,24 @@ def _qwen_fallback_model_ids(model_id: str) -> list[str]:
     }.get(_text(model_id), [])
 
 
+def _shoe_pose_model_ids(model_id: str) -> list[str]:
+    text = _text(model_id)
+    if not text or text.lower() in {
+        "auto",
+        "multi",
+        "multi-model",
+        "multi_model",
+        "多模型",
+    }:
+        return list(SHOE_POSE_MODEL_CANDIDATES)
+    parts = [
+        _text(item)
+        for item in re.split(r"[\s,，、;；]+", text)
+        if _text(item)
+    ]
+    return list(dict.fromkeys(parts or [text]))
+
+
 def _is_pose_matching_candidate(filename: str) -> bool:
     """Exclude prebuilt channel/AI angles from pose analysis while preserving them."""
 
@@ -348,17 +456,77 @@ def _is_pose_matching_candidate(filename: str) -> bool:
     )
 
 
-def _is_pose_selection_candidate(filename: str) -> bool:
-    """Keep named details out of the model prompt and ordinary pose slots."""
-
-    stem = Path(_text(filename)).stem
-    return (
-        _is_pose_matching_candidate(filename)
-        and not re.match(
+def _is_named_yk_filename(filename: str) -> bool:
+    return bool(
+        re.match(
             r"^yk\s*(?:[\(（]\s*)?\d+",
+            Path(_text(filename)).stem,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _named_yk_index(filename: str) -> int | None:
+    match = re.match(
+        r"^yk\s*(?:[\(（]\s*)?(\d+)",
+        Path(_text(filename)).stem,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _yk_output_sources(sources: list[str]) -> list[tuple[int, str]]:
+    output: list[tuple[int, str]] = []
+    used: set[int] = set()
+    fallback_index = 1
+    for source in sources:
+        explicit_index = _named_yk_index(source)
+        if explicit_index is not None:
+            if explicit_index in used:
+                continue
+            index = explicit_index
+        else:
+            while fallback_index in used:
+                fallback_index += 1
+            index = fallback_index
+        used.add(index)
+        output.append((index, source))
+    return output
+
+
+def _named_yk_sort_key(filename: str) -> tuple[int, int, str]:
+    index = _named_yk_index(filename)
+    stem = Path(_text(filename)).stem
+    canonical = bool(re.fullmatch(rf"yk\s*{index}", stem, flags=re.IGNORECASE)) if index else False
+    return (index if index is not None else 9999, 0 if canonical else 1, filename.lower())
+
+
+def _is_reserved_shoe_output_filename(filename: str) -> bool:
+    stem = Path(_text(filename)).stem
+    normalized = stem.lower()
+    if _is_named_yk_filename(filename):
+        return True
+    if normalized in {"o", "tms", "yx", "tmq", "tmt"}:
+        return True
+    if normalized.startswith(("jdt.", "wpt30.")):
+        return True
+    return bool(
+        re.match(
+            r"^(?:tmz|wpz|yq)\s*(?:[\(（]\s*)?\d+\s*[\)）]?$",
             stem,
             flags=re.IGNORECASE,
         )
+    )
+
+
+def _is_pose_selection_candidate(filename: str) -> bool:
+    """Keep named details out of the model prompt and ordinary pose slots."""
+
+    return (
+        _is_pose_matching_candidate(filename)
+        and not _is_named_yk_filename(filename)
     )
 
 
@@ -390,6 +558,41 @@ def _original_asset_relative_targets(
         used_targets.add(target)
         targets.append(target)
     return targets
+
+
+def _shoe_size_segment(entry: dict[str, Any]) -> str:
+    cloud_path = _text((entry.get("row") or {}).get("云盘路径")).replace("\\", "/")
+    segments = [segment for segment in cloud_path.split("/") if segment]
+    for segment in reversed(segments[:-1]):
+        if re.fullmatch(r"\d{2}", segment):
+            return segment
+    return ""
+
+
+def _filter_single_shoe_size_entries(
+    entries: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    sizes = sorted(
+        {
+            size
+            for entry in entries
+            for size in [_shoe_size_segment(entry)]
+            if size
+        },
+        key=lambda value: int(value),
+    )
+    if len(sizes) <= 1:
+        return entries, ""
+    selected = sizes[-1]
+    filtered = [
+        entry
+        for entry in entries
+        if not _shoe_size_segment(entry) or _shoe_size_segment(entry) == selected
+    ]
+    return (
+        filtered,
+        f"检测到同款色多个尺码原图（{', '.join(sizes)}），仅保留 {selected} 码素材",
+    )
 
 
 @dataclass(frozen=True)
@@ -841,21 +1044,33 @@ def _apply_selection_quality_rules(
                     f"{current_wpz3} -> {replacement}"
                 )
 
-    if _text(category) == "雪地" and wpz:
+    if wpz:
         current_wpz1 = wpz[0]
         current_tmz1 = _text(ruled.get("tmz1")) or current_wpz1
+        current_wpz1_feature = feature_for(current_wpz1)
+        current_tmz1_feature = feature_for(current_tmz1)
+        target_aspect, target_coverage = {
+            "雪地": (0.67, 0.145),
+            "运动": (0.78, 0.23),
+            "休闲": (0.84, 0.20),
+            "婴童": (0.84, 0.20),
+        }.get(_text(category), (0.84, 0.20))
 
-        def valid_snow_pose1(pose: _BinaryPoseFeature | None) -> bool:
+        def valid_shared_pose1(pose: _BinaryPoseFeature | None) -> bool:
             return bool(
                 pose
-                and 0.58 <= pose.aspect_ratio <= 0.75
-                and 0.10 <= pose.bounding_coverage <= 0.18
+                and 0.58 <= pose.aspect_ratio <= 0.95
+                and 0.08 <= pose.bounding_coverage <= 0.35
                 and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
             )
 
         if (
-            not valid_snow_pose1(feature_for(current_wpz1))
-            or not valid_snow_pose1(feature_for(current_tmz1))
+            current_wpz1_feature is not None
+            and current_tmz1_feature is not None
+            and (
+                not valid_shared_pose1(current_wpz1_feature)
+                or not valid_shared_pose1(current_tmz1_feature)
+            )
         ):
             occupied = {
                 _text(value)
@@ -872,21 +1087,21 @@ def _apply_selection_quality_rules(
                 for filename in entries_by_name
                 if filename not in occupied
                 for pose in [feature_for(filename)]
-                if valid_snow_pose1(pose)
+                if valid_shared_pose1(pose)
             ]
             if eligible_pose1:
                 replacement, _replacement_feature = min(
                     eligible_pose1,
                     key=lambda item: (
-                        abs(item[1].aspect_ratio - 0.67)
-                        + abs(item[1].bounding_coverage - 0.145) * 2.0,
+                        abs(item[1].aspect_ratio - target_aspect)
+                        + abs(item[1].bounding_coverage - target_coverage) * 2.0,
                         item[0].lower(),
                     ),
                 )
                 wpz[0] = replacement
                 ruled["tmz1"] = replacement
                 corrections.append(
-                    "雪地第1姿势正常斜前方单靴已纠正："
+                    "主图1新版单鞋斜前方姿势已纠正："
                     f"{current_wpz1} -> {replacement}"
                 )
 
@@ -1100,51 +1315,6 @@ def _apply_selection_quality_rules(
                 corrections.append(
                     f"运动第4姿势后侧鞋底角度已纠正："
                     f"{current_pose4} -> {replacement}"
-                )
-
-        current_pose1 = wpz[0] if wpz else _text(ruled.get("tmz1"))
-        current_pose1_feature = feature_for(current_pose1)
-
-        def valid_sports_pose1(pose: _BinaryPoseFeature | None) -> bool:
-            return bool(
-                pose
-                and 0.65 <= pose.aspect_ratio <= 0.95
-                and 0.15 <= pose.bounding_coverage <= 0.35
-                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-            )
-
-        if current_pose1 and not valid_sports_pose1(current_pose1_feature):
-            occupied = {
-                _text(value)
-                for value in [
-                    *wpz[1:],
-                    *yq,
-                    ruled.get("yx"),
-                    *[ruled.get(f"tmz{index}") for index in range(2, 6)],
-                ]
-                if _text(value)
-            }
-            eligible_pose1 = [
-                (filename, pose)
-                for filename in entries_by_name
-                if filename not in occupied
-                for pose in [feature_for(filename)]
-                if valid_sports_pose1(pose)
-            ]
-            if eligible_pose1:
-                replacement, _replacement_feature = min(
-                    eligible_pose1,
-                    key=lambda item: (
-                        abs(item[1].aspect_ratio - 0.78)
-                        + abs(item[1].bounding_coverage - 0.23) * 2.0,
-                        item[0].lower(),
-                    ),
-                )
-                ruled["tmz1"] = replacement
-                if wpz:
-                    wpz[0] = replacement
-                corrections.append(
-                    f"运动第1姿势已纠正：{current_pose1} -> {replacement}"
                 )
 
     current_yq3 = yq[2] if len(yq) >= 3 else ""
@@ -1473,12 +1643,15 @@ def _shoe_selection_prompt(
         )
     return f"""款号：{style_code}
 色码：{color_code}
-第一张图是带编号的本色候选原图，第二张图是鞋品主图姿势模板，第三张图是 yq 三姿势参考模板。
+第一张图是带编号的本色候选原图，第二张图是鞋品主图姿势模板，第三张图是新版主图1参考姿势，第四张图是 yq 三姿势参考模板。
 模板四列从左到右依次为：雪地、运动、婴童、休闲；每列从上到下是主图姿势1至5。
 {forced_rule}
 
 选择规则：
-1. tmz1..tmz5 是天猫5张主图，匹配该品类模板第1至5姿势；第5张必须白底。
+1. tmz1..tmz5 是天猫5张主图；wpz1..wpz4 与天猫前4张姿势相同。
+   tmz1/wpz1 必须使用第三张参考图的新版主图1：单只鞋、白底或浅灰底、斜前方悬浮/半悬浮展示，
+   能同时看清鞋面、鞋头、鞋身外侧和鞋底厚度；这个主图1适用于所有平台，不能再按旧模板第一格选择平放双鞋、鞋盒、局部特写或鞋头正对镜头。
+   tmz2..tmz5 匹配该品类模板第2至5姿势；第5张必须白底。
    所有品类的 tmz2/wpz2 都必须是：前方一只完整鞋正常展示，后方另一只完整鞋的鞋底朝向镜头。
    禁止选择两只鞋同向、并排、悬空的图，也禁止鞋垫、单鞋、单独鞋底或局部特写。
    所有品类的 tmz3/wpz3 都必须是单只鞋竖立或悬立、鞋身近似纵向的姿势；
@@ -1490,10 +1663,10 @@ def _shoe_selection_prompt(
    婴童第4姿势不能误用 yq3 的完整外侧面。
 2. wpz 共6张，wpz1..wpz4 与天猫前4张姿势相同；wpz5 与 tmz5 姿势相同但必须灰底；wpz6 必须是带款号和颜色标签的鞋盒图。
    tmz5/wpz5 都必须完整展示两只鞋，并严格匹配当前品类模板第5姿势；禁止鞋垫、单鞋、单独鞋底、局部特写或鞋盒。
-3. o 是每个颜色必需的海报图：运动类固定复用 wpz2 的“前方一只鞋+后方一只鞋底朝镜头”姿势；休闲、雪地、婴童固定复用各自 wpz5 的品类摆放姿势。程序会按品类强制覆盖。
+3. o 是主推色必需的海报图：运动类固定复用 wpz2 的“前方一只鞋+后方一只鞋底朝镜头”姿势；休闲、雪地、婴童固定复用主推色 wpz5 的品类摆放姿势。程序会按品类强制覆盖，非主推色不输出 o.jpg。
    wpz5 必须是该品类模板第5姿势的灰底版本，不能误用白底副本。
-4. yq 必须且只能返回3张，按第三张参考模板从左到右依次匹配：斜前方鞋+后方鞋底、完整鞋底平铺、完整外侧面。不要把 AI 角度图、颜色图或其他展示图放进 yq。
-5. yk 不用选择，程序只保留云盘中已经命名为 ykN 的细节图。
+4. yq 必须且只能返回3张，按第四张参考模板从左到右依次匹配：斜前方鞋+后方鞋底、完整鞋底平铺、完整外侧面。不要把 AI 角度图、颜色图或其他展示图放进 yq。
+5. yk 不用选择，程序只保留主推色云盘中已经命名为 yk1..ykN 的细节图；细节有几张就输出几张，非主推色不输出 yk。
    yx 只允许选择“鞋子主体与一张或多张功能吊牌/功能卡同框”的完整展示图。
    单独鞋垫、单独吊牌、鞋盒、普通鞋子图或局部特写都不是 yx；找不到合格图片必须返回空字符串。
 6. tms 不用选择，程序会按“12位款号-5位色码”文件名确定。
@@ -1574,28 +1747,68 @@ def _create_contact_sheets(
 def _default_analyze_color(**kwargs) -> dict[str, Any]:
     candidate_ids = kwargs["candidate_ids"]
     contact_sheets = kwargs.get("contact_sheets") or [kwargs["contact_sheet"]]
-    model_id = _text(kwargs.get("model_id")) or "qwen3.8-max-preview"
-    payload, route = llm_gateway.generate_multimodal_json(
-        system_prompt=SHOE_SELECTION_SYSTEM_PROMPT,
-        user_prompt=_shoe_selection_prompt(
-            kwargs["style_code"],
-            kwargs["color_code"],
-            candidate_ids,
-            kwargs.get("shoe_category") or "",
-        ),
-        image_inputs=[
-            *contact_sheets,
-            kwargs["reference_image"],
-            kwargs["yq_reference_image"],
-        ],
-        model_id=model_id,
-        fallback_model_ids=_qwen_fallback_model_ids(model_id),
-        config=kwargs.get("config"),
+    model_id = _text(kwargs.get("model_id")) or SHOE_POSE_DEFAULT_MODEL
+    model_ids = _shoe_pose_model_ids(model_id)
+    errors: list[str] = []
+    user_prompt = _shoe_selection_prompt(
+        kwargs["style_code"],
+        kwargs["color_code"],
+        candidate_ids,
+        kwargs.get("shoe_category") or "",
     )
-    if not isinstance(payload, dict):
-        raise ShoeSelectionError("鞋品姿势识别未返回 JSON 对象")
-    payload["_model_id"] = route.model_id
-    return payload
+    image_inputs = [
+        *contact_sheets,
+        kwargs["reference_image"],
+        kwargs.get("pose1_reference_image") or str(SHOE_POSE1_REFERENCE_IMAGE),
+        kwargs["yq_reference_image"],
+    ]
+    candidate_names = set(candidate_ids.values())
+
+    for current_model_id in model_ids:
+        try:
+            payload, route = llm_gateway.generate_multimodal_json(
+                system_prompt=SHOE_SELECTION_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                image_inputs=image_inputs,
+                model_id=current_model_id,
+                fallback_model_ids=(
+                    []
+                    if len(model_ids) > 1
+                    else _qwen_fallback_model_ids(current_model_id)
+                ),
+                config=kwargs.get("config"),
+            )
+            if not isinstance(payload, dict):
+                raise llm_gateway.LlmResponseError("鞋品姿势识别未返回 JSON 对象")
+            slots = payload.get("slots")
+            if not isinstance(slots, dict):
+                raise llm_gateway.LlmResponseError("鞋品姿势识别缺少 slots")
+            missing = []
+            for key, value in slots.items():
+                values = value if isinstance(value, list) else [value]
+                for item in values:
+                    resolved = _resolve_candidate_value(item, candidate_ids)
+                    if (
+                        resolved
+                        and candidate_names
+                        and resolved not in candidate_names
+                    ):
+                        missing.append(f"{key}={resolved}")
+            if missing:
+                raise llm_gateway.LlmResponseError(
+                    "识别结果引用了不存在的候选图：" + "、".join(missing[:5])
+                )
+            payload["_model_id"] = route.model_id
+            if errors:
+                payload["_model_attempt_warnings"] = "；".join(errors[:5])
+            return payload
+        except llm_gateway.LlmGatewayError as exc:
+            errors.append(f"{current_model_id}: {exc}")
+
+    raise ShoeSelectionError(
+        "鞋品姿势识别多模型均失败："
+        + "；".join(errors[:8])
+    )
 
 
 def _create_label_preview(source: Path, target: Path) -> None:
@@ -1622,7 +1835,9 @@ def _default_analyze_color_label(**kwargs) -> dict[str, Any]:
             f"这是款号 {kwargs['style_code']}、色码 {color_code} 的鞋盒标签图。"
             "请读取产品名称和完整颜色名称。颜色名称必须以图片标签为准，并保留5位色码。"
             '返回：{"product_name":"...","color_name":"...","color_code":"5位色码"}'
-            '，并返回整张图中鞋盒白色标签和款号文字的归一化坐标：'
+            "，并返回整张图中鞋盒白色标签和完整12位款号文字的归一化坐标。"
+            "style_code_bbox 必须紧贴完整12位款号文本本身，不包含“产品货号/款号”等字段名；"
+            "如果边界不确定，宁可略宽也不能漏掉任意一位数字。"
             '"label_bbox":[x1,y1,x2,y2],"style_code_bbox":[x1,y1,x2,y2]，'
             "坐标范围0到1000。"
         ),
@@ -1713,10 +1928,11 @@ def _create_ai_channel_assets(
     source = Path(source)
     package_root = Path(package_root)
     package_root.mkdir(parents=True, exist_ok=True)
+    safe_color_name = _safe_path_component(color_name)
     outputs = {
-        "wpt30": package_root / f"wpt30.{color_name}.png",
-        "jdt_png": package_root / f"jdt.{color_name}.png",
-        "jdt_jpg": package_root / f"jdt.{color_name}.jpg",
+        "wpt30": package_root / f"wpt30.{safe_color_name}.png",
+        "jdt_png": package_root / f"jdt.{safe_color_name}.png",
+        "jdt_jpg": package_root / f"jdt.{safe_color_name}.jpg",
     }
     shutil.copy2(source, outputs["wpt30"])
     shutil.copy2(source, outputs["jdt_png"])
@@ -1746,6 +1962,8 @@ def _create_tmq_asset(
     target: Path | str,
     label_bbox: Any = None,
     style_code_bbox: Any = None,
+    style_code: str = "",
+    require_style_code_bbox: bool = False,
 ) -> Path:
     from PIL import Image, ImageDraw, ImageOps
 
@@ -1756,7 +1974,29 @@ def _create_tmq_asset(
         with Image.open(source) as opened:
             image = ImageOps.exif_transpose(opened).convert("RGB")
     width, height = image.size
-    label = _normalized_bbox(label_bbox) or (0.50, 0.31, 0.79, 0.57)
+    style = _normalized_bbox(style_code_bbox)
+    if require_style_code_bbox and style is None:
+        raise ShoeSelectionError("鞋盒标签 OCR 未返回款号文字坐标，无法生成 tmq.jpg")
+
+    label = _normalized_bbox(label_bbox)
+    if label is None and style is not None:
+        style_x1, style_y1, style_x2, style_y2 = style
+        style_width = style_x2 - style_x1
+        style_height = style_y2 - style_y1
+        label = (
+            max(0.0, style_x1 - style_width * 1.3),
+            max(0.0, style_y1 - style_height * 5.0),
+            min(1.0, style_x2 + style_width * 3.2),
+            min(1.0, style_y2 + style_height * 8.0),
+        )
+    if label is None:
+        label = (0.50, 0.31, 0.79, 0.57)
+    style = ocr_service.refine_style_code_bbox(
+        image=image,
+        label_bbox=label,
+        style_code_bbox=style,
+        style_code=style_code,
+    )
     label_px = (
         label[0] * width,
         label[1] * height,
@@ -1774,24 +2014,43 @@ def _create_tmq_asset(
     crop = image.crop((round(left), round(top), round(left + side), round(top + side)))
     crop = crop.resize((460, 460), Image.Resampling.LANCZOS)
 
-    # 鞋盒标签版式固定，按标签首行的款号区域绘框比模型返回的文字框更稳定；
-    # 模型文字框常会漏掉紧贴右侧的最后一位款号。
     label_x1, label_y1, label_x2, label_y2 = label
-    style = (
-        label_x1 + (label_x2 - label_x1) * 0.29,
-        label_y1 + (label_y2 - label_y1) * 0.02,
-        label_x1 + (label_x2 - label_x1) * 0.82,
-        label_y1 + (label_y2 - label_y1) * 0.18,
-    )
+    if style is not None:
+        style_width_px = (style[2] - style[0]) * width
+        style_height_px = (style[3] - style[1]) * height
+        # OCR often returns a tight text box and may clip the final digit by a
+        # few pixels. Keep the box anchored to the recognized text while sizing
+        # it for a full 12-digit style code.
+        min_width_px = style_height_px * max(5.5, min(len(_text(style_code)) * 0.58, 8.8))
+        if style_width_px < min_width_px:
+            center = (style[0] + style[2]) / 2
+            half_width = (min_width_px / width) / 2
+            style = (
+                max(label_x1, center - half_width),
+                style[1],
+                min(label_x2, center + half_width),
+                style[3],
+            )
+    else:
+        style = (
+            label_x1 + (label_x2 - label_x1) * 0.24,
+            label_y1 + (label_y2 - label_y1) * 0.00,
+            label_x1 + (label_x2 - label_x1) * 0.90,
+            label_y1 + (label_y2 - label_y1) * 0.22,
+        )
     draw = ImageDraw.Draw(crop)
     scale = 460 / side
+    style_height_on_crop = max(1.0, (style[3] - style[1]) * height * scale)
+    pad_left = max(3, round(style_height_on_crop * 0.22))
+    pad_right = max(4, round(style_height_on_crop * 0.32))
+    pad_y = max(3, round(style_height_on_crop * 0.30))
     rectangle = (
-        round((style[0] * width - left) * scale),
-        round((style[1] * height - top) * scale),
-        round((style[2] * width - left) * scale),
-        round((style[3] * height - top) * scale),
+        max(0, round((style[0] * width - left) * scale) - pad_left),
+        max(0, round((style[1] * height - top) * scale) - pad_y),
+        min(460, round((style[2] * width - left) * scale) + pad_right),
+        min(460, round((style[3] * height - top) * scale) + pad_y),
     )
-    draw.rectangle(rectangle, outline=(255, 0, 0), width=2)
+    draw.rectangle(rectangle, outline=(255, 0, 0), width=3)
     target.parent.mkdir(parents=True, exist_ok=True)
     crop.save(target, format="JPEG", quality=95, optimize=True)
     return target
@@ -1830,26 +2089,35 @@ def _validate_selection_sources(
 
 def _copy_as_jpeg(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    if source.suffix.lower() in {".jpg", ".jpeg"}:
+    target_suffix = target.suffix.lower()
+    source_suffix = source.suffix.lower()
+    if target_suffix == ".png" and source_suffix == ".png":
+        shutil.copy2(source, target)
+        return
+    if target_suffix in {".jpg", ".jpeg"} and source_suffix in {".jpg", ".jpeg"}:
         shutil.copy2(source, target)
         return
     from PIL import Image, ImageOps
 
     with Image.open(source) as opened:
-        image = ImageOps.exif_transpose(opened).convert("RGB")
-        image.save(target, format="JPEG", quality=95, optimize=True)
+        image = ImageOps.exif_transpose(opened)
+        if target_suffix == ".png":
+            image.save(target, format="PNG")
+        else:
+            image.convert("RGB").save(target, format="JPEG", quality=95, optimize=True)
 
 
 def prepare_shoe_packages(
     *,
     data_rows: list[dict[str, Any]],
     output_root: Path | str,
-    model_id: str = "qwen3.8-max-preview",
+    model_id: str = SHOE_POSE_DEFAULT_MODEL,
     shoe_categories: dict[str, str] | None = None,
     config: dict | None = None,
     analyze_color=None,
     analyze_color_label=None,
     reference_image: Path | str = SHOE_REFERENCE_IMAGE,
+    pose1_reference_image: Path | str = SHOE_POSE1_REFERENCE_IMAGE,
     yq_reference_image: Path | str = SHOE_YQ_REFERENCE_IMAGE,
     log=lambda _message: None,
     progress=None,
@@ -1858,9 +2126,12 @@ def prepare_shoe_packages(
 
     output_root = Path(output_root)
     reference_image = Path(reference_image)
+    pose1_reference_image = Path(pose1_reference_image)
     yq_reference_image = Path(yq_reference_image)
     if not reference_image.is_file():
         raise ShoeSelectionError(f"鞋品主图参考模板不存在：{reference_image}")
+    if not pose1_reference_image.is_file():
+        raise ShoeSelectionError(f"鞋品主图1参考模板不存在：{pose1_reference_image}")
     if not yq_reference_image.is_file():
         raise ShoeSelectionError(f"鞋品 yq 参考模板不存在：{yq_reference_image}")
 
@@ -1931,6 +2202,9 @@ def prepare_shoe_packages(
         anchor_category = ""
 
         for color_code, entries in colors.items():
+            entries, size_warning = _filter_single_shoe_size_entries(entries)
+            if size_warning:
+                log(f"[warn] {style_code}-{color_code} {size_warning}")
             report_progress(
                 "识别姿势",
                 style_code=style_code,
@@ -1997,6 +2271,7 @@ def prepare_shoe_packages(
                     contact_sheet=str(contact_sheets[0]),
                     contact_sheets=[str(path) for path in contact_sheets],
                     reference_image=str(reference_image),
+                    pose1_reference_image=str(pose1_reference_image),
                     yq_reference_image=str(yq_reference_image),
                     candidate_ids=candidate_ids,
                     candidate_names=[
@@ -2037,9 +2312,9 @@ def prepare_shoe_packages(
                 (
                     filename
                     for filename in entries_by_name
-                    if re.match(r"^yk\s*(?:[\(（]\s*)?\d+", Path(filename).stem, re.IGNORECASE)
+                    if _is_named_yk_filename(filename)
                 ),
-                key=lambda value: _natural_slot_index(value, "yk"),
+                key=_named_yk_sort_key,
             )
             slots["yk"] = named_yk
             slots["yq"] = _selection_list(slots, "yq")[:3]
@@ -2122,7 +2397,11 @@ def prepare_shoe_packages(
                 f"模型 {slots.get('_model_id') or model_id}"
             )
 
-        assignments, warnings = build_output_assignments(selections_by_color, color_order)
+        output_color_order = _promoted_color_first(selections_by_color, color_order)
+        assignments, warnings = build_output_assignments(
+            selections_by_color,
+            output_color_order,
+        )
         warnings.extend(
             {
                 "color": color_name,
@@ -2138,7 +2417,7 @@ def prepare_shoe_packages(
         report_progress(
             "生成命名计划",
             style_code=style_code,
-            color_code=color_order[0] if color_order else "",
+            color_code=output_color_order[0] if output_color_order else "",
         )
         for assignment in assignments:
             color_name = assignment["color"]
@@ -2165,18 +2444,20 @@ def prepare_shoe_packages(
                 ),
             })
 
-        for color_index, color_name in enumerate(color_order, start=1):
+        for color_index, color_name in enumerate(output_color_order, start=1):
             report_progress(
                 "复制命名",
                 style_code=style_code,
                 color_code=color_name,
             )
-            folder = package_root / f"{color_index}.{color_name}"
+            folder = package_root / f"{color_index}.{_safe_path_component(color_name)}"
             entries_by_name = entries_by_color_name[color_name]
             original_entries = original_entries_by_color_name[color_name]
             original_targets = _original_asset_relative_targets(original_entries)
             for entry, relative_target in zip(original_entries, original_targets):
                 filename = entry["filename"]
+                if _is_reserved_shoe_output_filename(filename):
+                    continue
                 target = folder / relative_target
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(Path(entry["path"]), target)
@@ -2251,6 +2532,8 @@ def prepare_shoe_packages(
                     target=package_root / "tmq.jpg",
                     label_bbox=selections_by_color[color_name].get("label_bbox"),
                     style_code_bbox=selections_by_color[color_name].get("style_code_bbox"),
+                    style_code=style_code,
+                    require_style_code_bbox=bool(label_analyzer),
                 )
                 report_rows.append({
                     "输入款号": style_code,

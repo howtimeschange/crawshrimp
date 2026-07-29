@@ -367,6 +367,55 @@ def _generic_openai_json_request(
     )
 
 
+def _data_url_image(value: str) -> tuple[str, str] | None:
+    match = re.match(r"^data:([^;,]+);base64,(.+)$", _compact(value), flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    return match.group(1), re.sub(r"\s+", "", match.group(2))
+
+
+def _anthropic_image_content(reference: str) -> dict[str, Any]:
+    data_url = _data_url_image(reference)
+    if data_url:
+        media_type, encoded = data_url
+    else:
+        media_type, encoded = _download_image_data(reference)
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type if media_type.startswith("image/") else "image/jpeg",
+            "data": encoded,
+        },
+    }
+
+
+def _generic_anthropic_json_request(
+    route: LlmRoute,
+    system_prompt: str,
+    user_prompt: str,
+    image_references: list[str],
+) -> dict:
+    content: list[dict[str, Any]] = [{"type": "text", "text": _compact(user_prompt)}]
+    content.extend(_anthropic_image_content(reference) for reference in image_references)
+    return _post_json(
+        _anthropic_endpoint(route.base_url),
+        {
+            "model": route.model_id,
+            "max_tokens": 2000,
+            "system": _compact(system_prompt),
+            "messages": [{"role": "user", "content": content}],
+        },
+        {
+            "x-api-key": route.api_key,
+            "Authorization": f"Bearer {route.api_key}",
+            "anthropic-version": "2023-06-01",
+        },
+        timeout=240,
+        total_timeout=240,
+    )
+
+
 def _anthropic_request(route: LlmRoute, product_title: str, image_urls: list[str], correction: str) -> dict:
     content: list[dict[str, Any]] = [{"type": "text", "text": _user_prompt(product_title, correction)}]
     for image_url in image_urls:
@@ -384,7 +433,11 @@ def _anthropic_request(route: LlmRoute, product_title: str, image_urls: list[str
     return _post_json(
         _anthropic_endpoint(route.base_url),
         payload,
-        {"x-api-key": route.api_key, "anthropic-version": "2023-06-01"},
+        {
+            "x-api-key": route.api_key,
+            "Authorization": f"Bearer {route.api_key}",
+            "anthropic-version": "2023-06-01",
+        },
     )
 
 
@@ -508,8 +561,9 @@ def generate_multimodal_json(
     fallback_model_ids: list[str] | None = None,
     config: dict | None = None,
     request_openai: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_openai_json_request,
+    request_anthropic: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_anthropic_json_request,
 ) -> tuple[Any, LlmRoute]:
-    """Call an OpenAI-compatible multimodal route and parse its JSON response."""
+    """Call a multimodal route and parse its JSON response."""
 
     system = _compact(system_prompt)
     prompt = _compact(user_prompt)
@@ -536,10 +590,12 @@ def generate_multimodal_json(
     last_error: LlmGatewayError | None = None
     for attempt_index, current_model_id in enumerate(attempts):
         route = route_for_model(current_model_id, config=config)
-        if route.protocol != "openai":
-            raise LlmConfigurationError("当前通用多模态 JSON 识别仅支持 OpenAI 兼容模型")
         try:
-            response = request_openai(route, system, prompt, references)
+            response = (
+                request_anthropic(route, system, prompt, references)
+                if route.protocol == "anthropic"
+                else request_openai(route, system, prompt, references)
+            )
             return _parse_json_text(_response_text(response)), route
         except LlmGatewayError as exc:
             last_error = exc

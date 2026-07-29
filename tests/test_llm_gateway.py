@@ -125,6 +125,28 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(calls[0][1:3], ("识别鞋品姿势", "只返回 JSON"))
         self.assertTrue(calls[0][3][0].startswith("data:image/jpeg;base64,"))
 
+    def test_generic_multimodal_json_uses_anthropic_messages_route(self):
+        calls = []
+
+        def fake_anthropic(route, system_prompt, user_prompt, images):
+            calls.append((route, system_prompt, user_prompt, images))
+            return {"content": [{"type": "text", "text": '{"ok":true}'}]}
+
+        payload, route = llm_gateway.generate_multimodal_json(
+            system_prompt="识别鞋品姿势",
+            user_prompt="只返回 JSON",
+            image_inputs=["data:image/png;base64,iVBORw0KGgo="],
+            model_id="claude-sonnet-5",
+            config=self.config(),
+            request_anthropic=fake_anthropic,
+        )
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(route.model_id, "claude-sonnet-5")
+        self.assertEqual(route.protocol, "anthropic")
+        self.assertEqual(calls[0][1:3], ("识别鞋品姿势", "只返回 JSON"))
+        self.assertTrue(calls[0][3][0].startswith("data:image/png;base64,"))
+
     def test_generic_multimodal_json_retries_once_after_transient_gateway_error(self):
         calls = []
 

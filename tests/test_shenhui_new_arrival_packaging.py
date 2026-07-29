@@ -43,7 +43,11 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             params["shoe_category_file"]["template_file"],
             "assets/鞋品品类映射模板.xlsx",
         )
-        self.assertEqual(params["model_id"]["default"], "qwen3.8-max-preview")
+        self.assertEqual(params["model_id"]["default"], "gpt-5.5")
+        self.assertIn(
+            "gpt-5.5",
+            [option["value"] for option in params["model_id"]["options"]],
+        )
         self.assertIn(
             "qwen3.7-plus",
             [option["value"] for option in params["model_id"]["options"]],

@@ -3062,8 +3062,8 @@ def _prepare_shenhui_shoe_package_rows(
     report_rows, package_roots = shenhui_shoe_packaging.prepare_shoe_packages(
         data_rows=data_rows,
         output_root=output_root,
-        model_id=str(run_params.get("model_id") or "qwen3.8-max-preview").strip()
-        or "qwen3.8-max-preview",
+        model_id=str(run_params.get("model_id") or shenhui_shoe_packaging.SHOE_POSE_DEFAULT_MODEL).strip()
+        or shenhui_shoe_packaging.SHOE_POSE_DEFAULT_MODEL,
         shoe_categories=shoe_categories,
         analyze_color_label=(
             False

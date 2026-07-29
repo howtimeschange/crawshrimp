@@ -1207,6 +1207,7 @@ function spawnBackendProcess() {
       CRAWSHRIMP_AI_VIDEO_CAPABILITY_SECRET: AI_VIDEO_CAPABILITY_SECRET,
       CRAWSHRIMP_APP_ENV: CLOUD_APPROVAL_APP_ENV,
       CRAWSHRIMP_NODE_EXECUTABLE: process.execPath,
+      CRAWSHRIMP_NODE_MODULES_DIR: path.join(__dirname, '..', 'node_modules'),
       ELECTRON_RUN_AS_NODE: '',
       PYTHONPATH: scriptsDir,
     },

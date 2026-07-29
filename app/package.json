@@ -22,6 +22,7 @@
     "portfinder": "^1.0.32",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "tesseract.js": "^5.1.1",
     "tldraw": "^5.2.3"
   },
   "devDependencies": {
