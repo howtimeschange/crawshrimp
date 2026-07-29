@@ -1,6 +1,6 @@
 id: temu
 name: Temu 运营助手
-version: 1.5.5
+version: 1.5.8
 author: howtimeschange
 description: "Temu 卖家后台数据抓取与批量自动化：商品数据、商品流量、售后、评价、站点商品、商品实拍图洗唛合规"
 entry_url: https://agentseller.temu.com
@@ -1270,6 +1270,227 @@ tasks:
           - 主体标签图文件数
           - 外包装标签图文件数
           - 深度识别结果
+
+  - id: wash_label_official_pdf_download
+    name: 后台-洗水唛官方 PDF 批量下载
+    description: 在指定店铺通过页面 API 分页发现全部“已制作且可导出”的洗水唛，并逐条执行 PDF-only 官方导出；不会制作、编辑或保存标签。
+    script: wash-label-official-pdf-download.js
+    entry_url: https://agentseller.temu.com/goods/label
+    tab_match_prefixes:
+      - https://agentseller.temu.com/goods/label
+      - https://agentseller.temu.com/auth/authentication
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页（推荐）
+          - value: new
+            label: 新开标签页
+      - id: store_name
+        type: select
+        label: TEMU 店铺
+        default: balabala Official Shop
+        required: true
+        options:
+          - value: minibala Kids Shop
+            label: minibala Kids Shop
+          - value: SEMIR Official Shop
+            label: SEMIR Official Shop
+          - value: balabala Official Shop
+            label: balabala Official Shop
+          - value: Balabala Shoes
+            label: Balabala Shoes
+        hint: 脚本只会切换到当前账号可见且名称完全匹配的店铺，并在查询前回读校验。
+      - id: input_file
+        type: file_excel
+        label: 洗唛需求 Excel（可选）
+        required: false
+        hint: 选择「洗唛需求」表后，脚本会按款号/SKC 去重选代表 SKU货号，只下载已制作项；不传则扫描当前店铺全部已制作洗水唛。
+      - id: pilot_style
+        type: text
+        label: 试点款号（可选）
+        default: "209225117208"
+        hint: 仅在上传 Excel 时生效；留空表示处理表格内全部款号。
+      - id: max_skc
+        type: number
+        label: Excel 模式最多 SKC
+        default: 0
+        min: 0
+        max: 10000
+        step: 1
+        hint: 0 表示不限制；建议真实全量前先用 1-2 个 SKC 试跑。
+      - id: max_downloads
+        type: number
+        label: 单次最多下载
+        default: 0
+        min: 0
+        max: 10000
+        step: 1
+        hint: 0 表示下载当前店铺全部可下载洗水唛；测试或断点重跑时可填写正整数限制数量。
+      - id: timeout_seconds
+        type: number
+        label: 下载等待秒数
+        default: 60
+        min: 5
+        max: 120
+        step: 5
+        hint: 等待 TEMU 官方 PDF 浏览器下载完成；失败时只输出诊断，不生成截图恢复稿。
+    trigger:
+      type: manual
+    output:
+      - type: json
+        filename: "wash-label-download-diagnostic_{timestamp}.json"
+
+  - id: wash_label_create_and_download
+    name: 后台-洗水唛制作并下载官方 PDF
+    description: 基于洗唛需求 Excel 按 SKC 选择代表 SKU，通过 TEMU 页面 API 生成洗水唛制作参数；默认 dry-run 不保存，显式授权后调用 TEMU 保存接口，回读“已制作”后只导出官方 PDF。
+    script: wash-label-create-and-download.js
+    entry_url: https://agentseller.temu.com/goods/label
+    tab_match_prefixes:
+      - https://agentseller.temu.com/goods/label
+      - https://agentseller.temu.com/auth/authentication
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页（推荐）
+          - value: new
+            label: 新开标签页
+      - id: store_name
+        type: select
+        label: TEMU 店铺
+        default: balabala Official Shop
+        required: true
+        options:
+          - value: minibala Kids Shop
+            label: minibala Kids Shop
+          - value: SEMIR Official Shop
+            label: SEMIR Official Shop
+          - value: balabala Official Shop
+            label: balabala Official Shop
+          - value: Balabala Shoes
+            label: Balabala Shoes
+        hint: 脚本只会切换到当前账号可见且名称完全匹配的店铺，并在查询/制作前回读校验。
+      - id: input_file
+        type: file_excel
+        label: 洗唛需求 Excel
+        required: true
+        hint: 读取「洗唛需求」表，按必填字段去重、补全同款唯一成分，并以每个 SKC 的代表 SKU货号作为 TEMU 在线制作单位。
+      - id: pilot_style
+        type: text
+        label: 试点款号
+        default: "209225117208"
+        hint: 留空表示处理表格内全部款号；使用“试点已确认符号”时只允许款号 209225117208 自动进入保存。
+      - id: max_skc
+        type: number
+        label: 最多处理 SKC
+        default: 1
+        min: 0
+        max: 10000
+        step: 1
+        hint: 0 表示不限制；真实保存前建议先用 1-2 个 SKC dry-run。
+      - id: execute_mode
+        type: radio
+        label: 执行模式
+        default: dry_run
+        options:
+          - value: dry_run
+            label: 只预检参数，不保存
+          - value: create_and_download
+            label: 保存制作并下载
+        hint: dry-run 只输出制作 payload 摘要；保存是外部写入动作，需同时勾选“允许调用保存接口”。
+      - id: allow_save
+        type: checkbox
+        label: 允许调用 TEMU 保存接口
+        default: false
+        hint: 仅在执行模式为“保存制作并下载”时生效；未勾选时不会调用 care/create 或 care/edit。
+      - id: download_after_save
+        type: checkbox
+        label: 回读已制作后下载官方 PDF
+        default: true
+        hint: 开启后通过 TEMU 官方导出弹窗仅选择 PDF，并校验本地文件以 %PDF- 开头。
+      - id: skip_already_made
+        type: checkbox
+        label: 已制作项不重复保存
+        default: true
+        hint: 已制作项只按参数决定是否下载官方 PDF，不会自动编辑或重新保存。
+      - id: care_symbols_mode
+        type: radio
+        label: 洗护符号来源
+        default: pilot_defaults
+        options:
+          - value: pilot_defaults
+            label: 试点已确认符号
+          - value: manual_json
+            label: 人工 JSON
+        hint: 试点符号为手洗、不可漂白、平摊晾干、110℃无蒸汽熨烫、不可干洗；其他款号请人工确认 SCM 附件后使用 JSON。
+      - id: care_symbols_json
+        type: textarea
+        label: 人工洗护符号 JSON
+        default: '{"washing":13,"bleaching":3,"drying":8,"ironing":3,"dryCleaning":5}'
+        visible_when:
+          field: care_symbols_mode
+          equals: manual_json
+        hint: 传 TEMU 前端枚举值；字段必须包含 washing、bleaching、drying、ironing、dryCleaning。
+      - id: manufacturer_name
+        type: text
+        label: 制造商名称
+        default: "Zhejiang Semir Garment Co.,Ltd."
+        hint: 必须与 TEMU care/query 回读的可选项完全匹配；若只有一个 TEMU 可选项会自动使用该项。
+      - id: manufacturer_address
+        type: text
+        label: 制造商地址
+        default: "No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China"
+        hint: 写入 TEMU 保存字段 manufacturerAddressPg。
+      - id: production_date
+        type: date
+        label: 生产日期
+        default: "2026-06-01"
+      - id: batch_number
+        type: text
+        label: 批次号
+        default: "PC260601"
+      - id: label_width_mm
+        type: number
+        label: 洗水唛宽度 mm
+        default: 35
+        min: 10
+        max: 100
+        step: 1
+      - id: label_length_mm
+        type: number
+        label: 洗水唛长度 mm
+        default: 235
+        min: 50
+        max: 500
+        step: 5
+        hint: 试点交接已验证 35 x 235 mm；其他款需先 dry-run 并确认 TEMU 安全打印区域。
+      - id: label_padding_mm
+        type: number
+        label: 上下预留 mm
+        default: 10
+        min: 0
+        max: 100
+        step: 1
+      - id: timeout_seconds
+        type: number
+        label: 下载等待秒数
+        default: 60
+        min: 5
+        max: 120
+        step: 5
+        hint: 等待 TEMU 官方 PDF 浏览器下载完成；失败时只输出诊断，不生成截图恢复稿。
+    trigger:
+      type: manual
+    output:
+      - type: json
+        filename: "wash-label-create-and-download-diagnostic_{timestamp}.json"
 
   - id: store_items
     name: 站点商品

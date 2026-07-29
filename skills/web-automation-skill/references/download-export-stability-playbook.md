@@ -72,6 +72,7 @@ Adapter phase machine should own:
 
 Runtime download watcher should own:
 
+- native browser download-path setup before the final click
 - temporary tabs
 - region / auth confirmation popovers
 - browser download directory monitoring
@@ -156,8 +157,10 @@ Examples:
 Minimum validation for exported files:
 
 - file exists in runtime artifact directory
+- file is non-empty and fully finished rather than a `.crdownload`
 - final filename matches the intended naming rule
 - file type matches expectation
+- PDF exports begin with the `%PDF-` signature
 - if the file is supposed to be spreadsheet content, confirm it is a real spreadsheet container such as OOXML
 
 For high-risk flows, add a lightweight content sanity check too.

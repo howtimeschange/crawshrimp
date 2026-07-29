@@ -92,32 +92,44 @@ def find_new_download(
     if not directory.exists() or not directory.is_dir():
         return None
     expected_name = Path(str(expected_file or "")).name
+    expected_suffix = Path(expected_name).suffix.lower()
     threshold_ns = max(int(started_at_ns or 0) - 2_000_000_000, 0)
-    newest: tuple[int, Path, int] | None = None
+    exact: tuple[int, Path, int] | None = None
+    extension_fallback: tuple[int, Path, int] | None = None
     for path in directory.iterdir():
         if not path.is_file() or path.name.endswith(".crdownload"):
             continue
-        if expected_name and path.name != expected_name:
+        exact_name = not expected_name or path.name == expected_name
+        same_extension = bool(expected_suffix and path.suffix.lower() == expected_suffix)
+        if not exact_name and not same_extension:
             continue
         try:
             stat = path.stat()
         except OSError:
+            continue
+        if stat.st_size <= 0:
             continue
         previous = baseline.get(str(path))
         if previous and stat.st_mtime_ns <= int(previous.get("mtime_ns") or 0) and stat.st_size == int(previous.get("size") or 0):
             continue
         if stat.st_mtime_ns < threshold_ns:
             continue
-        if newest is None or stat.st_mtime_ns > newest[0]:
-            newest = (stat.st_mtime_ns, path, stat.st_size)
-    if newest is None:
+        candidate = (stat.st_mtime_ns, path, stat.st_size)
+        if exact_name:
+            if exact is None or stat.st_mtime_ns > exact[0]:
+                exact = candidate
+        elif extension_fallback is None or stat.st_mtime_ns > extension_fallback[0]:
+            extension_fallback = candidate
+    selected = exact or extension_fallback
+    if selected is None:
         return None
-    _, path, size = newest
+    _, path, size = selected
     return {
         "path": str(path),
         "filename": path.name,
         "bytes": size,
         "download_dir": str(directory),
+        "matchedBy": "expected_name" if exact else f"fallback_any_{path.suffix.lower().lstrip('.') or 'file'}",
     }
 
 
@@ -322,6 +334,18 @@ async def _websocket_capture(
                 return
             if not request_matches(entry, matches, ignore_body_contains=True):
                 return
+            if not entry.get("postData") and str(entry.get("method") or "").upper() not in {"", "GET", "HEAD"}:
+                try:
+                    post_result = await send(
+                        "Network.getRequestPostData",
+                        {"requestId": request_id},
+                        timeout_seconds=5.0,
+                    )
+                    post_data = (post_result.get("result") or {}).get("postData")
+                    if isinstance(post_data, str):
+                        entry["postData"] = post_data
+                except Exception:
+                    pass
             if include_response_body or body_match_requested:
                 try:
                     body_result = await send("Network.getResponseBody", {"requestId": request_id}, timeout_seconds=5.0)
@@ -579,12 +603,14 @@ class ChromeCDPBackend:
         self.url_prefix = url_prefix
         self._get_json = get_json
         self._send_ws = send_ws or _websocket_send
+        self._uses_default_send_ws = send_ws is None
         self._capture_ws = capture_ws or _websocket_capture
         self._file_chooser_ws = file_chooser_ws or _websocket_file_chooser
         self._browser_download_ws = browser_download_ws or _websocket_browser_session_download
         self._new_tab = new_tab
         self._close_tab = close_tab
         self._message_id = 0
+        self._download_session_ws = None
 
     def _next_id(self) -> int:
         self._message_id += 1
@@ -752,6 +778,171 @@ class ChromeCDPBackend:
         if hasattr(result, "__await__"):
             return await result
         return result
+
+    async def prepare_download_async(self, download_dir: Path | str) -> dict[str, Any]:
+        directory = Path(download_dir).expanduser()
+        directory.mkdir(parents=True, exist_ok=True)
+        if self._download_session_ws is not None:
+            await self.restore_download_async()
+
+        if self._uses_default_send_ws:
+            try:
+                import websockets
+            except ImportError as exc:
+                raise RuntimeError("Chrome CDP WebSocket support requires the 'websockets' package.") from exc
+            tab = self.select_tab()
+            ws_url = str(tab.get("webSocketDebuggerUrl") or "")
+            if not ws_url:
+                raise RuntimeError("Selected Chrome tab does not expose webSocketDebuggerUrl.")
+            self._download_session_ws = await websockets.connect(
+                ws_url,
+                max_size=50 * 1024 * 1024,
+                proxy=None,
+            )
+            response = await self._send_to_held_download_ws(
+                "Page.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": str(directory),
+                },
+            )
+        else:
+            response = await self._send(
+                "Page.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": str(directory),
+                },
+            )
+        error = response.get("error") if isinstance(response, dict) else None
+        if error:
+            if self._download_session_ws is not None:
+                await self._download_session_ws.close()
+                self._download_session_ws = None
+            return {
+                "configured": False,
+                "method": "Page.setDownloadBehavior",
+                "downloadPath": str(directory),
+                "error": json.dumps(error, ensure_ascii=False),
+            }
+        return {
+            "configured": True,
+            "method": "Page.setDownloadBehavior",
+            "downloadPath": str(directory),
+        }
+
+    def prepare_download(self, download_dir: Path | str) -> dict[str, Any]:
+        if self._uses_default_send_ws:
+            return {
+                "configured": False,
+                "method": "Page.setDownloadBehavior",
+                "downloadPath": str(Path(download_dir).expanduser()),
+                "error": "use execute_download so the CDP download session remains open",
+            }
+        return asyncio.run(self.prepare_download_async(download_dir))
+
+    async def _send_to_held_download_ws(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float = 10,
+    ) -> dict[str, Any]:
+        ws = self._download_session_ws
+        if ws is None:
+            raise RuntimeError("download session websocket is not open")
+        current_id = self._next_id()
+        await ws.send(json.dumps({"id": current_id, "method": method, "params": params or {}}))
+        deadline = asyncio.get_event_loop().time() + max(timeout, 0.1)
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError(f"CDP command timeout: {method}")
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            payload = json.loads(raw)
+            if payload.get("id") == current_id:
+                return payload
+
+    async def restore_download_async(self) -> None:
+        ws = self._download_session_ws
+        self._download_session_ws = None
+        if ws is not None:
+            self._download_session_ws = ws
+            try:
+                await self._send_to_held_download_ws("Page.setDownloadBehavior", {"behavior": "default"})
+            finally:
+                self._download_session_ws = None
+                await ws.close()
+            return
+        if not self._uses_default_send_ws:
+            await self._send("Page.setDownloadBehavior", {"behavior": "default"})
+
+    def restore_download(self) -> None:
+        if self._uses_default_send_ws and self._download_session_ws is None:
+            return
+        asyncio.run(self.restore_download_async())
+
+    async def execute_download_async(
+        self,
+        action: BrowserAction,
+        download_dir: Path | str,
+        *,
+        expected_file: str = "",
+        timeout_ms: int = 8000,
+    ) -> BrowserResult:
+        directory = Path(download_dir).expanduser()
+        directory.mkdir(parents=True, exist_ok=True)
+        baseline = snapshot_download_dir(directory)
+        started_at_ns = time.time_ns()
+        control = await self.prepare_download_async(directory)
+        try:
+            result = await self.execute_async(action)
+            if not result.ok:
+                return result
+            deadline = time.monotonic() + max(timeout_ms, 1000) / 1000.0
+            download = None
+            while time.monotonic() < deadline:
+                download = find_new_download(
+                    directory,
+                    baseline,
+                    expected_file=expected_file,
+                    started_at_ns=started_at_ns,
+                )
+                if download:
+                    break
+                await asyncio.sleep(0.1)
+            if not download:
+                return BrowserResult(
+                    ok=False,
+                    action=result.action,
+                    data=result.data,
+                    error=f"No downloaded file detected in {directory}",
+                )
+            merged = dict(result.data)
+            merged["download"] = {
+                **download,
+                "browserDownloadControl": control,
+            }
+            return BrowserResult(ok=True, action=result.action, data=merged)
+        finally:
+            await self.restore_download_async()
+
+    def execute_download(
+        self,
+        action: BrowserAction,
+        download_dir: Path | str,
+        *,
+        expected_file: str = "",
+        timeout_ms: int = 8000,
+    ) -> BrowserResult:
+        return asyncio.run(
+            self.execute_download_async(
+                action,
+                download_dir,
+                expected_file=expected_file,
+                timeout_ms=timeout_ms,
+            )
+        )
 
     async def download_browser_session(self, item: dict[str, Any], target_path: Path | str, timeout_seconds: int) -> dict[str, Any]:
         url = str((item or {}).get("url") or "").strip()

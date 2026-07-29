@@ -96,7 +96,7 @@ If the API path cannot solve the task safely, use fallback UI actions one at a t
 ```bash
 python3 scripts/web_operator.py act click --url-prefix https://example.com --selector "button.export" --reason "fallback: open export menu after API path was unavailable" --journal run.json
 python3 scripts/web_operator.py act type --url-prefix https://example.com --selector "input.search" --value "sku123" --reason "fallback: visible search is the available control" --journal run.json
-python3 scripts/web_operator.py act download --url-prefix https://example.com --selector "a.export" --expected-file report.csv --download-dir ~/Downloads --reason "fallback: download URL was not exposed" --journal run.json
+python3 scripts/web_operator.py act download --url-prefix https://example.com --selector "a.export" --expected-file report.csv --download-dir ~/Downloads --download-source browser_native_download --reason "fallback: download URL was not exposed" --journal run.json
 ```
 
 The operator uses `Runtime.evaluate` for DOM snapshots, page-context API calls, DOM actions, and verification checks. It intentionally runs one small action at a time so the agent can re-observe or verify before continuing.
@@ -104,6 +104,8 @@ The operator uses `Runtime.evaluate` for DOM snapshots, page-context API calls, 
 When `--journal` points to an existing file, `observe`, `act`, and `verify` load it and append the next evidence item instead of replacing the route.
 
 Download actions snapshot the download directory before clicking and then wait for a new nonempty file. Upload actions use the backend's CDP file-input primitive.
+
+Before a click download, the Chrome backend binds the selected page's native download path to the requested local directory with `Page.setDownloadBehavior`. This also preserves browser-generated Blob/Object URL downloads as their original bytes. Matching first uses the expected filename, then a newly created file with the same extension; PDF results must begin with `%PDF-` before they are accepted.
 
 ## Low-Level CDP
 

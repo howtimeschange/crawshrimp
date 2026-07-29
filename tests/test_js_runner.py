@@ -822,6 +822,16 @@ class FallbackFilenameDownloadRunner(JSRunner):
         super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
         self.downloads_dir = downloads_dir
 
+    async def _prepare_click_download(self, download_dir: Path) -> dict:
+        return {
+            "configured": False,
+            "method": "test",
+            "downloadPath": str(download_dir),
+        }
+
+    async def _restore_click_download(self) -> None:
+        return None
+
     async def _refresh_ws_url(self) -> None:
         return None
 
@@ -1546,6 +1556,231 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["items"][0]["matchedBy"], "fallback_any_xlsx")
             self.assertTrue(Path(result["items"][0]["path"]).exists())
             self.assertEqual(Path(result["items"][0]["path"]).name, "eu.xlsx")
+
+    async def test_download_clicks_routes_dynamic_pdf_to_controlled_directory_and_validates_signature(self):
+        class ControlledPdfRunner(JSRunner):
+            def __init__(self, artifact_dir: str):
+                super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
+                self.controlled_dir = None
+                self.restored = False
+
+            async def _prepare_click_download(self, download_dir: Path) -> dict:
+                self.controlled_dir = download_dir
+                return {
+                    "configured": True,
+                    "method": "Page.setDownloadBehavior",
+                    "downloadPath": str(download_dir),
+                }
+
+            async def _restore_click_download(self) -> None:
+                self.restored = True
+
+            async def _refresh_ws_url(self) -> None:
+                return None
+
+            async def _close_transient_download_tabs(self) -> None:
+                return None
+
+            async def _list_page_tab_ids(self) -> set[str]:
+                return set()
+
+            async def _handle_transient_download_tabs(self) -> list[dict]:
+                return []
+
+            async def _close_new_page_tabs(self, baseline_tab_ids: set[str]) -> None:
+                return None
+
+            async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
+                assert self.controlled_dir is not None
+                (self.controlled_dir / "temu-generated-name.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = ControlledPdfRunner(tmpdir)
+            result = await runner.download_clicks([{
+                "clicks": [{"x": 12, "y": 34}],
+                "filename": "20922511720810101110-9950019805206.pdf",
+                "label": "TEMU official PDF",
+                "source": "temu_official_download",
+                "timeout_ms": 1500,
+            }])
+
+            self.assertTrue(result["ok"])
+            item = result["items"][0]
+            self.assertEqual(item["matchedBy"], "fallback_any_pdf")
+            self.assertTrue(item["signatureValidated"])
+            self.assertEqual(item["source"], "temu_official_download")
+            self.assertTrue(item["browserDownloadControl"]["configured"])
+            self.assertEqual(Path(item["path"]).read_bytes()[:5], b"%PDF-")
+            self.assertTrue(runner.restored)
+
+    async def test_download_clicks_can_save_pdf_from_captured_blob_anchor(self):
+        class CapturedBlobPdfRunner(JSRunner):
+            def __init__(self, artifact_dir: str):
+                super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
+                self.controlled_dir = None
+                self.clicked = False
+                self.installed = False
+
+            async def _prepare_click_download(self, download_dir: Path) -> dict:
+                self.controlled_dir = download_dir
+                return {
+                    "configured": True,
+                    "method": "Page.setDownloadBehavior",
+                    "downloadPath": str(download_dir),
+                }
+
+            async def _restore_click_download(self) -> None:
+                return None
+
+            async def _refresh_ws_url(self) -> None:
+                return None
+
+            async def _close_transient_download_tabs(self) -> None:
+                return None
+
+            async def _list_page_tab_ids(self) -> set[str]:
+                return set()
+
+            async def _handle_transient_download_tabs(self) -> list[dict]:
+                return []
+
+            async def _close_new_page_tabs(self, baseline_tab_ids: set[str]) -> None:
+                return None
+
+            async def _install_blob_download_capture(self, capture_id: str, expected_filename: str = "", expected_magic: str = "") -> dict:
+                self.installed = True
+                return {
+                    "installed": True,
+                    "captureId": capture_id,
+                    "expectedFilename": expected_filename,
+                    "expectedMagic": expected_magic,
+                }
+
+            async def _read_blob_download_capture(self, capture_id: str, *, include_base64: bool = False) -> dict:
+                if not self.clicked:
+                    return {"found": False}
+                payload = b"%PDF-1.4\ncaptured from blob\n%%EOF\n"
+                return {
+                    "found": True,
+                    "capture": {
+                        "id": capture_id,
+                        "href": "blob:https://agentseller.temu.com/demo",
+                        "download": "洗水唛标签.pdf",
+                        "done": True,
+                        "ok": True,
+                        "bytes": len(payload),
+                        "type": "application/pdf",
+                        "magic": "%PDF-",
+                        "base64": base64.b64encode(payload).decode("ascii") if include_base64 else "",
+                    },
+                }
+
+            async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
+                self.clicked = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = CapturedBlobPdfRunner(tmpdir)
+            result = await runner.download_clicks([{
+                "clicks": [{"x": 12, "y": 34}],
+                "filename": "official.pdf",
+                "label": "TEMU official PDF",
+                "source": "temu_official_download",
+                "expected_magic": "%PDF-",
+                "capture_blob_download": True,
+                "timeout_ms": 1500,
+            }])
+
+            self.assertTrue(result["ok"])
+            item = result["items"][0]
+            self.assertTrue(runner.installed)
+            self.assertEqual(item["matchedBy"], "captured_blob_anchor")
+            self.assertEqual(item["source"], "temu_official_download")
+            self.assertTrue(item["signatureValidated"])
+            self.assertEqual(item["blobDownloadCapture"]["capture"]["download"], "洗水唛标签.pdf")
+            self.assertEqual(Path(item["path"]).name, "official.pdf")
+            self.assertEqual(Path(item["path"]).read_bytes()[:5], b"%PDF-")
+            self.assertEqual(runner.runtime_output_files, [item["path"]])
+
+    async def test_download_clicks_can_save_pdf_from_page_blob_expression(self):
+        class PageBlobRunner(JSRunner):
+            def __init__(self, artifact_dir: str):
+                super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
+
+            async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+                payload = b"%PDF-1.3\npage blob\n%%EOF\n"
+                return JSResult(
+                    success=True,
+                    data=[{
+                        "url": "blob:https://agentseller.temu.com/demo",
+                        "type": "application/pdf",
+                        "bytes": len(payload),
+                        "magic": "%PDF-",
+                        "base64": base64.b64encode(payload).decode("ascii"),
+                    }],
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = PageBlobRunner(tmpdir)
+            result = await runner.download_clicks([{
+                "clicks": [],
+                "filename": "from-page-blob.pdf",
+                "label": "TEMU modal pdfUrl",
+                "source": "temu_official_download",
+                "expected_magic": "%PDF-",
+                "page_blob_expression": "(() => ({success: true, data: [{}]}))()",
+            }])
+
+            self.assertTrue(result["ok"])
+            item = result["items"][0]
+            self.assertEqual(item["matchedBy"], "page_blob_expression")
+            self.assertEqual(item["pageBlob"]["type"], "application/pdf")
+            self.assertTrue(item["signatureValidated"])
+            self.assertEqual(Path(item["path"]).name, "from-page-blob.pdf")
+            self.assertEqual(Path(item["path"]).read_bytes()[:5], b"%PDF-")
+
+    async def test_download_clicks_rejects_html_saved_with_pdf_extension(self):
+        class InvalidPdfRunner(JSRunner):
+            def __init__(self, artifact_dir: str):
+                super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
+                self.controlled_dir = None
+
+            async def _prepare_click_download(self, download_dir: Path) -> dict:
+                self.controlled_dir = download_dir
+                return {"configured": True, "method": "test", "downloadPath": str(download_dir)}
+
+            async def _restore_click_download(self) -> None:
+                return None
+
+            async def _refresh_ws_url(self) -> None:
+                return None
+
+            async def _close_transient_download_tabs(self) -> None:
+                return None
+
+            async def _list_page_tab_ids(self) -> set[str]:
+                return set()
+
+            async def _handle_transient_download_tabs(self) -> list[dict]:
+                return []
+
+            async def _close_new_page_tabs(self, baseline_tab_ids: set[str]) -> None:
+                return None
+
+            async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
+                assert self.controlled_dir is not None
+                (self.controlled_dir / "login.pdf").write_bytes(b"<html>login</html>")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = InvalidPdfRunner(tmpdir)
+            result = await runner.download_clicks([{
+                "clicks": [{"x": 12, "y": 34}],
+                "filename": "official.pdf",
+                "timeout_ms": 1500,
+            }])
+
+            self.assertFalse(result["ok"])
+            self.assertIn("签名不匹配", result["items"][0]["error"])
+            self.assertFalse((Path(tmpdir) / "official.pdf").exists())
 
     def test_file_inject_expression_verifies_real_input_file_count(self):
         runner = JSRunner("ws://example.invalid")

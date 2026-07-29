@@ -253,6 +253,36 @@ def make_action_script(
         "timeoutMs": timeout_ms,
         "userConfirmed": bool(user_confirmed),
     }
+    if kind == "download":
+        return f"""
+/* window.__webAgentAct: synchronous download path */
+((payload) => {{
+  const textOf = (el) => (el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim()
+  const byText = (text) => {{
+    if (!text) return null
+    const needle = String(text).trim()
+    return [...document.querySelectorAll('button,a,[role=button],label,option,div,span')]
+      .find((el) => textOf(el) === needle || textOf(el).includes(needle))
+  }}
+  const target = payload.selector ? document.querySelector(payload.selector) : byText(payload.text)
+  if (!target) throw new Error(`target not found: ${{payload.selector || payload.text || payload.kind}}`)
+  if (!['click', 'download', 'paginate'].includes(payload.kind)) throw new Error(`unsupported action: ${{payload.kind}}`)
+  const dangerousMarkers = {json.dumps(list(DANGEROUS_CLICK_TARGET_MARKERS), ensure_ascii=False)}
+  const targetLabel = [
+    textOf(target),
+    target.getAttribute?.('aria-label') || '',
+    target.getAttribute?.('title') || '',
+    target.getAttribute?.('name') || '',
+    target.getAttribute?.('data-action') || '',
+    target.value || '',
+  ].join(' ').toLowerCase()
+  if (dangerousMarkers.some((marker) => targetLabel.includes(marker)) && !payload.userConfirmed) {{
+    throw new Error(`Action '${{payload.kind}}' on '${{targetLabel || payload.selector}}' requires explicit user confirmation.`)
+  }}
+  target.click()
+  return {{ ok: true, action: payload.kind, evidence: textOf(target) || target.href || payload.selector }}
+}})({_json_string(payload)})
+""".strip()
     return f"""
 window.__webAgentAct = async function(payload) {{
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -280,7 +310,13 @@ window.__webAgentAct = async function(payload) {{
     el.dispatchEvent(new Event('input', {{ bubbles: true }}))
     el.dispatchEvent(new Event('change', {{ bubbles: true }}))
   }}
-  const target = payload.kind === 'wait' ? await waitFor() : await waitFor()
+  // A browser-generated download must be triggered before the CDP user
+  // gesture expires. Resolve an already-observed download control
+  // synchronously; other actions may keep the normal wait loop.
+  const target = payload.kind === 'download'
+    ? (payload.selector ? document.querySelector(payload.selector) : byText(payload.text))
+    : await waitFor()
+  if (!target) throw new Error(`target not found: ${{payload.selector || payload.text || payload.kind}}`)
   if (['click', 'download', 'paginate'].includes(payload.kind)) {{
     const dangerousMarkers = {json.dumps(list(DANGEROUS_CLICK_TARGET_MARKERS), ensure_ascii=False)}
     const targetLabel = [
@@ -421,6 +457,12 @@ class WebOperator:
         if self.journal.plan is None:
             self.journal.set_plan(draft_plan(self.task))
 
+    def _backend_hook(self, name: str, *args: Any) -> Any:
+        hook = getattr(self.backend, name, None)
+        if callable(hook):
+            return hook(*args)
+        return None
+
     def observe(self, summary: str = "page observed") -> PageState:
         result = self.backend.execute(BrowserAction(kind="eval", script=DOM_SNAPSHOT_SCRIPT))
         if not result.ok:
@@ -453,6 +495,7 @@ class WebOperator:
         clicks: list[dict[str, Any]] | None = None,
         wheels: list[dict[str, Any]] | None = None,
         expected_file: str = "",
+        download_source: str = "",
         url: str = "",
     ) -> BrowserResult:
         target = selector or text or url
@@ -480,7 +523,11 @@ class WebOperator:
                 parsed_matches = parsed
             metadata = {"wheels": list(wheels or []), "matchers": parsed_matches, "timeout_ms": timeout_ms}
         elif kind == "download":
-            metadata = {"expected_file": expected_file, "timeout_ms": timeout_ms}
+            metadata = {
+                "expected_file": expected_file,
+                "download_source": download_source,
+                "timeout_ms": timeout_ms,
+            }
         elif kind == "navigate":
             metadata = {"url": str(value or url or selector), "timeout_ms": timeout_ms}
         protocol_action = Action(kind=kind, target=target, value=value, risk=risk, reason=reason, metadata=metadata)
@@ -498,7 +545,13 @@ class WebOperator:
 
         baseline: dict[str, dict[str, int]] = {}
         started_at_ns = time.time_ns()
-        if kind == "download":
+        download_control: dict[str, Any] = {}
+        atomic_download = kind == "download" and callable(getattr(self.backend, "execute_download", None))
+        if kind == "download" and not atomic_download:
+            self.download_dir.mkdir(parents=True, exist_ok=True)
+            prepared = self._backend_hook("prepare_download", self.download_dir)
+            if isinstance(prepared, dict):
+                download_control = prepared
             baseline = snapshot_download_dir(self.download_dir)
 
         if backend_kind == "upload_chooser":
@@ -525,10 +578,21 @@ class WebOperator:
                 timeout_ms=timeout_ms,
                 user_confirmed=user_confirmed,
             )
-            result = self.backend.execute(BrowserAction(kind="eval", script=script, timeout_ms=timeout_ms, user_gesture=True))
+            browser_action = BrowserAction(kind="eval", script=script, timeout_ms=timeout_ms, user_gesture=True)
+            if atomic_download:
+                result = self.backend.execute_download(
+                    browser_action,
+                    self.download_dir,
+                    expected_file=expected_file,
+                    timeout_ms=timeout_ms,
+                )
+            else:
+                result = self.backend.execute(browser_action)
 
         self.journal.add_action(journal_action)
         if not result.ok:
+            if kind == "download" and not atomic_download:
+                self._backend_hook("restore_download")
             failure = {"action": asdict(journal_action), "evidence": result.error or "action failed", "recovery": "re-observe and replan"}
             self.journal.add_failure(failure)
             self.journal.add_verification(Verification(passed=False, evidence=result.error or "action failed"))
@@ -544,19 +608,56 @@ class WebOperator:
                 )
             )
         if kind == "download":
-            deadline = time.monotonic() + max(timeout_ms, 1000) / 1000.0
-            download: dict[str, Any] | None = None
-            while time.monotonic() < deadline:
-                download = find_new_download(
-                    self.download_dir,
-                    baseline,
-                    expected_file=expected_file,
-                    started_at_ns=started_at_ns,
-                )
-                if download:
-                    break
-                time.sleep(0.1)
+            download = result.data.get("download") if atomic_download and isinstance(result.data, dict) else None
+            if not isinstance(download, dict):
+                download = None
+            if not atomic_download:
+                deadline = time.monotonic() + max(timeout_ms, 1000) / 1000.0
+                try:
+                    while time.monotonic() < deadline:
+                        download = find_new_download(
+                            self.download_dir,
+                            baseline,
+                            expected_file=expected_file,
+                            started_at_ns=started_at_ns,
+                        )
+                        if download:
+                            break
+                        time.sleep(0.1)
+                finally:
+                    self._backend_hook("restore_download")
             if download:
+                download.setdefault("browserDownloadControl", download_control)
+                download["source"] = str(download_source or "browser_native_download")
+                expected_name = Path(str(expected_file or "")).name
+                downloaded_path = Path(download["path"])
+                if expected_name and downloaded_path.name != expected_name:
+                    target_path = self.download_dir / expected_name
+                    if target_path.exists():
+                        failure_text = f"Expected download target already exists: {target_path}"
+                        self.journal.add_failure({"action": asdict(journal_action), "evidence": failure_text, "recovery": "verify or move the existing file before retrying"})
+                        self.journal.add_verification(Verification(passed=False, evidence=failure_text))
+                        return BrowserResult(ok=False, action=result.action, data={**result.data, "download": download}, error=failure_text)
+                    source_filename = downloaded_path.name
+                    downloaded_path.replace(target_path)
+                    download["sourceFilename"] = source_filename
+                    download["filename"] = target_path.name
+                    download["path"] = str(target_path)
+                expected_suffix = Path(expected_file or download["filename"]).suffix.lower()
+                if expected_suffix == ".pdf":
+                    path = Path(download["path"])
+                    try:
+                        with path.open("rb") as handle:
+                            valid_pdf = handle.read(5) == b"%PDF-"
+                    except OSError:
+                        valid_pdf = False
+                    download["signatureValidated"] = valid_pdf
+                    download["expectedMagic"] = "%PDF-"
+                    if not valid_pdf:
+                        failure_text = f"Downloaded file is not a valid PDF: {path}"
+                        self.journal.add_failure({"action": asdict(journal_action), "evidence": failure_text, "recovery": "inspect the browser response and retry official PDF export"})
+                        self.journal.add_verification(Verification(passed=False, evidence=failure_text))
+                        return BrowserResult(ok=False, action=result.action, data={**result.data, "download": download}, error=failure_text)
                 merged = dict(result.data)
                 merged["download"] = download
                 result = BrowserResult(ok=True, action=result.action, data=merged)
@@ -803,6 +904,7 @@ def _cmd_act(args: argparse.Namespace) -> int:
         clicks=clicks,
         wheels=wheels,
         expected_file=args.expected_file,
+        download_source=args.download_source,
         url=args.url,
     )
     if args.journal:
@@ -891,6 +993,7 @@ def build_parser() -> argparse.ArgumentParser:
     act.add_argument("--y", type=float, default=None)
     act.add_argument("--delta-y", type=float, default=600)
     act.add_argument("--expected-file", default="")
+    act.add_argument("--download-source", default="")
     act.add_argument("--reason", default="")
     act.add_argument("--risk", default="safe")
     act.add_argument("--timeout-ms", type=int, default=8000)

@@ -247,6 +247,76 @@ class WebOperatorTest(unittest.TestCase):
         self.assertGreater(result.data["download"]["bytes"], 0)
         self.assertIn("Downloaded file", operator.journal.verifications[-1].evidence)
 
+    def test_download_action_routes_blob_style_pdf_and_validates_signature(self):
+        class PdfDownloadBackend(FakeBackend):
+            def __init__(self):
+                super().__init__()
+                self.download_dir = None
+                self.restored = False
+
+            def prepare_download(self, download_dir):
+                self.download_dir = Path(download_dir)
+                return {
+                    "configured": True,
+                    "method": "Page.setDownloadBehavior",
+                    "downloadPath": str(download_dir),
+                }
+
+            def restore_download(self):
+                self.restored = True
+
+            def execute(self, action):
+                self.actions.append(action)
+                if action.kind == "eval" and "window.__webAgentAct" in action.script:
+                    (self.download_dir / "temu-generated.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+                    return BrowserResult(ok=True, action="eval", data={"value": {"ok": True}})
+                return super().execute(action)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = PdfDownloadBackend()
+            operator = WebOperator(backend=backend, task="下载 TEMU 官方 PDF", download_dir=Path(tmp))
+            result = operator.act(
+                "download",
+                selector="button.export-pdf",
+                expected_file="20922511720810101110-9950019805206.pdf",
+                download_source="temu_official_download",
+                timeout_ms=1000,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.data["download"]["signatureValidated"])
+        self.assertEqual(result.data["download"]["matchedBy"], "fallback_any_pdf")
+        self.assertEqual(result.data["download"]["filename"], "20922511720810101110-9950019805206.pdf")
+        self.assertEqual(result.data["download"]["sourceFilename"], "temu-generated.pdf")
+        self.assertEqual(result.data["download"]["source"], "temu_official_download")
+        self.assertTrue(result.data["download"]["browserDownloadControl"]["configured"])
+        self.assertTrue(backend.restored)
+
+    def test_download_action_rejects_html_saved_as_pdf(self):
+        class InvalidPdfBackend(FakeBackend):
+            def __init__(self, download_dir):
+                super().__init__()
+                self.download_dir = Path(download_dir)
+
+            def execute(self, action):
+                self.actions.append(action)
+                if action.kind == "eval" and "window.__webAgentAct" in action.script:
+                    (self.download_dir / "official.pdf").write_bytes(b"<html>login</html>")
+                    return BrowserResult(ok=True, action="eval", data={"value": {"ok": True}})
+                return super().execute(action)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            operator = WebOperator(backend=InvalidPdfBackend(tmp), task="下载 TEMU 官方 PDF", download_dir=Path(tmp))
+            result = operator.act(
+                "download",
+                selector="button.export-pdf",
+                expected_file="official.pdf",
+                timeout_ms=1000,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("not a valid PDF", result.error)
+
     def test_structured_verify_file_and_text_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "report.csv"

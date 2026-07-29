@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 from scripts.browser_executor import (
     BrowserAction,
+    BrowserResult,
     ChromeCDPBackend,
+    _websocket_capture,
     normalize_crawshrimp_snapshot,
 )
 
@@ -101,6 +103,82 @@ class BrowserExecutorTest(unittest.TestCase):
         self.assertIn("Page.bringToFront", methods)
         self.assertEqual(methods.count("Input.dispatchMouseEvent"), 3)
         self.assertIn("Page.navigate", methods)
+
+    def test_chrome_cdp_backend_controls_download_directory_before_click(self):
+        sent = []
+        tabs = [
+            {
+                "id": "tab-1",
+                "type": "page",
+                "url": "https://example.test",
+                "title": "Example",
+                "webSocketDebuggerUrl": "ws://example.test/devtools/page/tab-1",
+            }
+        ]
+
+        async def fake_ws_send(ws_url, message, timeout):
+            sent.append((ws_url, message["method"], message.get("params") or {}))
+            return {"id": message["id"], "result": {}}
+
+        backend = ChromeCDPBackend(
+            tab_id="tab-1",
+            get_json=lambda path: tabs if path == "/json" else None,
+            send_ws=fake_ws_send,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = asyncio.run(backend.prepare_download_async(Path(tmp)))
+            asyncio.run(backend.restore_download_async())
+
+        self.assertTrue(prepared["configured"])
+        self.assertEqual(sent[0][0], "ws://example.test/devtools/page/tab-1")
+        self.assertEqual(sent[0][1], "Page.setDownloadBehavior")
+        self.assertEqual(sent[0][2]["behavior"], "allow")
+        self.assertEqual(sent[0][2]["downloadPath"], tmp)
+        self.assertEqual(sent[1][2], {"behavior": "default"})
+
+    def test_chrome_cdp_backend_keeps_download_control_active_until_file_arrives(self):
+        sent = []
+        download_dir = None
+
+        async def fake_ws_send(ws_url, message, timeout):
+            nonlocal download_dir
+            sent.append((message["method"], message.get("params") or {}))
+            if message["method"] == "Page.setDownloadBehavior" and message.get("params", {}).get("behavior") == "allow":
+                download_dir = Path(message["params"]["downloadPath"])
+            return {"id": message["id"], "result": {}}
+
+        backend = ChromeCDPBackend(
+            tab_id="tab-1",
+            get_json=lambda path: [{
+                "id": "tab-1",
+                "type": "page",
+                "url": "https://example.test",
+                "webSocketDebuggerUrl": "ws://example.test/devtools/page/tab-1",
+            }],
+            send_ws=fake_ws_send,
+        )
+
+        async def fake_execute(action):
+            (download_dir / "generated.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+            return BrowserResult(ok=True, action=action.kind, data={"value": {"ok": True}})
+
+        backend.execute_async = fake_execute
+        with tempfile.TemporaryDirectory() as tmp:
+            result = asyncio.run(
+                backend.execute_download_async(
+                    BrowserAction(kind="eval", script="document.body.click()", user_gesture=True),
+                    Path(tmp),
+                    expected_file="sku.pdf",
+                    timeout_ms=1000,
+                )
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["download"]["matchedBy"], "fallback_any_pdf")
+        self.assertTrue(result.data["download"]["browserDownloadControl"]["configured"])
+        self.assertEqual(sent[0][1]["behavior"], "allow")
+        self.assertEqual(sent[-1][1]["behavior"], "default")
 
     def test_chrome_cdp_backend_sets_file_input_files_for_upload(self):
         sent = []
@@ -220,6 +298,81 @@ class BrowserExecutorTest(unittest.TestCase):
         self.assertTrue(passive.ok)
         self.assertEqual(passive.data["matches"][0]["url"], "https://example.test/api/orders")
         self.assertTrue(click.ok)
+
+    def test_websocket_capture_recovers_missing_post_body_through_cdp(self):
+        class FakeWebSocket:
+            def __init__(self):
+                self.queue = asyncio.Queue()
+                self.sent = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def send(self, raw):
+                import json
+
+                message = json.loads(raw)
+                self.sent.append(message)
+                method = message["method"]
+                if method == "Network.enable":
+                    await self.queue.put(json.dumps({"id": message["id"], "result": {}}))
+                    await self.queue.put(json.dumps({
+                        "method": "Network.requestWillBeSent",
+                        "params": {
+                            "requestId": "request-1",
+                            "request": {
+                                "url": "https://example.test/api/orders",
+                                "method": "POST",
+                                "headers": {},
+                            },
+                        },
+                    }))
+                    await self.queue.put(json.dumps({
+                        "method": "Network.responseReceived",
+                        "params": {
+                            "requestId": "request-1",
+                            "response": {
+                                "url": "https://example.test/api/orders",
+                                "status": 200,
+                                "mimeType": "application/json",
+                                "headers": {},
+                            },
+                        },
+                    }))
+                    await self.queue.put(json.dumps({
+                        "method": "Network.loadingFinished",
+                        "params": {"requestId": "request-1"},
+                    }))
+                    return
+                if method == "Network.getRequestPostData":
+                    await self.queue.put(json.dumps({
+                        "id": message["id"],
+                        "result": {"postData": '{"skuExtCodes":["9950019805206"]}'},
+                    }))
+                    return
+                await self.queue.put(json.dumps({"id": message["id"], "result": {}}))
+
+            async def recv(self):
+                return await self.queue.get()
+
+        fake_ws = FakeWebSocket()
+        with patch("websockets.connect", return_value=fake_ws):
+            result = asyncio.run(
+                _websocket_capture(
+                    "ws://example.test/devtools/page/tab-1",
+                    [{"method": "Network.enable", "params": {}}],
+                    1000,
+                    matches=[{"url_contains": "/api/orders", "method": "POST"}],
+                    options={"min_matches": 1, "settle_ms": 0},
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["matches"][0]["postData"], '{"skuExtCodes":["9950019805206"]}')
+        self.assertIn("Network.getRequestPostData", [item["method"] for item in fake_ws.sent])
 
     def test_chrome_cdp_backend_url_capture_uses_temporary_tab_and_runtime_options(self):
         tabs = [

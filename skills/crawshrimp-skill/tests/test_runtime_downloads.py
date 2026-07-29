@@ -186,6 +186,84 @@ class RuntimeDownloadsTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["items"][0]["transientActions"][0]["tabId"], "tmp")
             self.assertIn("click", [action.kind for action in backend.actions])
 
+    async def test_download_clicks_prepares_browser_pdf_download_and_accepts_generated_filename(self):
+        class PdfBackend:
+            def __init__(self):
+                self.download_dir = None
+                self.prepared = False
+                self.restored = False
+
+            async def prepare_download_async(self, download_dir):
+                self.download_dir = Path(download_dir)
+                self.prepared = True
+                return {
+                    "configured": True,
+                    "method": "Page.setDownloadBehavior",
+                    "downloadPath": str(download_dir),
+                }
+
+            async def restore_download_async(self):
+                self.restored = True
+
+            async def execute_async(self, action):
+                if action.kind == "click":
+                    (self.download_dir / "temu-generated.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+                return BrowserResult(ok=True, action=action.kind, data={})
+
+        with tempfile.TemporaryDirectory() as downloads, tempfile.TemporaryDirectory() as artifacts:
+            backend = PdfBackend()
+            manager = DownloadManager(Path(artifacts))
+            result = await manager.download_clicks(
+                [{
+                    "clicks": [{"x": 10, "y": 20}],
+                    "filename": "20922511720810101110-9950019805206.pdf",
+                    "source": "temu_official_download",
+                }],
+                backend=backend,
+                download_dir=Path(downloads),
+                timeout_ms=1000,
+            )
+
+            self.assertTrue(result["ok"])
+            item = result["items"][0]
+            self.assertTrue(backend.prepared)
+            self.assertTrue(backend.restored)
+            self.assertTrue(item["browserDownloadControl"]["configured"])
+            self.assertEqual(item["matchedBy"], "fallback_any_pdf")
+            self.assertEqual(item["source"], "temu_official_download")
+            self.assertTrue(item["signatureValidated"])
+            self.assertEqual(Path(item["path"]).read_bytes()[:5], b"%PDF-")
+
+    async def test_download_clicks_rejects_non_pdf_payload_with_pdf_name(self):
+        class InvalidPdfBackend:
+            def __init__(self):
+                self.download_dir = None
+
+            async def prepare_download_async(self, download_dir):
+                self.download_dir = Path(download_dir)
+                return {"configured": True, "method": "test"}
+
+            async def restore_download_async(self):
+                return None
+
+            async def execute_async(self, action):
+                if action.kind == "click":
+                    (self.download_dir / "temu-generated.pdf").write_bytes(b"<html>login</html>")
+                return BrowserResult(ok=True, action=action.kind, data={})
+
+        with tempfile.TemporaryDirectory() as downloads, tempfile.TemporaryDirectory() as artifacts:
+            manager = DownloadManager(Path(artifacts))
+            result = await manager.download_clicks(
+                [{"clicks": [{"x": 10, "y": 20}], "filename": "official.pdf"}],
+                backend=InvalidPdfBackend(),
+                download_dir=Path(downloads),
+                timeout_ms=1000,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertIn("signature does not match", result["items"][0]["error"])
+            self.assertFalse(any(Path(artifacts).iterdir()))
+
     async def test_download_clicks_reports_click_failure_before_polling(self):
         class FailingBackend:
             def execute(self, action):

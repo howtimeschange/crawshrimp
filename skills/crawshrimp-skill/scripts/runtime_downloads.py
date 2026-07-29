@@ -360,6 +360,8 @@ class DownloadManager:
             if pattern and not pattern.match(path.name):
                 continue
             stat = path.stat()
+            if stat.st_size <= 0:
+                continue
             previous = baseline.get(str(path))
             if previous and stat.st_mtime_ns <= previous[0] and stat.st_size == previous[1]:
                 continue
@@ -404,6 +406,61 @@ class DownloadManager:
             return await result
         return result
 
+    @staticmethod
+    def _extension_pattern(filename: str = "", expected_url: str = "") -> re.Pattern[str] | None:
+        raw_name = str(filename or "").strip() or derive_url_filename(expected_url, "")
+        suffix = Path(raw_name).suffix.lower()
+        if not suffix:
+            return None
+        return re.compile(rf".+{re.escape(suffix)}$", re.IGNORECASE)
+
+    @staticmethod
+    def _validate_clicked_download(path: Path, item: dict[str, Any], filename: str = "") -> tuple[bool, str, dict[str, Any]]:
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            return False, f"downloaded file cannot be read: {exc}", {"bytes": 0}
+
+        min_bytes = int(item.get("min_bytes") or item.get("minBytes") or 1)
+        if size < max(min_bytes, 1):
+            return False, f"downloaded file is smaller than min_bytes: {size} < {max(min_bytes, 1)}", {"bytes": size}
+
+        expected_size_raw = item.get("expected_size", item.get("expectedSize"))
+        expected_size = int(expected_size_raw) if expected_size_raw not in (None, "") else 0
+        if expected_size and size != expected_size:
+            return False, f"downloaded file size does not match expected_size: {size} != {expected_size}", {"bytes": size}
+
+        raw_magic = item.get("expected_magic", item.get("expectedMagic"))
+        if isinstance(raw_magic, str):
+            expected_magic = raw_magic.encode("utf-8")
+        elif isinstance(raw_magic, (bytes, bytearray)):
+            expected_magic = bytes(raw_magic)
+        else:
+            expected_magic = b""
+        expected_name = str(filename or "").strip() or path.name
+        if not expected_magic and Path(expected_name).suffix.lower() == ".pdf":
+            expected_magic = b"%PDF-"
+
+        signature_validated = False
+        if expected_magic:
+            try:
+                with path.open("rb") as handle:
+                    actual_magic = handle.read(len(expected_magic))
+            except OSError as exc:
+                return False, f"downloaded file signature cannot be read: {exc}", {"bytes": size}
+            if actual_magic != expected_magic:
+                return False, "downloaded file signature does not match", {
+                    "bytes": size,
+                    "expectedMagic": expected_magic.decode("utf-8", "replace"),
+                }
+            signature_validated = True
+
+        return True, "", {
+            "bytes": size,
+            "signatureValidated": signature_validated,
+            "expectedMagic": expected_magic.decode("utf-8", "replace") if expected_magic else "",
+        }
+
     async def download_clicks(
         self,
         items: list[dict[str, Any]],
@@ -427,9 +484,6 @@ class DownloadManager:
             regex_text = str(item.get("expected_name_regex") or "").strip()
             expected_url = str(item.get("expected_url") or item.get("url") or "").strip()
             item_timeout_ms = int(item.get("timeout_ms") or timeout_ms or 30000)
-            min_bytes = int(item.get("min_bytes") or item.get("minBytes") or 0)
-            expected_size_raw = item.get("expected_size", item.get("expectedSize"))
-            expected_size = int(expected_size_raw) if expected_size_raw not in (None, "") else 0
             try:
                 pattern = re.compile(regex_text, re.IGNORECASE) if regex_text else None
             except re.error:
@@ -443,19 +497,31 @@ class DownloadManager:
                     rf"^{re.escape(expected.stem)}(?: \(\d+\))?{re.escape(expected.suffix)}$",
                     re.IGNORECASE,
                 )
+            fallback_pattern = self._extension_pattern(filename, expected_url)
             if not clicks:
                 failure = {"success": False, "label": label, "filename": filename, "error": "download_clicks requires clicks", "transientActions": []}
                 results.append(failure)
                 if strict:
                     raise RuntimeError(failure["error"])
                 continue
-            if not directory.exists() or not directory.is_dir():
-                failure = {"success": False, "label": label, "filename": filename, "error": f"download directory does not exist: {directory}", "transientActions": []}
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                failure = {"success": False, "label": label, "filename": filename, "error": f"download directory cannot be created: {directory}: {exc}", "transientActions": []}
                 results.append(failure)
                 if strict:
                     raise RuntimeError(failure["error"])
                 continue
+
+            download_control = await self._maybe_call_backend_hook(backend, "prepare_download", directory)
+            if not isinstance(download_control, dict):
+                download_control = {
+                    "configured": False,
+                    "method": "Page.setDownloadBehavior",
+                    "downloadPath": str(directory),
+                }
             baseline = self.snapshot_download_dir(directory, pattern)
+            fallback_baseline = self.snapshot_download_dir(directory, fallback_pattern)
             baseline_tabs = await self._maybe_call_backend_hook(backend, "list_page_tab_ids")
             if baseline_tabs is None:
                 baseline_tabs = set()
@@ -475,6 +541,7 @@ class DownloadManager:
                         "transientActions": transient_actions,
                     }
                     results.append(failure)
+                    await self._maybe_call_backend_hook(backend, "restore_download")
                     if strict:
                         raise RuntimeError(failure["error"])
                     break
@@ -494,15 +561,26 @@ class DownloadManager:
                         seen_transient.add(key)
                         transient_actions.append(dict(action))
                     downloaded = self.find_new_downloaded_file(directory, baseline, pattern=pattern, started_at_ns=started_at_ns)
+                    if not downloaded and fallback_pattern is not None:
+                        downloaded = self.find_new_downloaded_file(
+                            directory,
+                            fallback_baseline,
+                            pattern=fallback_pattern,
+                            started_at_ns=started_at_ns,
+                        )
+                        if downloaded:
+                            suffix = downloaded.suffix.lower().lstrip(".") or "file"
+                            matched_by = f"fallback_any_{suffix}"
                     if downloaded:
                         break
                     await asyncio.sleep(0.1)
             finally:
                 await self._maybe_call_backend_hook(backend, "close_new_tabs", baseline_tabs)
+                await self._maybe_call_backend_hook(backend, "restore_download")
 
             if downloaded:
-                size = downloaded.stat().st_size if downloaded.exists() else 0
-                if min_bytes and size < min_bytes:
+                valid, validation_error, validation = self._validate_clicked_download(downloaded, item, filename)
+                if not valid:
                     try:
                         downloaded.unlink()
                     except Exception:
@@ -512,27 +590,10 @@ class DownloadManager:
                         "label": label,
                         "filename": filename,
                         "url": expected_url,
-                        "error": f"downloaded file is smaller than min_bytes: {size} < {min_bytes}",
+                        "error": validation_error,
+                        "browserDownloadControl": download_control,
                         "transientActions": transient_actions,
-                        "bytes": size,
-                    }
-                    results.append(failure)
-                    if strict:
-                        raise RuntimeError(failure["error"])
-                    continue
-                if expected_size and size != expected_size:
-                    try:
-                        downloaded.unlink()
-                    except Exception:
-                        pass
-                    failure = {
-                        "success": False,
-                        "label": label,
-                        "filename": filename,
-                        "url": expected_url,
-                        "error": f"downloaded file size does not match expected_size: {size} != {expected_size}",
-                        "transientActions": transient_actions,
-                        "bytes": size,
+                        **validation,
                     }
                     results.append(failure)
                     if strict:
@@ -546,8 +607,11 @@ class DownloadManager:
                         "label": label,
                         "url": expected_url,
                         "sourcePath": str(downloaded),
+                        "source": str(item.get("source") or "browser_native_download"),
                         "matchedBy": matched_by,
+                        "browserDownloadControl": download_control,
                         "transientActions": transient_actions,
+                        **validation,
                     }
                 )
                 continue
@@ -558,6 +622,7 @@ class DownloadManager:
                 "filename": filename,
                 "url": expected_url,
                 "error": "no downloaded file detected after click",
+                "browserDownloadControl": download_control,
                 "transientActions": transient_actions,
             }
             results.append(failure)

@@ -64,6 +64,7 @@ class JSRunner:
         self.artifact_dir = Path(artifact_dir).expanduser() if artifact_dir else Path(tempfile.mkdtemp(prefix="crawshrimp-runtime-"))
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.runtime_output_files: list[str] = []
+        self._click_download_ws = None
 
     def _next_id(self) -> int:
         self._msg_id += 1
@@ -852,6 +853,108 @@ class JSRunner:
             pattern = rf"^{re.escape(original_name)}(?: \(\d+\))?$"
         return re.compile(pattern, re.IGNORECASE)
 
+    def _build_download_extension_regex(self, filename: str = "", source_url: str = "") -> Optional[re.Pattern[str]]:
+        raw_name = str(filename or "").strip() or self._derive_url_filename(source_url, "")
+        suffix = Path(raw_name).suffix.lower()
+        if not suffix:
+            return None
+        return re.compile(rf".+{re.escape(suffix)}$", re.IGNORECASE)
+
+    async def _prepare_click_download(self, download_dir: Path) -> dict:
+        download_dir.mkdir(parents=True, exist_ok=True)
+        if self._click_download_ws is not None:
+            await self._restore_click_download()
+        ws = await websockets.connect(self.ws_url, max_size=50 * 1024 * 1024, proxy=None)
+        self._click_download_ws = ws
+        response = await self._cdp_send_on_ws(
+            "Page.setDownloadBehavior",
+            {
+                "behavior": "allow",
+                "downloadPath": str(download_dir),
+            },
+            ws=ws,
+        )
+        error = response.get("error") if isinstance(response, dict) else None
+        if error:
+            await ws.close()
+            self._click_download_ws = None
+            return {
+                "configured": False,
+                "method": "Page.setDownloadBehavior",
+                "error": json.dumps(error, ensure_ascii=False),
+            }
+        return {
+            "configured": True,
+            "method": "Page.setDownloadBehavior",
+            "downloadPath": str(download_dir),
+        }
+
+    async def _restore_click_download(self) -> None:
+        ws = self._click_download_ws
+        self._click_download_ws = None
+        if ws is None:
+            return
+        try:
+            await self._cdp_send_on_ws(
+                "Page.setDownloadBehavior",
+                {"behavior": "default"},
+                ws=ws,
+            )
+        finally:
+            await ws.close()
+
+    def _validate_click_download(
+        self,
+        path: Path,
+        item: dict,
+        filename: str = "",
+    ) -> tuple[bool, str, dict]:
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            return False, f"下载文件无法读取: {exc}", {"bytes": 0}
+
+        min_bytes = int((item or {}).get("min_bytes") or (item or {}).get("minBytes") or 1)
+        if size < max(min_bytes, 1):
+            return False, f"下载文件小于 min_bytes: {size} < {max(min_bytes, 1)}", {"bytes": size}
+
+        expected_size_raw = (item or {}).get("expected_size", (item or {}).get("expectedSize"))
+        expected_size = int(expected_size_raw) if expected_size_raw not in (None, "") else 0
+        if expected_size and size != expected_size:
+            return False, f"下载文件大小不匹配: {size} != {expected_size}", {"bytes": size}
+
+        raw_magic = (item or {}).get("expected_magic", (item or {}).get("expectedMagic"))
+        if isinstance(raw_magic, str):
+            expected_magic = raw_magic.encode("utf-8")
+        elif isinstance(raw_magic, (bytes, bytearray)):
+            expected_magic = bytes(raw_magic)
+        else:
+            expected_magic = b""
+
+        expected_name = str(filename or "").strip() or path.name
+        if not expected_magic and Path(expected_name).suffix.lower() == ".pdf":
+            expected_magic = b"%PDF-"
+
+        signature_validated = False
+        if expected_magic:
+            try:
+                with path.open("rb") as handle:
+                    actual_magic = handle.read(len(expected_magic))
+            except OSError as exc:
+                return False, f"下载文件签名无法读取: {exc}", {"bytes": size}
+            if actual_magic != expected_magic:
+                return False, "下载文件签名不匹配", {
+                    "bytes": size,
+                    "expectedMagic": expected_magic.decode("utf-8", "replace"),
+                }
+            signature_validated = True
+
+        return True, "", {
+            "bytes": size,
+            "signatureValidated": signature_validated,
+            "expectedMagic": expected_magic.decode("utf-8", "replace") if expected_magic else "",
+        }
+
     def _snapshot_download_state(
         self,
         directories: list[Path],
@@ -895,6 +998,8 @@ class JSRunner:
                     stat = path.stat()
                 except OSError:
                     continue
+                if stat.st_size <= 0:
+                    continue
 
                 previous = baseline.get(str(path))
                 if previous and stat.st_mtime_ns <= previous[0] and stat.st_size == previous[1]:
@@ -905,6 +1010,272 @@ class JSRunner:
                     newest = (stat.st_mtime_ns, path)
 
         return newest[1] if newest else None
+
+    def _blob_download_capture_install_expression(
+        self,
+        capture_id: str,
+        expected_filename: str = "",
+        expected_magic: str = "",
+    ) -> str:
+        capture_id_json = json.dumps(str(capture_id), ensure_ascii=False)
+        expected_filename_json = json.dumps(str(expected_filename or ""), ensure_ascii=False)
+        expected_magic_json = json.dumps(str(expected_magic or ""), ensure_ascii=False)
+        return f"""
+(() => {{
+  const captureId = {capture_id_json};
+  const expectedFilename = {expected_filename_json};
+  const expectedMagic = {expected_magic_json};
+  const state = window.__CRAWSHRIMP_BLOB_DOWNLOAD_CAPTURE__ = window.__CRAWSHRIMP_BLOB_DOWNLOAD_CAPTURE__ || {{
+    captures: [],
+    events: [],
+  }};
+  state.active = {{
+    id: captureId,
+    expectedFilename,
+    expectedMagic,
+    installedAt: new Date().toISOString(),
+  }};
+  const compact = value => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 500);
+  const record = (type, payload = {{}}) => {{
+    state.events.push({{ t: new Date().toISOString(), type, ...payload }});
+    if (state.events.length > 100) state.events.splice(0, state.events.length - 100);
+  }};
+  const toBase64 = bytes => {{
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {{
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }}
+    return btoa(binary);
+  }};
+  const suffixOf = value => {{
+    const clean = String(value || '').split('?')[0].trim();
+    const index = clean.lastIndexOf('.');
+    return index >= 0 ? clean.slice(index).toLowerCase() : '';
+  }};
+  const shouldCapture = anchor => {{
+    const active = state.active || {{}};
+    if (!active.id) return false;
+    const href = String(anchor?.href || '');
+    if (!href.startsWith('blob:')) return false;
+    const download = String(anchor?.download || '');
+    const expectedSuffix = suffixOf(active.expectedFilename);
+    if (expectedSuffix && suffixOf(download) === expectedSuffix) return true;
+    if (String(active.expectedMagic || '') === '%PDF-' && /pdf/i.test(download || href)) return true;
+    return !download;
+  }};
+  if (!window.__CRAWSHRIMP_BLOB_DOWNLOAD_CAPTURE_ORIGINALS__) {{
+    window.__CRAWSHRIMP_BLOB_DOWNLOAD_CAPTURE_ORIGINALS__ = {{}};
+  }}
+  const originals = window.__CRAWSHRIMP_BLOB_DOWNLOAD_CAPTURE_ORIGINALS__;
+  const patchVersion = 'jsrunner-anchor-dispatch-v1';
+  if (originals.anchorDispatchEvent && state.dispatchPatchVersion !== patchVersion) {{
+    window.HTMLAnchorElement.prototype.dispatchEvent = originals.anchorDispatchEvent;
+    delete originals.anchorDispatchEvent;
+  }}
+  if (!originals.anchorDispatchEvent) {{
+    originals.anchorDispatchEvent = window.HTMLAnchorElement.prototype.dispatchEvent;
+    window.HTMLAnchorElement.prototype.dispatchEvent = function crawshrimpAnchorDispatchEvent(event) {{
+      const eventType = String(event?.type || '');
+      if (eventType === 'click' && shouldCapture(this)) {{
+        const active = state.active || {{}};
+        const capture = {{
+          id: active.id,
+          href: compact(this.href),
+          download: compact(this.download),
+          startedAt: new Date().toISOString(),
+          ok: false,
+          done: false,
+          bytes: 0,
+          type: '',
+          magic: '',
+          base64: '',
+          error: '',
+        }};
+        state.captures.push(capture);
+        record('anchor.dispatchEvent.capture-start', {{
+          id: capture.id,
+          href: capture.href,
+          download: capture.download,
+        }});
+        fetch(this.href)
+          .then(response => response.blob())
+          .then(blob => blob.arrayBuffer().then(buffer => ({{ blob, buffer }})))
+          .then(({{ blob, buffer }}) => {{
+            const bytes = new Uint8Array(buffer);
+            capture.bytes = bytes.length;
+            capture.type = compact(blob.type);
+            capture.magic = String.fromCharCode(...bytes.slice(0, 5));
+            capture.base64 = toBase64(bytes);
+            capture.ok = !active.expectedMagic || capture.magic === active.expectedMagic;
+            capture.done = true;
+            capture.finishedAt = new Date().toISOString();
+            record('anchor.dispatchEvent.capture-done', {{
+              id: capture.id,
+              download: capture.download,
+              bytes: capture.bytes,
+              type: capture.type,
+              magic: capture.magic,
+              ok: capture.ok,
+            }});
+          }})
+          .catch(error => {{
+            capture.error = compact(error?.message || error);
+            capture.done = true;
+            capture.finishedAt = new Date().toISOString();
+            record('anchor.dispatchEvent.capture-error', {{
+              id: capture.id,
+              download: capture.download,
+              error: capture.error,
+            }});
+          }});
+      }}
+      return originals.anchorDispatchEvent.apply(this, arguments);
+    }};
+  }}
+  state.dispatchPatchVersion = patchVersion;
+  return {{
+    success: true,
+    data: [{{
+      installed: true,
+      captureId,
+      expectedFilename,
+      expectedMagic,
+    }}],
+  }};
+}})()
+""".strip()
+
+    def _blob_download_capture_read_expression(
+        self,
+        capture_id: str,
+        include_base64: bool = False,
+    ) -> str:
+        capture_id_json = json.dumps(str(capture_id), ensure_ascii=False)
+        include_base64_json = "true" if include_base64 else "false"
+        return f"""
+(() => {{
+  const captureId = {capture_id_json};
+  const includeBase64 = {include_base64_json};
+  const state = window.__CRAWSHRIMP_BLOB_DOWNLOAD_CAPTURE__ || {{}};
+  const captures = Array.isArray(state.captures) ? state.captures : [];
+  const capture = [...captures].reverse().find(item => item && item.id === captureId) || null;
+  const clean = capture ? {{
+    id: capture.id || '',
+    href: capture.href || '',
+    download: capture.download || '',
+    startedAt: capture.startedAt || '',
+    finishedAt: capture.finishedAt || '',
+    ok: !!capture.ok,
+    done: !!capture.done,
+    bytes: Number(capture.bytes || 0),
+    type: capture.type || '',
+    magic: capture.magic || '',
+    error: capture.error || '',
+    base64: includeBase64 ? (capture.base64 || '') : '',
+  }} : null;
+  return {{
+    success: true,
+    data: [{{
+      found: !!capture,
+      capture: clean,
+      eventCount: Array.isArray(state.events) ? state.events.length : 0,
+    }}],
+  }};
+}})()
+""".strip()
+
+    async def _install_blob_download_capture(
+        self,
+        capture_id: str,
+        expected_filename: str = "",
+        expected_magic: str = "",
+    ) -> dict:
+        result = await self.evaluate_with_reconnect(
+            self._blob_download_capture_install_expression(capture_id, expected_filename, expected_magic),
+            allow_navigation_retry=True,
+        )
+        if not result.success:
+            return {
+                "installed": False,
+                "captureId": capture_id,
+                "error": str(result.error or "blob download capture install failed"),
+            }
+        if isinstance(result.data, list) and result.data and isinstance(result.data[0], dict):
+            data = result.data[0]
+        elif isinstance(result.data, dict):
+            data = result.data
+        else:
+            data = {}
+        return {
+            "installed": bool(data.get("installed", True)),
+            "captureId": capture_id,
+            "expectedFilename": str(data.get("expectedFilename") or expected_filename or ""),
+            "expectedMagic": str(data.get("expectedMagic") or expected_magic or ""),
+        }
+
+    async def _read_blob_download_capture(
+        self,
+        capture_id: str,
+        *,
+        include_base64: bool = False,
+    ) -> dict:
+        result = await self.evaluate_with_reconnect(
+            self._blob_download_capture_read_expression(capture_id, include_base64=include_base64),
+            allow_navigation_retry=True,
+        )
+        if not result.success:
+            return {
+                "found": False,
+                "error": str(result.error or "blob download capture read failed"),
+            }
+        if isinstance(result.data, list) and result.data and isinstance(result.data[0], dict):
+            return result.data[0]
+        if isinstance(result.data, dict):
+            return result.data
+        return {"found": False}
+
+    async def _download_page_blob_expression(
+        self,
+        expression: str,
+        capture_dir: Path,
+        filename: str = "",
+    ) -> dict:
+        result = await self.evaluate_with_reconnect(expression, allow_navigation_retry=True)
+        if not result.success:
+            return {
+                "success": False,
+                "error": str(result.error or "page blob expression failed"),
+            }
+        if isinstance(result.data, list) and result.data and isinstance(result.data[0], dict):
+            data = result.data[0]
+        elif isinstance(result.data, dict):
+            data = result.data
+        else:
+            data = {}
+        encoded = str(data.get("base64") or "")
+        if not encoded:
+            return {
+                "success": False,
+                "error": str(data.get("error") or "page blob expression did not return base64"),
+                "pageBlob": {key: value for key, value in data.items() if key != "base64"},
+            }
+        try:
+            payload = base64.b64decode(encoded)
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"page blob base64 decode failed: {exc}",
+                "pageBlob": {key: value for key, value in data.items() if key != "base64"},
+            }
+        raw_name = filename or str(data.get("filename") or data.get("download") or "page-blob-download.bin")
+        captured_path = capture_dir / self._sanitize_artifact_filename(raw_name)
+        captured_path.write_bytes(payload)
+        return {
+            "success": True,
+            "path": str(captured_path),
+            "pageBlob": {key: value for key, value in data.items() if key != "base64"},
+        }
 
     def _build_artifact_target_path(
         self,
@@ -1759,8 +2130,7 @@ class JSRunner:
 
     async def download_clicks(self, items: list[dict], strict: bool = False) -> dict:
         results: list[dict] = []
-        downloads_dir = Path.home() / "Downloads"
-        fallback_xlsx_pattern = re.compile(r".+\.xlsx$", re.IGNORECASE)
+        system_downloads_dir = Path.home() / "Downloads"
 
         for item in items or []:
             clicks = (item or {}).get("clicks") or []
@@ -1769,6 +2139,18 @@ class JSRunner:
             expected_url = str((item or {}).get("expected_url") or (item or {}).get("url") or "").strip()
             timeout_ms = int((item or {}).get("timeout_ms") or max(self.timeout, 30) * 1000)
             regex_text = str((item or {}).get("expected_name_regex") or "").strip()
+            page_blob_expression = str(
+                (item or {}).get("page_blob_expression")
+                or (item or {}).get("pageBlobExpression")
+                or ""
+            ).strip()
+            capture_blob_download = bool(
+                (item or {}).get("capture_blob_download")
+                or (item or {}).get("captureBlobDownload")
+                or (item or {}).get("capture_blob")
+            )
+            raw_magic = (item or {}).get("expected_magic", (item or {}).get("expectedMagic"))
+            expected_magic_text = raw_magic.decode("utf-8", "replace") if isinstance(raw_magic, (bytes, bytearray)) else str(raw_magic or "")
 
             if regex_text:
                 try:
@@ -1776,9 +2158,71 @@ class JSRunner:
                 except re.error:
                     name_pattern = None
             else:
-                name_pattern = self._build_download_candidate_regex(expected_url)
+                name_pattern = self._build_download_candidate_regex(expected_url or filename)
             if name_pattern is None:
-                name_pattern = re.compile(r".+\.xlsx$", re.IGNORECASE)
+                name_pattern = self._build_download_extension_regex(filename, expected_url)
+            fallback_pattern = self._build_download_extension_regex(filename, expected_url)
+            if fallback_pattern is None:
+                fallback_pattern = re.compile(r".+\.xlsx$", re.IGNORECASE)
+
+            if not clicks and page_blob_expression:
+                capture_dir = Path(tempfile.mkdtemp(prefix="page-blob-download-", dir=str(self.artifact_dir)))
+                page_blob_result = await self._download_page_blob_expression(page_blob_expression, capture_dir, filename)
+                if page_blob_result.get("success") and page_blob_result.get("path"):
+                    downloaded = Path(str(page_blob_result["path"]))
+                    valid, validation_error, validation = self._validate_click_download(downloaded, item, filename)
+                    if valid:
+                        target_path = self._build_artifact_target_path(filename, expected_url)
+                        final_path = self._ensure_unique_artifact_path(target_path)
+                        final_path.parent.mkdir(parents=True, exist_ok=True)
+                        source_path = str(downloaded)
+                        shutil.move(source_path, str(final_path))
+                        saved_path = str(final_path)
+                        if saved_path not in self.runtime_output_files:
+                            self.runtime_output_files.append(saved_path)
+                        results.append({
+                            "success": True,
+                            "label": label,
+                            "filename": final_path.name,
+                            "path": saved_path,
+                            "url": expected_url,
+                            "sourcePath": source_path,
+                            "source": str((item or {}).get("source") or "page_blob_download"),
+                            "matchedBy": "page_blob_expression",
+                            "pageBlob": page_blob_result.get("pageBlob") or {},
+                            **validation,
+                        })
+                        shutil.rmtree(capture_dir, ignore_errors=True)
+                        continue
+                    result = {
+                        "success": False,
+                        "label": label,
+                        "filename": filename,
+                        "url": expected_url,
+                        "error": validation_error,
+                        "matchedBy": "page_blob_expression",
+                        "pageBlob": page_blob_result.get("pageBlob") or {},
+                        **validation,
+                    }
+                    results.append(result)
+                    shutil.rmtree(capture_dir, ignore_errors=True)
+                    if strict:
+                        raise RuntimeError(result["error"])
+                    continue
+                result = {
+                    "success": False,
+                    "label": label,
+                    "filename": filename,
+                    "url": expected_url,
+                    "error": str(page_blob_result.get("error") or "page blob download failed"),
+                    "matchedBy": "page_blob_expression",
+                    "pageBlob": page_blob_result.get("pageBlob") or {},
+                }
+                results.append(result)
+                shutil.rmtree(capture_dir, ignore_errors=True)
+                if strict:
+                    raise RuntimeError(result["error"])
+                continue
 
             if not clicks:
                 result = {
@@ -1792,31 +2236,54 @@ class JSRunner:
                     raise RuntimeError(result["error"])
                 continue
 
-            if not downloads_dir.exists():
-                result = {
-                    "success": False,
-                    "label": label,
-                    "filename": filename,
-                    "error": f"系统下载目录不存在: {downloads_dir}",
-                }
-                results.append(result)
-                if strict:
-                    raise RuntimeError(result["error"])
-                continue
-
             await self._close_transient_download_tabs()
-            baseline = self._snapshot_download_state([downloads_dir], name_pattern)
-            fallback_baseline = self._snapshot_download_state([downloads_dir], fallback_xlsx_pattern)
-            baseline_tab_ids = await self._list_page_tab_ids()
-            started_at_ns = time.time_ns()
-            transient_actions: list[dict] = []
-            transient_action_keys: set[str] = set()
-            matched_by = "expected_name"
+            capture_dir = Path(tempfile.mkdtemp(prefix="click-download-", dir=str(self.artifact_dir)))
 
             try:
                 await self._refresh_ws_url()
             except Exception:
                 logger.debug("refresh_ws_url skipped before download_clicks", exc_info=True)
+
+            download_control = {
+                "configured": False,
+                "method": "Page.setDownloadBehavior",
+                "downloadPath": str(capture_dir),
+            }
+            try:
+                download_control = await self._prepare_click_download(capture_dir)
+            except Exception as exc:
+                download_control["error"] = str(exc)
+
+            watch_dirs = [capture_dir]
+            if (
+                not download_control.get("configured")
+                and system_downloads_dir.exists()
+                and system_downloads_dir.is_dir()
+            ):
+                watch_dirs.append(system_downloads_dir)
+            baseline = self._snapshot_download_state(watch_dirs, name_pattern)
+            fallback_baseline = self._snapshot_download_state(watch_dirs, fallback_pattern)
+            baseline_tab_ids = await self._list_page_tab_ids()
+            started_at_ns = time.time_ns()
+            transient_actions: list[dict] = []
+            transient_action_keys: set[str] = set()
+            matched_by = "expected_name"
+            blob_capture_control: dict = {}
+            blob_capture: dict = {}
+            blob_capture_done = False
+            if capture_blob_download:
+                try:
+                    blob_capture_id = f"{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+                    blob_capture_control = await self._install_blob_download_capture(
+                        blob_capture_id,
+                        expected_filename=filename,
+                        expected_magic=expected_magic_text,
+                    )
+                except Exception as exc:
+                    blob_capture_control = {
+                        "installed": False,
+                        "error": str(exc),
+                    }
 
             for click in clicks:
                 await self.cdp_mouse_click(
@@ -1836,44 +2303,121 @@ class JSRunner:
                         transient_action_keys.add(action_key)
                         transient_actions.append(action)
                     downloaded = self._find_new_downloaded_file(
-                        [downloads_dir],
+                        watch_dirs,
                         baseline,
                         name_pattern,
                         started_at_ns,
                     )
                     if not downloaded:
                         downloaded = self._find_new_downloaded_file(
-                            [downloads_dir],
+                            watch_dirs,
                             fallback_baseline,
-                            fallback_xlsx_pattern,
+                            fallback_pattern,
                             started_at_ns,
                         )
                         if downloaded:
-                            matched_by = "fallback_any_xlsx"
+                            suffix = Path(downloaded).suffix.lower().lstrip(".") or "file"
+                            matched_by = f"fallback_any_{suffix}"
+                    if (
+                        not downloaded
+                        and capture_blob_download
+                        and blob_capture_control.get("installed")
+                        and blob_capture_control.get("captureId")
+                        and not blob_capture_done
+                    ):
+                        try:
+                            capture_state = await self._read_blob_download_capture(
+                                str(blob_capture_control.get("captureId") or ""),
+                                include_base64=False,
+                            )
+                        except Exception as exc:
+                            capture_state = {"found": False, "error": str(exc)}
+                        capture = capture_state.get("capture") if isinstance(capture_state, dict) else None
+                        if isinstance(capture, dict) and capture.get("done"):
+                            blob_capture_done = True
+                            blob_capture = {key: value for key, value in capture.items() if key != "base64"}
+                            if capture.get("ok"):
+                                try:
+                                    capture_payload = await self._read_blob_download_capture(
+                                        str(blob_capture_control.get("captureId") or ""),
+                                        include_base64=True,
+                                    )
+                                    full_capture = capture_payload.get("capture") if isinstance(capture_payload, dict) else None
+                                    if isinstance(full_capture, dict):
+                                        blob_capture = {key: value for key, value in full_capture.items() if key != "base64"}
+                                        encoded = str(full_capture.get("base64") or "")
+                                        if encoded:
+                                            capture_bytes = base64.b64decode(encoded)
+                                            captured_name = filename or str(full_capture.get("download") or "blob-download.bin")
+                                            captured_path = capture_dir / self._sanitize_artifact_filename(captured_name)
+                                            captured_path.write_bytes(capture_bytes)
+                                            downloaded = captured_path
+                                            matched_by = "captured_blob_anchor"
+                                except Exception as exc:
+                                    blob_capture = {
+                                        **blob_capture,
+                                        "error": str(exc),
+                                    }
                     if downloaded:
                         break
                     await asyncio.sleep(0.5)
             finally:
                 await self._close_new_page_tabs(baseline_tab_ids)
+                try:
+                    await self._restore_click_download()
+                except Exception:
+                    logger.debug("failed to restore default click download behavior", exc_info=True)
 
             if downloaded:
-                target_path = self._build_artifact_target_path(filename, expected_url)
-                final_path = self._ensure_unique_artifact_path(target_path)
-                final_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(downloaded), str(final_path))
-                saved_path = str(final_path)
-                if saved_path not in self.runtime_output_files:
-                    self.runtime_output_files.append(saved_path)
-                results.append({
-                    "success": True,
+                valid, validation_error, validation = self._validate_click_download(downloaded, item, filename)
+                if valid:
+                    target_path = self._build_artifact_target_path(filename, expected_url)
+                    final_path = self._ensure_unique_artifact_path(target_path)
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    source_path = str(downloaded)
+                    shutil.move(source_path, str(final_path))
+                    saved_path = str(final_path)
+                    if saved_path not in self.runtime_output_files:
+                        self.runtime_output_files.append(saved_path)
+                    results.append({
+                        "success": True,
+                        "label": label,
+                        "filename": final_path.name,
+                        "path": saved_path,
+                        "url": expected_url,
+                        "sourcePath": source_path,
+                        "source": str((item or {}).get("source") or "browser_native_download"),
+                        "matchedBy": matched_by,
+                        "browserDownloadControl": download_control,
+                        "blobDownloadCapture": {
+                            "control": blob_capture_control,
+                            "capture": blob_capture,
+                        } if blob_capture_control or blob_capture else {},
+                        "transientActions": transient_actions,
+                        **validation,
+                    })
+                    shutil.rmtree(capture_dir, ignore_errors=True)
+                    continue
+
+                result = {
+                    "success": False,
                     "label": label,
-                    "filename": final_path.name,
-                    "path": saved_path,
+                    "filename": filename,
                     "url": expected_url,
-                    "sourcePath": str(downloaded),
+                    "error": validation_error,
                     "matchedBy": matched_by,
+                    "browserDownloadControl": download_control,
+                    "blobDownloadCapture": {
+                        "control": blob_capture_control,
+                        "capture": blob_capture,
+                    } if blob_capture_control or blob_capture else {},
                     "transientActions": transient_actions,
-                })
+                    **validation,
+                }
+                results.append(result)
+                shutil.rmtree(capture_dir, ignore_errors=True)
+                if strict:
+                    raise RuntimeError(result["error"])
                 continue
 
             result = {
@@ -1882,9 +2426,15 @@ class JSRunner:
                 "filename": filename,
                 "url": expected_url,
                 "error": "点击后未检测到新下载文件",
+                "browserDownloadControl": download_control,
+                "blobDownloadCapture": {
+                    "control": blob_capture_control,
+                    "capture": blob_capture,
+                } if blob_capture_control or blob_capture else {},
                 "transientActions": transient_actions,
             }
             results.append(result)
+            shutil.rmtree(capture_dir, ignore_errors=True)
             if strict:
                 raise RuntimeError(result["error"])
 
