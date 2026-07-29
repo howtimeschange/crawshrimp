@@ -1,0 +1,11 @@
+{
+  "name": "crawshrimp-one-xm-proxy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm test && npx wrangler deploy --dry-run"
+  }
+}

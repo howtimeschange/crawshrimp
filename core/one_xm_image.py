@@ -106,6 +106,18 @@ def _join_url(base_url: str, path: str) -> str:
     return f"{_normalize_base_url(base_url)}/{path.lstrip('/')}"
 
 
+def _route_default_poll_url_through_base(base_url: str, poll_url: str) -> str:
+    target = _compact(poll_url)
+    normalized_base = _normalize_base_url(base_url)
+    default_base = _normalize_base_url(DEFAULT_BASE_URL)
+    if (
+        target.startswith(f"{default_base}/")
+        and normalized_base != default_base
+    ):
+        return f"{normalized_base}/{target[len(default_base):].lstrip('/')}"
+    return target
+
+
 def file_to_data_url(path: str, *, max_bytes: int = 20 * 1024 * 1024) -> str:
     file_path = Path(path).expanduser()
     if not file_path.is_file():
@@ -140,7 +152,10 @@ class OneXMImageClient:
             raise ValueError("1XM API key is required")
 
     def _headers(self, idempotency_key: str = "", *, json_body: bool = True) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "crawshrimp-ai-image-client/1.0",
+        }
         if json_body:
             headers["Content-Type"] = "application/json"
         safe_idempotency_key = _safe_idempotency_key(idempotency_key)
@@ -202,7 +217,7 @@ class OneXMImageClient:
         retry_delay_seconds: float = 1.0,
         sleep_fn: Callable[[float], None] = time.sleep,
     ) -> dict[str, Any]:
-        target = _compact(poll_url_or_task_id)
+        target = _route_default_poll_url_through_base(self.base_url, poll_url_or_task_id)
         if not target.startswith("http://") and not target.startswith("https://"):
             target = f"/images/tasks/{target}"
         return _retry_call(

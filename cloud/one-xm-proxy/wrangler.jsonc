@@ -1,0 +1,20 @@
+{
+  "$schema": "../approval-workbench/node_modules/wrangler/config-schema.json",
+  "name": "crawshrimp-one-xm-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-29",
+  "routes": [
+    {
+      "pattern": "one-xm-proxy.crawshrimp.com",
+      "custom_domain": true
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "ONE_XM_UPSTREAM_BASE_URL": "https://api.1xm.ai/v1",
+    "MAX_JSON_REWRITE_BYTES": "1048576"
+  }
+}

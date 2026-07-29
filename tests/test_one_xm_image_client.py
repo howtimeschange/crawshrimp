@@ -57,8 +57,43 @@ class OneXMImageClientTests(unittest.TestCase):
         self.assertEqual(result["image_urls"], ["https://img.1xm.ai/generated/task_1_0.png"])
         self.assertEqual(transport.calls[0]["method"], "POST")
         self.assertEqual(transport.calls[0]["headers"]["Authorization"], "Bearer unit-key")
+        self.assertEqual(transport.calls[0]["headers"]["User-Agent"], "crawshrimp-ai-image-client/1.0")
         self.assertEqual(transport.calls[0]["headers"]["Idempotency-Key"], "order_1")
         self.assertEqual(transport.calls[1]["method"], "GET")
+
+    def test_absolute_default_poll_url_uses_configured_proxy_base_url(self):
+        transport = FakeTransport([
+            (202, {
+                "id": "task_proxy",
+                "status": "queued",
+                "poll_url": "https://api.1xm.ai/v1/images/tasks/task_proxy",
+                "poll_after": 0,
+            }),
+            (200, {
+                "id": "task_proxy",
+                "status": "succeeded",
+                "data": [{"url": "https://img.1xm.ai/generated/task_proxy_0.png"}],
+            }),
+        ])
+        client = OneXMImageClient(
+            "unit-key",
+            base_url="https://proxy.example/t/proxy-token/v1",
+            transport=transport,
+        )
+
+        result = run_image_task_until_done(
+            client,
+            {"model": "gpt-image-2", "prompt": "proxy", "size": "1024x1024", "n": 1},
+            idempotency_key="order_proxy",
+            poll_timeout_seconds=30,
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            transport.calls[1]["url"],
+            "https://proxy.example/t/proxy-token/v1/images/tasks/task_proxy",
+        )
 
     def test_non_ascii_idempotency_key_is_normalized_for_http_headers(self):
         transport = FakeTransport([
