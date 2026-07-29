@@ -121,7 +121,11 @@ export function hasGeneratingBalaReviewAssets(batch = {}) {
 
 export function selectVisibleEditableVersions(source = {}, selectedOnly = false) {
   return (source?.versions || []).filter(version => (
-    !version?.deleted && (!selectedOnly || Boolean(version.editSelected))
+    !version?.deleted && (
+      !selectedOnly
+      || Boolean(version.editSelected)
+      || ['running', 'generating', 'queued'].includes(compact(version.status).toLowerCase())
+    )
   ))
 }
 
@@ -307,6 +311,125 @@ export function mergeBalaMaterialAssets(existingAssets = [], incomingAssets = []
     else merged[index] = mergeMaterialAsset(merged[index], candidate)
   }
   return merged
+}
+
+function materialRowSourceLabel(sourceType = '') {
+  return sourceType === 'detail' ? '商品细节图' : '模拍图'
+}
+
+function materialRowFromWorkspaceAsset({
+  styleCode = '',
+  sourceType = 'model',
+  asset = {},
+  path = '',
+  action = '',
+  note = '',
+} = {}) {
+  const localPath = compact(path || asset?.previewPath || asset?.path)
+  if (!localPath) return null
+  const filename = compact(asset?.filename || asset?.name || asset?.label || filenameFromPath(localPath))
+  return {
+    输入款号: compact(styleCode || asset?.styleCode || asset?.style_code),
+    素材来源: materialRowSourceLabel(sourceType),
+    文件名: filename || filenameFromPath(localPath),
+    本地文件: localPath,
+    下载结果: '已下载',
+    处理动作: compact(action || asset?.action || asset?.operationType || asset?.operation_type || '本地恢复'),
+    备注: compact(note || asset?.note || asset?.meta || ''),
+  }
+}
+
+export function buildBalaMaterialRowsFromWorkspaceGroups(groups = []) {
+  const rows = []
+  const seenPaths = new Set()
+  const append = (row) => {
+    if (!row?.本地文件 || seenPaths.has(row.本地文件)) return
+    seenPaths.add(row.本地文件)
+    rows.push(row)
+  }
+
+  for (const style of groups || []) {
+    const styleCode = compact(style?.styleCode || style?.style_code)
+    for (const asset of style?.modelPhotos || []) {
+      if (asset?.localReviewOnly) continue
+      append(materialRowFromWorkspaceAsset({
+        styleCode,
+        sourceType: 'model',
+        asset,
+        note: asset?.isAi ? '从本地 AI 结果恢复' : '从本地工作区恢复',
+      }))
+      for (const version of asset?.versions || []) {
+        if (version?.deleted) continue
+        append(materialRowFromWorkspaceAsset({
+          styleCode,
+          sourceType: 'model',
+          asset: version,
+          path: version?.previewPath || version?.path,
+          action: operationLabel(version?.operationType || version?.operation_type || version?.action),
+          note: '从本地 AI 结果恢复',
+        }))
+      }
+    }
+    for (const asset of style?.detailPhotos || []) {
+      if (asset?.localReviewOnly) continue
+      append(materialRowFromWorkspaceAsset({
+        styleCode,
+        sourceType: 'detail',
+        asset,
+        note: '从本地工作区恢复',
+      }))
+    }
+  }
+  return rows
+}
+
+function batchAssetsByPath(batch = {}) {
+  const byPath = new Map()
+  for (const item of batch?.items || []) {
+    for (const asset of item?.assets || []) {
+      const localPath = compact(asset?.path)
+      if (localPath) byPath.set(localPath, asset)
+    }
+  }
+  return byPath
+}
+
+function applyBatchAssetIdentity(target = {}, batchAsset = {}) {
+  const batchId = compact(batchAsset?.id || batchAsset?.asset_id)
+  if (batchId) target.id = batchId
+  target.remoteAssetId = batchId || compact(target.remoteAssetId || target.remote_asset_id)
+  target.imageUrl = compact(batchAsset?.image_url || batchAsset?.imageUrl || target.imageUrl || target.image_url)
+  target.thumbnailUrl = compact(batchAsset?.thumbnail_url || batchAsset?.thumbnailUrl || target.thumbnailUrl || target.thumbnail_url)
+  return Boolean(batchId)
+}
+
+export function applyBalaMaterialBatchToWorkspaceGroups(groups = [], batch = {}) {
+  const byPath = batchAssetsByPath(batch)
+  let linkedAssets = 0
+  let linkedVersions = 0
+  for (const style of groups || []) {
+    for (const key of ['modelPhotos', 'detailPhotos', 'otherPhotos']) {
+      for (const asset of style?.[key] || []) {
+        const match = byPath.get(compact(asset?.path))
+        if (match && applyBatchAssetIdentity(asset, match)) linkedAssets += 1
+        for (const version of asset?.versions || []) {
+          if (version?.deleted) continue
+          version.sourceAssetId = compact(asset?.id || version?.sourceAssetId || version?.source_asset_id)
+          version.sourcePath = compact(asset?.path || version?.sourcePath || version?.source_path)
+          const versionPath = compact(version?.previewPath || version?.path)
+          const versionMatch = byPath.get(versionPath)
+          const materialAssetId = compact(versionMatch?.id || versionMatch?.asset_id)
+          if (!materialAssetId) continue
+          version.materialAssetId = materialAssetId
+          version.materialBatchPath = versionPath
+          version.imageUrl = compact(versionMatch?.image_url || versionMatch?.imageUrl || version.imageUrl || version.image_url)
+          version.thumbnailUrl = compact(versionMatch?.thumbnail_url || versionMatch?.thumbnailUrl || version.thumbnailUrl || version.thumbnail_url)
+          linkedVersions += 1
+        }
+      }
+    }
+  }
+  return { linkedAssets, linkedVersions, totalLinked: linkedAssets + linkedVersions }
 }
 
 function normalizeBatchAsset(asset = {}) {

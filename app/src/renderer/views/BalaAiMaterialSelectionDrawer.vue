@@ -67,7 +67,7 @@
             <section v-if="selectedOperation === 'face_swap'" class="bala-operation-card">
               <div class="bala-field-head">
                 <strong>AI 换脸</strong>
-                <span>从内置素材库选择年龄和性别匹配的模特脸</span>
+                <span>仅替换脸部，保留原背景、姿势、构图和服装</span>
               </div>
               <button type="button" class="bala-picker-button" @click="modelPickerOpen = true">
                 打开模特素材库
@@ -81,15 +81,15 @@
             <section v-else-if="selectedOperation === 'background_swap'" class="bala-operation-card">
               <div class="bala-field-head">
                 <strong>AI 换背景</strong>
-                <span>输入背景要求，保留服装主体</span>
+                <span>只替换背景，保留人物、脸部、姿势和服装主体</span>
               </div>
-              <textarea v-model="backgroundPrompt" rows="5" placeholder="例如：换成马尔代夫的海边"></textarea>
+              <textarea v-model="backgroundPrompt" rows="5" placeholder="例如：干净明亮的儿童服装棚拍场景，柔和自然光"></textarea>
             </section>
 
             <section v-else-if="selectedOperation === 'outfit_swap'" class="bala-operation-card">
               <div class="bala-field-head">
                 <strong>AI 换装</strong>
-                <span>上传服装图和搭配/同款不同色参考图</span>
+                <span>只替换服装商品，保留原人物、姿势、背景和构图</span>
               </div>
               <FilePathPicker label="服装图" :paths="garmentImagePaths" @pick="pickImages('garment')" @clear="garmentImagePaths = []" />
               <FilePathPicker label="搭配参考图" :paths="outfitReferencePaths" @pick="pickImages('outfit')" @clear="outfitReferencePaths = []" />
@@ -99,7 +99,7 @@
             <section v-else class="bala-operation-card">
               <div class="bala-field-head">
                 <strong>AI 换姿势</strong>
-                <span>描述姿势、构图和保留要求</span>
+                <span>只调整人物姿势，保留服装商品、背景和镜头</span>
               </div>
               <textarea v-model="posePrompt" rows="5" placeholder="例如：让模特自然侧身行走，保留服装版型和颜色"></textarea>
               <textarea v-model="promptCardsText" rows="4" placeholder="可粘贴 Prompt 卡片，一行一条"></textarea>
@@ -108,7 +108,7 @@
             <section class="bala-operation-card">
               <div class="bala-field-head">
                 <strong>补充要求</strong>
-                <span>所有 AI 动作共用</span>
+                <span>换脸/换装可补充；换背景/换姿势请写在上方主 Prompt</span>
               </div>
               <textarea v-model="promptExtra" rows="4" placeholder="例如：无文字、无变形、画面自然、有阳光"></textarea>
             </section>
@@ -191,13 +191,13 @@ const selectedOperation = ref('face_swap')
 const modelPickerOpen = ref(false)
 const selectedModelIds = ref([])
 const selectedModelItems = ref([])
-const backgroundPrompt = ref('换成马尔代夫的海边')
+const backgroundPrompt = ref('')
 const garmentImagePaths = ref([])
 const outfitReferencePaths = ref([])
 const variantReferencePaths = ref([])
-const posePrompt = ref('让模特自然侧身行走，保留服装版型和颜色')
+const posePrompt = ref('')
 const promptCardsText = ref('')
-const promptExtra = ref('无文字，无变形，保留童装版型和颜色')
+const promptExtra = ref('无文字、无水印，保留商品版型、颜色、图案和材质')
 
 const boardRef = computed(() => parseBalaMaterialBoardUrl(props.boardUrl))
 const allItems = computed(() => Array.isArray(batch.value?.items) ? batch.value.items : [])
@@ -214,10 +214,16 @@ const batchSummary = computed(() => {
 const canExport = computed(() =>
   selectedAssetIds.value.length > 0
   && (selectedOperation.value !== 'face_swap' || selectedModelIds.value.length > 0)
+  && (selectedOperation.value !== 'background_swap' || backgroundPrompt.value.trim().length > 0)
+  && (selectedOperation.value !== 'outfit_swap' || garmentImagePaths.value.length > 0)
+  && (selectedOperation.value !== 'pose_swap' || posePrompt.value.trim().length > 0)
 )
 const actionHint = computed(() => {
   if (!selectedAssetIds.value.length) return '先选择要进入 AI 生图的素材图'
   if (selectedOperation.value === 'face_swap' && !selectedModelIds.value.length) return '换脸需要先选择模特素材'
+  if (selectedOperation.value === 'background_swap' && !backgroundPrompt.value.trim()) return '换背景需要填写背景 Prompt'
+  if (selectedOperation.value === 'outfit_swap' && !garmentImagePaths.value.length) return '换装需要先选择服装图'
+  if (selectedOperation.value === 'pose_swap' && !posePrompt.value.trim()) return '换姿势需要填写姿势 Prompt'
   return '确认后会打开 AI 换图原子脚本并带入这些参数'
 })
 
@@ -312,18 +318,19 @@ async function exportToAi() {
   submitting.value = true
   error.value = ''
   try {
+    const promptExtraValue = ['background_swap', 'pose_swap'].includes(selectedOperation.value) ? '' : promptExtra.value
     await window.cs.saveBalaMaterialSelection(ref.batchId, ref.token, selectedAssetIds.value)
     const result = await window.cs.exportBalaAiInput(ref.batchId, ref.token, {
       operation_type: selectedOperation.value,
       selected_asset_ids: selectedAssetIds.value,
       model_ref_ids: selectedModelIds.value,
-      background_prompt: backgroundPrompt.value,
-      garment_images: { paths: garmentImagePaths.value },
-      outfit_reference_images: { paths: outfitReferencePaths.value },
-      variant_reference_images: { paths: variantReferencePaths.value },
-      pose_prompt: posePrompt.value,
-      prompt_cards: promptCards(),
-      prompt_extra: promptExtra.value,
+      background_prompt: selectedOperation.value === 'background_swap' ? backgroundPrompt.value.trim() : '',
+      garment_images: selectedOperation.value === 'outfit_swap' ? { paths: garmentImagePaths.value } : { paths: [] },
+      outfit_reference_images: selectedOperation.value === 'outfit_swap' ? { paths: outfitReferencePaths.value } : { paths: [] },
+      variant_reference_images: selectedOperation.value === 'outfit_swap' ? { paths: variantReferencePaths.value } : { paths: [] },
+      pose_prompt: selectedOperation.value === 'pose_swap' ? posePrompt.value.trim() : '',
+      prompt_cards: selectedOperation.value === 'pose_swap' ? promptCards() : [],
+      prompt_extra: promptExtraValue,
     })
     emit('start-ai-stage', buildBalaAiStageRequest(result))
     close()

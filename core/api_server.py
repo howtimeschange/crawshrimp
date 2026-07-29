@@ -2559,28 +2559,55 @@ def _bala_ai_prompt(source_path: Path, model_item: dict, background_prompt: str,
     return "\n".join(lines)
 
 
+def _bala_face_swap_prompt(source_path: Path, model_item: dict, extra: str = "") -> str:
+    model_label = (
+        f"{model_item.get('group_label') or model_item.get('group') or ''}"
+        f" {model_item.get('expression') or ''}"
+    ).strip()
+    lines = [
+        "请基于输入的第一张童装商品模拍图进行真实电商照片级局部换脸编辑。",
+        "编辑范围只限人物脸部区域：替换脸部五官、年龄气质和表情；不要重绘整张图。",
+        "必须保留第一张图中的原始背景/场景、地面/墙面/天空、道具/椅子/台座、身体姿态、主体构图、拍摄角度、裁切比例、光线阴影、童装商品、版型、颜色、图案、材质和穿搭关系。",
+        f"参考第二张巴拉 AI 模特头像素材（{model_label}），让新脸自然贴合原图角度、光线、肤色和清晰度。",
+        "禁止替换背景或场景，禁止新增海边、户外、树木、天空、道具、文字、水印、Logo、吊牌、合格证或多余人物。",
+        "输出应尽量与原图除脸部外保持一致，真实摄影质感，不要拼贴感。",
+    ]
+    extra_text = str(extra or "").strip()
+    if extra_text:
+        lines.append(f"补充要求（不得改变上述只换脸范围，不得替换背景/场景）：{extra_text}")
+    return "\n".join(lines)
+
+
 def _bala_ai_operation_prompt(source_path: Path, model_item: dict, run_params: dict, operation_type: str) -> str:
     extra = str((run_params or {}).get("prompt_extra") or "").strip()
     if operation_type == "face_swap":
-        background_prompt = str((run_params or {}).get("background_prompt") or "保持原图自然背景").strip()
-        return _bala_ai_prompt(source_path, model_item or {}, background_prompt, extra)
+        return _bala_face_swap_prompt(source_path, model_item or {}, extra)
     if operation_type == "background_swap":
+        background_prompt = str((run_params or {}).get("background_prompt") or "").strip()
         lines = [
-            "请基于输入的童装商品模拍图进行真实电商照片级图像编辑。",
-            "必须保留童装商品、版型、颜色、图案、材质、穿搭关系、人物姿态和主体构图，不要改款、不要换衣服。",
-            f"将背景替换为：{str((run_params or {}).get('background_prompt') or '').strip()}。背景真实自然，符合儿童服装商业图，不要出现文字、水印、Logo、吊牌、合格证或多余人物。",
+            "请基于输入的童装商品模拍图进行真实电商照片级局部换背景编辑。",
+            f"编辑范围只限背景/场景：将原背景替换为「{background_prompt}」。",
+            "必须完整保留人物主体、脸部五官、发型、肤色、身体姿态、手脚位置、服装商品、版型、颜色、图案、材质、穿搭关系、主体轮廓、裁切比例和镜头视角。",
+            "新背景需要与原人物光线、阴影、透视、景深和地面接触关系自然融合，符合儿童服装商业图。",
+            "禁止改脸、换衣服、改变姿势、改变商品颜色或图案，禁止出现文字、水印、Logo、吊牌、合格证或多余人物。",
         ]
     elif operation_type == "outfit_swap":
         lines = [
-            "请基于输入的童装模特图进行真实电商照片级换装编辑。",
-            "将服装图中的商品自然替换到模特身上，保留童装版型、颜色、图案、材质和穿搭比例。",
-            "参考搭配图和同款不同色图理解衣服结构，输出自然、清晰、无拼贴感的完整儿童模特图。",
+            "请基于输入的童装模特图进行真实电商照片级局部换装编辑。",
+            "编辑范围只限服装商品区域：将服装参考图中的童装自然穿到原模特身上。",
+            "必须保留原图人物脸部、发型、年龄气质、身体姿态、手脚位置、背景/场景、道具、主体构图、镜头视角、裁切比例和整体光线。",
+            "严格按照服装图保留商品版型、颜色、图案、材质、领口/袖口/下摆/裤型等结构细节，并让衣服贴合原身体姿势和透视。",
+            "搭配参考图用于理解穿搭关系；同款不同色图用于理解版型结构，不得直接改变成参考图场景。",
+            "禁止换脸、替换背景、改变姿势、改变人物比例，禁止出现文字、水印、Logo、吊牌、合格证或多余人物。",
         ]
     elif operation_type == "pose_swap":
+        pose_prompt = str((run_params or {}).get("pose_prompt") or "").strip()
         lines = [
-            "请基于输入的童装商品模拍图进行真实电商照片级姿势调整。",
-            f"姿势要求：{str((run_params or {}).get('pose_prompt') or '').strip()}。",
-            "必须保留童装商品、版型、颜色、图案、材质和人物年龄气质，不要出现文字、水印、Logo 或多余人物。",
+            "请基于输入的童装商品模拍图进行真实电商照片级局部姿势调整。",
+            f"编辑范围以人物身体姿态为主：{pose_prompt}。",
+            "必须保留人物脸部身份和年龄气质、童装商品、版型、颜色、图案、材质、穿搭层次、背景/场景、道具、镜头视角、裁切比例和整体光线。",
+            "姿势调整要符合儿童自然身体比例和衣服受力褶皱，手脚完整，关节合理，商品展示清晰。",
+            "禁止换脸、换衣服、替换背景、改变商品颜色或图案，禁止出现文字、水印、Logo、吊牌、合格证或多余人物。",
         ]
     else:
         lines = ["请基于输入图片生成真实自然的儿童服装电商图。"]
@@ -2635,7 +2662,8 @@ def _bala_create_ai_image_job_row(
     style_code = _bala_extract_style_code(source_path)
     model_id = str(model_item.get("id") or "")
     operation_label = _bala_operation_label(operation_type)
-    background_prompt = str(run_params.get("background_prompt") or "").strip()
+    raw_background_prompt = str(run_params.get("background_prompt") or "").strip()
+    background_prompt = raw_background_prompt if operation_type == "background_swap" else ""
     garment_paths = _bala_param_image_paths(run_params, "garment_images")
     outfit_reference_paths = _bala_param_image_paths(run_params, "outfit_reference_images")
     variant_reference_paths = _bala_param_image_paths(run_params, "variant_reference_images")

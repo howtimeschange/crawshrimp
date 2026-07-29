@@ -469,7 +469,7 @@
                   @click="promptLibraryTarget = 'workspace'; promptLibraryOpen = true"
                 >从 Prompt 库选择</button>
               </span>
-              <textarea v-model="aiPrompt" rows="6"></textarea>
+              <textarea v-model="aiPrompt" rows="6" :placeholder="activePromptPlaceholder"></textarea>
             </label>
 
             <div class="aiv-generation-queue">
@@ -605,7 +605,7 @@
                       <article
                         v-for="version in visibleSourceVersions(source, showSelectedVersionsOnly)"
                         :key="version.id"
-                        :class="['aiv-media-card', 'aiv-version-card', { selected: version.editSelected, loading: version.status === 'running' }]"
+                        :class="['aiv-media-card', 'aiv-version-card', { selected: version.editSelected, loading: isAiVersionGenerating(version) }]"
                       >
                         <button
                           type="button"
@@ -628,7 +628,7 @@
                             <strong :title="version.label">{{ shortDisplayName(version.label) }}</strong>
                             <small :title="version.meta">{{ shortDisplayName(version.meta, 36) }}</small>
                           </div>
-                          <div v-if="version.status === 'running'" class="aiv-version-generation-status" role="status">
+                          <div v-if="isAiVersionGenerating(version)" class="aiv-version-generation-status" role="status">
                             <span>生成中 <strong>{{ version.progress || 0 }}%</strong></span>
                             <i class="aiv-mini-progress" :style="{ '--progress': `${version.progress || 0}%` }" aria-hidden="true"></i>
                           </div>
@@ -1936,7 +1936,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { IconCheck, IconChevronDown, IconFaceId, IconPhoto, IconRun, IconShirt, IconZoomIn } from '@tabler/icons-vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
@@ -1949,8 +1949,10 @@ import {
   BALA_AI_VIDEO_ADAPTER_ID,
   BALA_MATERIAL_PREPARE_TASK_ID,
   BALA_QN_VIDEO_TASK_ID,
+  applyBalaMaterialBatchToWorkspaceGroups,
   balaMaterialPanelControl,
   buildBalaAiStageRequest,
+  buildBalaMaterialRowsFromWorkspaceGroups,
   buildBalaMaterialPrepareParams,
   buildBalaReviewWorkspaceStyles,
   buildBalaVideoAssetPool,
@@ -2173,7 +2175,19 @@ const materialStyleListRef = ref(null)
 const styleCodes = ref('208326102205\n208326105214\n208326108104')
 const cloudPath = ref('巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/')
 const materialPackageName = ref('')
-const aiPrompt = ref('保留童装版型和颜色，画面自然，无文字，无品牌外露风险。')
+const AI_ACTION_PROMPT_DEFAULTS = {
+  face_swap: '只替换脸部为所选模特；保留原始背景/场景、构图、姿势、道具、服装版型和颜色；无文字、无水印。',
+  background_swap: '',
+  outfit_swap: '仅替换服装商品；保留原人物脸部、姿势、背景、构图和光线，服装按参考图保持版型、颜色、图案和材质。',
+  pose_swap: '',
+}
+const aiActionPrompts = reactive({ ...AI_ACTION_PROMPT_DEFAULTS })
+const aiPrompt = computed({
+  get: () => String(aiActionPrompts[activeAction.value] || ''),
+  set: value => {
+    aiActionPrompts[activeAction.value] = String(value || '')
+  },
+})
 const garmentImagePaths = ref([])
 const outfitReferencePaths = ref([])
 const variantReferencePaths = ref([])
@@ -2252,10 +2266,10 @@ const steps = computed(() => stepDefinitions.map(step => ({
 })))
 
 const aiActions = [
-  { id: 'face_swap', title: 'AI 换脸', shortTitle: '换脸', detail: '替换人物面部，保留服装版型', requirement: '选择模特' },
+  { id: 'face_swap', title: 'AI 换脸', shortTitle: '换脸', detail: '只替换人物面部，锁定原背景和构图', requirement: '选择模特' },
   { id: 'background_swap', title: 'AI 换背景', shortTitle: '换背景', detail: '只改场景，不改变人物与服装', requirement: '填写背景 Prompt' },
-  { id: 'outfit_swap', title: 'AI 换装', shortTitle: '换装', detail: '按服装与搭配参考完成替换', requirement: '选择服装图' },
-  { id: 'pose_swap', title: 'AI 换姿势', shortTitle: '换姿势', detail: '调整人物姿势，保留人物与服装', requirement: '填写姿势 Prompt' },
+  { id: 'outfit_swap', title: 'AI 换装', shortTitle: '换装', detail: '只改服装商品，保留人物和背景', requirement: '选择服装图' },
+  { id: 'pose_swap', title: 'AI 换姿势', shortTitle: '换姿势', detail: '只调人物姿势，保留服装和背景', requirement: '填写姿势 Prompt' },
 ]
 
 const activeAiAction = computed(() => aiActions.find(action => action.id === activeAction.value) || aiActions[0])
@@ -2276,6 +2290,12 @@ const activePromptLabel = computed(() => {
   if (activeAction.value === 'outfit_swap') return '换装补充要求'
   if (activeAction.value === 'pose_swap') return '姿势 Prompt'
   return '换脸补充要求'
+})
+const activePromptPlaceholder = computed(() => {
+  if (activeAction.value === 'background_swap') return '例如：干净明亮的儿童服装棚拍场景，柔和自然光，背景简洁高级'
+  if (activeAction.value === 'outfit_swap') return '可选，例如：衣服贴合身体姿势，保留原背景和人物表情，无文字、无水印'
+  if (activeAction.value === 'pose_swap') return '例如：让模特自然侧身站立，双手轻松放在身体两侧，保持服装展示清晰'
+  return '可选，例如：只替换脸部，保留原背景、姿势、构图和服装细节'
 })
 
 const styleWorkspaces = reactive([])
@@ -2463,6 +2483,7 @@ function workspaceSnapshot() {
       task: cloneWorkspaceValue(aiTaskState, {}),
       activeAction: activeAction.value,
       prompt: aiPrompt.value,
+      prompts: cloneWorkspaceValue(aiActionPrompts, {}),
       selectedModel: cloneWorkspaceValue(selectedModel.value, null),
       garmentImagePaths: [...garmentImagePaths.value],
       outfitReferencePaths: [...outfitReferencePaths.value],
@@ -2622,7 +2643,8 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   reviewBoardUrl.value = String(image.reviewBoardUrl || '')
   Object.assign(aiTaskState, cloneWorkspaceValue(image.task, {}))
   activeAction.value = aiActions.some(action => action.id === image.activeAction) ? image.activeAction : activeAction.value
-  aiPrompt.value = String(image.prompt || aiPrompt.value)
+  Object.assign(aiActionPrompts, { ...AI_ACTION_PROMPT_DEFAULTS, ...(image.prompts || {}) })
+  if (!image.prompts && image.prompt) aiPrompt.value = String(image.prompt || aiPrompt.value)
   selectedModel.value = cloneWorkspaceValue(image.selectedModel, null)
   garmentImagePaths.value = Array.isArray(image.garmentImagePaths) ? image.garmentImagePaths.filter(Boolean) : []
   outfitReferencePaths.value = Array.isArray(image.outfitReferencePaths) ? image.outfitReferencePaths.filter(Boolean) : []
@@ -3204,6 +3226,7 @@ let materialPollRunId = ''
 let aiPollTimer = null
 let aiPollRunId = ''
 let aiReviewPollToken = 0
+const activeAiPlaceholderIds = new Set()
 let videoPollTimer = null
 let previewAnnotationResolve = null
 let previewAnnotationReject = null
@@ -4337,6 +4360,10 @@ function visibleSourceVersions(source = {}, selectedOnly = false) {
   return selectVisibleEditableVersions(source, selectedOnly)
 }
 
+function isAiVersionGenerating(version = {}) {
+  return ['running', 'generating', 'queued'].includes(String(version?.status || '').trim().toLowerCase())
+}
+
 function requestDeleteGeneratedVersion(style, source, version) {
   const filePath = String(version?.previewPath || version?.path || '').trim()
   pendingVersionDeletion.value = { style, source, version, path: filePath }
@@ -4453,10 +4480,21 @@ function toggleLocalReference(asset, kind) {
 }
 
 function selectedMaterialAssetIds(options = {}) {
-  return styleWorkspaces.flatMap(style => [
-    ...(style.modelPhotos || []),
-    ...(options.modelOnly ? [] : (style.detailPhotos || [])),
-  ]).filter(asset => asset.selected && asset.id && !asset.localReviewOnly).map(asset => asset.id)
+  const ids = []
+  for (const style of styleWorkspaces) {
+    const assets = [
+      ...(style.modelPhotos || []),
+      ...(options.modelOnly ? [] : (style.detailPhotos || [])),
+    ]
+    for (const asset of assets) {
+      if (asset.selected && asset.id && !asset.localReviewOnly) ids.push(asset.id)
+      for (const version of asset.versions || []) {
+        const materialAssetId = String(version?.materialAssetId || '').trim()
+        if (materialAssetId && !version.deleted && (version.selected || version.editSelected)) ids.push(materialAssetId)
+      }
+    }
+  }
+  return [...new Set(ids)]
 }
 
 function selectedSourceAssetsForAi() {
@@ -4466,6 +4504,89 @@ function selectedSourceAssetsForAi() {
       .filter(version => version.editSelected)
       .map(version => ({ style, asset, version })),
   ]))
+}
+
+function errorText(error) {
+  return String(error?.message || error || '').trim()
+}
+
+function isStaleBalaMaterialBatchError(error, ref = null) {
+  const message = errorText(error)
+  const batchId = String(ref?.batchId || '').trim()
+  return /素材批次不存在|已失效|Bala material batch not found/i.test(message)
+    || (Boolean(batchId) && message.includes(batchId))
+}
+
+function staleBalaMaterialBatchMessage(ref = null) {
+  const suffix = ref?.batchId ? `（${ref.batchId}）` : ''
+  return `素材批次已失效${suffix}，请回到找图步骤重新点击“开始找图并回显”。`
+}
+
+function clearStaleBalaMaterialBatch(ref = null) {
+  materialBatch.value = null
+  materialBoardUrl.value = ''
+  updateMaterialTask({
+    status: 'failed',
+    error: staleBalaMaterialBatchMessage(ref),
+    message: '素材批次已失效，请重新找图并回显。',
+  })
+}
+
+function balaMaterialBatchAssetCount(batch = {}) {
+  return (batch?.items || []).reduce((sum, item) => sum + (item?.assets || []).length, 0)
+}
+
+async function rebuildBalaMaterialBatchFromWorkspace({ staleRef = null } = {}) {
+  if (typeof window.cs?.createBalaMaterialBatch !== 'function') {
+    throw new Error('当前运行环境无法重建素材批次，请回到找图步骤重新回显。')
+  }
+  const rows = buildBalaMaterialRowsFromWorkspaceGroups(styleWorkspaces)
+  if (!rows.length) {
+    throw new Error('本地工作区没有可重建批次的图片，请回到找图步骤重新回显。')
+  }
+  const batch = await window.cs.createBalaMaterialBatch(rows, {
+    adapter_id: BALA_AI_VIDEO_ADAPTER_ID,
+    task_id: BALA_MATERIAL_PREPARE_TASK_ID,
+    run_id: materialTask.runId || staleRef?.batchId || 'workspace-recovered',
+    recovery: 'workspace-local-images',
+  })
+  const assetCount = balaMaterialBatchAssetCount(batch)
+  if (!assetCount) {
+    throw new Error('本地图片文件已不存在或不可访问，请回到找图步骤重新回显。')
+  }
+  const linked = applyBalaMaterialBatchToWorkspaceGroups(styleWorkspaces, batch)
+  materialBatch.value = batch
+  materialBoardUrl.value = String(batch?.board_url || '')
+  const ref = parseBalaMaterialBoardUrl(materialBoardUrl.value)
+  if (!ref) throw new Error('素材批次已重建，但缺少可用访问地址。')
+  const summary = summarizeBalaMaterialGroups(styleWorkspaces)
+  updateMaterialTask({
+    status: 'done',
+    error: '',
+    message: `已用本地图片自动重建素材批次：${assetCount} 张素材，${linked.linkedVersions} 张 AI 结果已恢复。`,
+    downloaded: summary.modelCount + summary.detailCount,
+    failed: summary.failedCount,
+  })
+  return ref
+}
+
+async function ensureBalaMaterialBatchAvailable(ref = null) {
+  if (!ref) return await rebuildBalaMaterialBatchFromWorkspace()
+  if (typeof window.cs?.getBalaMaterialBatch !== 'function') return ref
+  try {
+    await window.cs.getBalaMaterialBatch(ref.batchId, ref.token)
+    return ref
+  } catch (error) {
+    if (isStaleBalaMaterialBatchError(error, ref)) {
+      try {
+        return await rebuildBalaMaterialBatchFromWorkspace({ staleRef: ref })
+      } catch (rebuildError) {
+        clearStaleBalaMaterialBatch(ref)
+        throw new Error(`${staleBalaMaterialBatchMessage(ref)} 自动重建失败：${errorText(rebuildError)}`)
+      }
+    }
+    throw error
+  }
 }
 
 function compactText(value = '') {
@@ -4752,6 +4873,17 @@ async function loadAiImageSettings() {
   ensureAiImageModelSelected()
 }
 
+async function refreshAiVideoRuntimeState({ includeCatalogs = false } = {}) {
+  const jobs = [
+    loadAiImageSettings(),
+    loadVideoProviderStatus(),
+  ]
+  if (includeCatalogs) {
+    jobs.push(loadModelLibrary(), loadTemplateCatalog())
+  }
+  await Promise.allSettled(jobs)
+}
+
 function openAiImageModelSettings() {
   emit('open-settings', 'ai-1xm')
 }
@@ -4802,27 +4934,67 @@ async function uploadLocalMaterialFromDisk() {
   }
 }
 
-function appendAiDraftVersions() {
+function appendAiGeneratingVersions(selectedSources = selectedSourceAssetsForAi()) {
   const label = activeActionTitle.value
   const meta = operationMetaForDraft()
   const now = Date.now()
-  for (const { style, asset } of selectedSourceAssetsForAi()) {
+  const created = []
+  for (const { style, asset, version } of selectedSources || []) {
     asset.versions = Array.isArray(asset.versions) ? asset.versions : []
-    const index = asset.versions.filter(version => version.action === label).length + 1
-    asset.versions.push({
-      id: `${style.styleCode}-${asset.id || asset.name}-${activeAction.value}-${now}-${index}`,
+    const index = asset.versions.filter(item => item.action === label).length + 1
+    const inputPath = String(version?.previewPath || version?.path || asset.path || '').trim()
+    const placeholder = {
+      id: `${style.styleCode}-${asset.id || asset.name}-${activeAction.value}-pending-${now}-${index}`,
       action: label,
       operationType: activeAction.value,
       label: `${label.replace(/^AI\s*/, '')} ${String(index).padStart(2, '0')}`,
       meta,
-      selected: true,
-      status: 'draft',
-      progress: 0,
-      sourceAssetId: asset.id,
-      sourcePath: asset.path,
-      previewPath: asset.path,
-    })
+      selected: false,
+      editSelected: false,
+      status: 'running',
+      progress: 2,
+      sourceAssetId: version?.materialAssetId || version?.sourceAssetId || asset.id,
+      sourcePath: inputPath,
+      pending: true,
+    }
+    asset.versions.push(placeholder)
+    activeAiPlaceholderIds.add(placeholder.id)
+    created.push(placeholder)
   }
+  if (created.length) persistAiImageWorkspaceState()
+  return created
+}
+
+function updateAiGeneratingVersions(progress = aiTaskState.progress) {
+  const value = Math.max(2, Math.min(95, Math.round(Number(progress) || 0)))
+  let changed = false
+  for (const style of styleWorkspaces) {
+    for (const source of style.modelPhotos || []) {
+      for (const version of source.versions || []) {
+        if (!activeAiPlaceholderIds.has(version.id) || version.status !== 'running') continue
+        version.progress = value
+        changed = true
+      }
+    }
+  }
+  if (changed) persistAiImageWorkspaceState()
+}
+
+function finishAiGeneratingVersions(status = 'failed') {
+  let changed = false
+  for (const style of styleWorkspaces) {
+    for (const source of style.modelPhotos || []) {
+      for (const version of source.versions || []) {
+        if (!activeAiPlaceholderIds.has(version.id)) continue
+        version.status = status
+        version.progress = status === 'failed' ? 100 : Math.max(95, version.progress || 0)
+        version.pending = false
+        changed = true
+      }
+    }
+  }
+  activeAiPlaceholderIds.clear()
+  if (changed) persistAiImageWorkspaceState()
 }
 
 function resetAiPoll() {
@@ -4853,6 +5025,7 @@ function applyAiLiveStatus(live = {}) {
     error: String(live?.error || '').trim(),
     message: aiStatusMessage(status, { total, current, live }),
   })
+  if (status === 'running') updateAiGeneratingVersions(progress)
 }
 
 function aiStatusMessage(status, { total, current, live } = {}) {
@@ -4932,6 +5105,8 @@ async function startAiImageGeneration() {
   }
 
   const generation = resolveSelectedAiImageGenerationParams()
+  const promptText = String(aiPrompt.value || '').trim()
+  const promptExtra = ['background_swap', 'pose_swap'].includes(activeAction.value) ? '' : promptText
   resetAiPoll()
   aiReviewPollToken += 1
   updateAiTaskState({
@@ -4944,21 +5119,23 @@ async function startAiImageGeneration() {
     logs: [],
   })
   try {
-    const ref = parseBalaMaterialBoardUrl(materialBoardUrl.value)
-    if (!ref) throw new Error('缺少素材批次，请先完成找图并生成素材回显')
+    appendAiGeneratingVersions(selectedSources)
+    const ref = await ensureBalaMaterialBatchAvailable(parseBalaMaterialBoardUrl(materialBoardUrl.value))
     const selectedIds = selectedMaterialAssetIds()
-    const sourceIds = [...new Set(selectedSources.map(({ asset }) => asset?.id).filter(Boolean))]
+    const sourceIds = [...new Set(selectedSources.map(({ asset, version }) => (
+      version?.materialAssetId || asset?.id
+    )).filter(Boolean))]
     await window.cs.saveBalaMaterialSelection(ref.batchId, ref.token, selectedIds)
     const exportResult = await window.cs.exportBalaAiInput(ref.batchId, ref.token, {
       operation_type: activeAction.value,
       selected_asset_ids: sourceIds,
       model_ref_ids: selectedModel.value ? [selectedModel.value.id] : [],
-      background_prompt: activeAction.value === 'background_swap' ? aiPrompt.value : '',
+      background_prompt: activeAction.value === 'background_swap' ? promptText : '',
       garment_images: activeAction.value === 'outfit_swap' ? { paths: toBalaBridgeStringArray(garmentImagePaths.value) } : { paths: [] },
       outfit_reference_images: activeAction.value === 'outfit_swap' ? { paths: toBalaBridgeStringArray(outfitReferencePaths.value) } : { paths: [] },
       variant_reference_images: activeAction.value === 'outfit_swap' ? { paths: toBalaBridgeStringArray(variantReferencePaths.value) } : { paths: [] },
-      pose_prompt: activeAction.value === 'pose_swap' ? aiPrompt.value : '',
-      prompt_extra: aiPrompt.value,
+      pose_prompt: activeAction.value === 'pose_swap' ? promptText : '',
+      prompt_extra: promptExtra,
       generation_mode: 'submit_async',
       review_mode: 'create_review_batch',
       model: generation.modelKey,
@@ -5014,11 +5191,19 @@ async function startAiImageGeneration() {
     }
     await pollAiImageTask()
   } catch (error) {
+    const ref = parseBalaMaterialBoardUrl(materialBoardUrl.value)
+    const rawMessage = errorText(error)
+    const staleBatch = isStaleBalaMaterialBatchError(error, ref)
+    const message = staleBatch && !/自动重建失败/.test(rawMessage)
+      ? staleBalaMaterialBatchMessage(ref)
+      : rawMessage
+    if (staleBatch && ref) clearStaleBalaMaterialBatch(ref)
     updateAiTaskState({
       status: 'failed',
-      error: error?.message || String(error),
-      message: error?.message || String(error),
+      error: message,
+      message,
     })
+    finishAiGeneratingVersions('failed')
   }
 }
 
@@ -5067,6 +5252,7 @@ async function finalizeAiImageTask(runId = '') {
       status: 'partial',
       message: 'AI 改图任务完成，但没有找到审核池链接；请查看任务详情。',
     })
+    finishAiGeneratingVersions('failed')
     return
   }
   let batch = await loadReviewBatchFromBoard(boardUrl)
@@ -5084,6 +5270,7 @@ async function finalizeAiImageTask(runId = '') {
     status: 'done',
     message: `AI 改图已回填图片工作台：${reviewSummary.value.pending} 张新结果。可继续修改、删除或进入审核。`,
   })
+  activeAiPlaceholderIds.clear()
 }
 
 async function waitForAiReviewResults(boardUrl, initialBatch = null) {
@@ -7403,6 +7590,7 @@ watch([
   reviewBoardUrl,
   activeAction,
   aiPrompt,
+  aiActionPrompts,
   selectedModel,
   garmentImagePaths,
   outfitReferencePaths,
@@ -7433,10 +7621,11 @@ onMounted(() => {
     scheduleVideoResultPoll()
   })()
   workspaceFileSyncTimer = setInterval(() => { void syncWorkspaceFiles() }, 4000)
-  void loadAiImageSettings()
-  void loadModelLibrary()
-  void loadTemplateCatalog()
-  void loadVideoProviderStatus()
+  void refreshAiVideoRuntimeState({ includeCatalogs: true })
+})
+
+onActivated(() => {
+  void refreshAiVideoRuntimeState()
 })
 
 // 筛选/款号切换后重绑缩略图观察
@@ -9557,6 +9746,32 @@ function localFileUrl(path) {
 
 .aiv-version-card.loading {
   border-color: rgba(var(--orange-rgb), 0.55);
+  box-shadow: inset 0 0 0 1px rgba(var(--orange-rgb), .62), 0 0 0 2px rgba(var(--orange-rgb), .14);
+}
+
+.aiv-version-card.loading .aiv-media-select img {
+  filter: brightness(.72) saturate(.9);
+}
+
+.aiv-version-card.loading .aiv-media-select::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(120deg, transparent 0%, rgba(255, 255, 255, .14) 42%, transparent 72%),
+    rgba(22, 22, 30, .20);
+  transform: translateX(-100%);
+  animation: aiv-version-loading-sweep 1.6s ease-in-out infinite;
+}
+
+.aiv-version-card.loading .aiv-media-hover-tools {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.aiv-version-card.loading .aiv-version-actions {
+  display: none;
 }
 
 .aiv-version-card.add {
@@ -9858,6 +10073,11 @@ function localFileUrl(path) {
 
 .aiv-reference-strip strong {
   margin-right: 4px;
+}
+
+@keyframes aiv-version-loading-sweep {
+  0% { transform: translateX(-100%); }
+  55%, 100% { transform: translateX(100%); }
 }
 
 .aiv-picked-row {

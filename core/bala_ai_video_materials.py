@@ -195,7 +195,7 @@ def load_material_batch(batch_id: str) -> dict:
     for path in candidates:
         if path.is_file():
             return json.loads(path.read_text(encoding="utf-8"))
-    raise FileNotFoundError(compact(batch_id))
+    raise FileNotFoundError(f"素材批次不存在或已失效：{compact(batch_id)}")
 
 
 def validate_token(batch: dict, token: str) -> None:

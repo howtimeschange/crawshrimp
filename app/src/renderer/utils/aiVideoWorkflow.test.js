@@ -98,6 +98,57 @@ test('AI video workflow continuing an original image counts it as an AI edit inp
   assert.match(source, /function continueEditingSource\(source = \{\}\)[\s\S]*source\.editSelected = true/)
 })
 
+test('AI video workflow refreshes model and provider state when returning from settings', () => {
+  const source = readView('AiVideoWorkflow.vue')
+  const mountedStart = source.indexOf('onMounted(() => {')
+  const mountedEnd = source.indexOf('// 筛选/款号切换后重绑缩略图观察', mountedStart)
+  const lifecycleSource = source.slice(mountedStart, mountedEnd)
+
+  assert.match(source, /onActivated/)
+  assert.match(source, /async function refreshAiVideoRuntimeState\(\{ includeCatalogs = false \} = \{\}\)/)
+  assert.match(lifecycleSource, /refreshAiVideoRuntimeState\(\{ includeCatalogs: true \}\)/)
+  assert.match(lifecycleSource, /onActivated\(\(\) => \{[\s\S]*refreshAiVideoRuntimeState\(\)/)
+  assert.match(source, /loadAiImageSettings\(\)/)
+  assert.match(source, /loadVideoProviderStatus\(\)/)
+})
+
+test('AI video workflow inserts visible AI edit loading versions after generation starts', () => {
+  const source = readView('AiVideoWorkflow.vue')
+  const start = source.indexOf('async function startAiImageGeneration')
+  const end = source.indexOf('async function pollAiImageTask', start)
+  const generationSource = source.slice(start, end)
+
+  assert.match(source, /function appendAiGeneratingVersions\(selectedSources = selectedSourceAssetsForAi\(\)\)/)
+  assert.match(source, /function isAiVersionGenerating\(version = \{\}\)/)
+  assert.match(source, /loading: isAiVersionGenerating\(version\)/)
+  assert.match(source, /status:\s*'running'/)
+  assert.match(source, /pending:\s*true/)
+  assert.match(source, /function updateAiGeneratingVersions\(progress = aiTaskState\.progress\)/)
+  assert.match(source, /function finishAiGeneratingVersions\(status = 'failed'\)/)
+  assert.ok(generationSource.indexOf('appendAiGeneratingVersions(selectedSources)') < generationSource.indexOf('await ensureBalaMaterialBatchAvailable'))
+  assert.match(generationSource, /finishAiGeneratingVersions\('failed'\)/)
+  assert.match(source, /\.aiv-version-card\.loading \.aiv-media-hover-tools\s*\{[\s\S]*opacity:\s*1;/)
+  assert.match(source, /@keyframes aiv-version-loading-sweep/)
+})
+
+test('AI video workflow keeps prompts isolated for each AI edit operation', () => {
+  const source = readView('AiVideoWorkflow.vue')
+  const start = source.indexOf('async function startAiImageGeneration')
+  const end = source.indexOf('async function pollAiImageTask', start)
+  const generationSource = source.slice(start, end)
+
+  assert.match(source, /const AI_ACTION_PROMPT_DEFAULTS = \{[\s\S]*face_swap:[\s\S]*保留原始背景\/场景[\s\S]*outfit_swap:[\s\S]*保留原人物脸部/)
+  assert.match(source, /const aiActionPrompts = reactive\(\{ \.\.\.AI_ACTION_PROMPT_DEFAULTS \}\)/)
+  assert.match(source, /const aiPrompt = computed\(\{[\s\S]*get: \(\) => String\(aiActionPrompts\[activeAction\.value\] \|\| ''\),[\s\S]*aiActionPrompts\[activeAction\.value\] = String\(value \|\| ''\)/)
+  assert.match(source, /:placeholder="activePromptPlaceholder"/)
+  assert.match(source, /prompts: cloneWorkspaceValue\(aiActionPrompts, \{\}\)/)
+  assert.match(source, /Object\.assign\(aiActionPrompts, \{ \.\.\.AI_ACTION_PROMPT_DEFAULTS, \.\.\.\(image\.prompts \|\| \{\}\) \}\)/)
+  assert.match(generationSource, /const promptExtra = \['background_swap', 'pose_swap'\]\.includes\(activeAction\.value\) \? '' : promptText/)
+  assert.match(generationSource, /background_prompt: activeAction\.value === 'background_swap' \? promptText : ''/)
+  assert.match(generationSource, /pose_prompt: activeAction\.value === 'pose_swap' \? promptText : ''/)
+  assert.match(generationSource, /prompt_extra: promptExtra/)
+})
+
 test('AI video workflow local review-only edit inputs do not sync fake asset ids to material selection', () => {
   const source = readView('AiVideoWorkflow.vue')
   const start = source.indexOf('function selectedMaterialAssetIds')
@@ -106,4 +157,18 @@ test('AI video workflow local review-only edit inputs do not sync fake asset ids
 
   assert.match(source, /localReviewOnly:\s*true/)
   assert.match(selectionSource, /!asset\.localReviewOnly/)
+})
+
+test('AI video workflow validates material batch before saving AI edit selection', () => {
+  const source = readView('AiVideoWorkflow.vue')
+  const start = source.indexOf('async function startAiImageGeneration')
+  const end = source.indexOf('async function pollAiImageTask', start)
+  const generationSource = source.slice(start, end)
+
+  assert.match(source, /function isStaleBalaMaterialBatchError\(error, ref = null\)/)
+  assert.match(source, /function clearStaleBalaMaterialBatch\(ref = null\)/)
+  assert.match(source, /async function ensureBalaMaterialBatchAvailable\(ref = null\)/)
+  assert.match(source, /await window\.cs\.getBalaMaterialBatch\(ref\.batchId, ref\.token\)/)
+  assert.ok(generationSource.indexOf('await ensureBalaMaterialBatchAvailable(ref)') < generationSource.indexOf('await window.cs.saveBalaMaterialSelection'))
+  assert.match(generationSource, /staleBalaMaterialBatchMessage\(ref\)/)
 })

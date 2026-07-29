@@ -206,7 +206,8 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         params = {item["id"]: item for item in task["params"]}
         self.assertEqual(params["source_images"]["type"], "file_images")
         self.assertEqual(params["material_root"]["include_file_listing"], True)
-        self.assertEqual(params["background_prompt"]["default"], "换成马尔代夫的海边")
+        self.assertEqual(params["background_prompt"]["default"], "")
+        self.assertIn("仅 AI 换背景时生效", params["background_prompt"]["hint"])
         self.assertEqual(params["model_key_tier"]["default"], "4k")
         self.assertIn("100女", params["model_groups"]["default"])
         output_columns = task["output"][0]["columns"]
@@ -776,6 +777,7 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                             "source_images": {"paths": [str(source)]},
                             "model_ref_ids": "100女/标准.jpg",
                             "background_prompt": "换成马尔代夫的海边",
+                            "prompt_extra": "保留童装版型和颜色，画面自然，无文字，无品牌外露风险。",
                             "generation_mode": "create_only",
                             "model_key_tier": "4k",
                             "image_size": "1536x2048",
@@ -791,10 +793,15 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                 self.assertEqual(row["提交状态"], "已创建，未提交")
                 self.assertEqual(row["款号"], "208326102205")
                 self.assertEqual(row["模特ID"], "100女/标准.jpg")
+                self.assertEqual(row["背景Prompt"], "")
                 job = data_sink.get_ai_image_job(row["AI任务UID"])
                 self.assertIsNotNone(job)
-                self.assertIn("马尔代夫", job["prompt"])
+                self.assertIn("编辑范围只限人物脸部区域", job["prompt"])
+                self.assertIn("禁止替换背景或场景", job["prompt"])
+                self.assertIn("补充要求（不得改变上述只换脸范围，不得替换背景/场景）", job["prompt"])
+                self.assertNotIn("马尔代夫", job["prompt"])
                 self.assertEqual(job["params"]["main_image_path"], str(source.resolve(strict=False)))
+                self.assertEqual(job["params"]["background_prompt"], "")
                 self.assertEqual(job["params"]["model_key_tier"], "4k")
                 self.assertEqual(job["params"]["reference_image_paths"][0], str((manifest_path.parent / "100女" / "标准.jpg").resolve(strict=False)))
                 assets = data_sink.list_ai_image_assets(row["AI任务UID"])
@@ -884,6 +891,10 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                 self.assertTrue(rows[0]["审批批次UID"])
                 self.assertTrue(rows[0]["审批看板"].startswith("http://127.0.0.1:18765/bala-ai-video-review/"))
                 self.assertEqual(rows[0]["下一步Provider"], "qn_img2video")
+                job = data_sink.get_ai_image_job(rows[0]["AI任务UID"])
+                self.assertIn("编辑范围只限背景/场景", job["prompt"])
+                self.assertIn("必须完整保留人物主体", job["prompt"])
+                self.assertIn("禁止改脸、换衣服、改变姿势", job["prompt"])
                 assets = data_sink.list_ai_image_assets(rows[0]["AI任务UID"])
                 self.assertEqual([asset["kind"] for asset in assets], ["main"])
 
@@ -927,8 +938,50 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                 self.assertEqual(rows[0]["搭配参考图文件"], str(outfit))
                 self.assertEqual(rows[0]["同款不同色参考图文件"], str(variant))
                 self.assertTrue(rows[0]["审批批次UID"])
+                job = data_sink.get_ai_image_job(rows[0]["AI任务UID"])
+                self.assertIn("编辑范围只限服装商品区域", job["prompt"])
+                self.assertIn("必须保留原图人物脸部", job["prompt"])
+                self.assertIn("禁止换脸、替换背景、改变姿势", job["prompt"])
                 assets = data_sink.list_ai_image_assets(rows[0]["AI任务UID"])
                 self.assertEqual([asset["kind"] for asset in assets], ["main", "reference", "reference", "reference"])
+
+            runtime_paths.reset_runtime_data_root_cache()
+
+    def test_apply_pose_swap_prompt_preserves_product_and_background(self):
+        async def wait_for_control(_status=None):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            data_root = base / "data"
+            source = base / "208326100202" / "01_模拍原图" / "source.png"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            with patch.dict("os.environ", {"CRAWSHRIMP_DATA": str(data_root)}, clear=False):
+                runtime_paths.reset_runtime_data_root_cache()
+                data_sink.init_db()
+                rows = asyncio.run(_apply_bala_ai_face_background_generate(
+                    {
+                        "operation_type": "pose_swap",
+                        "source_images": {"paths": [str(source)]},
+                        "pose_prompt": "让模特自然侧身站立，双手放松",
+                        "generation_mode": "create_only",
+                        "review_mode": "create_review_batch",
+                        "approval_base_url": "http://127.0.0.1:18765",
+                    },
+                    wait_for_control,
+                    lambda _message: None,
+                ))
+
+                self.assertEqual(rows[0]["操作类型"], "AI换姿势")
+                self.assertEqual(rows[0]["姿势Prompt"], "让模特自然侧身站立，双手放松")
+                job = data_sink.get_ai_image_job(rows[0]["AI任务UID"])
+                self.assertIn("编辑范围以人物身体姿态为主", job["prompt"])
+                self.assertIn("必须保留人物脸部身份", job["prompt"])
+                self.assertIn("禁止换脸、换衣服、替换背景", job["prompt"])
+                assets = data_sink.list_ai_image_assets(rows[0]["AI任务UID"])
+                self.assertEqual([asset["kind"] for asset in assets], ["main"])
 
             runtime_paths.reset_runtime_data_root_cache()
 

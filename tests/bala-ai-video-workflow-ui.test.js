@@ -5,6 +5,8 @@ import * as balaWorkflow from '../app/src/renderer/utils/balaAiVideoWorkflow.js'
 import {
   buildBalaMaterialPrepareParams,
   buildBalaAiStageRequest,
+  applyBalaMaterialBatchToWorkspaceGroups,
+  buildBalaMaterialRowsFromWorkspaceGroups,
   buildBalaVideoStageRequest,
   latestRunForTaskData,
   mergeBalaVideoResults,
@@ -126,6 +128,62 @@ test('material recall keeps one card per filename inside the same style and sour
   assert.equal(merged[0].modelPhotos.length, 1)
   assert.equal(merged[0].modelPhotos[0].path, '/tmp/first/1-AI.jpg')
   assert.equal(merged[0].modelPhotos[0].selected, true)
+})
+
+test('material batch recovery includes restored AI result versions and relinks new batch ids', () => {
+  const groups = [{
+    styleCode: '208326102205',
+    modelPhotos: [{
+      id: 'old-source-id',
+      name: 'front.jpg',
+      path: '/workspace/208326102205/01_模拍原图/front.jpg',
+      sourceType: 'model',
+      selected: true,
+      versions: [{
+        id: 'ai-version',
+        label: '换脸 01',
+        operationType: 'face_swap',
+        previewPath: '/workspace/208326102205/03_AI图/front-ai.png',
+        selected: true,
+      }, {
+        id: 'deleted-ai-version',
+        previewPath: '/workspace/208326102205/03_AI图/deleted.png',
+        deleted: true,
+      }],
+    }],
+    detailPhotos: [{
+      id: 'old-detail-id',
+      name: 'neck.jpg',
+      path: '/workspace/208326102205/02_商品细节图/neck.jpg',
+      sourceType: 'detail',
+      selected: false,
+    }],
+  }]
+
+  const rows = buildBalaMaterialRowsFromWorkspaceGroups(groups)
+
+  assert.deepEqual(rows.map(row => [row.素材来源, row.本地文件, row.备注]), [
+    ['模拍图', '/workspace/208326102205/01_模拍原图/front.jpg', '从本地工作区恢复'],
+    ['模拍图', '/workspace/208326102205/03_AI图/front-ai.png', '从本地 AI 结果恢复'],
+    ['商品细节图', '/workspace/208326102205/02_商品细节图/neck.jpg', '从本地工作区恢复'],
+  ])
+
+  const result = applyBalaMaterialBatchToWorkspaceGroups(groups, {
+    items: [{
+      assets: [
+        { id: 'new-source-id', path: '/workspace/208326102205/01_模拍原图/front.jpg', image_url: '/image/source' },
+        { id: 'new-ai-id', path: '/workspace/208326102205/03_AI图/front-ai.png', image_url: '/image/ai' },
+        { id: 'new-detail-id', path: '/workspace/208326102205/02_商品细节图/neck.jpg', thumbnail_url: '/thumb/detail' },
+      ],
+    }],
+  })
+
+  assert.deepEqual(result, { linkedAssets: 2, linkedVersions: 1, totalLinked: 3 })
+  assert.equal(groups[0].modelPhotos[0].id, 'new-source-id')
+  assert.equal(groups[0].modelPhotos[0].versions[0].materialAssetId, 'new-ai-id')
+  assert.equal(groups[0].modelPhotos[0].versions[0].sourceAssetId, 'new-source-id')
+  assert.equal(groups[0].modelPhotos[0].versions[0].imageUrl, '/image/ai')
+  assert.equal(groups[0].detailPhotos[0].id, 'new-detail-id')
 })
 
 test('restored material groups dedupe legacy paths and reselect AI-named files', () => {
@@ -387,6 +445,23 @@ test('AI edit source filtering preserves the reactive source object used by clic
   assert.equal(balaWorkflow.selectEditableSourcesForStyle(style, true)[0], source)
 })
 
+test('AI edit selected-only filter still shows running generation placeholders', () => {
+  assert.equal(typeof balaWorkflow.selectVisibleEditableVersions, 'function')
+  const source = {
+    versions: [
+      { id: 'done-hidden', status: 'pending', editSelected: false },
+      { id: 'running-visible', status: 'running', editSelected: false },
+      { id: 'selected-visible', status: 'pending', editSelected: true },
+      { id: 'deleted-hidden', status: 'running', deleted: true },
+    ],
+  }
+
+  assert.deepEqual(
+    balaWorkflow.selectVisibleEditableVersions(source, true).map(version => version.id),
+    ['running-visible', 'selected-visible'],
+  )
+})
+
 test('AI model library applies age and gender filters together', () => {
   const items = [
     { id: 'girl-young', ageLabel: '幼童', gender: '女' },
@@ -563,6 +638,25 @@ test('TaskRunner opens Bala material selection drawer after Semir material prepa
   assert.match(source, /semir_video_material_prepare/)
   assert.match(source, /@start-ai-stage=/)
   assert.match(source, /emit\('open-task'/)
+})
+
+test('Bala material drawer scopes prompts and required fields per AI operation', () => {
+  const source = fs.readFileSync('app/src/renderer/views/BalaAiMaterialSelectionDrawer.vue', 'utf8')
+  const exportStart = source.indexOf('async function exportToAi')
+  const exportSource = source.slice(exportStart)
+
+  assert.match(source, /const backgroundPrompt = ref\(''\)/)
+  assert.match(source, /const posePrompt = ref\(''\)/)
+  assert.match(source, /仅替换脸部，保留原背景、姿势、构图和服装/)
+  assert.match(source, /换背景\/换姿势请写在上方主 Prompt/)
+  assert.match(source, /selectedOperation\.value !== 'background_swap' \|\| backgroundPrompt\.value\.trim\(\)\.length > 0/)
+  assert.match(source, /selectedOperation\.value !== 'outfit_swap' \|\| garmentImagePaths\.value\.length > 0/)
+  assert.match(source, /selectedOperation\.value !== 'pose_swap' \|\| posePrompt\.value\.trim\(\)\.length > 0/)
+  assert.match(exportSource, /const promptExtraValue = \['background_swap', 'pose_swap'\]\.includes\(selectedOperation\.value\) \? '' : promptExtra\.value/)
+  assert.match(exportSource, /background_prompt: selectedOperation\.value === 'background_swap' \? backgroundPrompt\.value\.trim\(\) : ''/)
+  assert.match(exportSource, /garment_images: selectedOperation\.value === 'outfit_swap' \? \{ paths: garmentImagePaths\.value \} : \{ paths: \[\] \}/)
+  assert.match(exportSource, /pose_prompt: selectedOperation\.value === 'pose_swap' \? posePrompt\.value\.trim\(\) : ''/)
+  assert.match(exportSource, /prompt_extra: promptExtraValue/)
 })
 
 test('App handles Bala workflow open-task handoff with initial params', () => {
@@ -1447,6 +1541,27 @@ test('workspace versions keep results from different review batches that reuse t
     ['208326102205-ai-1', 'background-job', 'background_swap', '/tmp/background.png'],
   ])
   assert.notEqual(merged[0].id, merged[1].id)
+})
+
+test('workspace versions replace pathless running placeholders with finished AI results', () => {
+  assert.equal(typeof balaWorkflow.mergeBalaWorkspaceVersions, 'function')
+  const existing = [{
+    id: 'pending-face',
+    operationType: 'face_swap',
+    status: 'running',
+    progress: 18,
+  }]
+  const merged = balaWorkflow.mergeBalaWorkspaceVersions(existing, [{
+    id: 'remote-face',
+    operationType: 'face_swap',
+    path: '/tmp/finished-face.png',
+    status: 'pending',
+  }])
+
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].remoteAssetId, 'remote-face')
+  assert.equal(merged[0].previewPath, '/tmp/finished-face.png')
+  assert.equal(merged[0].status, 'pending')
 })
 
 test('review workspace keeps same-id AI assets from different persisted batches', () => {

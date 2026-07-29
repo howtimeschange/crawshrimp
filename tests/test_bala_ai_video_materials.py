@@ -1,3 +1,5 @@
+import pytest
+
 from core import bala_ai_video_materials as materials
 
 
@@ -79,6 +81,14 @@ def test_material_thumbnail_is_compressed_cached_and_keeps_the_original(tmp_path
     cached_mtime = thumbnail.stat().st_mtime_ns
     assert materials.ensure_material_thumbnail(batch, "asset-1", source, max_edge=320) == thumbnail
     assert thumbnail.stat().st_mtime_ns == cached_mtime
+
+
+def test_missing_material_batch_error_explains_stale_batch():
+    with pytest.raises(FileNotFoundError) as exc_info:
+        materials.load_material_batch("bala-material-missing-test")
+
+    assert "素材批次不存在或已失效" in str(exc_info.value)
+    assert "bala-material-missing-test" in str(exc_info.value)
 
 
 def test_export_ai_input_builds_outfit_swap_params_from_selected_materials(tmp_path):

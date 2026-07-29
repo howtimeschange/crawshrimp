@@ -382,8 +382,9 @@ tasks:
         type: textarea
         label: 换背景 Prompt
         rows: 3
-        default: "换成马尔代夫的海边"
+        default: ""
         placeholder: "例如：换成马尔代夫的海边"
+        hint: 仅 AI 换背景时生效；AI 换脸会强制保留原始背景和构图。
       - id: garment_images
         type: file_images
         label: 换装服装图
