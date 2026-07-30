@@ -175,8 +175,19 @@
     return dir === 1 || dir === '1' || dir === true
   }
 
+  function isJunkAssetItem(item) {
+    const filename = compact(item?.filename || item?.name || lastPathSegment(item?.fullpath || item?.path || ''))
+    const lowered = filename.toLowerCase()
+    if (lowered.startsWith('._') || ['.ds_store', 'desktop.ini', 'thumbs.db'].includes(lowered)) return true
+    return pathSegments(item?.fullpath || item?.path || filename).some(segment => {
+      const text = compact(segment)
+      const lower = text.toLowerCase()
+      return text === '__MACOSX' || text.startsWith('._') || ['.ds_store', 'desktop.ini', 'thumbs.db'].includes(lower)
+    })
+  }
+
   function isSupportedAssetItem(item) {
-    return !isDirectoryItem(item) && ASSET_EXTS.has(getExt(item))
+    return !isDirectoryItem(item) && !isJunkAssetItem(item) && ASSET_EXTS.has(getExt(item))
   }
 
   function isImageExt(ext) {
@@ -495,6 +506,15 @@
 
   function classifyShoeAsset(item) {
     const ext = getExt(item)
+    if (isJunkAssetItem(item)) {
+      return {
+        role: 'skip',
+        keep: false,
+        action: '已过滤',
+        reason: '系统隐藏/资源叉文件已跳过',
+        packageFilename: '',
+      }
+    }
     if (!isImageExt(ext)) {
       return {
         role: 'skip',

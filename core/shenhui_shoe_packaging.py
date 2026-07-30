@@ -153,11 +153,12 @@ def select_tmz_same_color_first(
     candidates_by_color: dict[str, dict[str, Any]],
     color_order: list[str] | None = None,
 ) -> list[tuple[str, str]]:
-    """Select five Tmall slots from one color whenever possible.
+    """Select five Tmall slots while showing the second color in tmz2.
 
     The color containing the largest number of Tmall slots becomes the base
-    color. Only a slot missing from that base color may be filled by another
-    color.
+    color. Slot 2 uses the next available color when present, because the
+    business package expects multi-color styles to reveal another color there.
+    Other slots only cross colors when the base color is missing that pose.
     """
 
     order = [
@@ -182,6 +183,19 @@ def select_tmz_same_color_first(
     for index in range(1, 6):
         slot = f"tmz{index}"
         base_value = _text((candidates_by_color.get(base_color) or {}).get(slot))
+        if index == 2:
+            alternate = next(
+                (
+                    (color, _text((candidates_by_color.get(color) or {}).get(slot)))
+                    for color in order
+                    if color != base_color
+                    and _text((candidates_by_color.get(color) or {}).get(slot))
+                ),
+                None,
+            )
+            if alternate:
+                selected.append(alternate)
+                continue
         if base_value:
             selected.append((base_color, base_value))
             continue
@@ -380,6 +394,7 @@ SHOE_WHITE_BACKGROUND_LUMA = 249.5
 SHOE_YX_MAX_FOREGROUND_COVERAGE = 0.65
 SHOE_POSE3_SIDE_ASYMMETRY_MARGIN = 0.006
 SHOE_POSE1_MIN_SCORE_IMPROVEMENT = 0.08
+SHOE_BACKGROUND_PAIR_MAX_DISTANCE = 0.06
 
 SHOE_POSE5_FEATURE_RULES = {
     "运动": {
@@ -545,6 +560,49 @@ def _is_pose_selection_candidate(filename: str) -> bool:
     return _is_pose_matching_candidate(filename)
 
 
+def _is_ai_angle_image_filename(filename: str) -> bool:
+    stem = re.sub(r"\s+", "", Path(_text(filename)).stem.lower())
+    return bool(re.search(r"ai角度图\d*$", stem, flags=re.IGNORECASE))
+
+
+def _entries_with_ai_angle_images(
+    base_entries: list[dict[str, Any]],
+    all_entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    names = {
+        _text(entry.get("filename"))
+        for entry in base_entries
+    }
+    output = list(base_entries)
+    output.extend(
+        entry
+        for entry in all_entries
+        if _is_ai_angle_image_filename(_text(entry.get("filename")))
+        and _text(entry.get("filename")) not in names
+    )
+    return output
+
+
+def _is_junk_shoe_asset_filename(filename: str, cloud_path: str = "") -> bool:
+    name = Path(_text(filename)).name
+    if not name:
+        return False
+    lowered = name.lower()
+    if lowered.startswith("._") or lowered in {".ds_store", "desktop.ini", "thumbs.db"}:
+        return True
+    segments = [
+        segment
+        for segment in _text(cloud_path).replace("\\", "/").split("/")
+        if segment
+    ]
+    return any(
+        segment == "__MACOSX"
+        or Path(segment).name.startswith("._")
+        or segment.lower() in {".ds_store", "desktop.ini", "thumbs.db"}
+        for segment in segments
+    )
+
+
 def _original_asset_relative_targets(
     entries: list[dict[str, Any]],
 ) -> list[Path]:
@@ -584,6 +642,15 @@ def _shoe_size_segment(entry: dict[str, Any]) -> str:
     return ""
 
 
+def _shoe_size_yk_marker_count(entries: list[dict[str, Any]], size: str) -> int:
+    return sum(
+        1
+        for entry in entries
+        if _shoe_size_segment(entry) == size
+        and _is_yk_source_filename(_text(entry.get("filename")))
+    )
+
+
 def _filter_single_shoe_size_entries(
     entries: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], str]:
@@ -598,15 +665,48 @@ def _filter_single_shoe_size_entries(
     )
     if len(sizes) <= 1:
         return entries, ""
-    selected = sizes[-1]
+    yk_counts = {
+        size: _shoe_size_yk_marker_count(entries, size)
+        for size in sizes
+    }
+    has_yk_markers = any(count > 0 for count in yk_counts.values())
+    if has_yk_markers:
+        selected = max(
+            sizes,
+            key=lambda size: (yk_counts[size], int(size)),
+        )
+        reason = f"按文案标注 YK 优先选择 {selected} 码素材"
+    else:
+        selected = sizes[-1]
+        preserved_angle_count = sum(
+            1
+            for entry in entries
+            if _shoe_size_segment(entry)
+            and _shoe_size_segment(entry) != selected
+            and _is_ai_angle_image_filename(_text(entry.get("filename")))
+        )
+        if preserved_angle_count:
+            reason = (
+                f"未发现文案标注 YK，回退保留 {selected} 码素材，"
+                f"并保留 {preserved_angle_count} 张跨尺码 AI 角度图"
+            )
+        else:
+            reason = f"未发现文案标注 YK，回退仅保留 {selected} 码素材"
     filtered = [
         entry
         for entry in entries
-        if not _shoe_size_segment(entry) or _shoe_size_segment(entry) == selected
+        if (
+            not _shoe_size_segment(entry)
+            or _shoe_size_segment(entry) == selected
+            or (
+                not has_yk_markers
+                and _is_ai_angle_image_filename(_text(entry.get("filename")))
+            )
+        )
     ]
     return (
         filtered,
-        f"检测到同款色多个尺码原图（{', '.join(sizes)}），仅保留 {selected} 码素材",
+        f"检测到同款色多个尺码原图（{', '.join(sizes)}），{reason}",
     )
 
 
@@ -619,13 +719,26 @@ class _BinaryPoseFeature:
     valid: bool
 
 
+def _image_rgb_on_white(image: Any) -> Any:
+    """Convert PIL images to RGB, compositing transparent pixels onto white."""
+
+    from PIL import Image
+
+    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        background.alpha_composite(rgba)
+        return background.convert("RGB")
+    return image.convert("RGB")
+
+
 def _binary_pose_feature(path: Path | str) -> _BinaryPoseFeature:
     """Build a color-insensitive foreground silhouette for cross-color matching."""
 
     from PIL import Image, ImageFilter, ImageOps
 
     with Image.open(path) as opened:
-        image = ImageOps.exif_transpose(opened).convert("RGB")
+        image = _image_rgb_on_white(ImageOps.exif_transpose(opened))
         image.thumbnail((256, 256), Image.Resampling.LANCZOS)
     width, height = image.size
     pixels = image.load()
@@ -684,7 +797,7 @@ def _binary_pose_distance(
 ) -> float:
     from PIL import ImageChops, ImageStat
 
-    if not anchor.valid or not candidate.valid:
+    if not anchor.valid or not candidate.valid or anchor.mask is None or candidate.mask is None:
         return float("inf")
     mismatch = (
         ImageStat.Stat(
@@ -768,8 +881,7 @@ def _rank_yx_layout_matches(
         if key not in cache:
             with Image.open(path) as opened:
                 cache[key] = (
-                    ImageOps.exif_transpose(opened)
-                    .convert("RGB")
+                    _image_rgb_on_white(ImageOps.exif_transpose(opened))
                     .resize((128, 128), Image.Resampling.LANCZOS)
                 )
         return cache[key]
@@ -831,6 +943,257 @@ def _copy_variant_key(filename: str) -> str:
         stem,
         flags=re.IGNORECASE,
     ).strip().lower()
+
+
+def _is_snow_lining_detail_feature(pose: _BinaryPoseFeature | None) -> bool:
+    return bool(
+        pose
+        and 0.90 <= pose.aspect_ratio <= 1.50
+        and 0.25 <= pose.bounding_coverage <= 0.50
+    )
+
+
+def _is_snow_pose4_opening_feature(pose: _BinaryPoseFeature | None) -> bool:
+    return bool(
+        pose
+        and 0.95 <= pose.aspect_ratio <= 1.45
+        and 0.50 <= pose.bounding_coverage <= 0.75
+        and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+    )
+
+
+def _is_snow_opening_angle_filename(filename: str) -> bool:
+    return _is_ai_angle_image_filename(filename)
+
+
+def _snow_opening_angle_filename_priority(filename: str) -> int:
+    if not _is_snow_opening_angle_filename(filename):
+        return 99
+    stem = re.sub(r"\s+", "", Path(_text(filename)).stem.lower())
+    match = re.search(r"角度图(\d+)$", stem, flags=re.IGNORECASE)
+    if not match:
+        return 9
+    try:
+        number = int(match.group(1))
+    except ValueError:
+        return 9
+    return 0 if number == 1 else 1 if number == 2 else min(number, 9)
+
+
+def _is_snow_pose4_business_opening(
+    filename: str,
+    pose: _BinaryPoseFeature | None,
+) -> bool:
+    if _is_snow_opening_angle_filename(filename):
+        return True
+    return bool(
+        pose
+        and (
+            (
+                _is_named_snow_detail_filename(filename)
+                and (
+                    _is_snow_pose4_opening_feature(pose)
+                    or _is_snow_lining_detail_feature(pose)
+                )
+            )
+            or (
+                0.85 <= pose.aspect_ratio <= 1.08
+                and 0.18 <= pose.bounding_coverage <= 0.35
+                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+            )
+        )
+    )
+
+
+def _create_snow_lining_detail_crop(source: Path, target: Path) -> None:
+    from PIL import Image, ImageChops, ImageOps
+
+    with Image.open(source) as opened:
+        image = _image_rgb_on_white(ImageOps.exif_transpose(opened))
+    width, height = image.size
+    pixels = image.load()
+    border = []
+    for x in range(width):
+        border.extend((pixels[x, 0], pixels[x, height - 1]))
+    for y in range(height):
+        border.extend((pixels[0, y], pixels[width - 1, y]))
+    background = tuple(
+        sorted(pixel[channel] for pixel in border)[len(border) // 2]
+        for channel in range(3)
+    )
+    diff = ImageChops.difference(
+        image,
+        Image.new("RGB", image.size, background),
+    ).convert("L")
+    mask = diff.point(lambda value: 255 if value > 18 else 0)
+    bbox = mask.getbbox()
+    if bbox:
+        left, top, right, bottom = bbox
+        fg_width = right - left
+        fg_height = bottom - top
+        crop = (
+            max(0, left - int(fg_width * 0.08)),
+            max(0, top - int(fg_height * 0.08)),
+            min(width, right + int(fg_width * 0.08)),
+            min(height, top + int(fg_height * 0.62)),
+        )
+    else:
+        crop = (
+            int(width * 0.20),
+            int(height * 0.10),
+            int(width * 0.80),
+            int(height * 0.62),
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    image.crop(crop).save(target, format="JPEG", quality=95, optimize=True)
+
+
+def _slot_source_names(slots: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for key, value in slots.items():
+        if str(key).startswith("_") or key == "yk":
+            continue
+        values = value if isinstance(value, list) else [value]
+        names.update(_text(item) for item in values if _text(item))
+    return names
+
+
+def _entry_feature(entry: dict[str, Any]) -> _BinaryPoseFeature | None:
+    path = entry.get("path") if isinstance(entry, dict) else None
+    if not path:
+        return None
+    try:
+        return _binary_pose_feature(Path(path))
+    except Exception:
+        return None
+
+
+def _snow_lining_detail_score(feature: _BinaryPoseFeature) -> float:
+    return (
+        abs(feature.aspect_ratio - 1.23)
+        + abs(feature.bounding_coverage - 0.38) * 2.0
+    )
+
+
+def _is_named_snow_detail_filename(filename: str) -> bool:
+    stem = Path(_text(filename)).stem.lower()
+    return bool(
+        _is_yk_source_filename(filename)
+        or re.search(r"(?:细节|鞋口|内里|绒毛|detail|mouth|lining)", stem)
+    )
+
+
+def _snow_pose4_opening_score(feature: _BinaryPoseFeature) -> float:
+    return (
+        abs(feature.aspect_ratio - 1.16)
+        + abs(feature.bounding_coverage - 0.58) * 2.0
+    )
+
+
+def _snow_pose4_business_opening_sort_key(
+    filename: str,
+    feature: _BinaryPoseFeature | None,
+) -> tuple[int, int, float, str]:
+    angle_priority = _snow_opening_angle_filename_priority(filename)
+    if angle_priority < 99:
+        return (0, angle_priority, 0.0, filename.lower())
+    if feature is None:
+        return (9, 9, float("inf"), filename.lower())
+    group = 1 if _is_named_snow_detail_filename(filename) else 2
+    return (
+        group,
+        9,
+        _snow_pose4_opening_score(feature),
+        filename.lower(),
+    )
+
+
+def _ensure_snow_detail_yk(
+    *,
+    style_code: str,
+    color_code: str,
+    slots: dict[str, Any],
+    entries_by_name: dict[str, dict[str, Any]],
+    analysis_root: Path,
+) -> tuple[dict[str, Any], str]:
+    if _selection_list(slots, "yk"):
+        return slots, ""
+
+    detail_candidates = [
+        (name, entry, feature)
+        for name, entry in entries_by_name.items()
+        for feature in [_entry_feature(entry)]
+        if feature and _is_snow_lining_detail_feature(feature)
+    ]
+    opening_candidates = [
+        (name, entry, feature)
+        for name, entry in entries_by_name.items()
+        for feature in [_entry_feature(entry)]
+        if feature and _is_snow_pose4_business_opening(name, feature)
+    ]
+
+    occupied = _slot_source_names(slots)
+    available = [
+        item
+        for item in detail_candidates
+        if item[0] not in occupied
+        and _is_named_snow_detail_filename(item[0])
+    ]
+    if available:
+        name, _entry, _feature = min(
+            available,
+            key=lambda item: (_snow_lining_detail_score(item[2]), item[0].lower()),
+        )
+        ruled = dict(slots)
+        ruled["yk"] = [name]
+        return ruled, f"缺少文案 YK 标注，已选择 {name} 作为 yk1"
+
+    preferred_names = [
+        _text(slots.get("tmz4")),
+        *(_selection_list(slots, "wpz")[3:4]),
+    ]
+    preferred = next(
+        (
+            (name, entry, feature)
+            for name in preferred_names
+            for entry in [entries_by_name.get(name)]
+            if entry
+            for feature in [_entry_feature(entry)]
+            if feature
+            and (
+                _is_snow_pose4_business_opening(name, feature)
+                or _is_snow_lining_detail_feature(feature)
+            )
+        ),
+        None,
+    )
+    source = preferred or min(
+        opening_candidates,
+        key=lambda item: _snow_pose4_business_opening_sort_key(item[0], item[2]),
+        default=None,
+    )
+    if source is None:
+        source = min(
+            detail_candidates,
+            key=lambda item: (_snow_lining_detail_score(item[2]), item[0].lower()),
+            default=None,
+        )
+    if source is None:
+        return slots, ""
+    source_name, source_entry, _source_feature = source
+    generated_name = "yk1-auto-crop.jpg"
+    if generated_name in entries_by_name:
+        generated_name = "yk1-auto-crop-2.jpg"
+    generated_path = analysis_root / style_code / f"{color_code}-{generated_name}"
+    _create_snow_lining_detail_crop(Path(source_entry["path"]), generated_path)
+    entries_by_name[generated_name] = {
+        "path": generated_path,
+        "filename": generated_name,
+        "row": source_entry["row"],
+    }
+    ruled = dict(slots)
+    ruled["yk"] = [generated_name]
+    return ruled, f"缺少独立细节图，已从 {source_name} 裁切生成 yk1"
 
 
 def _apply_selection_quality_rules(
@@ -1147,16 +1510,9 @@ def _apply_selection_quality_rules(
         current_wpz4 = wpz[3]
         current_tmz4 = _text(ruled.get("tmz4")) or current_wpz4
 
-        def valid_snow_pose4(pose: _BinaryPoseFeature | None) -> bool:
-            return bool(
-                pose
-                and 0.90 <= pose.aspect_ratio <= 1.50
-                and 0.25 <= pose.bounding_coverage <= 0.50
-            )
-
         if (
-            not valid_snow_pose4(feature_for(current_wpz4))
-            or not valid_snow_pose4(feature_for(current_tmz4))
+            not _is_snow_pose4_business_opening(current_wpz4, feature_for(current_wpz4))
+            or not _is_snow_pose4_business_opening(current_tmz4, feature_for(current_tmz4))
         ):
             occupied = {
                 _text(value)
@@ -1177,21 +1533,20 @@ def _apply_selection_quality_rules(
                 for filename in entries_by_name
                 if filename not in occupied
                 for pose in [feature_for(filename)]
-                if valid_snow_pose4(pose)
+                if _is_snow_pose4_business_opening(filename, pose)
             ]
             if eligible_pose4:
                 replacement, _replacement_feature = min(
                     eligible_pose4,
-                    key=lambda item: (
-                        abs(item[1].aspect_ratio - 1.23)
-                        + abs(item[1].bounding_coverage - 0.38) * 2.0,
-                        item[0].lower(),
+                    key=lambda item: _snow_pose4_business_opening_sort_key(
+                        item[0],
+                        item[1],
                     ),
                 )
                 wpz[3] = replacement
                 ruled["tmz4"] = replacement
                 corrections.append(
-                    "雪地第4姿势鞋口内里特写已纠正："
+                    "雪地第4姿势完整鞋口内里图已纠正："
                     f"{current_wpz4} -> {replacement}"
                 )
 
@@ -1408,8 +1763,7 @@ def _apply_selection_quality_rules(
     if len(wpz) < 5:
         return ruled, corrections
 
-    preferred_leisure_tmz5 = ""
-    previous_leisure_tmz5 = _text(ruled.get("tmz5"))
+    preferred_leisure_gray_tmz5 = ""
     if _text(category) == "休闲":
         leisure_tmz5_candidates = [
             (filename, pose)
@@ -1424,7 +1778,7 @@ def _apply_selection_quality_rules(
             )
         ]
         if leisure_tmz5_candidates:
-            preferred_leisure_tmz5, _preferred_feature = min(
+            preferred_leisure_gray_tmz5, _preferred_feature = min(
                 leisure_tmz5_candidates,
                 key=lambda item: (
                     abs(item[1].aspect_ratio - 1.44)
@@ -1432,14 +1786,10 @@ def _apply_selection_quality_rules(
                     item[0].lower(),
                 ),
             )
-            ruled["tmz5"] = preferred_leisure_tmz5
-            if preferred_leisure_tmz5 != previous_leisure_tmz5:
-                corrections.append(
-                    "休闲第5张主图双鞋斜前方姿势已纠正："
-                    f"{previous_leisure_tmz5} -> {preferred_leisure_tmz5}"
-                )
 
     groups: dict[str, list[tuple[str, _BinaryPoseFeature]]] = {}
+    gray_variants: list[tuple[str, _BinaryPoseFeature]] = []
+    white_variants: list[tuple[str, _BinaryPoseFeature]] = []
     for filename in entries_by_name:
         current_feature = feature_for(filename)
         if not current_feature:
@@ -1447,8 +1797,13 @@ def _apply_selection_quality_rules(
         groups.setdefault(_copy_variant_key(filename), []).append(
             (filename, current_feature)
         )
+        if current_feature.background_luma < SHOE_WHITE_BACKGROUND_LUMA:
+            gray_variants.append((filename, current_feature))
+        else:
+            white_variants.append((filename, current_feature))
 
     paired_groups: list[dict[str, Any]] = []
+    paired_names: set[tuple[str, str]] = set()
     for key, variants in groups.items():
         gray = [
             item
@@ -1477,6 +1832,44 @@ def _apply_selection_quality_rules(
             "white_name": white_name,
             "white_feature": white_feature,
         })
+        paired_names.add((gray_name, white_name))
+
+    used_white_names = {
+        white_name
+        for _gray_name, white_name in paired_names
+    }
+
+    def safe_pose_distance(
+        first: _BinaryPoseFeature,
+        second: _BinaryPoseFeature,
+    ) -> float:
+        if first.mask is None or second.mask is None:
+            return float("inf")
+        return _binary_pose_distance(first, second)
+
+    for gray_name, gray_feature in gray_variants:
+        nearest_white = min(
+            (
+                (white_name, white_feature, safe_pose_distance(gray_feature, white_feature))
+                for white_name, white_feature in white_variants
+                if (gray_name, white_name) not in paired_names
+                and white_name not in used_white_names
+            ),
+            key=lambda item: (item[2], item[0].lower()),
+            default=None,
+        )
+        if nearest_white is None or nearest_white[2] > SHOE_BACKGROUND_PAIR_MAX_DISTANCE:
+            continue
+        white_name, white_feature, _distance = nearest_white
+        paired_groups.append({
+            "key": f"{gray_name}\0{white_name}",
+            "gray_name": gray_name,
+            "gray_feature": gray_feature,
+            "white_name": white_name,
+            "white_feature": white_feature,
+        })
+        paired_names.add((gray_name, white_name))
+        used_white_names.add(white_name)
 
     rule = SHOE_POSE5_FEATURE_RULES.get(_text(category))
     if not paired_groups or not rule:
@@ -1489,12 +1882,22 @@ def _apply_selection_quality_rules(
             and pose.bounding_coverage <= rule["max_coverage"]
         )
 
+    preferred_leisure_group = next(
+        (
+            group
+            for group in paired_groups
+            if group["gray_name"] == preferred_leisure_gray_tmz5
+        ),
+        None,
+    )
     current_key = _copy_variant_key(wpz[4])
     current_group = next(
         (group for group in paired_groups if group["key"] == current_key),
         None,
     )
-    if current_group and valid_pose(current_group):
+    if preferred_leisure_group:
+        selected_group = preferred_leisure_group
+    elif current_group and valid_pose(current_group):
         selected_group = current_group
     else:
         eligible = [group for group in paired_groups if valid_pose(group)]
@@ -1516,21 +1919,27 @@ def _apply_selection_quality_rules(
             ),
         )
 
-    previous_tmz5 = previous_leisure_tmz5 or _text(ruled.get("tmz5"))
+    previous_tmz5 = _text(ruled.get("tmz5"))
     previous_wpz5 = wpz[4]
-    ruled["tmz5"] = preferred_leisure_tmz5 or selected_group["white_name"]
+    ruled["tmz5"] = selected_group["white_name"]
     wpz[4] = selected_group["gray_name"]
+    if (
+        preferred_leisure_group
+        and selected_group["key"] == preferred_leisure_group["key"]
+        and previous_tmz5 != ruled["tmz5"]
+    ):
+        corrections.append(
+            "休闲第5张主图双鞋斜前方姿势已纠正："
+            f"{previous_tmz5} -> {ruled['tmz5']}"
+        )
     if _copy_variant_key(previous_wpz5) != selected_group["key"]:
         corrections.append(
             f"{category}第5姿势已纠正："
             f"{previous_wpz5} -> {selected_group['gray_name']}"
         )
     if (
-        not preferred_leisure_tmz5
-        and (
         previous_tmz5 != ruled["tmz5"]
         or previous_wpz5 != wpz[4]
-        )
     ):
         corrections.append(
             "tmz5/wpz5 白底/灰底已按同一姿势成对校正："
@@ -1746,8 +2155,9 @@ def _shoe_selection_prompt(
    必须展示鞋子的完整外侧轮廓，鞋头不能正对镜头；不能选择“鞋头朝镜头”的正面竖立图，
    也不能选择正常平放的侧视图、普通斜前方单鞋图，或复用 tmz1/wpz1、yq3。
    tmz4/wpz4 必须按品类区分：运动是后侧斜悬且鞋底朝镜头；休闲是完整后侧面；
-   雪地是鞋口和内里绒毛局部特写；婴童是单鞋后侧角度。
-   雪地第4姿势不能选择拉链、鞋帮外侧或普通侧面特写；
+   雪地是完整鞋口内里图：画面要同时看见鞋口绒毛/内里和鞋帮侧面，不能只裁到鞋面或鞋头；
+   婴童是单鞋后侧角度。
+   雪地第4姿势不能选择拉链、鞋帮外侧、普通侧面特写、鞋面/鞋头局部裁切图；
    婴童第4姿势不能误用 yq3 的完整外侧面。
 2. wpz 共6张，wpz1..wpz4 与天猫前4张姿势相同；wpz5 与 tmz5 姿势相同但必须灰底；wpz6 必须是带款号和颜色标签的鞋盒图。
    tmz5/wpz5 都必须完整展示两只鞋，并严格匹配当前品类模板第5姿势；禁止鞋垫、单鞋、单独鞋底、局部特写或鞋盒。
@@ -1755,6 +2165,7 @@ def _shoe_selection_prompt(
    wpz5 必须是该品类模板第5姿势的灰底版本，不能误用白底副本。
 4. yq 必须且只能返回3张，按第四张参考模板从左到右依次匹配：斜前方鞋+后方鞋底、完整鞋底平铺、完整外侧面。不要把 AI 角度图、颜色图或其他展示图放进 yq。
 5. yk 不用选择，程序会合并主推色云盘中的 1.jpg..N.jpg 和主推色云盘中已经命名为 yk1..ykN 的细节图；细节有几张就输出几张，非主推色不输出 yk。
+   雪地款缺少独立 yk 细节图时，程序会优先复用未占用的鞋口内里细节原图；若没有独立细节图，会从正确的雪地第4姿势鞋口内里图裁切生成 yk1。
    yx 只允许选择“鞋子主体与一张或多张功能吊牌/功能卡同框”的完整展示图。
    单独鞋垫、单独吊牌、鞋盒、普通鞋子图或局部特写都不是 yx；找不到合格图片必须返回空字符串。
 6. tms 不用选择，程序会按“12位款号-5位色码”文件名确定。
@@ -1792,7 +2203,7 @@ def _create_contact_sheet(
         candidate_ids[candidate_id] = filename
         source = Path(entry["path"])
         with Image.open(source) as opened:
-            image = ImageOps.exif_transpose(opened).convert("RGB")
+            image = _image_rgb_on_white(ImageOps.exif_transpose(opened))
             image.thumbnail((tile_width - 12, image_height - 12), Image.Resampling.LANCZOS)
             left = (offset % columns) * tile_width
             top = (offset // columns) * (image_height + label_height)
@@ -1904,7 +2315,7 @@ def _create_label_preview(source: Path, target: Path) -> None:
     from PIL import Image, ImageOps
 
     with Image.open(source) as opened:
-        image = ImageOps.exif_transpose(opened).convert("RGB")
+        image = _image_rgb_on_white(ImageOps.exif_transpose(opened))
         image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
         target.parent.mkdir(parents=True, exist_ok=True)
         image.save(target, format="JPEG", quality=82, optimize=True)
@@ -2053,7 +2464,7 @@ def _create_tmq_asset(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", Image.DecompressionBombWarning)
         with Image.open(source) as opened:
-            image = ImageOps.exif_transpose(opened).convert("RGB")
+            image = _image_rgb_on_white(ImageOps.exif_transpose(opened))
     width, height = image.size
     style = _normalized_bbox(style_code_bbox)
     if require_style_code_bbox and style is None:
@@ -2185,7 +2596,7 @@ def _copy_as_jpeg(source: Path, target: Path) -> None:
         if target_suffix == ".png":
             image.save(target, format="PNG")
         else:
-            image.convert("RGB").save(target, format="JPEG", quality=95, optimize=True)
+            _image_rgb_on_white(image).save(target, format="JPEG", quality=95, optimize=True)
 
 
 def prepare_shoe_packages(
@@ -2228,6 +2639,8 @@ def prepare_shoe_packages(
         color_code = _text(row.get("__shoe_color_code") or row.get("颜色"))
         filename = _text(row.get("__shoe_original_filename") or row.get("原文件名") or local_path.name)
         if not style_code or not filename:
+            continue
+        if _is_junk_shoe_asset_filename(filename, _text(row.get("云盘路径"))):
             continue
         entry = {
             "path": local_path,
@@ -2312,10 +2725,15 @@ def prepare_shoe_packages(
             candidate_ids: dict[str, str] = {}
             used_local_match = anchor_slots is not None
             if used_local_match:
+                target_match_entries = (
+                    _entries_with_ai_angle_images(pose_matching_entries, entries)
+                    if _text(anchor_category) == "雪地"
+                    else pose_matching_entries
+                )
                 matched_slots, worst_distance = _match_slots_from_anchor_color(
                     anchor_slots=anchor_slots,
                     anchor_entries=anchor_selection_entries,
-                    target_entries=pose_matching_entries,
+                    target_entries=target_match_entries,
                 )
                 if worst_distance <= SHOE_CROSS_COLOR_MAX_DISTANCE:
                     payload = {
@@ -2411,9 +2829,15 @@ def prepare_shoe_packages(
             if named_yx:
                 slots["yx"] = named_yx
 
+            quality_rule_entries = list(selection_entries)
+            if _text(category) == "雪地":
+                quality_rule_entries = _entries_with_ai_angle_images(
+                    quality_rule_entries,
+                    entries,
+                )
             pose_entries_by_name = {
                 entry["filename"]: entry
-                for entry in selection_entries
+                for entry in quality_rule_entries
             }
             outsole_entries_by_name = {
                 entry["filename"]: entry
@@ -2429,10 +2853,24 @@ def prepare_shoe_packages(
                 log(f"鞋品确定性校验：{style_code}-{color_code}，{correction}")
             slots = _apply_o_category_rule(category, slots)
 
+            if _text(category) == "雪地":
+                slots, yk_fallback = _ensure_snow_detail_yk(
+                    style_code=style_code,
+                    color_code=color_code,
+                    slots=slots,
+                    entries_by_name=entries_by_name,
+                    analysis_root=analysis_root,
+                )
+                if yk_fallback:
+                    log(
+                        "鞋品确定性校验："
+                        f"{style_code}-{color_code}，{yk_fallback}"
+                    )
+
             _validate_selection_sources(style_code, color_name, slots, entries_by_name)
             if anchor_slots is None:
                 anchor_slots = dict(slots)
-                anchor_selection_entries = list(pose_matching_entries)
+                anchor_selection_entries = list(quality_rule_entries)
                 anchor_category = category
             if label_analyzer:
                 wpz_sources = _selection_list(slots, "wpz")

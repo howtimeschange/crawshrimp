@@ -93,12 +93,25 @@ test('shoe asset collection keeps images without applying clothing yq semantics'
     filename: 'Thumbs.db',
     fullpath: '鞋品/204326141005-已写/00317/36/Thumbs.db',
   })
+  const appleDouble = helpers.classifyShoeAsset({
+    ext: 'jpg',
+    filename: '._tmz (1).jpg',
+    fullpath: '鞋品/204325141014/90001/30/._tmz (1).jpg',
+  })
+  const macosx = helpers.classifyShoeAsset({
+    ext: 'jpg',
+    filename: 'tmz (1).jpg',
+    fullpath: '鞋品/204325141014/__MACOSX/tmz (1).jpg',
+  })
 
   assert.equal(image.keep, true)
   assert.equal(image.role, 'shoe_source')
   assert.equal(labelImage.keep, true)
   assert.equal(labelImage.role, 'shoe_source')
   assert.equal(database.keep, false)
+  assert.equal(appleDouble.keep, false)
+  assert.equal(macosx.keep, false)
+  assert.match(appleDouble.reason, /隐藏|资源叉/)
 })
 
 test('shoe color code is read from the folder above the size folder', async () => {
