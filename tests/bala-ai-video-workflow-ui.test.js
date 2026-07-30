@@ -1702,7 +1702,7 @@ test('workflow restores all persisted review batches and routes decisions throug
   assert.match(main, /list-bala-review-workspace-batches/)
 })
 
-test('video asset pool enforces the review gate and keeps business source labels', () => {
+test('video asset pool lets pending model detail and AI images be selected for video tasks', () => {
   assert.equal(typeof balaWorkflow.buildBalaVideoAssetPool, 'function')
   const assets = balaWorkflow.buildBalaVideoAssetPool({
     reviewStyle: {
@@ -1710,11 +1710,14 @@ test('video asset pool enforces the review gate and keeps business source labels
       assets: [
         { id: 'approved-face', label: '正面', operationType: 'face_swap', status: 'approved', path: '/tmp/face.png', thumbnailUrl: 'http://127.0.0.1:18765/thumbnail/approved-face' },
         { id: 'pending-outfit', label: '侧面', operationType: 'outfit_swap', status: 'pending', path: '/tmp/outfit.png' },
+        { id: 'pending-detail-ai', label: 'AI细节', kind: 'ai', operationType: 'background_swap', status: 'pending', path: '/tmp/ai-detail.png', sourcePath: '/workspace/208326102205/02_商品细节图/detail.jpg' },
         { id: 'retry-pose', label: '背面', operationType: 'pose_swap', status: 'retry', path: '/tmp/pose.png' },
         { id: 'rejected-bg', label: '背景', operationType: 'background_swap', status: 'rejected', path: '/tmp/bg.png' },
       ],
       sourceAssets: [
         { id: 'approved-origin', name: '原图', sourceType: 'model', status: 'approved', path: '/tmp/source.jpg' },
+        { id: 'pending-origin', name: '待审模特', sourceType: 'model', status: 'pending', path: '/tmp/pending-source.jpg' },
+        { id: 'pending-detail', name: '待审细节', sourceType: 'detail', status: 'pending', path: '/tmp/pending-detail.jpg' },
         { id: 'rejected-detail', name: '细节', sourceType: 'detail', status: 'rejected', path: '/tmp/detail.jpg' },
       ],
     },
@@ -1726,23 +1729,32 @@ test('video asset pool enforces the review gate and keeps business source labels
     asset.businessKind,
     asset.displayKind,
     asset.status,
+    asset.selected,
     asset.selectable,
   ]), [
-    ['vasset-approved-face', 'ai', '模拍', 'AI·模拍', 'approved', true],
-    ['vasset-pending-outfit', 'ai', '模拍', 'AI·模拍', 'pending', false],
-    ['vasset-retry-pose', 'ai', '模拍', 'AI·模拍', 'retry', false],
-    ['vasset-208326102205-source-approved-origin', 'origin', '模拍', '模特图', 'approved', true],
+    ['vasset-approved-face', 'ai', '模拍', 'AI·模拍', 'approved', true, true],
+    ['vasset-pending-outfit', 'ai', '模拍', 'AI·模拍', 'pending', false, true],
+    ['vasset-pending-detail-ai', 'ai', '素材', 'AI·细节', 'pending', false, true],
+    ['vasset-retry-pose', 'ai', '模拍', 'AI·模拍', 'retry', false, true],
+    ['vasset-208326102205-source-approved-origin', 'origin', '模拍', '模特图', 'approved', true, true],
+    ['vasset-208326102205-source-pending-origin', 'origin', '模拍', '模特图', 'pending', false, true],
+    ['vasset-208326102205-source-pending-detail', 'reference', '素材', '细节图', 'pending', false, true],
   ])
   assert.equal(assets[0].thumbnailUrl, 'http://127.0.0.1:18765/thumbnail/approved-face')
 })
 
-test('video stage only exposes styles that contain an approved asset', () => {
+test('video stage exposes styles that contain any selectable asset', () => {
   assert.equal(typeof balaWorkflow.hasApprovedBalaVideoAsset, 'function')
+  assert.equal(typeof balaWorkflow.hasSelectableBalaVideoAsset, 'function')
   assert.equal(balaWorkflow.hasApprovedBalaVideoAsset([
-    { status: 'pending', selectable: false },
-    { status: 'retry', selectable: false },
+    { status: 'pending', selectable: true },
+    { status: 'retry', selectable: true },
   ]), false)
-  assert.equal(balaWorkflow.hasApprovedBalaVideoAsset([
+  assert.equal(balaWorkflow.hasSelectableBalaVideoAsset([
+    { status: 'pending', selectable: true },
+    { status: 'retry', selectable: true },
+  ]), true)
+  assert.equal(balaWorkflow.hasSelectableBalaVideoAsset([
     { status: 'pending', selectable: false },
     { status: 'approved', selectable: true },
   ]), true)
@@ -1750,7 +1762,7 @@ test('video stage only exposes styles that contain an approved asset', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   assert.match(
     source,
-    /function buildVideoJobsFromReview\(\)[\s\S]*?hasApprovedBalaVideoAsset\(assets\)[\s\S]*?continue/,
+    /function buildVideoJobsFromReview\(\)[\s\S]*?hasSelectableBalaVideoAsset\(assets\)[\s\S]*?continue/,
   )
 })
 
@@ -1787,7 +1799,7 @@ test('a submitted video task cannot be reset by preflight or create a duplicate 
   )
 })
 
-test('new video task uses a tiled style library, approved-only assets, and no split mode', () => {
+test('new video task uses a tiled style library, selectable assets, and no split mode', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const templateSource = source.split('<script setup>')[0]
 
@@ -1798,6 +1810,8 @@ test('new video task uses a tiled style library, approved-only assets, and no sp
   assert.doesNotMatch(source, /videoTaskDraft\.groupMode/)
   assert.doesNotMatch(source, /task\.groupMode/)
   assert.match(templateSource, /:disabled="!asset\.selectable"/)
+  assert.match(source, /assets\.filter\(asset => asset\.selectable && asset\.status === 'approved'\)\.map\(asset => asset\.id\)/)
+  assert.match(source, /图片素材（至少 1 张）/)
   assert.match(source, /group_mode:\s*'all_images_one_video'/)
   assert.match(source, /duration:\s*5,[\s\S]*?runBalaSeedanceVideo/)
 })

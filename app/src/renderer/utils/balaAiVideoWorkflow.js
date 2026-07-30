@@ -1378,7 +1378,7 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
       displayKind: taxonomy.displayKind,
       status,
       selected: status === 'approved',
-      selectable: status === 'approved',
+      selectable: true,
       path,
       sourcePath: compact(asset?.sourcePath || asset?.source_path),
       imageUrl: compact(asset?.imageUrl || asset?.image_url),
@@ -1409,6 +1409,10 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
 
 export function hasApprovedBalaVideoAsset(assets = []) {
   return (assets || []).some(asset => asset?.status === 'approved' && asset?.selectable === true)
+}
+
+export function hasSelectableBalaVideoAsset(assets = []) {
+  return (assets || []).some(asset => asset?.selectable === true)
 }
 
 export function normalizeBalaTemplateCatalog(payload = {}) {

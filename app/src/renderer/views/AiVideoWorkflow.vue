@@ -1609,7 +1609,7 @@
                   @keydown.end.prevent="moveVideoTaskStyleTab('last')"
                 >
                   <strong>{{ job.styleCode }}</strong>
-                  <span>{{ job.assets.filter(asset => asset.selectable).length }} 张已审核</span>
+                  <span>{{ job.assets.filter(asset => asset.selectable).length }} 张可选 · {{ approvedVideoAssetCount(job) }} 已审</span>
                 </button>
               </div>
             </section>
@@ -1835,7 +1835,7 @@
                     class="aiv-vtask-card-hit"
                     :disabled="!asset.selectable"
                     :aria-pressed="videoTaskDraft.assetIds.includes(asset.id)"
-                    :aria-label="`${asset.selectable ? (videoTaskDraft.assetIds.includes(asset.id) ? '取消选择' : '选择') : '仅查看'}视频素材 ${asset.label}`"
+                    :aria-label="`${asset.selectable ? (videoTaskDraft.assetIds.includes(asset.id) ? '取消选择' : '选择') : '不可选择'}视频素材 ${asset.label}`"
                     @click="toggleVideoTaskDraftAsset(asset)"
                   >
                     <img
@@ -1882,7 +1882,7 @@
                 </button>
                 <div v-if="!filteredVideoTaskAssets.length" class="aiv-video-task-empty">
                   <strong>{{ activeVideoTaskAssetTab?.label || '当前' }}图片为空</strong>
-                  <span v-if="videoTaskAssetFilter === 'approved' && videoTaskKindFilter === 'all'">请先在“AI 审核”中通过图片，或切换到“待审核”仅查看。</span>
+                  <span v-if="videoTaskAssetFilter === 'approved' && videoTaskKindFilter === 'all'">已审核图片为空，可切换到“待审核”或“全部”选择未审核素材。</span>
                   <span v-else-if="videoTaskKindFilter !== 'all'">当前状态与类型筛选下没有图片，可切换「模特图 / 细节图 / AI 图」。</span>
                   <span v-else>当前款号没有这类图片。</span>
                 </div>
@@ -1961,8 +1961,8 @@ import {
   clearBalaVideoTaskHistory,
   filterBalaModelLibraryItems,
   formatBalaModelDisplayLabel,
-  hasApprovedBalaVideoAsset,
   hasGeneratingBalaReviewAssets,
+  hasSelectableBalaVideoAsset,
   isBalaVideoFilePath,
   isSeedancePrivacyProtectionError,
   isActiveWorkflowStatus,
@@ -2931,7 +2931,7 @@ const videoTaskDraftRequirements = computed(() => {
       ? { id: 'assets', label: '首帧图（恰好 1 张）', complete: assets.length === 1, message: 'HappyHorse 图生视频需要恰好选择 1 张首帧图' }
       : provider === 'happyhorse' && happyHorseMode === 'r2v'
         ? { id: 'assets', label: '参考图片（1–9 张）', complete: assets.length >= 1 && assets.length <= 9, message: 'HappyHorse 参考生视频需要选择 1–9 张图片' }
-        : { id: 'assets', label: '已审核素材（至少 1 张）', complete: assets.length > 0, message: '请选择至少 1 张已审核素材' }
+        : { id: 'assets', label: '图片素材（至少 1 张）', complete: assets.length > 0, message: '请选择至少 1 张图片素材' }
   return [
     { id: 'style', label: '款号素材库', complete: Boolean(videoTaskDraft.styleCode), message: '请先选择一个款号素材库' },
     assetRequirement,
@@ -5827,7 +5827,7 @@ function buildVideoJobsFromReview() {
   for (const style of reviewStyles) {
     const materialStyle = styleWorkspaces.find(item => item.styleCode === style.styleCode)
     const assets = buildBalaVideoAssetPool({ reviewStyle: style, materialStyle })
-    if (!hasApprovedBalaVideoAsset(assets)) continue
+    if (!hasSelectableBalaVideoAsset(assets)) continue
     jobs.push({
       styleCode: style.styleCode,
       provider: 'qn',
@@ -7077,8 +7077,8 @@ function resetVideoTaskDraftAssets() {
     syncHappyHorseModeFromAssetCount()
     return
   }
-  // 默认勾选已审核图；HappyHorse 再按数量自动切模式（不强制清空）
-  videoTaskDraft.assetIds = assets.filter(asset => asset.selectable).map(asset => asset.id)
+  // 默认勾选已审核图；待审/未审核图保留为手动选择。
+  videoTaskDraft.assetIds = assets.filter(asset => asset.selectable && asset.status === 'approved').map(asset => asset.id)
   if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.assetIds.length > 9) {
     videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 9)
   }
