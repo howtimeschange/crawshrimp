@@ -122,6 +122,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertIn("适用于所有平台", prompt)
         self.assertIn("非主推色不输出 o.jpg", prompt)
         self.assertIn("主推色云盘中已经命名为 yk1..ykN", prompt)
+        self.assertIn("休闲第5姿势不要选择两只鞋竖向上下分开", prompt)
 
     def test_prompt_spells_out_shared_pose_three_and_snow_pose_four(self):
         prompt = shenhui_shoe_packaging._shoe_selection_prompt(
@@ -803,6 +804,74 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
         self.assertEqual(ruled["tmz5"], "front-oblique-pair 拷贝.jpg")
         self.assertEqual(ruled["wpz"][4], "front-oblique-pair.jpg")
+        self.assertTrue(any("休闲第5张主图" in item for item in corrections))
+
+    def test_quality_rules_prefers_business_leisure_pose_five_with_low_coverage(self):
+        mask = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(mask).rectangle((24, 46, 104, 82), fill=1)
+        features = {
+            "00044006.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=mask.copy(),
+                aspect_ratio=0.552,
+                bounding_coverage=0.095,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "00044006 拷贝.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=mask.copy(),
+                aspect_ratio=0.552,
+                bounding_coverage=0.095,
+                background_luma=255.0,
+                valid=True,
+            ),
+            "2.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=mask.copy(),
+                aspect_ratio=1.309,
+                bounding_coverage=0.090,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "00044042 拷贝.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=mask.copy(),
+                aspect_ratio=1.286,
+                bounding_coverage=0.092,
+                background_luma=255.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz5": "00044006 拷贝.jpg",
+            "wpz": [
+                "slot1.jpg",
+                "slot2.jpg",
+                "slot3.jpg",
+                "slot4.jpg",
+                "00044006.jpg",
+                "box.jpg",
+            ],
+            "yq": [],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "休闲",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz5"], "00044042 拷贝.jpg")
+        self.assertEqual(ruled["wpz"][4], "2.jpg")
         self.assertTrue(any("休闲第5张主图" in item for item in corrections))
 
     def test_quality_rules_ignore_leisure_pose_five_without_white_pair(self):
@@ -1826,6 +1895,52 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
         self.assertGreaterEqual(min(corner), 245)
         self.assertGreater(center[0], 120)
+
+    def test_copy_as_jpeg_can_composite_transparent_png_on_gray(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "transparent.png"
+            target = root / "target.jpg"
+            image = Image.new("RGBA", (12, 12), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((4, 4, 8, 8), fill=(180, 40, 30, 255))
+            image.save(source)
+
+            shenhui_shoe_packaging._copy_as_jpeg(
+                source,
+                target,
+                background_rgb=shenhui_shoe_packaging.SHOE_GRAY_BACKGROUND_RGB,
+            )
+
+            with Image.open(target) as result:
+                corner = result.getpixel((0, 0))
+                center = result.getpixel((6, 6))
+
+        self.assertLessEqual(max(abs(value - 242) for value in corner), 8)
+        self.assertGreater(center[0], 120)
+
+    def test_copy_as_jpeg_can_repaint_opaque_white_background_on_gray(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "white-background.png"
+            target = root / "target.jpg"
+            image = Image.new("RGB", (20, 20), (255, 255, 255))
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((6, 6, 13, 13), fill=(180, 120, 90))
+            image.save(source)
+
+            shenhui_shoe_packaging._copy_as_jpeg(
+                source,
+                target,
+                background_rgb=shenhui_shoe_packaging.SHOE_GRAY_BACKGROUND_RGB,
+            )
+
+            with Image.open(target) as result:
+                corner = result.getpixel((0, 0))
+                center = result.getpixel((10, 10))
+
+        self.assertLessEqual(max(abs(value - 242) for value in corner), 8)
+        self.assertLess(center[1], 170)
 
     def test_create_tmq_asset_uses_style_code_bbox_for_red_box(self):
         with tempfile.TemporaryDirectory() as tmpdir:

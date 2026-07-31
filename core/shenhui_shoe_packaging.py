@@ -395,6 +395,7 @@ SHOE_YX_MAX_FOREGROUND_COVERAGE = 0.65
 SHOE_POSE3_SIDE_ASYMMETRY_MARGIN = 0.006
 SHOE_POSE1_MIN_SCORE_IMPROVEMENT = 0.08
 SHOE_BACKGROUND_PAIR_MAX_DISTANCE = 0.06
+SHOE_GRAY_BACKGROUND_RGB = (242, 242, 242)
 
 SHOE_POSE5_FEATURE_RULES = {
     "运动": {
@@ -722,14 +723,87 @@ class _BinaryPoseFeature:
 def _image_rgb_on_white(image: Any) -> Any:
     """Convert PIL images to RGB, compositing transparent pixels onto white."""
 
+    return _image_rgb_on_background(image, (255, 255, 255))
+
+
+def _image_rgb_on_background(
+    image: Any,
+    background_rgb: tuple[int, int, int],
+    *,
+    replace_opaque_background: bool = False,
+) -> Any:
+    """Convert PIL images to RGB, compositing transparent pixels onto a solid color."""
+
     from PIL import Image
 
     if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
         rgba = image.convert("RGBA")
-        background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        background = Image.new("RGBA", rgba.size, (*background_rgb, 255))
         background.alpha_composite(rgba)
         return background.convert("RGB")
-    return image.convert("RGB")
+    rgb = image.convert("RGB")
+    if replace_opaque_background:
+        return _replace_border_background(rgb, background_rgb)
+    return rgb
+
+
+def _replace_border_background(
+    image: Any,
+    background_rgb: tuple[int, int, int],
+    *,
+    tolerance: int = 18,
+) -> Any:
+    """Repaint only the edge-connected studio background on opaque images."""
+
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return image
+    pixels = image.load()
+    border = []
+    for x in range(width):
+        border.extend((pixels[x, 0], pixels[x, height - 1]))
+    for y in range(height):
+        border.extend((pixels[0, y], pixels[width - 1, y]))
+    source_background = tuple(
+        sorted(pixel[channel] for pixel in border)[len(border) // 2]
+        for channel in range(3)
+    )
+
+    def is_background(pixel: tuple[int, int, int]) -> bool:
+        return max(
+            abs(pixel[channel] - source_background[channel])
+            for channel in range(3)
+        ) <= tolerance
+
+    output = image.copy()
+    output_pixels = output.load()
+    visited = bytearray(width * height)
+    stack: list[tuple[int, int]] = []
+    for x in range(width):
+        stack.append((x, 0))
+        stack.append((x, height - 1))
+    for y in range(height):
+        stack.append((0, y))
+        stack.append((width - 1, y))
+
+    while stack:
+        x, y = stack.pop()
+        offset = y * width + x
+        if visited[offset]:
+            continue
+        visited[offset] = 1
+        if not is_background(pixels[x, y]):
+            continue
+        output_pixels[x, y] = background_rgb
+        if x > 0:
+            stack.append((x - 1, y))
+        if x + 1 < width:
+            stack.append((x + 1, y))
+        if y > 0:
+            stack.append((x, y - 1))
+        if y + 1 < height:
+            stack.append((x, y + 1))
+    return output
 
 
 def _binary_pose_feature(path: Path | str) -> _BinaryPoseFeature:
@@ -1772,8 +1846,8 @@ def _apply_selection_quality_rules(
             if (
                 pose
                 and pose.valid
-                and 1.20 <= pose.aspect_ratio <= 1.65
-                and 0.22 <= pose.bounding_coverage <= 0.42
+                and 1.15 <= pose.aspect_ratio <= 1.75
+                and 0.05 <= pose.bounding_coverage <= 0.42
                 and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
             )
         ]
@@ -1781,8 +1855,8 @@ def _apply_selection_quality_rules(
             preferred_leisure_gray_tmz5, _preferred_feature = min(
                 leisure_tmz5_candidates,
                 key=lambda item: (
-                    abs(item[1].aspect_ratio - 1.44)
-                    + abs(item[1].bounding_coverage - 0.34) * 2.0,
+                    abs(item[1].aspect_ratio - 1.30)
+                    + abs(item[1].bounding_coverage - 0.09) * 2.0,
                     item[0].lower(),
                 ),
             )
@@ -2123,20 +2197,23 @@ def _shoe_selection_prompt(
             "雪地": "两只鞋并排、鞋头以约45度斜前方朝向镜头",
             "运动": "两只鞋前后错位、斜前方展示，能看清鞋面和外侧",
             "婴童": "两只鞋左右对称并排，两个鞋头都正面朝向镜头",
-            "休闲": "两只鞋分开呈对角线摆放，从上方看清两只鞋面",
+            "休闲": "两只鞋斜前方并排或轻微错位展示，能看清两只鞋面和鞋头",
         }[forced_category]
+        pose5_extra = ""
+        if forced_category == "婴童":
+            pose5_extra = (
+                "婴童第5姿势不允许选择两只鞋斜向45度、前后错位、"
+                "一只侧身或从侧前方展示的图片。\n"
+            )
+        elif forced_category == "休闲":
+            pose5_extra = "休闲第5姿势不要选择两只鞋竖向上下分开的俯视对角线图。\n"
         forced_rule = (
             f"\n本款品类已由 Excel 确定为“{forced_category}”，"
             f"只能按模板{category_column}选择姿势；不得自行改判品类，"
             f'shoe_category 必须返回“{forced_category}”。'
             f"该品类第5姿势必须是：{pose5_rule}。"
             "灰底 wpz5 与白底 tmz5 必须分别选择这个相同摆放姿势。"
-            + (
-                "婴童第5姿势不允许选择两只鞋斜向45度、前后错位、"
-                "一只侧身或从侧前方展示的图片。\n"
-                if forced_category == "婴童"
-                else "\n"
-            )
+            + (pose5_extra or "\n")
         )
     return f"""款号：{style_code}
 色码：{color_code}
@@ -2579,14 +2656,23 @@ def _validate_selection_sources(
         )
 
 
-def _copy_as_jpeg(source: Path, target: Path) -> None:
+def _copy_as_jpeg(
+    source: Path,
+    target: Path,
+    *,
+    background_rgb: tuple[int, int, int] | None = None,
+) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target_suffix = target.suffix.lower()
     source_suffix = source.suffix.lower()
-    if target_suffix == ".png" and source_suffix == ".png":
+    if background_rgb is None and target_suffix == ".png" and source_suffix == ".png":
         shutil.copy2(source, target)
         return
-    if target_suffix in {".jpg", ".jpeg"} and source_suffix in {".jpg", ".jpeg"}:
+    if (
+        background_rgb is None
+        and target_suffix in {".jpg", ".jpeg"}
+        and source_suffix in {".jpg", ".jpeg"}
+    ):
         shutil.copy2(source, target)
         return
     from PIL import Image, ImageOps
@@ -2596,7 +2682,17 @@ def _copy_as_jpeg(source: Path, target: Path) -> None:
         if target_suffix == ".png":
             image.save(target, format="PNG")
         else:
-            _image_rgb_on_white(image).save(target, format="JPEG", quality=95, optimize=True)
+            background = background_rgb or (255, 255, 255)
+            _image_rgb_on_background(
+                image,
+                background,
+                replace_opaque_background=background_rgb is not None,
+            ).save(
+                target,
+                format="JPEG",
+                quality=95,
+                optimize=True,
+            )
 
 
 def prepare_shoe_packages(
@@ -2943,7 +3039,20 @@ def prepare_shoe_packages(
             source_name = assignment["source"]
             entry = entries_by_color_name[color_name][source_name]
             target = package_root / assignment["output_path"]
-            _copy_as_jpeg(Path(entry["path"]), target)
+            selected_category = _text(
+                selections_by_color[color_name].get("shoe_category")
+            )
+            background_rgb = (
+                SHOE_GRAY_BACKGROUND_RGB
+                if selected_category == "雪地"
+                and assignment["slot"] in {"tmz4", "wpz4"}
+                else None
+            )
+            _copy_as_jpeg(
+                Path(entry["path"]),
+                target,
+                background_rgb=background_rgb,
+            )
             source_row = entry["row"]
             report_rows.append({
                 "输入款号": style_code,
