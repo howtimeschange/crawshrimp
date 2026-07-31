@@ -1346,7 +1346,7 @@ tasks:
 
   - id: wash_label_create_and_download
     name: 后台-洗水唛制作并下载官方 PDF
-    description: 基于洗唛需求 Excel 按 SKC 选择代表 SKU，通过 TEMU 页面 API 生成洗水唛制作参数；默认 dry-run 不保存，显式授权后调用 TEMU 保存接口，回读“已制作”后只导出官方 PDF。
+    description: 可直接按企业码，或基于洗唛需求 Excel 选择代表 SKU；TEMU 先查企业码，再通过已登录 SCM 按款号读取洗唛批复判定成分并生成制作参数；默认 dry-run 不保存，显式授权后调用 TEMU 保存接口，回读“已制作”后只导出官方 PDF。
     script: wash-label-create-and-download.js
     entry_url: https://agentseller.temu.com/goods/label
     tab_match_prefixes:
@@ -1379,9 +1379,15 @@ tasks:
         hint: 脚本只会切换到当前账号可见且名称完全匹配的店铺，并在查询/制作前回读校验。
       - id: input_file
         type: file_excel
-        label: 洗唛需求 Excel
-        required: true
-        hint: 读取「洗唛需求」表，按必填字段去重、补全同款唯一成分，并以每个 SKC 的代表 SKU货号作为 TEMU 在线制作单位。
+        label: 洗唛需求 Excel（可选）
+        required: false
+        hint: 未填写企业码时读取「洗唛需求」表，按必填字段去重、补全同款唯一成分，并以每个 SKC 的代表 SKU货号作为 TEMU 在线制作单位。
+      - id: enterprise_codes
+        type: textarea
+        label: 企业码
+        default: ""
+        required: false
+        hint: 每行一个企业码；脚本会在 TEMU 后台用企业码查询，并按 TEMU 回读款号去 SCM 搜索。可粘贴已下载文件名，脚本会自动取最后一段企业码。
       - id: pilot_style
         type: text
         label: 试点款号
@@ -1420,6 +1426,44 @@ tasks:
         label: 已制作项不重复保存
         default: true
         hint: 已制作项只按参数决定是否下载官方 PDF，不会自动编辑或重新保存。
+      - id: scm_lookup
+        type: checkbox
+        label: 自动查询 SCM 洗唛批复判定
+        default: true
+        hint: 使用 9222 浏览器中已登录的 scm.semir.com 标签页；脚本只操作页面控件和组件数据，不复制 SCM 请求头、Cookie 或 token。
+      - id: scm_brand
+        type: select
+        label: SCM 品牌过滤
+        default: auto
+        options:
+          - value: auto
+            label: 按 TEMU 店铺自动匹配
+          - value: "10"
+            label: 森马
+          - value: "20"
+            label: 巴拉巴拉
+          - value: "23"
+            label: mini bala
+          - value: "28"
+            label: 森马儿童
+          - value: any
+            label: 不限制品牌
+        hint: 自动模式会把 SEMIR 映射为森马，balabala/Balabala Shoes 映射为巴拉巴拉，minibala 映射为 mini bala。
+      - id: scm_only_completed
+        type: checkbox
+        label: 只接受 SCM 已完成记录
+        default: true
+        hint: 开启后只有 SCM 洗唛批复判定状态为“已完成”的 SKC 行可用于成分回填。
+      - id: scm_composition_mode
+        type: select
+        label: SCM 成分写入方式
+        default: safe_simple
+        options:
+          - value: safe_simple
+            label: 简单百分比成分自动写入
+          - value: evidence_only
+            label: 只记录 SCM 证据
+        hint: 仅单部位、总和约 100% 的成分会写入 TEMU materialInfoList；复杂多部位成分只记录证据并等待人工确认。
       - id: care_symbols_mode
         type: radio
         label: 洗护符号来源
@@ -1427,16 +1471,18 @@ tasks:
         options:
           - value: pilot_defaults
             label: 试点已确认符号
+          - value: scm_confirmed_json
+            label: SCM 确认 JSON
           - value: manual_json
             label: 人工 JSON
-        hint: 试点符号为手洗、不可漂白、平摊晾干、110℃无蒸汽熨烫、不可干洗；其他款号请人工确认 SCM 附件后使用 JSON。
+        hint: 试点符号为手洗、不可漂白、平摊晾干、110℃无蒸汽熨烫、不可干洗；其他款号必须人工读取 SCM 附件洗涤说明后使用 SCM 确认 JSON 或人工 JSON。
       - id: care_symbols_json
         type: textarea
         label: 人工洗护符号 JSON
         default: '{"washing":13,"bleaching":3,"drying":8,"ironing":3,"dryCleaning":5}'
         visible_when:
           field: care_symbols_mode
-          equals: manual_json
+          not_equals: pilot_defaults
         hint: 传 TEMU 前端枚举值；字段必须包含 washing、bleaching、drying、ironing、dryCleaning。
       - id: manufacturer_name
         type: text
@@ -1470,7 +1516,7 @@ tasks:
         min: 50
         max: 500
         step: 5
-        hint: 试点交接已验证 35 x 235 mm；其他款需先 dry-run 并确认 TEMU 安全打印区域。
+        hint: 试点交接已验证 35 x 235 mm 可完整显示 QR；脚本以该值作为最小长度，不会把 TEMU 回读的更短长度用于保存。
       - id: label_padding_mm
         type: number
         label: 上下预留 mm

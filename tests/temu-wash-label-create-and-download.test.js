@@ -171,6 +171,64 @@ const EXCEL_TARGET = {
   outputFilename: '20922511720860904110-9950019805299.pdf',
 }
 
+const ENTERPRISE_TARGET = {
+  inputMode: 'enterprise_code',
+  style: '',
+  color: '',
+  skc: '',
+  representativeSize: '',
+  skuCode: '',
+  skuNo: '9950019805206',
+  enterpriseCode: '9950019805206',
+  composition: '',
+  compositionSource: 'scm_or_manual',
+  productLine: '',
+  sizeCount: 1,
+  status: 'ready',
+  outputFilename: '',
+}
+
+const SCM_ROWS = [
+  {
+    ORDER_NO: 'XM241115000025',
+    BRAND: '20',
+    BRAND_DISPLAY: '巴拉巴拉',
+    P_MAT_CODE: '209225117208',
+    P_MAT_NAME: '测试童装',
+    SKC_CODE: '20922511720810101',
+    F1: '10101',
+    F1_DISPLAY: '本白10101',
+    C_COMPONENT: '面料：95%棉 5%氨纶 （配料除外）',
+    E_COMPONENT: 'Fabric:95% COTTON 5% ELASTANE(Except accessories)',
+    H_STATUS: 100,
+    SKC_RESULT: 0,
+    SKC_REMARK: '',
+    SKC_FILE_URL1: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/label.pdf',
+    SKC_FILE_URL2: '',
+    LAST_MODIFIED_TIME: '2026-07-31 09:00:00',
+    TREE_LEVEL: '2',
+  },
+  {
+    ORDER_NO: 'XM241115000025',
+    BRAND: '20',
+    BRAND_DISPLAY: '巴拉巴拉',
+    P_MAT_CODE: '209225117208',
+    P_MAT_NAME: '测试童装',
+    SKC_CODE: '20922511720860904',
+    F1: '60904',
+    F1_DISPLAY: '酒红60904',
+    C_COMPONENT: '面料：95%棉 5%氨纶 （配料除外）',
+    E_COMPONENT: 'Fabric:95% COTTON 5% ELASTANE(Except accessories)',
+    H_STATUS: 100,
+    SKC_RESULT: 0,
+    SKC_REMARK: '',
+    SKC_FILE_URL1: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/label2.pdf',
+    SKC_FILE_URL2: '',
+    LAST_MODIFIED_TIME: '2026-07-31 09:00:00',
+    TREE_LEVEL: '2',
+  },
+]
+
 function careQueryResponse(overrides = {}) {
   return {
     res: {
@@ -221,7 +279,26 @@ test('Excel preparation selects SKC representative and carries composition conte
   assert.equal(result.meta.shared.excelTargets[0].outputFilename, '20922511720860904110-9950019805299.pdf')
 })
 
-test('pending TEMU wash label enters care query instead of being skipped', async () => {
+test('enterprise-code preparation does not require Excel and deduplicates codes', async () => {
+  const result = await runAdapter({
+    phase: 'excel_prepare',
+    params: {
+      enterprise_codes: '9950019805206\n20922511720810101110-9950019805206.pdf\n9950019805299',
+      max_skc: 0,
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_lookup_excel_target')
+  assert.equal(result.meta.shared.workflowMode, 'enterprise_code_create_and_download')
+  assert.equal(result.meta.shared.total_rows, 2)
+  assert.equal(result.meta.shared.workflowSummary.exactDuplicateCodesRemoved, 1)
+  assert.deepEqual(
+    Array.from(result.meta.shared.excelTargets.map(item => item.enterpriseCode)),
+    ['9950019805206', '9950019805299'],
+  )
+})
+
+test('pending TEMU wash label requests SCM lookup before care query', async () => {
   const result = await runAdapter({
     phase: 'api_lookup_excel_target',
     shared: {
@@ -240,10 +317,82 @@ test('pending TEMU wash label enters care query instead of being skipped', async
     },
   })
 
-  assert.equal(result.meta.next_phase, 'api_care_query')
+  assert.equal(result.meta.next_phase, 'scm_lookup_target')
   assert.equal(result.meta.shared.apiTarget.productSkuId, PENDING_TARGET.productSkuId)
   assert.equal(result.meta.shared.apiTarget.excelSkuCode, '20922511720860904110')
   assert.equal(result.meta.shared.temuRowStatus, 'TEMU待制作')
+})
+
+test('enterprise code lookup queries TEMU by enterprise code and then requests SCM lookup', async () => {
+  const result = await runAdapter({
+    phase: 'api_lookup_excel_target',
+    shared: {
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      currentExcelTargetIndex: 0,
+    },
+    postImpl: async ({ requestPath, payload }) => {
+      assert.equal(requestPath, '/visage-agent-seller/labelcode/pageQuery')
+      assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+        page: 1,
+        pageSize: 50,
+        skuExtCodes: ['9950019805206'],
+      })
+      return { res: { total: 1, pageItems: [makePageItem({ ...PENDING_TARGET, skuExtCode: '9950019805206' })] } }
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'scm_lookup_target')
+  assert.equal(result.meta.shared.apiTarget.enterpriseCode, '9950019805206')
+  assert.equal(result.meta.shared.apiTarget.excelStyle, '209225117208')
+  assert.equal(result.meta.shared.apiTarget.outputFilename, '209225117208-9950019805206.pdf')
+})
+
+test('SCM lookup phase evaluates the logged-in SCM tab without copying credentials', async () => {
+  const result = await runAdapter({
+    phase: 'scm_lookup_target',
+    shared: {
+      apiTarget: { ...PENDING_TARGET, ...ENTERPRISE_TARGET, excelStyle: '209225117208' },
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_target_eval')
+  assert.equal(result.meta.next_phase, 'verify_scm_lookup')
+  assert.equal(result.meta.shared_key, 'scmLookupResult')
+  assert.deepEqual(Array.from(result.meta.target_url_contains), ['scm.semir.com'])
+  assert.match(result.meta.expression, /scm-qc-wash-appr-index/)
+  assert.match(result.meta.expression, /input_0_P_MAT_CODE/)
+  assert.match(result.meta.expression, /innerText \|\| value\.textContent/)
+  assert.doesNotMatch(result.meta.expression, /cookie|localStorage|sf-token|Anti-Content/i)
+})
+
+test('SCM lookup result attaches completed composition evidence before care query', async () => {
+  const apiTarget = { ...PENDING_TARGET, ...ENTERPRISE_TARGET, excelStyle: '209225117208' }
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: true,
+          source: 'scm_qc_wash_appr_page_component',
+          rows: SCM_ROWS,
+          recordsTotal: 2,
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_care_query')
+  assert.equal(result.meta.shared.apiTarget.excelComposition, '面料：95%棉 5%氨纶 （配料除外）')
+  assert.equal(result.meta.shared.apiTarget.excelCompositionSource, 'scm_qc_wash_appr_page')
+  assert.equal(result.meta.shared.apiTarget.scmOrderNo, 'XM241115000025')
+  assert.equal(result.meta.shared.apiTarget.scmColorCode, '10101')
 })
 
 test('care query for pending label falls back to configured TEMU label dimensions', async () => {
@@ -261,6 +410,26 @@ test('care query for pending label falls back to configured TEMU label dimension
   assert.equal(result.meta.shared.careLabel.width, 35)
   assert.equal(result.meta.shared.careLabel.len, 235)
   assert.equal(result.meta.shared.careInitial.manufacturerNameOptions[0], 'Zhejiang Semir Garment Co.,Ltd.')
+})
+
+test('care query infers SKU code from SCM SKC plus TEMU size for enterprise filename', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: '209225117208',
+    excelSkc: '20922511720810101',
+    excelSkuNo: '9950019805206',
+    enterpriseCode: '9950019805206',
+    outputFilename: '209225117208-9950019805206.pdf',
+  }
+  const result = await runAdapter({
+    phase: 'api_care_query',
+    shared: { apiTarget, excelTargets: [ENTERPRISE_TARGET], excelTarget: ENTERPRISE_TARGET },
+    postImpl: async () => careQueryResponse({ size: '110' }),
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_care_payload')
+  assert.equal(result.meta.shared.apiTarget.excelSkuCode, '20922511720810101110')
+  assert.equal(result.meta.shared.apiTarget.outputFilename, '20922511720810101110-9950019805206.pdf')
 })
 
 test('dry-run prepares pilot payload with confirmed TEMU symbol enums and never saves', async () => {
@@ -287,6 +456,68 @@ test('dry-run prepares pilot payload with confirmed TEMU symbol enums and never 
     dryCleaning: 5,
   })
   assert.equal(result.meta.shared.carePayload.manufacturerAddressPg, 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China')
+})
+
+test('dry-run reports the minimum label length used to keep the QR code visible', async () => {
+  const apiTarget = { ...PENDING_TARGET, excelStyle: EXCEL_TARGET.style, outputFilename: EXCEL_TARGET.outputFilename }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    params: { label_length_mm: 235 },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse({ len: 180, width: 35, padding: 10 }).res,
+      careLabel: { width: 35, len: 180, padding: 10, size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.shared.carePayload.len, 235)
+  assert.equal(result.meta.shared.carePayloadSummary.lengthStrategy, 'minimum_for_full_qr')
+  assert.equal(result.data[0].洗水唛长度mm, 235)
+  assert.equal(result.data[0].洗水唛尺码, '110')
+})
+
+test('dry-run applies simple SCM composition to TEMU material payload', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: '209225117208',
+    excelSkuCode: '20922511720810101110',
+    excelSkuNo: '9950019805206',
+    enterpriseCode: '9950019805206',
+    excelComposition: '面料：95%棉 5%氨纶 （配料除外）',
+    excelEnglishComposition: 'Fabric:95% COTTON 5% ELASTANE(Except accessories)',
+    excelCompositionSource: 'scm_qc_wash_appr_page',
+    outputFilename: '20922511720810101110-9950019805206.pdf',
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    params: {
+      care_symbols_mode: 'scm_confirmed_json',
+      care_symbols_json: '{"washing":13,"bleaching":3,"drying":8,"ironing":3,"dryCleaning":5}',
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      careInitial: careQueryResponse({
+        materialInfoList: [{ name: '旧成分', proportion: '100' }],
+        materialI18nInfoList: [{ lan: 'en', propValue: 'OLD', proportion: '100' }],
+      }).res,
+      careLabel: { width: 35, len: 235, padding: 10, size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'advance_excel_target')
+  assert.equal(result.meta.shared.carePayloadSummary.compositionMode, 'scm_safe_simple_applied')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayload.materialInfoList)), [
+    { name: '棉', proportion: '95' },
+    { name: '氨纶', proportion: '5' },
+  ])
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayload.materialI18nInfoList)), [
+    { lan: 'en', propValue: 'COTTON', proportion: '95' },
+    { lan: 'en', propValue: 'ELASTANE', proportion: '5' },
+  ])
 })
 
 test('create mode is still blocked unless allow_save is explicitly true', async () => {
