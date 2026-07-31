@@ -1346,7 +1346,7 @@ tasks:
 
   - id: wash_label_create_and_download
     name: 后台-洗水唛制作并下载官方 PDF
-    description: 可直接按企业码，或基于洗唛需求 Excel 选择代表 SKU；TEMU 先查企业码，再通过已登录 SCM 按款号读取洗唛批复判定成分并生成制作参数；默认 dry-run 不保存，显式授权后调用 TEMU 保存接口，回读“已制作”后只导出官方 PDF。
+    description: 可直接按企业码，或基于洗唛需求 Excel 选择代表 SKU；TEMU 先查企业码，再通过已登录 SCM 按款号读取洗护说明并映射 TEMU 五项洗护符号，SCM 登录或查询异常时使用固定洗护符号；成分只记录证据不回填 TEMU。默认 dry-run 不保存，显式授权后调用 TEMU 保存接口，回读“已制作”后只导出官方 PDF。
     script: wash-label-create-and-download.js
     entry_url: https://agentseller.temu.com/goods/label
     tab_match_prefixes:
@@ -1381,7 +1381,7 @@ tasks:
         type: file_excel
         label: 洗唛需求 Excel（可选）
         required: false
-        hint: 未填写企业码时读取「洗唛需求」表，按必填字段去重、补全同款唯一成分，并以每个 SKC 的代表 SKU货号作为 TEMU 在线制作单位。
+        hint: 未填写企业码时读取「洗唛需求」表，按必填字段去重，并以每个 SKC 的代表 SKU货号作为 TEMU 在线制作单位；表格成分和 SCM 成分仅用于结果证据，不写回 TEMU。
       - id: enterprise_codes
         type: textarea
         label: 企业码
@@ -1392,7 +1392,7 @@ tasks:
         type: text
         label: 试点款号
         default: "209225117208"
-        hint: 留空表示处理表格内全部款号；使用“试点已确认符号”时只允许款号 209225117208 自动进入保存。
+        hint: 留空表示处理表格内全部款号；真实保存前建议先保留一个款号做 dry-run 或小批量验证。
       - id: max_skc
         type: number
         label: 最多处理 SKC
@@ -1453,37 +1453,37 @@ tasks:
         type: checkbox
         label: 只接受 SCM 已完成记录
         default: true
-        hint: 开启后只有 SCM 洗唛批复判定状态为“已完成”的 SKC 行可用于成分回填。
+        hint: 开启后优先读取 SCM 洗唛批复判定状态为“已完成”的 SKC 行；未能读取或无法映射洗护说明时会使用固定洗护符号继续处理。
       - id: scm_composition_mode
         type: select
-        label: SCM 成分写入方式
-        default: safe_simple
+        label: SCM 成分处理方式
+        default: evidence_only
         options:
-          - value: safe_simple
-            label: 简单百分比成分自动写入
           - value: evidence_only
-            label: 只记录 SCM 证据
-        hint: 仅单部位、总和约 100% 的成分会写入 TEMU materialInfoList；复杂多部位成分只记录证据并等待人工确认。
+            label: 只记录 SCM 证据，不回填 TEMU
+        hint: 按最新业务反馈，成分不需要回填 TEMU 系统；脚本只保留 SCM 成分、备注和附件作为诊断证据。
       - id: care_symbols_mode
         type: radio
         label: 洗护符号来源
-        default: pilot_defaults
+        default: scm_or_fixed
         options:
-          - value: pilot_defaults
-            label: 试点已确认符号
+          - value: scm_or_fixed
+            label: SCM 映射，异常用固定符号
+          - value: fixed_defaults
+            label: 固定洗护符号
           - value: scm_confirmed_json
             label: SCM 确认 JSON
           - value: manual_json
             label: 人工 JSON
-        hint: 试点符号为手洗、不可漂白、平摊晾干、110℃无蒸汽熨烫、不可干洗；其他款号必须人工读取 SCM 附件洗涤说明后使用 SCM 确认 JSON 或人工 JSON。
+        hint: 固定符号按 2026-07-31 反馈：30℃水洗、不可漂白、阴干、110℃无蒸汽熨烫、不可干洗。SCM 正常读取到洗护说明时会映射 TEMU 五项枚举。
       - id: care_symbols_json
         type: textarea
         label: 人工洗护符号 JSON
-        default: '{"washing":13,"bleaching":3,"drying":8,"ironing":3,"dryCleaning":5}'
+        default: '{"washing":10,"bleaching":3,"drying":5,"ironing":3,"dryCleaning":5}'
         visible_when:
           field: care_symbols_mode
-          not_equals: pilot_defaults
-        hint: 传 TEMU 前端枚举值；字段必须包含 washing、bleaching、drying、ironing、dryCleaning。
+          not_equals: scm_or_fixed
+        hint: 仅在选择 SCM 确认 JSON 或人工 JSON 时填写；固定洗护符号模式会忽略该字段。字段必须包含 washing、bleaching、drying、ironing、dryCleaning。
       - id: manufacturer_name
         type: text
         label: 制造商名称

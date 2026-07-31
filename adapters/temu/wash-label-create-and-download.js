@@ -18,12 +18,12 @@
   const scmUrlContains = textOf(params.scm_url_contains || 'scm.semir.com')
   const scmOnlyCompleted = params.scm_only_completed !== false && String(params.scm_only_completed || '').toLowerCase() !== 'false'
   const scmBrandMode = compact(params.scm_brand || 'auto')
-  const scmCompositionMode = compact(params.scm_composition_mode || 'safe_simple')
+  const scmCompositionMode = compact(params.scm_composition_mode || 'evidence_only')
   const manufacturerNameParam = textOf(params.manufacturer_name || 'Zhejiang Semir Garment Co.,Ltd.')
   const manufacturerAddressParam = textOf(params.manufacturer_address || 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China')
   const productionDateParam = textOf(params.production_date || '2026-06-01')
   const batchNumberParam = textOf(params.batch_number || 'PC260601')
-  const careSymbolsMode = compact(params.care_symbols_mode || 'pilot_defaults')
+  const careSymbolsMode = compact(params.care_symbols_mode || 'scm_or_fixed')
   const labelWidthMm = Math.max(10, Math.min(100, Number(params.label_width_mm || 35)))
   const labelLengthMm = Math.max(50, Math.min(500, Number(params.label_length_mm || 235)))
   const labelPaddingMm = Math.max(0, Math.min(100, Number(params.label_padding_mm || 10)))
@@ -36,12 +36,19 @@
   const MISSING_COMPOSITION = new Set(['', 'N/A', 'NA'])
   const SAVE_MODE = 'create_and_download'
   const PILOT_STYLE = '209225117208'
-  const PILOT_CARE_SYMBOLS = {
-    washing: 13,
+  const FIXED_CARE_SYMBOLS = {
+    washing: 10,
     bleaching: 3,
-    drying: 8,
+    drying: 5,
     ironing: 3,
     dryCleaning: 5,
+  }
+  const FIXED_CARE_SYMBOL_LABELS = {
+    washing: 'Maximum washing temperature 30℃',
+    bleaching: 'Do not bleach',
+    drying: 'Line drying in the shade',
+    ironing: 'Iron at maximum sole-plate temperature of 110℃ without steam',
+    dryCleaning: 'Do not dry clean',
   }
   const DEFAULT_ING_LANGS = ['en', 'de', 'fr', 'it', 'es', 'da', 'cs', 'sv']
   const SCM_BRAND_BY_STORE = {
@@ -443,12 +450,119 @@
     return symbols
   }
 
+  function fixedCareSymbols(reason = '') {
+    return {
+      ...FIXED_CARE_SYMBOLS,
+      __source: reason || 'fixed_defaults',
+      __labels: { ...FIXED_CARE_SYMBOL_LABELS },
+    }
+  }
+
+  function normalizedCareInstructionText(value) {
+    return textOf(value)
+      .replace(/°\s*C/ig, '℃')
+      .replace(/\bC\b/g, '℃')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  function firstRuleMatch(text, rules) {
+    for (const rule of rules) {
+      if (rule.patterns.some(pattern => pattern.test(text))) return rule
+    }
+    return null
+  }
+
+  function mapCareSymbolsFromScmText(target) {
+    const text = normalizedCareInstructionText(target?.scmCareInstructionText || params.scm_care_instruction_text || '')
+    if (!text) return { error: 'missing_scm_care_instruction_text' }
+    const rules = {
+      washing: [
+        { value: 14, label: 'Do not wash', patterns: [/do not wash/i, /不可水洗/] },
+        { value: 13, label: 'Wash by hand', patterns: [/wash by hand(?!\s*ambient)/i, /手洗/] },
+        { value: 10, label: FIXED_CARE_SYMBOL_LABELS.washing, patterns: [/maximum washing temperature\s*30℃(?!\s*(mild|very mild))/i, /30℃\s*(水洗|洗涤|机洗)/i] },
+        { value: 11, label: 'Maximum washing temperature 30℃ mild process', patterns: [/maximum washing temperature\s*30℃\s*mild process/i] },
+        { value: 12, label: 'Maximum washing temperature 30℃ very mild process', patterns: [/maximum washing temperature\s*30℃\s*very mild process/i] },
+        { value: 7, label: 'Maximum washing temperature 40℃', patterns: [/maximum washing temperature\s*40℃(?!\s*(mild|very mild))/i] },
+      ],
+      bleaching: [
+        { value: 3, label: FIXED_CARE_SYMBOL_LABELS.bleaching, patterns: [/do not bleach/i, /不可漂白/] },
+        { value: 2, label: 'Only oxygen/non-chlorine bleach allowed', patterns: [/oxygen\/non-chlorine bleach/i, /非氯漂/] },
+        { value: 1, label: 'Any bleaching agent allowed', patterns: [/any bleaching agent allowed/i] },
+      ],
+      drying: [
+        { value: 11, label: 'Drip Flat drying in the shade', patterns: [/drip flat drying in the shade/i] },
+        { value: 10, label: 'Drip Flat drying', patterns: [/drip flat drying/i] },
+        { value: 9, label: 'Flat drying in the shade', patterns: [/flat drying in the shade/i, /阴凉处平摊晾干/] },
+        { value: 8, label: 'Flat drying', patterns: [/flat drying/i, /平摊晾干/] },
+        { value: 7, label: 'Drip line drying in the shade', patterns: [/drip line drying in the shade/i] },
+        { value: 6, label: 'Drip line drying', patterns: [/drip line drying/i] },
+        { value: 5, label: FIXED_CARE_SYMBOL_LABELS.drying, patterns: [/line drying in the shade/i, /阴凉处悬挂晾干|阴凉处晾干|阴干/] },
+        { value: 4, label: 'Line drying', patterns: [/line drying/i, /悬挂晾干/] },
+        { value: 3, label: 'Do not tumble dry', patterns: [/do not tumble dry/i, /不可翻转干燥/] },
+      ],
+      ironing: [
+        { value: 4, label: 'Do not iron', patterns: [/do not iron/i, /不可熨烫/] },
+        { value: 3, label: FIXED_CARE_SYMBOL_LABELS.ironing, patterns: [/110℃\s*without steam/i, /maximum sole-plate temperature of 110℃/i, /110℃.*无蒸汽/] },
+        { value: 5, label: 'Iron at maximum sole-plate temperature of 120℃ without steam', patterns: [/120℃\s*without steam/i] },
+        { value: 2, label: 'Iron at maximum sole-plate temperature of 150℃', patterns: [/maximum sole-plate temperature of 150℃/i] },
+        { value: 1, label: 'Iron at maximum sole-plate temperature of 200℃', patterns: [/maximum sole-plate temperature of 200℃/i] },
+      ],
+      dryCleaning: [
+        { value: 5, label: FIXED_CARE_SYMBOL_LABELS.dryCleaning, patterns: [/do not dry clean/i, /不可干洗/] },
+        { value: 6, label: 'Professional wet cleaning', patterns: [/professional wet cleaning(?!\s*(mild|very mild))/i] },
+      ],
+    }
+    const symbols = {}
+    const labels = {}
+    const missing = []
+    for (const field of ['washing', 'bleaching', 'drying', 'ironing', 'dryCleaning']) {
+      const matched = firstRuleMatch(text, rules[field])
+      if (!matched) {
+        missing.push(field)
+        continue
+      }
+      symbols[field] = matched.value
+      labels[field] = matched.label
+    }
+    if (missing.length) {
+      return {
+        error: `scm_care_instruction_unmapped:${missing.join(',')}`,
+        missing,
+        sourceText: text.slice(0, 500),
+      }
+    }
+    return {
+      ...symbols,
+      __source: 'scm_instruction_mapping',
+      __labels: labels,
+      __sourceText: text.slice(0, 500),
+    }
+  }
+
   function parseCareSymbols(target) {
-    if (careSymbolsMode === 'pilot_defaults') return { ...PILOT_CARE_SYMBOLS }
+    if (careSymbolsMode === 'scm_or_fixed' || careSymbolsMode === 'auto') {
+      const mapped = mapCareSymbolsFromScmText(target)
+      if (!mapped.error) return mapped
+      return fixedCareSymbols(mapped.error)
+    }
+    if (careSymbolsMode === 'fixed_defaults' || careSymbolsMode === 'pilot_defaults') return fixedCareSymbols(careSymbolsMode)
     if (careSymbolsMode !== 'manual_json' && careSymbolsMode !== 'scm_confirmed_json') {
       return { error: `未知洗护符号模式：${careSymbolsMode || '空'}` }
     }
-    return parseCareSymbolsJson(careSymbolsMode === 'scm_confirmed_json' ? 'SCM 已确认洗护符号 JSON' : '洗护符号 JSON')
+    const parsed = parseCareSymbolsJson(careSymbolsMode === 'scm_confirmed_json' ? 'SCM 已确认洗护符号 JSON' : '洗护符号 JSON')
+    if (!parsed.error) parsed.__source = careSymbolsMode
+    return parsed
+  }
+
+  function careSymbolValues(symbols) {
+    return {
+      washing: symbols.washing,
+      bleaching: symbols.bleaching,
+      drying: symbols.drying,
+      ironing: symbols.ironing,
+      dryCleaning: symbols.dryCleaning,
+    }
   }
 
   function optionArray(value) {
@@ -508,31 +622,11 @@
   }
 
   function buildMaterialOverride(care, target) {
-    if (scmCompositionMode === 'evidence_only') {
-      return { mode: 'evidence_only' }
-    }
-    const composition = textOf(target?.excelComposition)
-    if (!composition || target?.excelCompositionSource !== 'scm_qc_wash_appr_page') {
-      return { mode: 'temu_existing' }
-    }
-    const zh = parseSimpleComposition(composition, 'zh')
-    if (!zh.parts) {
-      return { mode: 'scm_evidence_only_unparsed', reason: zh.error, composition }
-    }
-    const en = parseSimpleComposition(target?.scmEnglishComposition || target?.excelEnglishComposition || '', 'en')
-    const materialInfoList = zh.parts.map((part, index) => (
-      cloneMaterialWithPart(Array.isArray(care?.materialInfoList) ? care.materialInfoList[index] : null, part, 'zh')
-    ))
-    const i18nTemplates = Array.isArray(care?.materialI18nInfoList) ? care.materialI18nInfoList : []
-    const englishParts = en.parts && en.parts.length === zh.parts.length ? en.parts : zh.parts
-    const materialI18nInfoList = englishParts.map((part, index) => (
-      cloneMaterialWithPart(i18nTemplates[index] || i18nTemplates[0] || { lan: 'en' }, part, 'en')
-    ))
     return {
-      mode: 'scm_safe_simple_applied',
-      materialInfoList,
-      materialI18nInfoList,
-      composition,
+      mode: 'scm_evidence_only_not_written',
+      reason: scmCompositionMode === 'safe_simple'
+        ? '业务反馈要求成分不回填 TEMU，已忽略 safe_simple'
+        : '',
     }
   }
 
@@ -580,12 +674,6 @@
   function buildCarePayload(care, target) {
     const symbols = parseCareSymbols(target)
     if (symbols.error) return symbols
-    if (
-      careSymbolsMode === 'pilot_defaults'
-      && compact(target?.excelStyle || target?.skcExtCode).slice(0, PILOT_STYLE.length) !== PILOT_STYLE
-    ) {
-      return { error: '当前选择“试点已确认符号”，但目标款号不是 209225117208；请改用人工 JSON 符号或人工确认 SCM 附件。' }
-    }
 
     const manufacturerName = chooseTemuOption(care?.manufacturerNameOptions, manufacturerNameParam, '制造商名称')
     if (manufacturerName.error) return manufacturerName
@@ -644,13 +732,16 @@
         manufacturerAddressSource: manufacturerAddress.source,
         productionDate,
         batchNumber: batchNumberParam,
-        careSymbols: symbols,
+        careSymbols: careSymbolValues(symbols),
         width: Number(care?.width || 0) || labelWidthMm,
         len: resolvedLabelLength(care),
         padding: Number(care?.padding || 0) || labelPaddingMm,
         lengthStrategy: 'minimum_for_full_qr',
         requestedMinimumLen: labelLengthMm,
         careSymbolsMode,
+        careSymbolsSource: textOf(symbols.__source),
+        careSymbolsLabels: symbols.__labels || {},
+        careSymbolsSourceText: textOf(symbols.__sourceText),
         compositionMode: materialOverride.mode,
         compositionModeReason: materialOverride.reason || '',
         compositionSource: textOf(target?.excelCompositionSource),
@@ -915,6 +1006,9 @@
       洗水唛尺码: String(rowShared.careLabel?.size || ''),
       洗护符号模式: String(rowShared.carePayloadSummary?.careSymbolsMode || careSymbolsMode),
       洗护符号: rowShared.carePayloadSummary?.careSymbols ? JSON.stringify(rowShared.carePayloadSummary.careSymbols) : '',
+      洗护符号来源: String(rowShared.carePayloadSummary?.careSymbolsSource || ''),
+      洗护符号说明: rowShared.carePayloadSummary?.careSymbolsLabels ? JSON.stringify(rowShared.carePayloadSummary.careSymbolsLabels) : '',
+      SCM洗护说明: String(rowShared.carePayloadSummary?.careSymbolsSourceText || target?.scmCareInstructionText || ''),
       制造商名称: String(rowShared.carePayloadSummary?.manufacturerName || ''),
       制造商地址: String(rowShared.carePayloadSummary?.manufacturerAddressPg || ''),
       生产日期: String(rowShared.carePayloadSummary?.productionDate || ''),
@@ -1332,19 +1426,6 @@
       return { error: colorCode ? `SCM 没有匹配色号 ${colorCode} 的记录` : 'SCM 没有可用候选记录', rows, brandRows, completedRows }
     }
     const compositions = uniqueNonblank(candidateRows.map(row => row.cComponent))
-    if (!compositions.length) {
-      return { error: 'SCM 候选记录缺少中文成分', rows, brandRows, completedRows, candidateRows }
-    }
-    if (compositions.length > 1) {
-      return {
-        error: 'SCM 候选记录存在多个中文成分，未自动选择',
-        rows,
-        brandRows,
-        completedRows,
-        candidateRows,
-        compositions,
-      }
-    }
     const englishCompositions = uniqueNonblank(candidateRows.map(row => row.eComponent))
     const remarks = uniqueNonblank(candidateRows.map(row => row.skcRemark))
     const selected = candidateRows[0]
@@ -1354,7 +1435,8 @@
       completedRows,
       candidateRows,
       selected,
-      composition: compositions[0],
+      compositions,
+      composition: compositions[0] || '',
       englishComposition: englishCompositions[0] || '',
       careInstructionText: remarks.join('；'),
       careInstructionSource: remarks.length ? 'scm_skc_remark' : 'missing_structured_wash_instruction',
@@ -1904,37 +1986,34 @@
           scmLookupStatus: 'SCM查询等待页面就绪',
         })
       }
-      return nextPhase(advancePhaseName(), 100, {
+      return nextPhase('api_care_query', 100, {
         ...shared,
+        apiTarget: {
+          ...target,
+          scmLookupFailedReason: reason,
+        },
         scmLookupAttempts: 0,
         scmLookupLastError: reason,
-        scmLookupStatus: 'SCM查询失败',
-        temuRowStatus: 'SCM查询失败',
-      }, [
-        resultRow('scm_lookup_failed', `SCM 查询失败：${reason}`, {
-          temuRowStatus: 'SCM查询失败',
-          SCM查询状态: '失败',
-        }, target),
-      ])
+        scmLookupStatus: 'SCM查询失败，使用固定洗护符号',
+      })
     }
 
     const evidence = selectScmEvidence(payload.rows, target)
     if (evidence.error) {
-      return nextPhase(advancePhaseName(), 100, {
+      return nextPhase('api_care_query', 100, {
         ...shared,
+        apiTarget: {
+          ...target,
+          scmLookupEvidenceError: evidence.error,
+        },
         scmRows: evidence.rows || [],
-        scmLookupStatus: 'SCM证据不可用',
-        temuRowStatus: 'SCM证据不可用',
-      }, [
-        resultRow('scm_evidence_invalid', evidence.error, {
-          temuRowStatus: 'SCM证据不可用',
-          SCM查询状态: '证据不可用',
-          SCM匹配记录数: Array.isArray(evidence.rows) ? evidence.rows.length : 0,
-          SCM已完成记录数: Array.isArray(evidence.completedRows) ? evidence.completedRows.length : 0,
-          SCM候选记录数: Array.isArray(evidence.candidateRows) ? evidence.candidateRows.length : 0,
-          SCM成分候选: Array.isArray(evidence.compositions) ? evidence.compositions.join(' | ') : '',
-        }, target),
-      ])
+        scmLookupLastError: evidence.error,
+        scmLookupStatus: 'SCM证据不可用，使用固定洗护符号',
+        scmMatchedRows: Array.isArray(evidence.rows) ? evidence.rows.length : 0,
+        scmCompletedRows: Array.isArray(evidence.completedRows) ? evidence.completedRows.length : 0,
+        scmCandidateRows: Array.isArray(evidence.candidateRows) ? evidence.candidateRows.length : 0,
+        scmCompositionCandidates: Array.isArray(evidence.compositions) ? evidence.compositions : [],
+      })
     }
     const apiRecord = attachScmEvidence(target, evidence)
     return nextPhase('api_care_query', 150, {

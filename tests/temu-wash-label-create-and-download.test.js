@@ -31,6 +31,14 @@ const PENDING_TARGET = {
   needCosmeticLabel: true,
 }
 
+const LATEST_CARE_TEXT = [
+  'Maximum washing temperature 30°C',
+  'Do not bleach',
+  'Line drying in the shade',
+  'Iron at maximum sole-plate temperature of 110°C without steam',
+  'Do not dry clean',
+].join('\n')
+
 class FakeElement {
   constructor(options = {}) {
     this.tagName = String(options.tagName || 'DIV').toUpperCase()
@@ -202,7 +210,7 @@ const SCM_ROWS = [
     E_COMPONENT: 'Fabric:95% COTTON 5% ELASTANE(Except accessories)',
     H_STATUS: 100,
     SKC_RESULT: 0,
-    SKC_REMARK: '',
+    SKC_REMARK: LATEST_CARE_TEXT,
     SKC_FILE_URL1: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/label.pdf',
     SKC_FILE_URL2: '',
     LAST_MODIFIED_TIME: '2026-07-31 09:00:00',
@@ -393,6 +401,60 @@ test('SCM lookup result attaches completed composition evidence before care quer
   assert.equal(result.meta.shared.apiTarget.excelCompositionSource, 'scm_qc_wash_appr_page')
   assert.equal(result.meta.shared.apiTarget.scmOrderNo, 'XM241115000025')
   assert.equal(result.meta.shared.apiTarget.scmColorCode, '10101')
+  assert.equal(result.meta.shared.apiTarget.scmCareInstructionText, LATEST_CARE_TEXT.replace(/\s+/g, ' ').trim())
+})
+
+test('SCM lookup failure continues with fixed care symbols instead of failing the item', async () => {
+  const apiTarget = { ...PENDING_TARGET, ...ENTERPRISE_TARGET, excelStyle: '209225117208' }
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupAttempts: 12,
+      scmLookupResult: {
+        ok: false,
+        error: 'SCM login expired',
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_care_query')
+  assert.equal(result.data.length, 0)
+  assert.equal(result.meta.shared.scmLookupStatus, 'SCM查询失败，使用固定洗护符号')
+  assert.equal(result.meta.shared.apiTarget.scmLookupFailedReason, 'SCM login expired')
+})
+
+test('SCM evidence without composition still continues for care-symbol mapping', async () => {
+  const apiTarget = { ...PENDING_TARGET, ...ENTERPRISE_TARGET, excelStyle: '209225117208' }
+  const rowsWithoutComposition = SCM_ROWS.map(row => ({
+    ...row,
+    C_COMPONENT: '',
+    E_COMPONENT: '',
+  }))
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: true,
+          source: 'scm_qc_wash_appr_page_component',
+          rows: rowsWithoutComposition,
+          recordsTotal: 2,
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_care_query')
+  assert.equal(result.data.length, 0)
+  assert.equal(result.meta.shared.apiTarget.excelComposition, '')
+  assert.equal(result.meta.shared.apiTarget.scmCareInstructionText, LATEST_CARE_TEXT.replace(/\s+/g, ' ').trim())
 })
 
 test('care query for pending label falls back to configured TEMU label dimensions', async () => {
@@ -432,7 +494,7 @@ test('care query infers SKU code from SCM SKC plus TEMU size for enterprise file
   assert.equal(result.meta.shared.apiTarget.outputFilename, '20922511720810101110-9950019805206.pdf')
 })
 
-test('dry-run prepares pilot payload with confirmed TEMU symbol enums and never saves', async () => {
+test('dry-run prepares fixed payload with latest TEMU symbol enums and never saves', async () => {
   const apiTarget = { ...PENDING_TARGET, excelStyle: EXCEL_TARGET.style, outputFilename: EXCEL_TARGET.outputFilename }
   const result = await runAdapter({
     phase: 'prepare_care_payload',
@@ -449,13 +511,44 @@ test('dry-run prepares pilot payload with confirmed TEMU symbol enums and never 
   assert.equal(result.data[0].结果, 'create_payload_ready')
   assert.match(result.data[0].原因, /dry_run/)
   assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
-    washing: 13,
+    washing: 10,
     bleaching: 3,
-    drying: 8,
+    drying: 5,
     ironing: 3,
     dryCleaning: 5,
   })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'missing_scm_care_instruction_text')
   assert.equal(result.meta.shared.carePayload.manufacturerAddressPg, 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China')
+})
+
+test('dry-run maps SCM wash-care text to TEMU symbol enums', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: LATEST_CARE_TEXT,
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+      careLabel: { width: 35, len: 235, padding: 10, size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'advance_excel_target')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 10,
+    bleaching: 3,
+    drying: 5,
+    ironing: 3,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_instruction_mapping')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Line drying in the shade')
 })
 
 test('dry-run reports the minimum label length used to keep the QR code visible', async () => {
@@ -478,7 +571,7 @@ test('dry-run reports the minimum label length used to keep the QR code visible'
   assert.equal(result.data[0].洗水唛尺码, '110')
 })
 
-test('dry-run applies simple SCM composition to TEMU material payload', async () => {
+test('dry-run keeps SCM composition as evidence and preserves TEMU material payload', async () => {
   const apiTarget = {
     ...PENDING_TARGET,
     excelStyle: '209225117208',
@@ -493,8 +586,9 @@ test('dry-run applies simple SCM composition to TEMU material payload', async ()
   const result = await runAdapter({
     phase: 'prepare_care_payload',
     params: {
+      scm_composition_mode: 'safe_simple',
       care_symbols_mode: 'scm_confirmed_json',
-      care_symbols_json: '{"washing":13,"bleaching":3,"drying":8,"ironing":3,"dryCleaning":5}',
+      care_symbols_json: '{"washing":10,"bleaching":3,"drying":5,"ironing":3,"dryCleaning":5}',
     },
     shared: {
       apiTarget,
@@ -509,14 +603,13 @@ test('dry-run applies simple SCM composition to TEMU material payload', async ()
   })
 
   assert.equal(result.meta.next_phase, 'advance_excel_target')
-  assert.equal(result.meta.shared.carePayloadSummary.compositionMode, 'scm_safe_simple_applied')
+  assert.equal(result.meta.shared.carePayloadSummary.compositionMode, 'scm_evidence_only_not_written')
+  assert.match(result.meta.shared.carePayloadSummary.compositionModeReason, /成分不回填/)
   assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayload.materialInfoList)), [
-    { name: '棉', proportion: '95' },
-    { name: '氨纶', proportion: '5' },
+    { name: '旧成分', proportion: '100' },
   ])
   assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayload.materialI18nInfoList)), [
-    { lan: 'en', propValue: 'COTTON', proportion: '95' },
-    { lan: 'en', propValue: 'ELASTANE', proportion: '5' },
+    { lan: 'en', propValue: 'OLD', proportion: '100' },
   ])
 })
 
