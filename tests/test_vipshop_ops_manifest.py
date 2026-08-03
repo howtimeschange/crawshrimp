@@ -17,7 +17,7 @@ class VipshopOpsManifestTests(unittest.TestCase):
 
         self.assertEqual(manifest["id"], "vipshop-ops-assistant")
         self.assertEqual(manifest["name"], "唯品会运营助手")
-        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertEqual(manifest["version"], "0.2.0")
         self.assertEqual(task["name"], "轻供款商品报表")
         self.assertEqual(task["script"], "light-supply-goods-report.js")
         self.assertEqual(task["entry_url"], "https://compass.vip.com/frontend/index.html#/product/details")
@@ -35,6 +35,35 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertIn("区分", output_columns)
         self.assertIn("款号", output_columns)
         self.assertIn("数据来源接口", output_columns)
+
+
+    def test_manifest_declares_package_main_image_replace(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        tasks = {item["id"]: item for item in manifest["tasks"]}
+        task = tasks["package_main_image_replace"]
+        params = {item["id"]: item for item in task["params"]}
+        output_columns = task["output"][0]["columns"]
+
+        self.assertEqual(task["name"], "包装+主图替换")
+        self.assertEqual(task["script"], "vipshop-package-main-image-replace.js")
+        self.assertEqual(task["entry_url"], "https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise")
+        self.assertIn("https://pdc-portal.vip.com/", task["tab_match_prefixes"])
+        self.assertEqual(params["mode"]["default"], "new")
+        self.assertIn("推荐", params["mode"]["options"][1]["label"])
+        self.assertEqual(params["execute_mode"]["default"], "plan")
+        self.assertEqual(params["input_file"]["type"], "file_excel")
+        self.assertTrue(params["input_file"]["required"])
+        self.assertEqual(params["input_file"]["templates"][0]["file"], "templates/vipshop-package-main-image-replace-template.csv")
+        self.assertEqual(params["material_root"]["type"], "directory")
+        self.assertTrue(params["material_root"]["include_file_listing"])
+        self.assertEqual(params["material_images"]["type"], "file_images")
+        self.assertIn("package", params["operation_scope"]["default"])
+        self.assertIn("main_image", params["operation_scope"]["default"])
+        self.assertEqual(task["output"][0]["filename"], "唯品会包装主图替换预检_{timestamp}.xlsx")
+        self.assertIn("V_SPU", output_columns)
+        self.assertIn("P_SPU", output_columns)
+        self.assertIn("目标颜色", output_columns)
+        self.assertIn("接口路径", output_columns)
 
 
 if __name__ == "__main__":

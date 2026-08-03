@@ -1,6 +1,6 @@
 id: vipshop-ops-assistant
 name: 唯品会运营助手
-version: 0.1.0
+version: 0.2.0
 author: codex
 description: "唯品会罗盘与供应商平台运营报表工具"
 entry_url: https://compass.vip.com/frontend/index.html#/product/details
@@ -13,6 +13,256 @@ auth:
   login_url: https://vis.vip.com/
 
 tasks:
+  - id: package_main_image_replace
+    name: 包装+主图替换
+    description: 读取款号/货号清单，优先从森马云盘按款号查找并下载图包，再在唯品会商品资料/PDC 中匹配目标颜色，完成包装微详情、商品详情切片、主图和列表图替换；默认只做预检，live 需显式授权。
+    script: vipshop-package-main-image-replace.js
+    entry_url: https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise
+    tab_match_prefixes:
+      - https://vis.vip.com/
+      - https://nov-admin.vip.com/
+      - https://pdc-portal.vip.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: current
+            label: 当前唯品后台页面
+          - value: new
+            label: 新开商品资料页（推荐）
+        hint: 请先在 9222 端口 Chrome 登录唯品会；默认新开 nov-admin 商品资料页，避免外层 vis 页面跨域拦截接口。
+      - id: execute_mode
+        type: radio
+        label: 执行模式
+        default: plan
+        options:
+          - value: plan
+            label: 找图+API 预检（推荐）
+          - value: live
+            label: 线上替换（需授权）
+        hint: live 需要同时开启“确认线上保存提交”；脚本会取消审核/撤回、上传图片、保存并提交审核。
+      - id: allow_live
+        type: checkbox
+        label: 确认线上保存提交
+        default: false
+        options:
+          - value: "true"
+            label: 已确认只处理本表货号并执行保存提交
+        hint: 安全闸门。未勾选时即使执行模式为 live，也不会取消审核、上传、保存或提交。
+      - id: operation_scope
+        type: checkbox
+        label: 替换范围
+        default:
+          - package
+          - main_image
+        ui_variant: dropdown_multi
+        options:
+          - value: package
+            label: 包装微详情+商品详情图
+          - value: main_image
+            label: 主图+商品列表图
+        hint: 包装会规划微详情 1200x1200 与详情切片；主图会规划商品图片 1200x1200 与列表图 950x1200。
+      - id: enable_ocr_anchor_detection
+        type: checkbox
+        label: OCR识别商详保留图
+        default: true
+        options:
+          - value: "true"
+            label: 保留“想要的信息看这里”及之后图片
+        hint: 线上替换包装详情图前会使用项目 Tesseract OCR 识别保留锚点；未识别到可靠锚点时阻断保存提交，避免误删底部信息。
+      - id: ocr_max_images
+        type: text
+        label: OCR扫描张数
+        default: all
+        ui_span: third
+        hint: 默认扫描全部当前商详图；可填数字缩小范围。
+      - id: phase_eval_timeout_ms
+        type: number
+        label: OCR相位超时
+        default: 180000
+        min: 8000
+        max: 600000
+        step: 1000
+        ui_span: third
+        hint: OCR 运行在当前 9222 浏览器页面内；图片较多时需放宽单相位 CDP 执行超时。
+      - id: use_semir_cloud
+        type: checkbox
+        label: 森马云盘找图
+        default: true
+        options:
+          - value: "true"
+            label: 按天猫包装逻辑从森马云盘找图
+        hint: 未选择本地图包时默认启用；会按款号搜索可见挂载点，优先选最新款号目录。
+      - id: cloud_path
+        type: text
+        label: 包装图云盘主路径
+        required: false
+        default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        hint: 默认与天猫包装图路径一致，在产品上新根目录内按款号搜索包装微详情和商品详情切片；最后一级若是款号，会按当前行款号自动替换。
+      - id: main_image_cloud_root
+        type: text
+        label: 主图打标云盘根路径
+        required: false
+        default: "巴拉巴拉品牌事业部-市场系统//品牌视觉部/"
+        placeholder: "巴拉巴拉品牌事业部-市场系统//品牌视觉部/"
+        hint: 主图/列表图 1200 和 950 从该根路径下搜索，要求结果路径包含“主图打标（京东唯品）”和“回图/唯品”；年份、批次不需要填写。
+      - id: main_image_path_features
+        type: textarea
+        label: 主图路径特征
+        required: false
+        default: "主图打标\n京东唯品\n回图/唯品"
+        hint: 默认按这些路径特征过滤森马云盘搜索结果；如后续目录命名变化，可逐行补充/调整。
+      - id: candidate_cloud_paths
+        type: textarea
+        label: 候选云盘路径
+        required: false
+        placeholder: "挂载点//备用目录/款号"
+        hint: 可选。包装图主路径素材不足时按行尝试候选路径；每行一个。
+      - id: main_image_candidate_cloud_paths
+        type: textarea
+        label: 主图候选云盘路径
+        required: false
+        placeholder: "挂载点//主图打标目录/回图/唯品"
+        hint: 可选。主图根路径搜索不足时尝试；仍会要求路径符合主图打标和回图/唯品特征。
+      - id: folder_scan_depth
+        type: number
+        label: 云盘目录扫描深度
+        default: 5
+        min: 1
+        max: 10
+        step: 1
+        ui_span: third
+        hint: 控制从款号目录向下递归查找图片的层级。
+      - id: input_file
+        type: file_excel
+        label: 款号货号表
+        required: true
+        templates:
+          - file: templates/vipshop-package-main-image-replace-template.csv
+            label: Excel / CSV 模板
+            description: 填写“款号”“货号”两列；货号必须是完整款色号，避免相似颜色误匹配。
+            version: "2026.08.03.1"
+        hint: 必须包含“款号”“货号”两列；脚本按完整货号匹配 PDC 颜色，拼款时只规划目标货号对应颜色。
+      - id: material_root
+        type: directory
+        label: 本地图包目录
+        required: false
+        include_file_listing: true
+        placeholder: "例如：/Users/you/Downloads/唯品图包"
+        hint: 可选。选择目录后脚本按完整货号在文件名/路径中匹配图片，并识别微详情、images/切片、主图、列表图。
+      - id: material_images
+        type: file_images
+        label: 手动选择图片
+        required: false
+        hint: 可选。多选图片时，文件名或上级目录请包含完整货号；支持 1200x1200 主图/微详情、950x1200 列表图、详情切片。
+      - id: page_size
+        type: number
+        label: 商品资料每页数量
+        default: 200
+        min: 20
+        max: 500
+        step: 20
+        ui_span: third
+        hint: 商品资料接口分页大小；默认 200。
+      - id: max_pages
+        type: number
+        label: 最多查询页数
+        default: 20
+        min: 1
+        max: 100
+        step: 1
+        ui_span: third
+        hint: 防止后台异常无限分页；通常按输入货号一次即可命中。
+      - id: vendor_type
+        type: number
+        label: PDC 供应商类型
+        default: 1
+        min: 1
+        max: 9
+        step: 1
+        ui_span: third
+        hint: 当前已验证普通供应商编辑页为 1。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "唯品会包装主图替换预检_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 表格行号
+          - 款号
+          - 货号
+          - 商品ID
+          - V_SPU
+          - P_SPU
+          - 商品状态
+          - 商品名称
+          - 后台款号
+          - 是否拼款
+          - 目标颜色
+          - 目标色号
+          - 颜色匹配
+          - 操作范围
+          - 图片用途
+          - 图片索引
+          - 本地文件
+          - 识别尺寸
+          - 接口路径
+          - 执行结果
+          - 备注
+        sheets:
+          - name: 包装主图替换计划
+            columns:
+              - 表格行号
+              - 款号
+              - 货号
+              - 商品ID
+              - V_SPU
+              - P_SPU
+              - 商品状态
+              - 商品名称
+              - 后台款号
+              - 是否拼款
+              - 目标颜色
+              - 目标色号
+              - 颜色匹配
+              - 操作范围
+              - 图片用途
+              - 图片索引
+              - 本地文件
+              - 识别尺寸
+              - 接口路径
+              - 执行结果
+              - 备注
+          - name: 执行摘要
+            columns:
+              - 表格行号
+              - 款号
+              - 货号
+              - 商品ID
+              - V_SPU
+              - P_SPU
+              - 商品状态
+              - 商品名称
+              - 后台款号
+              - 是否拼款
+              - 目标颜色
+              - 目标色号
+              - 颜色匹配
+              - 操作范围
+              - 图片用途
+              - 图片索引
+              - 本地文件
+              - 识别尺寸
+              - 接口路径
+              - 执行结果
+              - 备注
+
+
   - id: light_supply_goods_report
     name: 轻供款商品报表
     description: 读取货品匹配表，在罗盘商品明细页按 API 分页抓取「商品明细」，并跨域调用供应商平台「商品信息」接口，提取区分为轻供的款号生成报表。
