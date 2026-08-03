@@ -42,14 +42,24 @@ export function loadEnvFiles(cwd = process.cwd(), fileNames = [".env.local", ".e
 }
 
 export function getArkConfig(env = process.env) {
-  const apiKey = env.ARK_API_KEY || env.VOLCENGINE_ARK_API_KEY;
+  const apiKey =
+    env.SEEDANCE_API_KEY ||
+    env.DOUBAO_SEEDANCE_API_KEY ||
+    env.ARK_API_KEY ||
+    env.VOLCENGINE_ARK_API_KEY;
 
   if (!apiKey) {
-    throw new Error("Missing ARK_API_KEY. Put it in .env.local or export it before running.");
+    throw new Error(
+      "Missing SEEDANCE_API_KEY or ARK_API_KEY. Put it in .env.local or export it before running."
+    );
   }
 
   return {
     apiKey,
-    baseUrl: env.ARK_BASE_URL || DEFAULT_BASE_URL
+    baseUrl:
+      env.SEEDANCE_BASE_URL ||
+      env.DOUBAO_SEEDANCE_BASE_URL ||
+      env.ARK_BASE_URL ||
+      DEFAULT_BASE_URL
   };
 }

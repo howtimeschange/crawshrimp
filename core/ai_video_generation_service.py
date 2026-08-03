@@ -491,9 +491,11 @@ def provider_env(provider: str) -> tuple[dict[str, str], list[str]]:
     if provider == "seedance":
         if secrets["seedance"]:
             env["ARK_API_KEY"] = secrets["seedance"]
+            env["SEEDANCE_API_KEY"] = secrets["seedance"]
         base_url = _compact(_nested_config_value(cfg, "ai.video.seedance_base_url"))
         if base_url:
             env["ARK_BASE_URL"] = base_url
+            env["SEEDANCE_BASE_URL"] = base_url
             secret_values.append(base_url)
     elif provider == "happyhorse":
         if secrets["happyhorse"]:

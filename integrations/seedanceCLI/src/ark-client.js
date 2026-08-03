@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { DEFAULT_BASE_URL } from "./config.js";
 
-const TASKS_PATH = "/api/v3/contents/generations/tasks";
+const TASKS_PATH = "/contents/generations/tasks";
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "expired"]);
 
 export class ArkApiError extends Error {
@@ -28,7 +28,7 @@ export class ArkContentGenerationClient {
     }
 
     this.apiKey = apiKey;
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.baseUrl = normalizeArkBaseUrl(baseUrl);
     this.fetch = fetchImpl;
   }
 
@@ -117,6 +117,15 @@ export async function downloadFile(url, outputPath, { fetchImpl = globalThis.fet
 
 export function isTerminalStatus(status) {
   return TERMINAL_STATUSES.has(status);
+}
+
+export function normalizeArkBaseUrl(baseUrl) {
+  if (!baseUrl || typeof baseUrl !== "string") {
+    throw new Error("baseUrl must be a non-empty string.");
+  }
+
+  const normalized = baseUrl.replace(/\/+$/, "");
+  return /\/api\/v3$/i.test(normalized) ? normalized : `${normalized}/api/v3`;
 }
 
 export function validateTaskPayload(payload) {

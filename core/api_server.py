@@ -7195,7 +7195,12 @@ def _bala_video_provider_env(provider: str) -> tuple[dict, list[str]]:
     env.pop("ELECTRON_RUN_AS_NODE", None)
     for environment_name in (
         "ARK_API_KEY",
+        "SEEDANCE_API_KEY",
+        "DOUBAO_SEEDANCE_API_KEY",
         "VOLCENGINE_ARK_API_KEY",
+        "ARK_BASE_URL",
+        "SEEDANCE_BASE_URL",
+        "DOUBAO_SEEDANCE_BASE_URL",
         "DASHSCOPE_API_KEY",
         "BAILIAN_API_KEY",
     ):
@@ -7204,9 +7209,12 @@ def _bala_video_provider_env(provider: str) -> tuple[dict, list[str]]:
     if status_key == "seedance":
         if secrets["seedance"]:
             env["ARK_API_KEY"] = secrets["seedance"]
+            env["SEEDANCE_API_KEY"] = secrets["seedance"]
         base_url = str(_nested_config_value(cfg, "ai.video.seedance_base_url") or "").strip()
         if base_url:
             env["ARK_BASE_URL"] = base_url
+            env["SEEDANCE_BASE_URL"] = base_url
+            secret_values.append(base_url)
     elif status_key == "happyhorse":
         if secrets["happyhorse"]:
             env["DASHSCOPE_API_KEY"] = secrets["happyhorse"]
@@ -7448,7 +7456,7 @@ async def _run_seedance_cli(req: BalaSeedanceVideoRequest) -> dict:
         ])
     env, secret_values = _bala_video_provider_env("seedance")
     env.update(node_env)
-    if not str(env.get("ARK_API_KEY") or "").strip():
+    if not str(env.get("ARK_API_KEY") or env.get("SEEDANCE_API_KEY") or "").strip():
         return {
             "ok": False,
             "provider": "seedance",
@@ -7918,8 +7926,8 @@ async def _run_video_provider_task_cli(req: BalaVideoProviderTaskRequest) -> dic
     provider_label = _bala_video_provider_label(provider)
     env, secret_values = _bala_video_provider_env(provider)
     env.update(node_env)
-    required_key = "ARK_API_KEY" if status_key == "seedance" else "DASHSCOPE_API_KEY"
-    if not str(env.get(required_key) or "").strip():
+    required_keys = ("ARK_API_KEY", "SEEDANCE_API_KEY") if status_key == "seedance" else ("DASHSCOPE_API_KEY",)
+    if not any(str(env.get(required_key) or "").strip() for required_key in required_keys):
         return {
             "ok": False,
             "provider": provider,

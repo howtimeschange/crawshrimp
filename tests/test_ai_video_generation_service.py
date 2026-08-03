@@ -562,6 +562,10 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
         }
         polluted = {
             "ARK_BASE_URL": "https://shell-seedance.invalid",
+            "SEEDANCE_API_KEY": "shell-seedance-key",
+            "SEEDANCE_BASE_URL": "https://shell-seedance-alias.invalid",
+            "DOUBAO_SEEDANCE_API_KEY": "shell-doubao-seedance-key",
+            "DOUBAO_SEEDANCE_BASE_URL": "https://shell-doubao-seedance.invalid",
             "BAILIAN_BASE_URL": "https://shell-bailian.invalid",
             "BAILIAN_WORKSPACE_ID": "shell-workspace",
             "BAILIAN_REGION": "shell-region",
@@ -596,7 +600,7 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
                 env, _ = svc.provider_env(provider)
                 for name, value in allowed.items():
                     self.assertEqual(env.get(name), value, f"{provider} lost allowlisted {name}")
-                selected_names = {"ARK_BASE_URL"} if provider == "seedance" else {
+                selected_names = {"SEEDANCE_API_KEY", "ARK_BASE_URL", "SEEDANCE_BASE_URL"} if provider == "seedance" else {
                     "BAILIAN_BASE_URL",
                     "BAILIAN_WORKSPACE_ID",
                     "BAILIAN_REGION",
@@ -606,7 +610,11 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
                         self.assertNotIn(name, env, f"{provider} inherited {name}")
                 if provider == "seedance":
                     self.assertEqual(env.get("ARK_API_KEY"), "selected-seedance-key")
+                    self.assertEqual(env.get("SEEDANCE_API_KEY"), "selected-seedance-key")
                     self.assertEqual(env.get("ARK_BASE_URL"), "https://configured-seedance.invalid")
+                    self.assertEqual(env.get("SEEDANCE_BASE_URL"), "https://configured-seedance.invalid")
+                    self.assertNotIn("DOUBAO_SEEDANCE_API_KEY", env)
+                    self.assertNotIn("DOUBAO_SEEDANCE_BASE_URL", env)
                     self.assertNotIn("DASHSCOPE_API_KEY", env)
                     self.assertNotIn("BAILIAN_WORKSPACE_ID", env)
                 else:
@@ -629,7 +637,7 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
             "happyhorse": "configured-happyhorse-api-key",
         }
         injected_names = {
-            "seedance": ("ARK_API_KEY", "ARK_BASE_URL"),
+            "seedance": ("ARK_API_KEY", "SEEDANCE_API_KEY", "ARK_BASE_URL", "SEEDANCE_BASE_URL"),
             "happyhorse": (
                 "DASHSCOPE_API_KEY",
                 "BAILIAN_BASE_URL",

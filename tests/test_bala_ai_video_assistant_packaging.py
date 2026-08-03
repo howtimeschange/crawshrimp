@@ -525,12 +525,18 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             "ai": {
                 "video": {
                     "seedance_api_key": "config-placeholder-seedance",
+                    "seedance_base_url": "https://configured-seedance.invalid",
                     "bailian_api_key": "config-placeholder-happyhorse",
                 },
             },
         }
         with patch.dict("os.environ", {
             "ARK_API_KEY": "runtime-placeholder-seedance",
+            "ARK_BASE_URL": "https://runtime-seedance.invalid",
+            "SEEDANCE_API_KEY": "runtime-placeholder-seedance-new",
+            "SEEDANCE_BASE_URL": "https://runtime-seedance-new.invalid",
+            "DOUBAO_SEEDANCE_API_KEY": "runtime-placeholder-doubao-seedance",
+            "DOUBAO_SEEDANCE_BASE_URL": "https://runtime-doubao-seedance.invalid",
             "VOLCENGINE_ARK_API_KEY": "runtime-placeholder-seedance-alias",
             "DASHSCOPE_API_KEY": "runtime-placeholder-happyhorse",
             "BAILIAN_API_KEY": "runtime-placeholder-happyhorse-alias",
@@ -539,7 +545,12 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             happyhorse_env, _ = api_server._bala_video_provider_env("happyhorse")
 
         self.assertEqual(seedance_env["ARK_API_KEY"], "config-placeholder-seedance")
+        self.assertEqual(seedance_env["SEEDANCE_API_KEY"], "config-placeholder-seedance")
+        self.assertEqual(seedance_env["ARK_BASE_URL"], "https://configured-seedance.invalid")
+        self.assertEqual(seedance_env["SEEDANCE_BASE_URL"], "https://configured-seedance.invalid")
         self.assertNotIn("VOLCENGINE_ARK_API_KEY", seedance_env)
+        self.assertNotIn("DOUBAO_SEEDANCE_API_KEY", seedance_env)
+        self.assertNotIn("DOUBAO_SEEDANCE_BASE_URL", seedance_env)
         self.assertEqual(happyhorse_env["DASHSCOPE_API_KEY"], "config-placeholder-happyhorse")
         self.assertNotIn("BAILIAN_API_KEY", happyhorse_env)
 

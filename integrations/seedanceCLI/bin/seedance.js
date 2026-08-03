@@ -13,8 +13,12 @@ const USAGE = `Usage:
   npm run seedance -- wait <task-id> [--download <output.mp4>] [--interval <seconds>] [--timeout <seconds>]
 
 Environment:
-  ARK_API_KEY      Volcengine Ark API key
-  ARK_BASE_URL     Optional, defaults to https://ark.cn-beijing.volces.com
+  SEEDANCE_API_KEY          Seedance or compatible gateway API key
+  SEEDANCE_BASE_URL         Optional compatible gateway endpoint, may include /api/v3
+  DOUBAO_SEEDANCE_API_KEY   Alias for SEEDANCE_API_KEY
+  DOUBAO_SEEDANCE_BASE_URL  Alias for SEEDANCE_BASE_URL
+  ARK_API_KEY               Volcengine Ark API key
+  ARK_BASE_URL              Optional, defaults to https://ark.cn-beijing.volces.com
 `;
 
 async function main() {

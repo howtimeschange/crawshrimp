@@ -1,0 +1,13 @@
+{
+  "model": "doubao-seedance-2-0-260128",
+  "content": [
+    {
+      "type": "text",
+      "text": "一个外卖员骑着电动车在大街上送外卖，白天城市街景，车辆和行人自然经过，镜头平稳跟拍，写实电影感，动作连贯，5秒视频。"
+    }
+  ],
+  "generate_audio": false,
+  "ratio": "16:9",
+  "duration": 5,
+  "watermark": false
+}

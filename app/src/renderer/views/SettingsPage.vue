@@ -871,7 +871,7 @@ const aiVideoKeyFields = [
 ]
 const llmKeyFields = [LLM_API_KEY_FIELD]
 const aiVideoConnectionHints = {
-  'ai.video.seedance_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.seedance_base_url']}；输入新值才会覆盖。`,
+  'ai.video.seedance_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.seedance_base_url']}；森马网关可填 https://ai-aigw.semir.com/doubao-seedance/api/v3。`,
   'ai.video.bailian_region': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_region']}；输入新值才会覆盖。`,
   'ai.video.bailian_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_base_url']}；有业务空间 ID 时会按空间和区域自动生成 endpoint。`,
   'ai.video.bailian_uploads_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_uploads_url']}；仅用于本地素材临时 OSS 上传。`,

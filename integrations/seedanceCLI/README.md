@@ -6,9 +6,18 @@
 - 查询任务：`GET https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/{id}`
 - 成功状态：`status === "succeeded"`，视频地址在 `content.video_url`
 
+也支持兼容网关地址直接配置到 `/api/v3`，例如森马豆包视频网关：
+
+```bash
+SEEDANCE_API_KEY='your_runtime_key' \
+SEEDANCE_BASE_URL='https://ai-aigw.semir.com/doubao-seedance/api/v3' \
+npm run seedance -- submit examples/seedance2-delivery-rider.json \
+  --wait --download outputs/seedance2-delivery-rider.mp4
+```
+
 ## 配置
 
-复制 `.env.example` 为 `.env.local`，填入方舟 API Key：
+复制 `.env.example` 为 `.env.local`，填入方舟或兼容网关 API Key：
 
 ```bash
 cp .env.example .env.local
@@ -22,6 +31,12 @@ cp .env.example .env.local
 
 ```bash
 npm run seedance -- submit examples/seedance2-tea.json
+```
+
+生成 5 秒外卖员送餐视频：
+
+```bash
+npm run seedance -- submit examples/seedance2-delivery-rider.json --wait --download outputs/seedance2-delivery-rider.mp4
 ```
 
 提交并等待结果：

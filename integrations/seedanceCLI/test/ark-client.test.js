@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { ArkContentGenerationClient, isTerminalStatus, validateTaskPayload } from "../src/ark-client.js";
+import { getArkConfig } from "../src/config.js";
 
 test("createVideoTask posts payload to Ark task endpoint", async () => {
   const calls = [];
@@ -53,6 +54,30 @@ test("getVideoTask fetches task by path id", async () => {
   assert.equal(result.content.video_url, "https://example.com/video.mp4");
 });
 
+test("createVideoTask preserves a Seedance gateway base URL that already includes /api/v3", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse({ id: "cgt-gateway" });
+  };
+
+  const client = new ArkContentGenerationClient({
+    apiKey: "test-key",
+    baseUrl: "https://ai-aigw.semir.com/doubao-seedance/api/v3",
+    fetchImpl
+  });
+
+  await client.createVideoTask({
+    model: "doubao-seedance-2-0-260128",
+    content: [{ type: "text", text: "a delivery rider crossing a city street" }]
+  });
+
+  assert.equal(
+    calls[0].url,
+    "https://ai-aigw.semir.com/doubao-seedance/api/v3/contents/generations/tasks"
+  );
+});
+
 test("pollVideoTask stops on terminal status", async () => {
   const statuses = ["queued", "running", "succeeded"];
   const updates = [];
@@ -89,6 +114,26 @@ test("isTerminalStatus identifies Ark task terminal states", () => {
   assert.equal(isTerminalStatus("failed"), true);
   assert.equal(isTerminalStatus("cancelled"), true);
   assert.equal(isTerminalStatus("expired"), true);
+});
+
+test("getArkConfig accepts Seedance gateway aliases", () => {
+  const config = getArkConfig({
+    SEEDANCE_API_KEY: "seedance-key",
+    SEEDANCE_BASE_URL: "https://ai-aigw.semir.com/doubao-seedance/api/v3"
+  });
+
+  assert.equal(config.apiKey, "seedance-key");
+  assert.equal(config.baseUrl, "https://ai-aigw.semir.com/doubao-seedance/api/v3");
+});
+
+test("getArkConfig accepts Doubao Seedance aliases", () => {
+  const config = getArkConfig({
+    DOUBAO_SEEDANCE_API_KEY: "doubao-seedance-key",
+    DOUBAO_SEEDANCE_BASE_URL: "https://ai-aigw.semir.com/doubao-seedance/api/v3"
+  });
+
+  assert.equal(config.apiKey, "doubao-seedance-key");
+  assert.equal(config.baseUrl, "https://ai-aigw.semir.com/doubao-seedance/api/v3");
 });
 
 test("example Seedance 2.0 payload matches the task shape", async () => {
