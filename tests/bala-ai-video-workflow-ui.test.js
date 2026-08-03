@@ -157,6 +157,13 @@ test('material batch recovery includes restored AI result versions and relinks n
       path: '/workspace/208326102205/02_商品细节图/neck.jpg',
       sourceType: 'detail',
       selected: false,
+      versions: [{
+        id: 'detail-ai-version',
+        label: '细节换背景',
+        operationType: 'background_swap',
+        previewPath: '/workspace/208326102205/03_AI图/neck-ai.png',
+        selected: true,
+      }],
     }],
   }]
 
@@ -166,6 +173,7 @@ test('material batch recovery includes restored AI result versions and relinks n
     ['模拍图', '/workspace/208326102205/01_模拍原图/front.jpg', '从本地工作区恢复'],
     ['模拍图', '/workspace/208326102205/03_AI图/front-ai.png', '从本地 AI 结果恢复'],
     ['商品细节图', '/workspace/208326102205/02_商品细节图/neck.jpg', '从本地工作区恢复'],
+    ['商品细节图', '/workspace/208326102205/03_AI图/neck-ai.png', '从本地 AI 结果恢复'],
   ])
 
   const result = applyBalaMaterialBatchToWorkspaceGroups(groups, {
@@ -174,16 +182,19 @@ test('material batch recovery includes restored AI result versions and relinks n
         { id: 'new-source-id', path: '/workspace/208326102205/01_模拍原图/front.jpg', image_url: '/image/source' },
         { id: 'new-ai-id', path: '/workspace/208326102205/03_AI图/front-ai.png', image_url: '/image/ai' },
         { id: 'new-detail-id', path: '/workspace/208326102205/02_商品细节图/neck.jpg', thumbnail_url: '/thumb/detail' },
+        { id: 'new-detail-ai-id', path: '/workspace/208326102205/03_AI图/neck-ai.png', image_url: '/image/detail-ai' },
       ],
     }],
   })
 
-  assert.deepEqual(result, { linkedAssets: 2, linkedVersions: 1, totalLinked: 3 })
+  assert.deepEqual(result, { linkedAssets: 2, linkedVersions: 2, totalLinked: 4 })
   assert.equal(groups[0].modelPhotos[0].id, 'new-source-id')
   assert.equal(groups[0].modelPhotos[0].versions[0].materialAssetId, 'new-ai-id')
   assert.equal(groups[0].modelPhotos[0].versions[0].sourceAssetId, 'new-source-id')
   assert.equal(groups[0].modelPhotos[0].versions[0].imageUrl, '/image/ai')
   assert.equal(groups[0].detailPhotos[0].id, 'new-detail-id')
+  assert.equal(groups[0].detailPhotos[0].versions[0].materialAssetId, 'new-detail-ai-id')
+  assert.equal(groups[0].detailPhotos[0].versions[0].imageUrl, '/image/detail-ai')
 })
 
 test('restored material groups dedupe legacy paths and reselect AI-named files', () => {
@@ -443,6 +454,18 @@ test('AI edit source filtering preserves the reactive source object used by clic
     ['v2'],
   )
   assert.equal(balaWorkflow.selectEditableSourcesForStyle(style, true)[0], source)
+})
+
+test('AI edit source filtering includes selected detail photos from the material step', () => {
+  const model = { name: 'front.jpg', sourceType: 'model', selected: true, versions: [] }
+  const detail = { name: 'neck.jpg', sourceType: 'detail', selected: true, versions: [] }
+  const hiddenDetail = { name: 'tag.jpg', sourceType: 'detail', selected: false, versions: [] }
+  const style = { modelPhotos: [model], detailPhotos: [detail, hiddenDetail] }
+
+  assert.deepEqual(
+    balaWorkflow.selectEditableSourcesForStyle(style).map(item => [item.name, item.sourceType]),
+    [['front.jpg', 'model'], ['neck.jpg', 'detail']],
+  )
 })
 
 test('AI edit selected-only filter still shows running generation placeholders', () => {
@@ -836,25 +859,30 @@ test('AI video material tabs stay in fixed rows above the independently scrollin
   assert.match(source, /\.aiv-material-source-switcher > span\s*\{[\s\S]*?margin-left:\s*auto/)
 })
 
-test('AI video review step restores all persisted review batches with a latest-run fallback after remount', () => {
+test('AI video workflow removes the operator review step but restores persisted review batches for compatibility', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
 
   assert.match(source, /@click="selectWorkflowStep\(step\.id\)"/)
   assert.match(source, /async function selectWorkflowStep\(stepId\)/)
-  assert.match(source, /stepId === 'review'[\s\S]*?loadLatestReviewBatch\(\)/)
+  assert.doesNotMatch(source, /\{ id: 'review', index:/)
+  assert.match(source, /\{ id: 'templates', index: 3, title: '生视频'/)
+  assert.match(source, /stepId === 'review'[\s\S]*?activeStep\.value = 'templates'/)
   assert.match(source, /async function restoreLatestReviewBatch\(/)
   assert.match(source, /window\.cs\.getData\(BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_IMAGE_TASK_ID\)/)
   assert.match(source, /onMounted\(\(\) => \{[\s\S]*?restoreReviewWorkspaceBatches\(\{ silent: true \}\)[\s\S]*?if \(!restoredBatchCount\) await restoreLatestReviewBatch\(\{ silent: true \}\)/)
   assert.match(source, /async function refreshReviewBatch\(\)[\s\S]*?if \(!boardUrls\.length\) \{[\s\S]*?loadLatestReviewBatch\(\)/)
 })
 
-test('AI video step navigation restores the latest review assets before creating video tasks', () => {
+test('AI video step navigation builds video jobs directly from the workspace selection', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
 
   assert.match(
     source,
-    /async function selectWorkflowStep\(stepId\)[\s\S]*?stepId === 'templates'[\s\S]*?loadLatestReviewBatch\(\)[\s\S]*?buildVideoJobsFromReview\(\)/,
+    /async function selectWorkflowStep\(stepId\)[\s\S]*?stepId === 'templates'[\s\S]*?prepareVideoJobsFromWorkspace\(\{ silent: false \}\)/,
   )
+  assert.match(source, /function sendReviewToVideo\(\)[\s\S]*?prepareVideoJobsFromWorkspace\(\)/)
+  assert.match(source, /进入生视频/)
+  assert.doesNotMatch(source, /<button type="button" class="aiv-ghost wide" @click="openReviewWorkspace">进入审核<\/button>/)
 })
 
 test('Bala material prepare defaults to a new browser page', () => {
@@ -1108,6 +1136,18 @@ test('completed video tasks switch to view action and autoplay their result', ()
   assert.match(source, /:autoplay="videoResultToPlayId === item\.id"/)
   assert.match(source, /@canplay="handleVideoResultCanPlay\(item\)"/)
   assert.match(source, /await element\.play\(\)/)
+})
+
+test('failed video tasks expose a one-click rerun path', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+
+  assert.match(source, /function videoTaskHasFailedResult\(task = \{\}\)/)
+  assert.match(source, /function videoTaskActionLabel\(task = \{\}\)[\s\S]*?return '重跑'/)
+  assert.match(source, /async function rerunVideoTask\(task = \{\}, mode = 'live'\)/)
+  assert.match(source, /function clearVideoTaskResultRecords\(task = \{\}\)[\s\S]*?clearBalaVideoTaskHistory/)
+  assert.match(source, /async function rerunVideoResult\(item = \{\}\)/)
+  assert.match(templateSource, /@click="rerunVideoResult\(item\)">重跑<\/button>/)
 })
 
 test('TaskRunner opens Bala image review drawer after AI generation', () => {
@@ -1430,10 +1470,23 @@ test('precise image edits archive the generated result inside the selected works
   assert.match(editSource, /const current = activePreviewHistoryItem\.value/)
   assert.match(editSource, /main_image_path:\s*mainPath/)
   assert.doesNotMatch(editSource, /selectedSourceAssetsForAi\(/)
-  assert.match(source, /window\.cs\.saveAsAiImageJob\(jobUid,\s*\{[\s\S]*?directory:\s*workspaceDir\.value[\s\S]*?files:\s*\[source\]/)
+  assert.match(source, /window\.cs\.saveAsAiImageJob\(jobUid,\s*\{[\s\S]*?directory:\s*aiResultDirectoryForStyle\(previewImage\.value\?\.styleCode\) \|\| workspaceDir\.value[\s\S]*?files:\s*\[source\]/)
   assert.match(editSource, /const localOutputPath = await archivePreviewOutputToWorkspace\(jobUid, output\)/)
   assert.match(editSource, /if \(!localOutputPath\) throw new Error\('大图修改结果未能保存到当前工作区'\)/)
   assert.match(editSource, /previewPath:\s*localOutputPath/)
+})
+
+test('batch AI generation archives generated images inside each style workspace folder', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const archiveStart = source.indexOf('async function archiveReviewAssetToWorkspace')
+  const archiveEnd = source.indexOf('async function archiveReviewStylesToWorkspace', archiveStart)
+  const archiveSource = source.slice(archiveStart, archiveEnd)
+
+  assert.match(source, /function aiResultDirectoryForStyle\(styleCode = ''\)[\s\S]*?\/03_AI图/)
+  assert.match(source, /void archiveReviewStylesToWorkspace\(styles\)/)
+  assert.match(archiveSource, /asset\?\.kind !== 'ai'/)
+  assert.match(archiveSource, /window\.cs\.saveAsAiImageJob\(jobUid,[\s\S]*?directory: targetDir/)
+  assert.match(source, /syncWorkspaceVersionsFromReviewStyles\(styles\)[\s\S]*?void syncWorkspaceFiles\(\)/)
 })
 
 test('precise image edit modal keeps the same operation boundaries as batch AI edits', () => {
@@ -1479,7 +1532,7 @@ test('precise image edit modal keeps the same operation boundaries as batch AI e
   assert.match(editSource, /variant_reference_image_paths:\s*operationType === 'outfit_swap' \? variantPaths : \[\]/)
 })
 
-test('review workspace includes originals and every non-deleted AI result', () => {
+test('review-compatible workspace includes selected originals, details, and every non-deleted AI result', () => {
   assert.equal(typeof balaWorkflow.buildBalaReviewWorkspaceStyles, 'function')
   const styles = balaWorkflow.buildBalaReviewWorkspaceStyles([{
     styleCode: '208326102205',
@@ -1494,15 +1547,16 @@ test('review workspace includes originals and every non-deleted AI result', () =
         { id: 'ai-bg', operationType: 'background_swap', label: '背景结果', previewPath: '/tmp/bg.png', deleted: true },
       ],
     }],
-    detailPhotos: [{ id: 'detail-1', name: 'neck.jpg', path: '/tmp/neck.jpg', sourceType: 'detail' }],
+    detailPhotos: [{ id: 'detail-1', name: 'neck.jpg', path: '/tmp/neck.jpg', sourceType: 'detail', selected: true }],
   }])
 
   assert.equal(styles.length, 1)
   assert.deepEqual(styles[0].assets.map(asset => [asset.id, asset.kind, asset.status]), [
     ['source-1', 'origin', 'pending'],
     ['ai-face', 'ai', 'pending'],
+    ['detail-1', 'reference', 'pending'],
   ])
-  assert.equal(styles[0].sourceAssets.length, 1)
+  assert.equal(styles[0].sourceAssets.length, 2)
 
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   assert.match(source, /reviewAssetCount\(style, 'origin'\).*张原图/)
@@ -1715,9 +1769,9 @@ test('video asset pool lets pending model detail and AI images be selected for v
         { id: 'rejected-bg', label: '背景', operationType: 'background_swap', status: 'rejected', path: '/tmp/bg.png' },
       ],
       sourceAssets: [
-        { id: 'approved-origin', name: '原图', sourceType: 'model', status: 'approved', path: '/tmp/source.jpg' },
+        { id: 'approved-origin', name: '原图', sourceType: 'model', status: 'approved', path: '/tmp/source.jpg', selected: true },
         { id: 'pending-origin', name: '待审模特', sourceType: 'model', status: 'pending', path: '/tmp/pending-source.jpg' },
-        { id: 'pending-detail', name: '待审细节', sourceType: 'detail', status: 'pending', path: '/tmp/pending-detail.jpg' },
+        { id: 'pending-detail', name: '待审细节', sourceType: 'detail', status: 'pending', path: '/tmp/pending-detail.jpg', selected: true },
         { id: 'rejected-detail', name: '细节', sourceType: 'detail', status: 'rejected', path: '/tmp/detail.jpg' },
       ],
     },
@@ -1733,18 +1787,19 @@ test('video asset pool lets pending model detail and AI images be selected for v
     asset.selectable,
   ]), [
     ['vasset-approved-face', 'ai', '模拍', 'AI·模拍', 'approved', true, true],
-    ['vasset-pending-outfit', 'ai', '模拍', 'AI·模拍', 'pending', false, true],
-    ['vasset-pending-detail-ai', 'ai', '素材', 'AI·细节', 'pending', false, true],
-    ['vasset-retry-pose', 'ai', '模拍', 'AI·模拍', 'retry', false, true],
+    ['vasset-pending-outfit', 'ai', '模拍', 'AI·模拍', 'pending', true, true],
+    ['vasset-pending-detail-ai', 'ai', '素材', 'AI·细节', 'pending', true, true],
+    ['vasset-retry-pose', 'ai', '模拍', 'AI·模拍', 'retry', true, true],
     ['vasset-208326102205-source-approved-origin', 'origin', '模拍', '模特图', 'approved', true, true],
     ['vasset-208326102205-source-pending-origin', 'origin', '模拍', '模特图', 'pending', false, true],
-    ['vasset-208326102205-source-pending-detail', 'reference', '素材', '细节图', 'pending', false, true],
+    ['vasset-208326102205-source-pending-detail', 'reference', '素材', '细节图', 'pending', true, true],
   ])
   assert.equal(assets[0].thumbnailUrl, 'http://127.0.0.1:18765/thumbnail/approved-face')
 })
 
 test('video stage exposes styles that contain any selectable asset', () => {
   assert.equal(typeof balaWorkflow.hasApprovedBalaVideoAsset, 'function')
+  assert.equal(typeof balaWorkflow.hasSelectedBalaVideoAsset, 'function')
   assert.equal(typeof balaWorkflow.hasSelectableBalaVideoAsset, 'function')
   assert.equal(balaWorkflow.hasApprovedBalaVideoAsset([
     { status: 'pending', selectable: true },
@@ -1757,6 +1812,10 @@ test('video stage exposes styles that contain any selectable asset', () => {
   assert.equal(balaWorkflow.hasSelectableBalaVideoAsset([
     { status: 'pending', selectable: false },
     { status: 'approved', selectable: true },
+  ]), true)
+  assert.equal(balaWorkflow.hasSelectedBalaVideoAsset([
+    { selected: false, selectable: true },
+    { selected: true, selectable: true },
   ]), true)
 
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
@@ -1810,7 +1869,7 @@ test('new video task uses a tiled style library, selectable assets, and no split
   assert.doesNotMatch(source, /videoTaskDraft\.groupMode/)
   assert.doesNotMatch(source, /task\.groupMode/)
   assert.match(templateSource, /:disabled="!asset\.selectable"/)
-  assert.match(source, /assets\.filter\(asset => asset\.selectable && asset\.status === 'approved'\)\.map\(asset => asset\.id\)/)
+  assert.match(source, /assets\.filter\(asset => asset\.selectable && asset\.selected\)\.map\(asset => asset\.id\)/)
   assert.match(source, /图片素材（至少 1 张）/)
   assert.match(source, /group_mode:\s*'all_images_one_video'/)
   assert.match(source, /duration:\s*5,[\s\S]*?runBalaSeedanceVideo/)

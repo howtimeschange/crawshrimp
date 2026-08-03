@@ -312,13 +312,14 @@ test('AI video keeps local references, image tasks, and workspace snapshots isol
   assert.match(workbenchSource, /records\.filter\(job => !isAiVideoWorkflowJob\(job\)\)/)
 })
 
-test('workspace restore never reopens the passive video-results step by default', async () => {
+test('workspace restore never reopens passive results or removed review steps by default', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
   assert.match(workflowSource, /function workspaceSnapshotStep\(\)/)
   assert.match(workflowSource, /activeStep\.value === 'results' \? 'templates' : activeStep\.value/)
   assert.match(workflowSource, /function restoreWorkspaceActiveStep\(snapshot = \{\}\)/)
-  assert.match(workflowSource, /const restoredStep = String\(snapshot\.activeStep \|\| ''\) === 'results' \? 'templates' : String\(snapshot\.activeStep \|\| ''\)/)
+  assert.match(workflowSource, /const rawStep = String\(snapshot\.activeStep \|\| ''\)/)
+  assert.match(workflowSource, /const restoredStep = rawStep === 'results' \|\| rawStep === 'review' \? 'templates' : rawStep/)
   assert.match(workflowSource, /restoreWorkspaceActiveStep\(snapshot\)/)
 })
 
@@ -496,11 +497,13 @@ test('video task creation shows in-dialog requirements and prevents incomplete s
   assert.match(workflowSource, /请选择视频结果输出目录/)
 })
 
-test('video task creation prioritizes reviewed images in a left media area with a right-side control rail', async () => {
+test('video task creation prioritizes selected images in a left media area with a right-side control rail', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
-  assert.match(workflowSource, /const videoTaskAssetFilter = ref\('approved'\)/)
+  assert.match(workflowSource, /const videoTaskAssetFilter = ref\('selected'\)/)
   assert.match(workflowSource, /const videoTaskAssetTabs = computed/)
+  assert.match(workflowSource, /label: '已选中'/)
+  assert.match(workflowSource, /label: '未选中'/)
   assert.match(workflowSource, /const filteredVideoTaskAssets = computed/)
   assert.match(workflowSource, /const displayedVideoTaskAssets = computed/)
   assert.match(workflowSource, /class="aiv-video-task-selection"/)

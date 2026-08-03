@@ -130,7 +130,10 @@ export function selectVisibleEditableVersions(source = {}, selectedOnly = false)
 }
 
 export function selectEditableSourcesForStyle(style = {}, selectedOnly = false) {
-  return (style?.modelPhotos || []).filter((asset) => {
+  return [
+    ...(style?.modelPhotos || []),
+    ...(style?.detailPhotos || []),
+  ].filter((asset) => {
     const versions = selectVisibleEditableVersions(asset)
     if (!asset?.selected && !versions.length) return false
     if (!selectedOnly) return true
@@ -378,6 +381,17 @@ export function buildBalaMaterialRowsFromWorkspaceGroups(groups = []) {
         asset,
         note: '从本地工作区恢复',
       }))
+      for (const version of asset?.versions || []) {
+        if (version?.deleted) continue
+        append(materialRowFromWorkspaceAsset({
+          styleCode,
+          sourceType: 'detail',
+          asset: version,
+          path: version?.previewPath || version?.path,
+          action: operationLabel(version?.operationType || version?.operation_type || version?.action),
+          note: '从本地 AI 结果恢复',
+        }))
+      }
     }
   }
   return rows
@@ -1069,22 +1083,29 @@ function reviewAssetStatus(value = '') {
 export function buildBalaReviewWorkspaceStyles(styleWorkspaces = []) {
   return (styleWorkspaces || []).map((style) => {
     const assets = []
-    for (const source of style?.modelPhotos || []) {
+    const sourceGroups = [
+      { sourceType: 'model', kind: 'origin', defaultMeta: '第一步已选模拍图', label: '原图', sources: style?.modelPhotos || [] },
+      { sourceType: 'detail', kind: 'reference', defaultMeta: '第一步已选细节图', label: '细节图', sources: style?.detailPhotos || [] },
+    ]
+    for (const group of sourceGroups) for (const source of group.sources || []) {
       if (!source?.selected && !(source?.versions || []).length) continue
       assets.push({
         id: compact(source.id || source.path || source.name),
         remoteAssetId: compact(source.remoteAssetId || source.remote_asset_id),
-        label: compact(source.name || source.filename || '原图'),
-        action: '原图',
+        label: compact(source.name || source.filename || group.label),
+        action: group.label,
         operationType: 'origin',
         status: normalizeBalaReviewStatus(source.reviewStatus || source.status),
-        meta: compact(source.note || source.action || '第一步已选模拍图'),
+        meta: compact(source.note || source.action || group.defaultMeta),
         path: compact(source.path),
         imageUrl: compact(source.imageUrl || source.image_url),
         sourcePath: compact(source.path),
         sourceAssetId: compact(source.id),
         reviewBoardUrl: compact(source.reviewBoardUrl || source.review_board_url),
-        kind: 'origin',
+        kind: group.kind,
+        sourceType: group.sourceType,
+        selected: Boolean(source.selected),
+        editSelected: Boolean(source.editSelected),
       })
       for (const version of source?.versions || []) {
         if (version?.deleted) continue
@@ -1101,6 +1122,9 @@ export function buildBalaReviewWorkspaceStyles(styleWorkspaces = []) {
           imageUrl: compact(version.imageUrl || version.image_url),
           sourcePath: compact(source.path),
           sourceAssetId: compact(source.id),
+          sourceType: group.sourceType,
+          selected: version.selected !== false,
+          editSelected: Boolean(version.editSelected),
           jobUid: compact(version.jobUid || version.job_uid),
           runUid: compact(version.runUid || version.run_uid),
           reviewBoardUrl: compact(version.reviewBoardUrl || version.review_board_url),
@@ -1108,17 +1132,34 @@ export function buildBalaReviewWorkspaceStyles(styleWorkspaces = []) {
         })
       }
     }
-    const sourceAssets = (style?.detailPhotos || []).map(asset => ({
-      id: compact(asset.id || asset.path || asset.name),
-      label: compact(asset.name || asset.filename || '素材'),
-      name: compact(asset.name || asset.filename || '素材'),
-      role: '参考图',
-      sourceType: 'detail',
-      status: normalizeBalaReviewStatus(asset.reviewStatus || asset.status),
-      path: compact(asset.path),
-      imageUrl: compact(asset.imageUrl || asset.image_url),
-      kind: 'reference',
-    }))
+    const sourceAssets = [
+      ...(style?.modelPhotos || []).map(asset => ({
+        id: compact(asset.id || asset.path || asset.name),
+        label: compact(asset.name || asset.filename || '素材'),
+        name: compact(asset.name || asset.filename || '素材'),
+        role: '模拍图',
+        sourceType: 'model',
+        status: normalizeBalaReviewStatus(asset.reviewStatus || asset.status),
+        path: compact(asset.path),
+        imageUrl: compact(asset.imageUrl || asset.image_url),
+        kind: 'origin',
+        selected: Boolean(asset.selected),
+        editSelected: Boolean(asset.editSelected),
+      })),
+      ...(style?.detailPhotos || []).map(asset => ({
+        id: compact(asset.id || asset.path || asset.name),
+        label: compact(asset.name || asset.filename || '素材'),
+        name: compact(asset.name || asset.filename || '素材'),
+        role: '参考图',
+        sourceType: 'detail',
+        status: normalizeBalaReviewStatus(asset.reviewStatus || asset.status),
+        path: compact(asset.path),
+        imageUrl: compact(asset.imageUrl || asset.image_url),
+        kind: 'reference',
+        selected: Boolean(asset.selected),
+        editSelected: Boolean(asset.editSelected),
+      })),
+    ]
     return {
       styleCode: compact(style?.styleCode || style?.style_code),
       assets: mergeBalaMaterialAssets([], assets),
@@ -1128,6 +1169,7 @@ export function buildBalaReviewWorkspaceStyles(styleWorkspaces = []) {
 }
 
 function reviewAssetKind(asset = {}) {
+  if (asset.kind === 'ai') return 'ai'
   if (asset.kind === 'origin' || asset.operationType === 'origin' || asset.sourceType === 'model') return 'origin'
   if (asset.kind === 'reference' || asset.sourceType === 'detail') return 'reference'
   return 'ai'
@@ -1356,6 +1398,11 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
   const styleCode = compact(reviewStyle?.styleCode || reviewStyle?.style_code || materialStyle?.styleCode)
   const output = []
   const seenPaths = new Set()
+  const selectedForVideo = (asset = {}, status = 'pending', taxonomy = {}) => (
+    Boolean(asset?.selected || asset?.editSelected || asset?.videoSelected)
+    || (taxonomy?.isAi && !asset?.deleted)
+    || status === 'approved'
+  )
   const append = (asset, { source = false, folderHint = '' } = {}) => {
     const status = reviewAssetStatus(asset?.status)
     if (['rejected', 'failed', 'generating'].includes(status)) return
@@ -1377,7 +1424,7 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
       businessKind: videoBusinessKind({ ...asset, kind: structuralKind, sourceType: taxonomy.sourceType }),
       displayKind: taxonomy.displayKind,
       status,
-      selected: status === 'approved',
+      selected: selectedForVideo(asset, status, taxonomy),
       selectable: true,
       path,
       sourcePath: compact(asset?.sourcePath || asset?.source_path),
@@ -1392,23 +1439,38 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
   for (const asset of reviewStyle?.assets || []) append(asset)
   for (const asset of reviewStyle?.sourceAssets || []) append(asset, { source: true })
 
-  for (const asset of materialStyle?.modelPhotos || []) {
-    append({ ...asset, kind: 'origin', sourceType: 'model', status: asset.reviewStatus || 'pending' }, {
-      source: true,
-      folderHint: 'model',
-    })
-  }
-  for (const asset of materialStyle?.detailPhotos || []) {
-    append({ ...asset, kind: 'reference', sourceType: 'detail', status: asset.reviewStatus || 'pending' }, {
-      source: true,
-      folderHint: 'detail',
-    })
+  for (const [sourceType, assets] of [
+    ['model', materialStyle?.modelPhotos || []],
+    ['detail', materialStyle?.detailPhotos || []],
+  ]) {
+    for (const asset of assets || []) {
+      const kind = sourceType === 'detail' ? 'reference' : 'origin'
+      append({ ...asset, kind, sourceType, status: asset.reviewStatus || 'pending' }, {
+        source: true,
+        folderHint: sourceType,
+      })
+      for (const version of asset?.versions || []) {
+        if (version?.deleted) continue
+        append({
+          ...version,
+          kind: 'ai',
+          sourceType,
+          status: version.reviewStatus || version.status || 'pending',
+          sourcePath: version.sourcePath || asset.path,
+          sourceAssetId: version.sourceAssetId || asset.id,
+        }, { folderHint: sourceType })
+      }
+    }
   }
   return output
 }
 
 export function hasApprovedBalaVideoAsset(assets = []) {
   return (assets || []).some(asset => asset?.status === 'approved' && asset?.selectable === true)
+}
+
+export function hasSelectedBalaVideoAsset(assets = []) {
+  return (assets || []).some(asset => asset?.selected === true && asset?.selectable === true)
 }
 
 export function hasSelectableBalaVideoAsset(assets = []) {

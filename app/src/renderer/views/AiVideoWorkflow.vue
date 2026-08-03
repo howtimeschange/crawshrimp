@@ -4,7 +4,7 @@
       <div>
         <p class="aiv-kicker">AI 视频</p>
         <h2>AI 视频工作流</h2>
-        <p class="aiv-subtitle">按款号组织素材、AI 改图、审核、批量生视频和本地下载</p>
+        <p class="aiv-subtitle">按款号组织素材、AI 改图、批量生视频和本地下载</p>
       </div>
       <div class="aiv-top-actions">
         <button type="button" class="aiv-ghost" @click="openOutputDir">打开输出目录</button>
@@ -376,7 +376,7 @@
           <header class="aiv-panel-head">
             <div>
               <strong>AI 改图动作</strong>
-              <span>选择只表示本次操作范围，不决定审核结果</span>
+              <span>选择只表示本次操作范围；生视频会默认使用已选原图和保留 AI 图</span>
             </div>
           </header>
           <div class="aiv-panel-body aiv-edit-scroll-body">
@@ -481,7 +481,7 @@
           <footer class="aiv-edit-sticky-actions">
             <div class="aiv-edit-selection-summary">
               <strong>本次操作 {{ selectedEditSourceCount }} 张图片</strong>
-              <span>原图和未删除的 AI 结果会全量进入下一步审核。</span>
+              <span>已选原图和保留的 AI 结果会进入生视频素材池。</span>
             </div>
             <button
               type="button"
@@ -491,7 +491,7 @@
             >
               {{ aiIsRunning ? '正在生图...' : '开始生图' }}
             </button>
-            <button type="button" class="aiv-ghost wide" @click="openReviewWorkspace">进入审核</button>
+            <button type="button" class="aiv-ghost wide" @click="sendReviewToVideo">进入生视频</button>
           </footer>
         </aside>
 
@@ -651,7 +651,7 @@
                   </section>
                 </article>
                 <div v-if="!editSourcesForStyle(style).length" class="aiv-empty-inline">
-                  本款还没有选中的模拍原图，可回到找图步骤补选。
+                  本款还没有选中的模拍或细节原图，可回到找图步骤补选。
                 </div>
               </div>
             </article>
@@ -879,7 +879,7 @@
                   v-for="asset in task.assets.slice(0, 4)"
                   :key="asset.id"
                   type="button"
-                  :class="['aiv-video-asset-card', 'thumb-only', 'selected', { pending: asset.status !== 'approved' }]"
+                  :class="['aiv-video-asset-card', 'thumb-only', 'selected', { pending: !asset.selected }]"
                   :title="asset.label"
                   @click="openImagePreview(asset, task.styleCode)"
                 >
@@ -897,7 +897,7 @@
                 <div class="aiv-video-task-title-line">
                   <strong :title="`${task.styleCode} · ${task.title}`">{{ task.styleCode }} · {{ task.title }}</strong>
                   <span class="aiv-video-task-stage" :class="`is-${videoTaskStage(task).id}`" :title="videoTaskStage(task).message"><i></i>{{ videoTaskStage(task).label }}</span>
-                  <span class="aiv-video-task-status">{{ task.assets.length }} 张素材 · {{ approvedVideoTaskAssetCount(task) }} 已审核 · {{ task.status }}</span>
+                  <span class="aiv-video-task-status">{{ task.assets.length }} 张素材 · {{ selectedVideoTaskAssetCountForTask(task) }} 已选中 · {{ task.status }}</span>
                   <span :class="['aiv-badge', task.provider !== 'qn' ? 'orange' : '']">{{ providerLabel(task.provider) }}</span>
                   <span :class="['aiv-badge', task.template ? 'orange' : '']">
                     {{ videoTaskResultTemplateLabel(task) }}
@@ -1004,6 +1004,7 @@
                   <p v-else>{{ videoResultStage(item).message }}</p>
                   <footer>
                     <button v-if="videoResultHasOutput(item)" type="button" class="aiv-ghost small" @click="openVideoResult(item)">预览</button>
+                    <button v-else-if="canRerunVideoResult(item)" type="button" class="aiv-primary small" @click="rerunVideoResult(item)">重跑</button>
                     <button v-else-if="canRefreshVideoResult(item)" type="button" class="aiv-ghost small" @click="refreshSingleVideoResult(item)">刷新状态</button>
                     <button v-else-if="canDownloadVideoResult(item)" type="button" class="aiv-ghost small" @click="downloadVideoResult(item)">下载视频</button>
                     <button v-if="videoResultHasOutput(item)" type="button" class="aiv-primary small" @click="openVideoResult(item)">打开文件</button>
@@ -1235,7 +1236,7 @@
         </header>
         <div class="aiv-confirm-copy">
           <strong>{{ pendingVersionDeletion.version?.label || '当前 AI 结果' }}</strong>
-          <span id="aiv-delete-description">删除后无法撤销，图片也会从工作台、审核池和视频素材池移除。</span>
+          <span id="aiv-delete-description">删除后无法撤销，图片也会从工作台和视频素材池移除。</span>
           <code>{{ pendingVersionDeletion.path }}</code>
           <div v-if="deleteVersionError" class="aiv-inline-error">{{ deleteVersionError }}</div>
         </div>
@@ -1609,7 +1610,7 @@
                   @keydown.end.prevent="moveVideoTaskStyleTab('last')"
                 >
                   <strong>{{ job.styleCode }}</strong>
-                  <span>{{ job.assets.filter(asset => asset.selectable).length }} 张可选 · {{ approvedVideoAssetCount(job) }} 已审</span>
+                  <span>{{ job.assets.filter(asset => asset.selectable).length }} 张可选 · {{ selectedVideoAssetCount(job) }} 已选中</span>
                 </button>
               </div>
             </section>
@@ -1777,7 +1778,7 @@
               <header :class="['aiv-picker-head', { 'aiv-field-invalid': !videoTaskDraftRequirement('assets')?.complete }]">
                 <div>
                   <strong>{{ videoTaskDraft.styleCode || '未选择款号' }} · 图片素材</strong>
-                  <span>{{ videoTaskDraftRequirement('assets')?.complete ? `${activeVideoTaskAssetTab?.label || '已审核'}图片展示中；点击卡片切换选中` : videoTaskDraftRequirement('assets')?.message }}</span>
+                  <span>{{ videoTaskDraftRequirement('assets')?.complete ? `${activeVideoTaskAssetTab?.label || '已选中'}图片展示中；点击卡片切换选中` : videoTaskDraftRequirement('assets')?.message }}</span>
                 </div>
                 <span class="aiv-badge orange">已选 {{ selectedVideoTaskAssetCount }}</span>
               </header>
@@ -1826,7 +1827,7 @@
                   class="aiv-vtask-card"
                   :class="{
                     selected: videoTaskDraft.assetIds.includes(asset.id),
-                    pending: asset.status !== 'approved',
+                    pending: !asset.selected,
                   }"
                   :data-vtask-id="asset.id"
                 >
@@ -1856,7 +1857,7 @@
                       class="aiv-vtask-card-selected"
                       aria-hidden="true"
                     >已选</span>
-                    <span class="aiv-vtask-card-status" :class="asset.status">{{ assetStatusLabel(asset.status) }}</span>
+                    <span class="aiv-vtask-card-status" :class="videoTaskAssetSelectionState(asset)">{{ videoTaskAssetSelectionLabel(asset) }}</span>
                     <span class="aiv-vtask-card-meta">
                       <strong>{{ asset.label }}</strong>
                       <small>{{ videoTaskAssetKindLabel(asset) }}</small>
@@ -1882,7 +1883,7 @@
                 </button>
                 <div v-if="!filteredVideoTaskAssets.length" class="aiv-video-task-empty">
                   <strong>{{ activeVideoTaskAssetTab?.label || '当前' }}图片为空</strong>
-                  <span v-if="videoTaskAssetFilter === 'approved' && videoTaskKindFilter === 'all'">已审核图片为空，可切换到“待审核”或“全部”选择未审核素材。</span>
+                  <span v-if="videoTaskAssetFilter === 'selected' && videoTaskKindFilter === 'all'">已选中图片为空，可切换到“未选中”或“全部”选择其他素材。</span>
                   <span v-else-if="videoTaskKindFilter !== 'all'">当前状态与类型筛选下没有图片，可切换「模特图 / 细节图 / AI 图」。</span>
                   <span v-else>当前款号没有这类图片。</span>
                 </div>
@@ -2057,7 +2058,7 @@ const activeTemplateStyle = ref('')
 const addImageMenuStyle = ref('')
 const reviewFilter = ref('')
 const reviewStatusFilter = ref('')
-const videoTaskAssetFilter = ref('approved')
+const videoTaskAssetFilter = ref('selected')
 const videoTaskKindFilter = ref('all')
 const reviewBulkConfirmation = ref(null)
 const recentReviewBulkAction = ref(null)
@@ -2267,9 +2268,8 @@ const videoProviderStatus = reactive({
 const stepDefinitions = [
   { id: 'materials', index: 1, title: '找图', detail: '森马云盘素材下载' },
   { id: 'ai-edit', index: 2, title: 'AI 改图', detail: '按款号图片工作台' },
-  { id: 'review', index: 3, title: '审核', detail: '新增图、通过和重跑' },
-  { id: 'templates', index: 4, title: '生视频', detail: '按款号批量上传生成' },
-  { id: 'results', index: 5, title: '结果', detail: '视频下载和回显' },
+  { id: 'templates', index: 3, title: '生视频', detail: '按款号批量上传生成' },
+  { id: 'results', index: 4, title: '结果', detail: '视频下载和回显' },
 ]
 
 const completedSteps = new Set(['materials'])
@@ -2330,7 +2330,7 @@ const materialTaskStage = computed(() => {
   return { id: 'idle', label: '等待找图', detail: '输入款号后开始从云盘获取素材。' }
 })
 const selectedEditSourceCount = computed(() => (
-  styleWorkspaces.reduce((sum, style) => sum + (style.modelPhotos || []).reduce((inner, source) => (
+  styleWorkspaces.reduce((sum, style) => sum + editSourcesForStyle(style).reduce((inner, source) => (
     inner + (source.editSelected ? 1 : 0) + visibleSourceVersions(source).filter(version => version.editSelected).length
   ), 0), 0)
 ))
@@ -2457,7 +2457,8 @@ function workspaceSnapshotStep() {
 }
 
 function restoreWorkspaceActiveStep(snapshot = {}) {
-  const restoredStep = String(snapshot.activeStep || '') === 'results' ? 'templates' : String(snapshot.activeStep || '')
+  const rawStep = String(snapshot.activeStep || '')
+  const restoredStep = rawStep === 'results' || rawStep === 'review' ? 'templates' : rawStep
   if (!stepDefinitions.some(step => step.id === restoredStep)) return false
   activeStep.value = restoredStep
   return true
@@ -2682,6 +2683,9 @@ function persistedVideoAsset(asset = {}) {
     label: String(asset.label || asset.name || ''),
     name: String(asset.name || ''),
     kind: String(asset.kind || ''),
+    sourceType: String(asset.sourceType || ''),
+    displayKind: String(asset.displayKind || ''),
+    isAi: Boolean(asset.isAi),
     operationType: String(asset.operationType || ''),
     status: String(asset.status || ''),
     sourceAssetId: String(asset.sourceAssetId || ''),
@@ -2689,6 +2693,7 @@ function persistedVideoAsset(asset = {}) {
     path: String(asset.path || ''),
     previewPath: String(asset.previewPath || ''),
     selectable: Boolean(asset.selectable),
+    selected: Boolean(asset.selected),
   }
 }
 
@@ -2819,8 +2824,8 @@ const videoTaskSelectableAssets = computed(() => activeVideoAssetPool.value?.ass
 const videoTaskAssetTabs = computed(() => {
   const assets = videoTaskSelectableAssets.value
   return [
-    { id: 'approved', label: '已审核', count: assets.filter(asset => asset.status === 'approved').length },
-    { id: 'pending', label: '待审核', count: assets.filter(asset => asset.status === 'pending' || asset.status === 'retry').length },
+    { id: 'selected', label: '已选中', count: assets.filter(asset => asset.selected).length },
+    { id: 'unselected', label: '未选中', count: assets.filter(asset => !asset.selected).length },
     { id: 'all', label: '全部', count: assets.length },
   ]
 })
@@ -2841,8 +2846,8 @@ const filteredVideoTaskAssets = computed(() => {
   const statusFilter = videoTaskAssetFilter.value
   const kindFilter = videoTaskKindFilter.value
   return videoTaskSelectableAssets.value.filter((asset) => {
-    if (statusFilter === 'approved' && asset.status !== 'approved') return false
-    if (statusFilter === 'pending' && !(asset.status === 'pending' || asset.status === 'retry')) return false
+    if (statusFilter === 'selected' && !asset.selected) return false
+    if (statusFilter === 'unselected' && asset.selected) return false
     if (kindFilter === 'ai') return videoTaskAssetIsAi(asset)
     if (kindFilter === 'model' || kindFilter === 'detail') {
       return videoTaskAssetSourceType(asset) === kindFilter
@@ -3320,6 +3325,22 @@ function absoluteApiUrl(value = '') {
   if (!url.startsWith('/')) return url
   const base = typeof window.cs?.getApiBase === 'function' ? window.cs.getApiBase() : ''
   return `${String(base || '').replace(/\/+$/, '')}${url}`
+}
+
+function safeWorkspaceSegment(value = '', fallback = '未分类') {
+  return String(value || fallback).trim().replace(/[\\/:*?"<>|]+/g, '_') || fallback
+}
+
+function aiResultDirectoryForStyle(styleCode = '') {
+  const root = String(workspaceDir.value || '').trim().replace(/[\\/]+$/, '')
+  if (!root) return ''
+  return `${root}/${safeWorkspaceSegment(styleCode)}/03_AI图`
+}
+
+function pathInsideDirectory(path = '', directory = '') {
+  const filePath = String(path || '').trim().replace(/\\/g, '/')
+  const dir = String(directory || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  return Boolean(filePath && dir && (filePath === dir || filePath.startsWith(`${dir}/`)))
 }
 
 function localImagePathFor(asset = {}, thumbnail = false) {
@@ -4323,7 +4344,7 @@ function toggleEditInputSelection(asset) {
 }
 
 function editableInputsForStyle(style = {}) {
-  return (style.modelPhotos || []).flatMap(source => [source, ...visibleSourceVersions(source)])
+  return selectEditableSourcesForStyle(style, false).flatMap(source => [source, ...visibleSourceVersions(source)])
 }
 
 function styleEditSelectionAllChecked(style = {}) {
@@ -4505,7 +4526,7 @@ function selectedMaterialAssetIds(options = {}) {
 }
 
 function selectedSourceAssetsForAi() {
-  return styleWorkspaces.flatMap(style => (style.modelPhotos || []).flatMap((asset) => [
+  return styleWorkspaces.flatMap(style => workspaceImageSources(style).flatMap((asset) => [
     ...(asset.editSelected ? [{ style, asset, version: null }] : []),
     ...visibleSourceVersions(asset)
       .filter(version => version.editSelected)
@@ -4806,10 +4827,10 @@ async function openReviewWorkspace() {
   const styles = buildReviewWorkspaceStyles()
   reviewStyles.splice(0, reviewStyles.length, ...styles)
   if (!reviewStyles.length) {
-    updateAiTaskState({ status: 'failed', error: '当前没有可审核的原图或 AI 结果', message: '当前没有可审核的原图或 AI 结果' })
+    updateAiTaskState({ status: 'failed', error: '当前没有可用于生视频的原图或 AI 结果', message: '当前没有可用于生视频的原图或 AI 结果' })
     return
   }
-  activeStep.value = 'review'
+  sendReviewToVideo()
 }
 
 function operationMetaForDraft() {
@@ -4976,7 +4997,7 @@ function updateAiGeneratingVersions(progress = aiTaskState.progress) {
   const value = Math.max(2, Math.min(95, Math.round(Number(progress) || 0)))
   let changed = false
   for (const style of styleWorkspaces) {
-    for (const source of style.modelPhotos || []) {
+    for (const source of workspaceImageSources(style)) {
       for (const version of source.versions || []) {
         if (!activeAiPlaceholderIds.has(version.id) || version.status !== 'running') continue
         version.progress = value
@@ -4990,7 +5011,7 @@ function updateAiGeneratingVersions(progress = aiTaskState.progress) {
 function finishAiGeneratingVersions(status = 'failed') {
   let changed = false
   for (const style of styleWorkspaces) {
-    for (const source of style.modelPhotos || []) {
+    for (const source of workspaceImageSources(style)) {
       for (const version of source.versions || []) {
         if (!activeAiPlaceholderIds.has(version.id)) continue
         version.status = status
@@ -5037,8 +5058,8 @@ function applyAiLiveStatus(live = {}) {
 
 function aiStatusMessage(status, { total, current, live } = {}) {
   if (status === 'failed') return aiTaskState.error || 'AI 改图任务失败，可检查配置后重试。'
-  if (status === 'done') return 'AI 改图任务已完成，正在回填审核池。'
-  if (status === 'partial') return 'AI 改图部分完成，已回填可审核结果。'
+  if (status === 'done') return 'AI 改图任务已完成，正在回填图片工作台。'
+  if (status === 'partial') return 'AI 改图部分完成，已回填可用结果。'
   if (status === 'running') {
     const phase = String(live?.phase || '').trim()
     const count = total ? `任务 ${current || 0}/${total}` : '正在创建并提交 AI 生图任务'
@@ -5080,7 +5101,7 @@ async function startAiImageGeneration() {
   aiTaskState.error = ''
   const selectedSources = selectedSourceAssetsForAi()
   if (!selectedSources.length) {
-    updateAiTaskState({ status: 'failed', error: '请先在找图步骤选择至少一张模拍原图', message: '请先在找图步骤选择至少一张模拍原图' })
+    updateAiTaskState({ status: 'failed', error: '请先在找图步骤选择至少一张模拍或细节原图', message: '请先在找图步骤选择至少一张模拍或细节原图' })
     return
   }
   const selectedInputPaths = selectedSources.map(({ asset, version }) => (
@@ -5269,13 +5290,13 @@ async function finalizeAiImageTask(runId = '') {
   if (hasGeneratingBalaReviewAssets(batch)) {
     updateAiTaskState({
       status: 'partial',
-      message: 'AI 图片仍在生成，可稍后进入审核刷新结果。',
+      message: 'AI 图片仍在生成，可稍后刷新结果后进入生视频。',
     })
     return
   }
   updateAiTaskState({
     status: 'done',
-    message: `AI 改图已回填图片工作台：${reviewSummary.value.pending} 张新结果。可继续修改、删除或进入审核。`,
+    message: `AI 改图已回填图片工作台：${reviewSummary.value.pending} 张新结果。可继续修改、删除或进入生视频。`,
   })
   activeAiPlaceholderIds.clear()
 }
@@ -5313,8 +5334,8 @@ async function resumeAiReviewResults(boardUrl, batch) {
       progress: hasGeneratingBalaReviewAssets(settled) ? 90 : 100,
       error: '',
       message: hasGeneratingBalaReviewAssets(settled)
-        ? 'AI 图片仍在生成，可稍后进入审核刷新结果。'
-        : `AI 改图结果已落盘：${reviewSummary.value.pending} 张待审，${reviewSummary.value.approved} 张已通过。`,
+        ? 'AI 图片仍在生成，可稍后刷新结果后进入生视频。'
+        : `AI 改图结果已落盘：${reviewSummary.value.pending + reviewSummary.value.approved} 张可用结果。`,
     })
   } catch (error) {
     updateAiTaskState({
@@ -5390,7 +5411,7 @@ async function restoreLatestReviewBatch({ silent = false } = {}) {
       runId: String(run?.id || run?.run_id || '').trim(),
       outputFiles,
       error: '',
-      message: `已恢复审核池：${reviewSummary.value.pending} 张待审，${reviewSummary.value.approved} 张已通过。`,
+      message: `已恢复 AI 改图结果：${reviewSummary.value.pending + reviewSummary.value.approved} 张可用结果。`,
     })
     if (hasGeneratingBalaReviewAssets(batch)) void resumeAiReviewResults(boardUrl, batch)
     return batch
@@ -5410,32 +5431,38 @@ async function loadLatestReviewBatch() {
   try {
     if (reviewBoardUrl.value) {
       await loadReviewBatchFromBoard(reviewBoardUrl.value)
-      activeStep.value = 'review'
-      return
+      return reviewBatch.value
     }
     if (aiTaskState.outputFiles?.length) {
       const boardUrl = findBalaReviewBoardUrl(aiTaskState.outputFiles) || await findBalaReviewBoardUrlFromExcel(aiTaskState.outputFiles)
       if (boardUrl) {
         await loadReviewBatchFromBoard(boardUrl)
-        activeStep.value = 'review'
-        return
+        return reviewBatch.value
       }
     }
     const restored = await restoreLatestReviewBatch()
-    if (restored) {
-      activeStep.value = 'review'
-      return
-    }
+    if (restored) return restored
     throw new Error('还没有可刷新的审核池')
   } catch (error) {
     updateAiTaskState({ status: 'failed', error: error?.message || String(error), message: error?.message || String(error) })
+    return null
   }
+}
+
+async function prepareVideoJobsFromWorkspace({ silent = true } = {}) {
+  const localStyles = buildBalaReviewWorkspaceStyles(styleWorkspaces)
+  if (localStyles.length) {
+    const merged = mergeBalaReviewWorkspaceStyles(localStyles, reviewStyles)
+    reviewStyles.splice(0, reviewStyles.length, ...merged)
+  }
+  if (!reviewStyles.length && !silent) await loadLatestReviewBatch()
+  buildVideoJobsFromReview()
 }
 
 async function selectWorkflowStep(stepId) {
   if (stepId === 'review') {
-    if (!reviewStyles.length) await loadLatestReviewBatch()
-    await openReviewWorkspace()
+    await prepareVideoJobsFromWorkspace({ silent: false })
+    activeStep.value = 'templates'
     return
   }
   if (stepId === 'ai-edit') {
@@ -5443,20 +5470,24 @@ async function selectWorkflowStep(stepId) {
     void loadAiImageSettings()
   }
   if (stepId === 'templates') {
-    if (!reviewStyles.length) {
-      await loadLatestReviewBatch()
-    }
-    buildVideoJobsFromReview()
+    await prepareVideoJobsFromWorkspace({ silent: false })
   }
   activeStep.value = stepId
+}
+
+function workspaceImageSources(style = {}) {
+  return [
+    ...(style?.modelPhotos || []),
+    ...(style?.detailPhotos || []),
+  ]
 }
 
 function syncWorkspaceVersionsFromReviewStyles(styles = reviewStyles) {
   for (const reviewStyle of styles || []) {
     const workspace = styleWorkspaces.find(item => item.styleCode === reviewStyle.styleCode)
     if (!workspace) continue
-    for (const origin of (reviewStyle.sourceAssets || []).filter(asset => asset.kind === 'origin')) {
-      const source = (workspace.modelPhotos || []).find(item => (
+    for (const origin of (reviewStyle.sourceAssets || []).filter(asset => ['origin', 'reference'].includes(asset.kind))) {
+      const source = workspaceImageSources(workspace).find(item => (
         (item.path && origin.path && item.path === origin.path)
         || (item.path && origin.sourcePath && item.path === origin.sourcePath)
         || (item.id && origin.sourceAssetId && item.id === origin.sourceAssetId)
@@ -5468,9 +5499,10 @@ function syncWorkspaceVersionsFromReviewStyles(styles = reviewStyles) {
       }
     }
     for (const asset of reviewStyle.assets || []) {
-      const source = (workspace.modelPhotos || []).find(item => (
+      if (asset.kind === 'origin' || asset.kind === 'reference') continue
+      const source = workspaceImageSources(workspace).find(item => (
         item.path && asset.sourcePath && item.path === asset.sourcePath
-      )) || (workspace.modelPhotos || [])[0]
+      )) || workspaceImageSources(workspace)[0]
       if (!source) continue
       const nextVersion = {
         remoteAssetId: asset.remoteAssetId || asset.id,
@@ -5499,12 +5531,59 @@ function applyReviewBatchStyles(styles = []) {
   const localStyles = buildBalaReviewWorkspaceStyles(styleWorkspaces)
   const merged = mergeBalaReviewWorkspaceStyles(localStyles, styles)
   reviewStyles.splice(0, reviewStyles.length, ...merged)
+  void archiveReviewStylesToWorkspace(styles)
+}
+
+async function archiveReviewAssetToWorkspace(asset = {}, styleCode = '') {
+  if (!workspaceDir.value || asset?.kind !== 'ai' || asset?.deleted) return ''
+  if (typeof window.cs?.saveAsAiImageJob !== 'function') return ''
+  const targetDir = aiResultDirectoryForStyle(styleCode)
+  if (!targetDir) return ''
+  const existingPath = String(asset.path || asset.previewPath || '').trim()
+  if (pathInsideDirectory(existingPath, targetDir)) return existingPath
+  const jobUid = String(asset.jobUid || asset.job_uid || '').trim()
+  if (!jobUid) return ''
+  const remoteSource = absoluteApiUrl(asset.imageUrl || asset.image_url)
+  const source = existingPath || remoteSource
+  if (!source) return ''
+  try {
+    const saved = await window.cs.saveAsAiImageJob(jobUid, {
+      directory: targetDir,
+      files: [source],
+    })
+    return String(saved?.files?.[0] || '').trim()
+  } catch (error) {
+    aiTaskState.logs.push(`AI 图本地归档失败：${asset.label || asset.id || jobUid} · ${error?.message || String(error)}`)
+    return ''
+  }
+}
+
+async function archiveReviewStylesToWorkspace(styles = []) {
+  if (!workspaceDir.value || !styles?.length) return
+  let changed = false
+  for (const style of styles || []) {
+    for (const asset of style.assets || []) {
+      const localPath = await archiveReviewAssetToWorkspace(asset, style.styleCode)
+      if (!localPath || String(asset.path || asset.previewPath || '') === localPath) continue
+      asset.path = localPath
+      asset.previewPath = localPath
+      changed = true
+    }
+  }
+  if (!changed) return
+  syncWorkspaceVersionsFromReviewStyles(styles)
+  const localStyles = buildBalaReviewWorkspaceStyles(styleWorkspaces)
+  const merged = mergeBalaReviewWorkspaceStyles(localStyles, styles)
+  reviewStyles.splice(0, reviewStyles.length, ...merged)
+  if (activeStep.value === 'templates') buildVideoJobsFromReview()
+  persistAiImageWorkspaceState()
+  void syncWorkspaceFiles()
 }
 
 function syncWorkspaceReviewDecision(asset, status) {
   for (const style of styleWorkspaces) {
-    for (const source of style.modelPhotos || []) {
-      if (asset.kind === 'origin') {
+    for (const source of workspaceImageSources(style)) {
+      if (asset.kind === 'origin' || asset.kind === 'reference') {
         const sameOrigin = (
           (asset.sourceAssetId && source.id === asset.sourceAssetId)
           || (asset.path && source.path === asset.path)
@@ -5832,7 +5911,7 @@ function buildVideoJobsFromReview() {
       styleCode: style.styleCode,
       provider: 'qn',
       assets,
-      details: assets.filter(asset => asset.kind === '细节图').length,
+      details: assets.filter(asset => asset.sourceType === 'detail').length,
       template: null,
       status: '待建任务',
       prompt: '',
@@ -5842,10 +5921,10 @@ function buildVideoJobsFromReview() {
 }
 
 function sendReviewToVideo() {
-  buildVideoJobsFromReview()
+  prepareVideoJobsFromWorkspace()
   if (!videoJobs.length) {
     videoStageState.status = 'failed'
-    videoStageState.error = '审核池里还没有可进入视频阶段的图片'
+    videoStageState.error = '当前还没有可进入视频阶段的已选图片'
     videoStageState.message = videoStageState.error
     return
   }
@@ -5878,7 +5957,13 @@ function videoTaskHasViewableResult(task = {}) {
   )
 }
 
+function videoTaskHasFailedResult(task = {}) {
+  const result = videoResultForTask(task)
+  return Boolean(result && videoResultStage(result).id === 'failed')
+}
+
 function videoTaskActionLabel(task = {}) {
+  if (videoTaskHasFailedResult(task) && isVideoTaskSubmittable(task)) return '重跑'
   return videoTaskHasViewableResult(task) ? '查看视频' : '生成视频'
 }
 
@@ -5921,6 +6006,10 @@ async function handleVideoTaskAction(task = {}) {
     await playVideoResult(result)
     return
   }
+  if (videoTaskHasFailedResult(task)) {
+    await rerunVideoTask(task, 'live')
+    return
+  }
   await runVideoTask(task, 'live')
 }
 
@@ -5933,7 +6022,7 @@ function videoResultStage(item = {}) {
   const providerStatus = String(item.providerStatus || '').trim().toLowerCase()
   const normalized = status.toLowerCase()
   if (item.error || /失败|error|failed|cancelled|canceled|stopped|partial/.test(`${normalized} ${providerStatus}`)) {
-    return { id: 'failed', label: '失败', message: '任务失败。请检查错误信息后返回生视频修改并重新预检。' }
+    return { id: 'failed', label: '失败', message: '任务失败。请检查错误信息后可直接重跑，或返回生视频修改并重新预检。' }
   }
   if (localVideoPathFor(item)) {
     return { id: 'downloaded', label: '已下载', message: '视频已下载到本地，可直接预览或打开文件。' }
@@ -6653,6 +6742,35 @@ async function runVideoTask(task, mode = 'plan') {
   }
 }
 
+function clearVideoTaskResultRecords(task = {}) {
+  const taskId = String(task?.id || '').trim()
+  if (!taskId) return false
+  const result = clearBalaVideoTaskHistory(videoResults, [{ id: taskId, taskRefId: taskId }])
+  videoResults.splice(0, videoResults.length, ...result.results)
+  return Boolean(result.taskRefIds.length)
+}
+
+async function rerunVideoTask(task = {}, mode = 'live') {
+  const taskId = String(task?.id || '').trim()
+  if (!taskId || videoTaskBusyIds.has(taskId)) return
+  clearVideoTaskResultRecords(task)
+  task.status = '待预检'
+  task.providerTaskId = ''
+  task.runId = ''
+  await runVideoTask(task, mode)
+}
+
+function canRerunVideoResult(item = {}) {
+  const task = videoTaskForResult(item)
+  return Boolean(task && videoResultStage(item).id === 'failed' && isVideoTaskSubmittable(task))
+}
+
+async function rerunVideoResult(item = {}) {
+  const task = videoTaskForResult(item)
+  if (!task) return
+  await rerunVideoTask(task, 'live')
+}
+
 async function runSelectedVideoTasks(mode = 'plan') {
   const tasks = selectedVisibleVideoTasks.value.slice()
   if (!tasks.length) {
@@ -6677,16 +6795,16 @@ function versionCountForStyle(style) {
   return editSourcesForStyle(style).reduce((sum, source) => sum + (source.versions || []).length, 0)
 }
 
-function approvedVideoAssetCount(job) {
-  return (job?.assets || []).filter(asset => asset.status === 'approved').length
+function selectedVideoAssetCount(job) {
+  return (job?.assets || []).filter(asset => asset.selected).length
 }
 
 function reviewAssetCount(style, kind) {
   return (style?.assets || []).filter(asset => asset.kind === kind).length
 }
 
-function approvedVideoTaskAssetCount(task) {
-  return (task?.assets || []).filter(asset => asset.status === 'approved').length
+function selectedVideoTaskAssetCountForTask(task) {
+  return (task?.assets || []).filter(asset => asset.selected).length
 }
 
 function assetStatusLabel(status) {
@@ -6697,6 +6815,14 @@ function assetStatusLabel(status) {
   if (status === 'generating') return '生成中'
   if (status === 'failed') return '失败'
   return '素材'
+}
+
+function videoTaskAssetSelectionState(asset = {}) {
+  return asset?.selected ? 'selected' : 'unselected'
+}
+
+function videoTaskAssetSelectionLabel(asset = {}) {
+  return asset?.selected ? '已选中' : '未选中'
 }
 
 function normalizePreviewEditAction(value = '', fallback = 'background_swap') {
@@ -6870,7 +6996,7 @@ async function archivePreviewOutputToWorkspace(jobUid, output = {}) {
   const source = String(output?.url || output?.path || '').trim()
   if (!source) return ''
   const saved = await window.cs.saveAsAiImageJob(jobUid, {
-    directory: workspaceDir.value,
+    directory: aiResultDirectoryForStyle(previewImage.value?.styleCode) || workspaceDir.value,
     files: [source],
   })
   return String(saved?.files?.[0] || '').trim()
@@ -7077,8 +7203,8 @@ function resetVideoTaskDraftAssets() {
     syncHappyHorseModeFromAssetCount()
     return
   }
-  // 默认勾选已审核图；待审/未审核图保留为手动选择。
-  videoTaskDraft.assetIds = assets.filter(asset => asset.selectable && asset.status === 'approved').map(asset => asset.id)
+  // 默认勾选第一步已选原图和第二步保留的 AI 图；其余素材保留为手动选择。
+  videoTaskDraft.assetIds = assets.filter(asset => asset.selectable && asset.selected).map(asset => asset.id)
   if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.assetIds.length > 9) {
     videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 9)
   }
@@ -7097,7 +7223,7 @@ function resetVideoTaskDraftAssets() {
 function openVideoTaskDialog(styleCode = '', sourceTask = null, mode = 'new') {
   lastFocusedElement.value = document.activeElement
   videoTaskDraftError.value = ''
-  videoTaskAssetFilter.value = 'approved'
+  videoTaskAssetFilter.value = 'selected'
   videoTaskKindFilter.value = 'all'
   resetVideoTaskAssetRenderLimit()
   // 用最新审核池/素材文件夹重算款号池，保证细节图·AI 图分类字段最新
@@ -7193,8 +7319,9 @@ function moveVideoTaskStyleTab(direction) {
 }
 
 function selectVideoTaskAssetTab(filter) {
-  if (!videoTaskAssetTabs.value.some(tab => tab.id === filter)) return
-  videoTaskAssetFilter.value = filter
+  const normalized = filter === 'approved' ? 'selected' : (filter === 'pending' ? 'unselected' : filter)
+  if (!videoTaskAssetTabs.value.some(tab => tab.id === normalized)) return
+  videoTaskAssetFilter.value = normalized
   resetVideoTaskAssetRenderLimit()
 }
 
