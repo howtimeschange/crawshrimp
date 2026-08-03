@@ -117,7 +117,8 @@
     return {
       '款号': compact(job?.style_code),
       'ID': compact(job?.item_id),
-      '视频标题': compact(job?.title),
+      '逛逛标题': compact(job?.guang_title),
+      '搜推标题': compact(job?.recommend_title),
       '视频描述': compact(job?.description),
       '参与活动': compact(job?.activity),
       '定时/日': compact(job?.schedule_day),
@@ -149,11 +150,12 @@
     }
   }
 
-  function failureRow(styleCode, itemId, title, description, message, row = {}) {
+  function failureRow(styleCode, itemId, guangTitle, recommendTitle, description, message, row = {}) {
     const base = outputBase({
       style_code: styleCode,
       item_id: itemId,
-      title,
+      guang_title: guangTitle,
+      recommend_title: recommendTitle,
       description,
       activity: columnValue(row, ['参与活动']),
       schedule_day: columnValue(row, ['定时/日']),
@@ -171,7 +173,9 @@
     rows.forEach((row, index) => {
       const styleCode = columnValue(row, ['款号', '商品款号', '商品编码', '商家编码', 'style_code', 'styleCode'])
       const itemId = normalizeItemId(columnValue(row, ['ID', '商品ID', '天猫商品ID', '宝贝ID', '商品链接', 'item_id', 'itemId']))
-      const title = columnValue(row, ['视频标题', '添加标题', '标题'])
+      const legacyTitle = columnValue(row, ['视频标题', '添加标题', '标题'])
+      const guangTitle = columnValue(row, ['逛逛标题', '光合标题', '光合逛逛标题', 'guang_title', 'guangTitle']) || legacyTitle
+      const recommendTitle = columnValue(row, ['搜推标题', '搜推素材标题', '搜索推荐标题', 'recommend_title', 'recommendTitle', 'soutui_title', 'soutuiTitle']) || legacyTitle
       const description = columnValue(row, ['视频描述', '内容描述', '描述'])
       const activity = columnValue(row, ['参与活动'])
       const scheduleDay = columnValue(row, ['定时/日', '定时日期'])
@@ -180,34 +184,45 @@
       const rowNo = excelRowNumber(row, index)
       const videoPath = matchVideoPath(styleCode, rawParams)
       if (!itemId) {
-        invalidRows.push(failureRow(styleCode, itemId, title, description, `模板第${rowNo}行缺少商品ID`, row))
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行缺少商品ID`, row))
         return
       }
-      if (!title) {
-        invalidRows.push(failureRow(styleCode, itemId, title, description, `模板第${rowNo}行缺少视频标题`, row))
+      const publishGuang = publishTargetEnabled(rawParams, 'guang', 'publish_guang', true)
+      const publishRecommend = publishTargetEnabled(rawParams, 'recommend', 'publish_recommend', true)
+      const bindProduct = publishTargetEnabled(rawParams, 'product', 'bind_product', true)
+      if (publishGuang && !guangTitle) {
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行缺少逛逛标题`, row))
         return
       }
-      if (title.length > 20) {
-        invalidRows.push(failureRow(styleCode, itemId, title, description, `模板第${rowNo}行视频标题超过搜推素材20字限制`, row))
+      if (publishGuang && guangTitle.length > 30) {
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行逛逛标题超过30字限制`, row))
+        return
+      }
+      if (publishRecommend && !recommendTitle) {
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行缺少搜推标题`, row))
+        return
+      }
+      if (publishRecommend && recommendTitle.length > 20) {
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行搜推标题超过20字限制`, row))
         return
       }
       if (description.length < 10 || description.length > 1000) {
-        invalidRows.push(failureRow(styleCode, itemId, title, description, `模板第${rowNo}行视频描述需为10-1000字`, row))
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行视频描述需为10-1000字`, row))
         return
       }
       if (!videoPath) {
-        invalidRows.push(failureRow(styleCode, itemId, title, description, `模板第${rowNo}行未匹配到视频；请填写测试视频路径或选择按款号命名的视频目录`, row))
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行未匹配到视频；请填写测试视频路径或选择按款号命名的视频目录`, row))
         return
       }
       if (seen.has(itemId)) {
-        invalidRows.push(failureRow(styleCode, itemId, title, description, `模板第${rowNo}行与前面商品任务重复`, row))
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行与前面商品任务重复`, row))
         return
       }
       let scheduleAt = null
       try {
         scheduleAt = parseScheduleTimestamp(scheduleDay, scheduleTime)
       } catch (error) {
-        invalidRows.push(failureRow(styleCode, itemId, title, description, `模板第${rowNo}行${compact(error?.message || error)}`, row))
+        invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行${compact(error?.message || error)}`, row))
         return
       }
       seen.add(itemId)
@@ -215,7 +230,8 @@
         row_no: rowNo,
         style_code: styleCode,
         item_id: itemId,
-        title,
+        guang_title: guangTitle,
+        recommend_title: recommendTitle,
         description,
         activity,
         schedule_day: scheduleDay,
@@ -223,9 +239,9 @@
         schedule_at: scheduleAt,
         video_path: videoPath,
         existing_content_id: existingContentId,
-        publish_guang: publishTargetEnabled(rawParams, 'guang', 'publish_guang', true),
-        publish_recommend: publishTargetEnabled(rawParams, 'recommend', 'publish_recommend', true),
-        bind_product: publishTargetEnabled(rawParams, 'product', 'bind_product', true),
+        publish_guang: publishGuang,
+        publish_recommend: publishRecommend,
+        bind_product: bindProduct,
       })
     })
     return { jobs, invalidRows }
@@ -483,6 +499,42 @@
     return scene === 'qn_material_manager' ? RECOMMEND_PUBLISH_API : GUANG_PUBLISH_API
   }
 
+  function titleForScene(job, scene) {
+    return scene === 'qn_material_manager'
+      ? compact(job?.recommend_title || job?.guang_title)
+      : compact(job?.guang_title || job?.recommend_title)
+  }
+
+  function normalizeActivityName(value) {
+    return compact(value).replace(/^[#＃]+/, '').trim()
+  }
+
+  function activityTopicId(item = {}) {
+    return compact(item.sceneId || item.topicId || item.id || item.activityId || item.topic_id)
+  }
+
+  function activityTopicSource(item = {}) {
+    return compact(item.source || item.topicSource || item.topic_source || item.subType)
+  }
+
+  function titleWithActivity(description, activityName) {
+    const base = compact(description)
+    const name = normalizeActivityName(activityName)
+    if (!name) return base
+    if (base.includes(name) || base.includes(`#${name}`) || base.includes(`＃${name}`)) return base
+    return `${base} ${name}`.trim()
+  }
+
+  function titleRawWithActivity(description, activityName) {
+    const base = compact(description)
+    const name = normalizeActivityName(activityName)
+    if (!name) return ''
+    if (base.includes(name) || base.includes(`#${name}`) || base.includes(`＃${name}`)) {
+      return base.replace(new RegExp(`[#＃]?${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'g'), '{##[Topic]##}')
+    }
+    return `${base} {##[Topic]##}`.trim()
+  }
+
   function rotateLeft(value, amount) {
     return ((value << amount) | (value >>> (32 - amount))) >>> 0
   }
@@ -603,6 +655,65 @@
     return publishSession
   }
 
+  async function searchGuangActivityTopic(activityName) {
+    const name = normalizeActivityName(activityName)
+    if (!name) return null
+    const data = await callMtop('mtop.taobao.media.guang.hashtag.search', {
+      ugcScene: 'pc_newcreator_video',
+      searchText: name,
+      pageSize: 20,
+    }, { timeout: 20000 })
+    const rows = extractArray(data)
+    return rows.find(item => compact(item?.name) === name) || rows[0] || null
+  }
+
+  async function applyGuangActivity(runtime, job) {
+    const activityName = normalizeActivityName(job?.activity)
+    setContentValue(runtime, 'topics', [])
+    setContentValue(runtime, 'topicId', '')
+    setContentValue(runtime, 'topicSource', '')
+    setContentValue(runtime, 'titleRaw', '')
+    setContentValue(runtime, 'titleElements', [])
+    if (!activityName) {
+      setContentValue(runtime, 'title', job.description)
+      return {
+        title: job.description,
+        titleRaw: '',
+        titleElements: [],
+        topics: [],
+        topicId: '',
+        activityName: '',
+      }
+    }
+
+    const topicInfo = {
+      type: 'Topic',
+      subType: 'hashtag_customize',
+      name: activityName,
+      ...(await searchGuangActivityTopic(activityName) || {}),
+    }
+    const topicId = activityTopicId(topicInfo)
+    const topicSource = activityTopicSource(topicInfo)
+    const title = titleWithActivity(job.description, activityName)
+    const titleRaw = titleRawWithActivity(job.description, activityName)
+    const titleElements = [{
+      id: topicId,
+      name: activityName,
+      subType: compact(topicInfo.subType) || 'hashtag_customize',
+      type: 'Topic',
+    }]
+    const topics = topicId ? [{ topicId, topicInfo, topicSource }] : []
+
+    setContentValue(runtime, 'title', title)
+    setContentValue(runtime, 'titleRaw', titleRaw)
+    setContentValue(runtime, 'titleElements', titleElements)
+    setContentValue(runtime, 'topics', topics)
+    setContentValue(runtime, 'topicId', topicId)
+    setContentValue(runtime, 'topicSource', topicSource)
+
+    return { title, titleRaw, titleElements, topics, topicId, topicSource, activityName }
+  }
+
   function buildDirectPublishRequest(scene, runtime, publishSession) {
     const content = publishContent(runtime)
     const config = publishConfig(runtime)
@@ -610,6 +721,15 @@
     const userId = compact(window.__USER_INFO__?.userId)
     if (!userId) throw new Error('当前发布器未提供用户标识，无法生成发布校验值')
     const cover = content.coverUser || {}
+    const topicId = compact(content.topicId)
+    const topicSource = compact(
+      content.topicSource ||
+      (Array.isArray(content.topics) ? content.topics[0]?.topicSource || content.topics[0]?.source : ''),
+    )
+    const titleRaw = compact(content.titleRaw)
+    const titleElements = Array.isArray(content.titleElements) && content.titleElements.length
+      ? content.titleElements
+      : null
     const publishExtra = {
       ...(content.publishExtra && typeof content.publishExtra === 'object' ? content.publishExtra : {}),
       ...(config.publishParams && typeof config.publishParams === 'object' ? config.publishParams : {}),
@@ -633,7 +753,7 @@
       contentType: 'video',
       ugcScene: scene,
       shareResult: compact(content.shareResult),
-      topics: Array.isArray(content.topics) ? content.topics : [],
+      topics: topicId ? [{ topicId, source: topicSource }] : [],
       items: (Array.isArray(content.items) ? content.items : []).map(normalizePublishItem),
       video: {
         fileId: compact(content.fileId || content.video?.fileId),
@@ -666,6 +786,7 @@
         : {}),
       publishSession,
       publishToken: md5Hex(`${userId}2088666${requestId}`),
+      ...(titleRaw ? { titleRaw: encodeURIComponent(titleRaw), titleElements } : {}),
     }
     return request
   }
@@ -890,8 +1011,25 @@
     // 关联商品会异步触发智能标题/封面更新；等它稳定后再写业务标题和描述，
     // 避免页面 effect 把脚本刚写入的文本覆盖为空。
     await new Promise(resolve => setTimeout(resolve, 1200))
-    setContentValue(runtime, 'shortTitle', job.title)
-    setContentValue(runtime, 'title', job.description)
+    setContentValue(runtime, 'shortTitle', titleForScene(job, scene))
+    let activityWrite = {
+      title: job.description,
+      titleRaw: '',
+      titleElements: [],
+      topics: [],
+      topicId: '',
+      activityName: '',
+    }
+    if (scene === 'pc_newcreator_video') {
+      activityWrite = await applyGuangActivity(runtime, job)
+    } else {
+      setContentValue(runtime, 'title', job.description)
+      setContentValue(runtime, 'titleRaw', '')
+      setContentValue(runtime, 'titleElements', [])
+      setContentValue(runtime, 'topics', [])
+      setContentValue(runtime, 'topicId', '')
+      setContentValue(runtime, 'topicSource', '')
+    }
     setDescriptionEditorValue(job.description, scene === 'qn_material_manager')
     if (scene === 'pc_newcreator_video') setContentValue(runtime, 'onlineTime', job.schedule_at)
     if (scene === 'pc_newcreator_video') await prepareGuangRequiredOptions(runtime)
@@ -902,23 +1040,39 @@
       readback: {
         shortTitle: value.shortTitle,
         title: value.title,
+        titleRaw: value.titleRaw,
+        titleElements: value.titleElements,
         editorTitle: descriptionEditorText(),
         coverUser: value.coverUser,
         items: value.items,
+        topics: value.topics,
+        topicId: value.topicId,
         onlineTime: value.onlineTime,
         fileId: value.fileId,
         videoStatus: value.videoStatus,
         compliantResult: value.compliantResult,
         compliantResultList: value.compliantResultList,
+        activityWrite,
       },
     }
   }
 
   function validatePublishReadback(job, readback, scene) {
-    if (compact(readback.shortTitle) !== job.title) throw new Error('发布器标题写入后读回不一致')
-    if (compact(readback.title) !== job.description) throw new Error('发布器描述写入后读回不一致')
+    if (compact(readback.shortTitle) !== titleForScene(job, scene)) throw new Error('发布器标题写入后读回不一致')
+    const expectedTitle = scene === 'pc_newcreator_video'
+      ? titleWithActivity(job.description, job.activity)
+      : job.description
+    if (compact(readback.title) !== compact(expectedTitle)) throw new Error('发布器描述写入后读回不一致')
     if (scene === 'qn_material_manager' && compact(readback.editorTitle) !== job.description) {
       throw new Error('搜推素材富文本描述写入后读回不一致')
+    }
+    if (scene === 'pc_newcreator_video' && normalizeActivityName(job.activity)) {
+      const activityName = normalizeActivityName(job.activity)
+      const elementMatched = (Array.isArray(readback.titleElements) ? readback.titleElements : [])
+        .some(item => compact(item?.type) === 'Topic' && compact(item?.name) === activityName)
+      const topicMatched = (Array.isArray(readback.topics) ? readback.topics : [])
+        .some(item => compact(item?.topicInfo?.name || item?.name) === activityName)
+      if (!elementMatched && !topicMatched) throw new Error('光合参与活动写入后读回不一致')
     }
     const itemId = normalizeItemId(readback.items?.[0]?.itemId || readback.items?.[0]?.id)
     if (itemId !== job.item_id) throw new Error('发布器关联商品写入后读回不一致')
@@ -1132,6 +1286,11 @@
       extractCaptureError,
       buildDisplayVideo,
       md5Hex,
+      titleForScene,
+      normalizeActivityName,
+      titleWithActivity,
+      titleRawWithActivity,
+      activityTopicId,
       buildDirectPublishRequest,
       buildProductSubmitRequest,
       findSellPageState,
@@ -1156,7 +1315,7 @@
       })
     }
     if (!jobs.length || invalidRows.length) {
-      return complete(previewRows.length ? previewRows : [failureRow('', '', '', '', 'Excel 没有可执行数据行')], {
+      return complete(previewRows.length ? previewRows : [failureRow('', '', '', '', '', 'Excel 没有可执行数据行')], {
         jobs,
         invalid_rows: invalidRows,
         results: [],

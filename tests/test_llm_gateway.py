@@ -19,15 +19,18 @@ def valid_scripts():
     return {
         "scripts": [
             {
-                "video_title": "爱跑跳男童的春日轻运动鞋",
+                "guang_title": "爱跑跳男童春日轻运动鞋透气好穿上学户外日常都方便",
+                "recommend_title": "男童春日轻运动鞋透气上学户外日常",
                 "video_description": "家有爱跑爱跳男孩的家长看这里，鞋面透气孔洞是第一眼重点，旋钮扣方便孩子自己穿脱，宽敞鞋头给日常活动留出空间。正在给幼儿园和小学男生挑春秋运动鞋的家庭，可以重点看看这双。",
             },
             {
-                "video_title": "小童日常跑跳鞋怎么选",
+                "guang_title": "小童日常跑跳鞋旋钮穿脱省心上学户外活动每天都适合",
+                "recommend_title": "小童日常跑跳鞋旋钮穿脱省心上学户外",
                 "video_description": "幼儿园男孩每天跑跳多，选鞋先看穿脱和脚感。这双鞋用旋钮扣减少反复系带，鞋头空间更从容，再加上撞色生肖造型，日常上学和户外活动都好搭。想给活泼小男孩准备运动鞋的家长可以看看。",
             },
             {
-                "video_title": "男孩春秋运动鞋看这几个细节",
+                "guang_title": "男孩春秋运动鞋透气旋钮扣设计跑跳日常搭配省心好穿",
+                "recommend_title": "男孩春秋运动鞋透气旋钮扣日常好穿",
                 "video_description": "给三到六岁男孩选春秋鞋，先看透气，再看穿脱，最后看日常搭配。图片里的孔洞鞋面、旋钮扣和立体生肖元素分别照顾到跑跳、独立穿鞋和孩子喜欢的造型。正在挑男童慢跑鞋的家长别错过。",
             },
         ]
@@ -73,6 +76,13 @@ class LlmGatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(llm_gateway.LlmResponseError, "促销利益点"):
             llm_gateway.normalize_video_copies(payload)
 
+    def test_response_validation_rejects_titles_that_are_too_short(self):
+        payload = valid_scripts()
+        payload["scripts"][0]["guang_title"] = "男童运动鞋透气好穿"
+        payload["scripts"][0]["recommend_title"] = "男童运动鞋"
+        with self.assertRaisesRegex(llm_gateway.LlmResponseError, "没有接近"):
+            llm_gateway.normalize_video_copies(payload)
+
     def test_generation_retries_once_after_invalid_model_json(self):
         calls = []
 
@@ -93,6 +103,30 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(len(copies), 3)
         self.assertEqual(len(calls), 2)
         self.assertIn("3个视频方案", calls[1])
+
+    def test_generation_retries_transient_gateway_errors(self):
+        calls = []
+
+        def fake_openai(route, title, images, correction):
+            calls.append(correction)
+            if len(calls) == 1:
+                raise llm_gateway.LlmGatewayError(
+                    "文本模型接口连接失败：Remote end closed connection without response"
+                )
+            return {"choices": [{"message": {"content": __import__("json").dumps(valid_scripts(), ensure_ascii=False)}}]}
+
+        copies, route = llm_gateway.generate_video_copies(
+            product_title="巴拉巴拉童鞋儿童运动鞋男童透气跑步鞋",
+            image_urls=["https://img.example/1.jpg"],
+            model_id="gpt-5.6-terra",
+            config=self.config(),
+            request_openai=fake_openai,
+            retry_sleep=lambda _: None,
+        )
+
+        self.assertEqual(route.model_id, "gpt-5.6-terra")
+        self.assertEqual(len(copies), 3)
+        self.assertEqual(len(calls), 2)
 
     def test_generic_multimodal_json_uses_local_images_with_domestic_qwen_route(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -263,7 +297,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual({row["款号"] for row in rows}, {"204125140101"})
         self.assertTrue(all(row["ID"] == "850170525107" for row in rows))
-        self.assertTrue(all(row["视频标题"] and row["视频描述"] for row in rows))
+        self.assertTrue(all(row["逛逛标题"] and row["搜推标题"] and row["视频描述"] for row in rows))
         self.assertTrue(waits)
 
     async def test_final_workbook_matches_batch_upload_headers_and_text_ids(self):
@@ -274,7 +308,8 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
                     [{
                         "款号": "204125140101",
                         "ID": "850170525107",
-                        "视频标题": "爱跑跳男童的春日轻运动鞋",
+                        "逛逛标题": "爱跑跳男童春日轻运动鞋透气好穿上学户外日常都方便",
+                        "搜推标题": "男童春日轻运动鞋透气上学户外日常",
                         "视频描述": valid_scripts()["scripts"][0]["video_description"],
                         "参与活动": "",
                         "定时/日": "",
@@ -285,7 +320,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
                     "bala-ai-video-assistant",
                     "tmall_video_copy_generate",
                     "result.xlsx",
-                    column_order=["款号", "ID", "视频标题", "视频描述", "参与活动", "定时/日", "定时/具体时间", "上传情况", "内容ID"],
+                    column_order=["款号", "ID", "逛逛标题", "搜推标题", "视频描述", "参与活动", "定时/日", "定时/具体时间", "上传情况", "内容ID"],
                 ))
             final_refs = api_server._finalize_bala_ai_video_assistant_outputs(
                 task_id="tmall_video_copy_generate",
@@ -303,7 +338,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
             try:
                 self.assertEqual(
                     [cell.value for cell in sheet[1]],
-                    ["款号", "ID", "视频标题", "视频描述", "参与活动", "定时/日", "定时/具体时间", "上传情况", "内容ID"],
+                    ["款号", "ID", "逛逛标题", "搜推标题", "视频描述", "参与活动", "定时/日", "定时/具体时间", "上传情况", "内容ID"],
                 )
                 self.assertEqual(sheet["B2"].value, "850170525107")
                 self.assertEqual(sheet["B2"].number_format, "@")

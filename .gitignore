@@ -25,6 +25,7 @@ logs/
 *.xlsx
 !adapters/dasen-ops-assistant/templates/showcase-batch-template.xlsx
 !adapters/mop-ops-assistant/templates/search-recommend-material-template.xlsx
+!adapters/bala-ai-video-assistant/templates/tmall-video-copy-template.xlsx
 *.log
 .env
 AuthKey_*.p8

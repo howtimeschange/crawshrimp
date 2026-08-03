@@ -61,9 +61,10 @@ function inputRow(overrides = {}) {
   return {
     款号: '208326133201',
     ID: '1027640116164',
-    视频标题: '新生儿贴身衣，认准新疆棉A类',
+    逛逛标题: '新生儿贴身衣认准新疆棉A类柔软透气',
+    搜推标题: '新生儿新疆棉贴身衣',
     视频描述: '新手妈妈看过来，给新生儿挑贴身衣，面料真的不能将就。这套小云朵连体衣柔软透气，贴身穿更放心。',
-    参与活动: '',
+    参与活动: '夏日运动穿搭图鉴',
     '定时/日': '2026-07-30 00:00:00',
     '定时/具体时间': '18:00:00',
     上传情况: '',
@@ -84,6 +85,9 @@ test('short video upload parses the reference template and Shanghai schedule', a
   assert.equal(parsed.jobs.length, 1)
   assert.equal(parsed.jobs[0].style_code, '208326133201')
   assert.equal(parsed.jobs[0].item_id, '1027640116164')
+  assert.equal(parsed.jobs[0].guang_title, '新生儿贴身衣认准新疆棉A类柔软透气')
+  assert.equal(parsed.jobs[0].recommend_title, '新生儿新疆棉贴身衣')
+  assert.equal(parsed.jobs[0].activity, '夏日运动穿搭图鉴')
   assert.equal(parsed.jobs[0].video_path, '/Users/test/6ec7e3d213229297.mp4')
   assert.equal(parsed.jobs[0].schedule_at, 1785405600000)
   assert.equal(helpers.parseScheduleTimestamp('2026/07/30', '18:00'), 1785405600000)
@@ -126,13 +130,32 @@ test('short video upload plan mode returns all three planned entry states', asyn
 test('short video upload blocks invalid title and missing video before live changes', async () => {
   const helpers = await loadExports()
   const parsed = helpers.normalizeJobs({
-    input_file: { rows: [inputRow({ 视频标题: '这是一个明显超过二十个汉字限制的搜推素材标题不能发布' })] },
+    input_file: { rows: [inputRow({ 搜推标题: '这是一个明显超过二十个汉字限制的搜推素材标题不能发布' })] },
   })
 
   assert.equal(parsed.jobs.length, 0)
   assert.equal(parsed.invalidRows.length, 1)
   assert.equal(parsed.invalidRows[0].上传情况, '预检失败')
   assert.match(parsed.invalidRows[0].备注, /20字限制/)
+})
+
+test('short video upload keeps legacy 视频标题 compatible for both publish surfaces', async () => {
+  const helpers = await loadExports()
+  const parsed = helpers.normalizeJobs({
+    input_file: {
+      rows: [{
+        款号: '208326133201',
+        ID: '1027640116164',
+        视频标题: '新生儿贴身衣A类',
+        视频描述: inputRow().视频描述,
+      }],
+    },
+    video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+  })
+
+  assert.equal(parsed.invalidRows.length, 0)
+  assert.equal(parsed.jobs[0].guang_title, '新生儿贴身衣A类')
+  assert.equal(parsed.jobs[0].recommend_title, '新生儿贴身衣A类')
 })
 
 test('short video upload extracts publish content id and platform error from captured bodies', async () => {
@@ -164,6 +187,7 @@ test('short video upload keeps the Excel description and uses API submission pat
 
   assert.equal(parsed.jobs[0].description, description)
   assert.match(SCRIPT_SOURCE, /setDescriptionEditorValue\(job\.description,\s*scene === 'qn_material_manager'\)/)
+  assert.match(SCRIPT_SOURCE, /mtop\.taobao\.media\.guang\.hashtag\.search/)
   assert.match(SCRIPT_SOURCE, /mtop\.taobao\.media\.guang\.pcPublish\.publish/)
   assert.match(SCRIPT_SOURCE, /mtop\.taobao\.spongebob\.item\.material\.publish/)
   assert.match(SCRIPT_SOURCE, /POST \/tmall\/submit\.htm/)
@@ -176,6 +200,99 @@ test('short video upload keeps the Excel description and uses API submission pat
   assert.doesNotMatch(SCRIPT_SOURCE, /window\.fetch/)
   assert.doesNotMatch(SCRIPT_SOURCE, /captureOfficialPublishRequest/)
   assert.doesNotMatch(SCRIPT_SOURCE, /captureProductSubmitRequest/)
+})
+
+test('short video upload applies separate titles and Guang activity readback', async () => {
+  const helpers = await loadExports({ window: { __USER_INFO__: { userId: '123456' } } })
+  const job = {
+    item_id: '1027640116164',
+    guang_title: '新生儿贴身衣认准新疆棉A类柔软透气',
+    recommend_title: '新生儿新疆棉贴身衣',
+    description: inputRow().视频描述,
+    activity: '夏日运动穿搭图鉴',
+  }
+
+  assert.equal(helpers.titleForScene(job, 'pc_newcreator_video'), job.guang_title)
+  assert.equal(helpers.titleForScene(job, 'qn_material_manager'), job.recommend_title)
+  assert.equal(
+    helpers.titleWithActivity(job.description, job.activity),
+    `${job.description} 夏日运动穿搭图鉴`,
+  )
+  assert.equal(
+    helpers.titleRawWithActivity(job.description, job.activity),
+    `${job.description} {##[Topic]##}`,
+  )
+  assert.equal(helpers.activityTopicId({ sceneId: '1000001152' }), '1000001152')
+
+  const runtime = {
+    store: {
+      getState() {
+        return {
+          content: {
+            value: {
+              id: 'content-draft',
+              shortTitle: job.guang_title,
+              title: `${job.description} 夏日运动穿搭图鉴`,
+              titleRaw: `${job.description} {##[Topic]##}`,
+              titleElements: [{ id: '1000001152', type: 'Topic', name: '夏日运动穿搭图鉴' }],
+              topicId: '1000001152',
+              topicSource: 'hashtag_customize',
+              items: [{ itemId: '1027640116164', id: '1027640116164', source: 'selfShop', picUrl: 'https://img.example.com/item.jpg' }],
+              video: { fileId: 'file-id', statInfo: { audio: [] } },
+              coverUser: { url: 'https://img.example.com/cover.jpg', width: 800, height: 800, origin: 'intellect' },
+              downloadEnable: '0',
+            },
+          },
+          config: {
+            value: {
+              bizCode: 'pc_video_seller_publish',
+              publishParams: {},
+              abParams: {},
+            },
+          },
+        }
+      },
+    },
+  }
+  const request = helpers.buildDirectPublishRequest('pc_newcreator_video', runtime, 'publish-session')
+  assert.deepEqual(plain(request.topics), [{ topicId: '1000001152', source: 'hashtag_customize' }])
+  assert.equal(request.titleRaw, encodeURIComponent(`${job.description} {##[Topic]##}`))
+  assert.deepEqual(plain(request.titleElements), [{ id: '1000001152', type: 'Topic', name: '夏日运动穿搭图鉴' }])
+
+  const noTopicIdRuntime = {
+    store: {
+      getState() {
+        return {
+          content: {
+            value: {
+              ...runtime.store.getState().content.value,
+              topicId: '',
+              topicSource: '',
+              topics: [],
+              titleElements: [{ type: 'Topic', name: '夏日运动穿搭图鉴', subType: 'hashtag_customize' }],
+            },
+          },
+          config: runtime.store.getState().config,
+        }
+      },
+    },
+  }
+  const noTopicIdRequest = helpers.buildDirectPublishRequest('pc_newcreator_video', noTopicIdRuntime, 'publish-session')
+  assert.deepEqual(plain(noTopicIdRequest.topics), [])
+  assert.deepEqual(plain(noTopicIdRequest.titleElements), [{ type: 'Topic', name: '夏日运动穿搭图鉴', subType: 'hashtag_customize' }])
+
+  helpers.validatePublishReadback(job, {
+    shortTitle: job.guang_title,
+    title: `${job.description} 夏日运动穿搭图鉴`,
+    titleRaw: `${job.description} {##[Topic]##}`,
+    titleElements: [{ type: 'Topic', name: '夏日运动穿搭图鉴' }],
+    topics: [{ topicInfo: { name: '夏日运动穿搭图鉴' } }],
+    items: [{ itemId: '1027640116164' }],
+    onlineTime: null,
+    coverUser: { url: 'https://img.example.com/cover.jpg' },
+    fileId: 'file-id',
+    videoStatus: 'success',
+  }, 'pc_newcreator_video')
 })
 
 test('short video upload maps the publish flow group and keeps legacy booleans compatible', async () => {

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -47,14 +48,20 @@ SUPPORTED_MODELS = (
     *DOMESTIC_OPENAI_MODELS,
 )
 DEFAULT_MODEL = "gpt-5.6-terra"
+GUANG_TITLE_MIN_CHARS = 24
+GUANG_TITLE_MAX_CHARS = 30
+RECOMMEND_TITLE_MIN_CHARS = 16
+RECOMMEND_TITLE_MAX_CHARS = 20
 
 VIDEO_COPY_SYSTEM_PROMPT = """你是一个电商信息流的资深运营。你要为童装或童鞋商品编写小红书卖货视频文案。
 只能依据商品标题和提供的商品主图，不要虚构图片中无法确认的材质、功能、认证或使用效果。
 每个方案必须遵循：开头精准框定人群；按重要程度说明主卖点和次卖点；结尾再次框选人群并促成行动。
 不要写价格、折扣、优惠券、满减、赠品、包邮、秒杀等价格或促销利益点。
-视频标题不超过30个汉字；视频描述适合约30秒口播，建议60到220个字符。
+每个方案要生成两个标题：逛逛标题必须24到30个汉字，优先接近30字；搜推标题必须16到20个汉字，优先接近20字。
+标题不要使用空格，不要为了凑字加入图片和商品标题无法支撑的材质、功能或效果。
+视频描述适合约30秒口播，建议60到220个字符。
 只返回 JSON，不要返回 Markdown。JSON 格式固定为：
-{"scripts":[{"video_title":"...","video_description":"..."},{"video_title":"...","video_description":"..."},{"video_title":"...","video_description":"..."}]}"""
+{"scripts":[{"guang_title":"...","recommend_title":"...","video_description":"..."},{"guang_title":"...","recommend_title":"...","video_description":"..."},{"guang_title":"...","recommend_title":"...","video_description":"..."}]}"""
 
 _PROMOTION_PATTERN = re.compile(
     r"(?:[¥￥$]\s*\d|\d+(?:\.\d+)?\s*元|价格|优惠|折扣|满减|立减|领券|券后|"
@@ -478,6 +485,21 @@ def _parse_json_text(value: str) -> Any:
             raise LlmResponseError("文本模型返回的 JSON 无法解析") from exc
 
 
+def _is_retryable_llm_error(exc: LlmGatewayError) -> bool:
+    if isinstance(exc, LlmConfigurationError):
+        return False
+    text = str(exc or "").lower()
+    return (
+        "连接失败" in text
+        or "remote end closed" in text
+        or "timed out" in text
+        or "timeout" in text
+        or "请求超过" in text
+        or "http 429" in text
+        or re.search(r"http 5\d\d", text, flags=re.IGNORECASE) is not None
+    )
+
+
 def normalize_video_copies(payload: Any) -> list[dict[str, str]]:
     if isinstance(payload, dict):
         rows = payload.get("scripts")
@@ -493,27 +515,55 @@ def normalize_video_copies(payload: Any) -> list[dict[str, str]]:
         if not isinstance(item, dict):
             errors.append(f"第{index}个方案不是对象")
             continue
-        title = re.sub(r"\s+", " ", _compact(item.get("video_title") or item.get("title")))
+        legacy_title = _compact(item.get("video_title") or item.get("title"))
+        guang_title = re.sub(
+            r"\s+",
+            " ",
+            _compact(item.get("guang_title") or item.get("guangguang_title") or item.get("逛逛标题") or legacy_title),
+        )
+        recommend_title = re.sub(
+            r"\s+",
+            " ",
+            _compact(
+                item.get("recommend_title")
+                or item.get("search_recommend_title")
+                or item.get("soutui_title")
+                or item.get("搜推标题")
+                or legacy_title
+            ),
+        )
         description = re.sub(
             r"\s+",
             " ",
             _compact(item.get("video_description") or item.get("description") or item.get("copy")),
         )
-        if not title:
-            errors.append(f"第{index}个视频标题为空")
-        elif len(title) > 30:
-            errors.append(f"第{index}个视频标题超过30字")
+        if not guang_title:
+            errors.append(f"第{index}个逛逛标题为空")
+        elif len(guang_title) < GUANG_TITLE_MIN_CHARS:
+            errors.append(f"第{index}个逛逛标题少于{GUANG_TITLE_MIN_CHARS}字，没有接近30字")
+        elif len(guang_title) > GUANG_TITLE_MAX_CHARS:
+            errors.append(f"第{index}个逛逛标题超过{GUANG_TITLE_MAX_CHARS}字")
+        if not recommend_title:
+            errors.append(f"第{index}个搜推标题为空")
+        elif len(recommend_title) < RECOMMEND_TITLE_MIN_CHARS:
+            errors.append(f"第{index}个搜推标题少于{RECOMMEND_TITLE_MIN_CHARS}字，没有接近20字")
+        elif len(recommend_title) > RECOMMEND_TITLE_MAX_CHARS:
+            errors.append(f"第{index}个搜推标题超过{RECOMMEND_TITLE_MAX_CHARS}字")
         if not description:
             errors.append(f"第{index}个视频描述为空")
         elif not 60 <= len(description) <= 220:
             errors.append(f"第{index}个视频描述应为60到220字")
-        if _PROMOTION_PATTERN.search(f"{title} {description}"):
+        if _PROMOTION_PATTERN.search(f"{guang_title} {recommend_title} {description}"):
             errors.append(f"第{index}个方案包含价格或促销利益点")
-        key = (title, description)
+        key = (guang_title, recommend_title, description)
         if key in seen:
             errors.append(f"第{index}个方案与其他方案重复")
         seen.add(key)
-        normalized.append({"video_title": title, "video_description": description})
+        normalized.append({
+            "guang_title": guang_title,
+            "recommend_title": recommend_title,
+            "video_description": description,
+        })
     if errors:
         raise LlmResponseError("；".join(errors))
     return normalized
@@ -527,6 +577,7 @@ def generate_video_copies(
     config: dict | None = None,
     request_openai: Callable[[LlmRoute, str, list[str], str], dict] = _openai_request,
     request_anthropic: Callable[[LlmRoute, str, list[str], str], dict] = _anthropic_request,
+    retry_sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[list[dict[str, str]], LlmRoute]:
     title = _compact(product_title)
     images = [_normalize_image_url(item) for item in image_urls if _normalize_image_url(item)][:5]
@@ -537,16 +588,29 @@ def generate_video_copies(
 
     route = route_for_model(model_id, config=config)
     correction = ""
-    for attempt in range(2):
-        response = (
-            request_anthropic(route, title, images, correction)
-            if route.protocol == "anthropic"
-            else request_openai(route, title, images, correction)
-        )
+    validation_attempt = 0
+    max_validation_attempts = 2
+    transport_attempt = 0
+    max_transport_attempts = 3
+    while validation_attempt < max_validation_attempts and transport_attempt < max_transport_attempts:
+        try:
+            response = (
+                request_anthropic(route, title, images, correction)
+                if route.protocol == "anthropic"
+                else request_openai(route, title, images, correction)
+            )
+            transport_attempt = 0
+        except LlmGatewayError as exc:
+            transport_attempt += 1
+            if transport_attempt >= max_transport_attempts or not _is_retryable_llm_error(exc):
+                raise
+            retry_sleep(min(2.0, float(transport_attempt)))
+            continue
         try:
             return normalize_video_copies(_parse_json_text(_response_text(response))), route
         except LlmResponseError as exc:
-            if attempt:
+            validation_attempt += 1
+            if validation_attempt >= max_validation_attempts:
                 raise
             correction = str(exc)
     raise LlmResponseError("文本模型输出未通过校验")

@@ -4212,7 +4212,8 @@ async def _apply_video_copy_generation(data_rows: list, run_params: dict, wait_f
         return {
             "款号": str(source.get("款号") or "").strip(),
             "ID": str(source.get("ID") or "").strip(),
-            "视频标题": "",
+            "逛逛标题": "",
+            "搜推标题": "",
             "视频描述": "",
             "参与活动": str(source.get("参与活动") or ""),
             "定时/日": str(source.get("定时/日") or ""),
@@ -4234,7 +4235,8 @@ async def _apply_video_copy_generation(data_rows: list, run_params: dict, wait_f
                 rows = [
                     {
                         **base,
-                        "视频标题": copy["video_title"],
+                        "逛逛标题": copy["guang_title"],
+                        "搜推标题": copy["recommend_title"],
                         "视频描述": copy["video_description"],
                         "上传情况": "",
                     }
@@ -4250,7 +4252,8 @@ async def _apply_video_copy_generation(data_rows: list, run_params: dict, wait_f
                 log(f"[llm][warn] 生成失败 {ordinal}/{len(source_rows)}：{base['款号'] or base['ID']}：{safe_error}")
                 return source_index, [{
                     **base,
-                    "视频标题": "",
+                    "逛逛标题": "",
+                    "搜推标题": "",
                     "视频描述": "",
                     "上传情况": f"生成失败：{safe_error}",
                 }]
@@ -5050,7 +5053,8 @@ def _style_video_copy_workbook(path: Path) -> None:
         expected_headers = [
             "款号",
             "ID",
-            "视频标题",
+            "逛逛标题",
+            "搜推标题",
             "视频描述",
             "参与活动",
             "定时/日",
@@ -5064,29 +5068,31 @@ def _style_video_copy_workbook(path: Path) -> None:
             cell.fill = yellow
             cell.font = Font(name="微软雅黑", size=10, bold=True, color="000000")
             cell.alignment = Alignment(
-                horizontal="left" if header in {"视频标题", "视频描述"} else "center",
+                horizontal="left" if header in {"逛逛标题", "搜推标题", "视频描述"} else "center",
                 vertical="center",
             )
         sheet.row_dimensions[1].height = 30
         widths = {
             "A": 18,
             "B": 22,
-            "C": 32,
-            "D": 72,
-            "E": 18,
-            "F": 16,
-            "G": 22,
-            "H": 30,
-            "I": 18,
+            "C": 34,
+            "D": 28,
+            "E": 72,
+            "F": 20,
+            "G": 16,
+            "H": 22,
+            "I": 30,
+            "J": 18,
         }
         for column, width in widths.items():
             sheet.column_dimensions[column].width = width
         for row in range(2, sheet.max_row + 1):
-            for column in ("A", "B", "I"):
+            for column in ("A", "B", "J"):
                 sheet[f"{column}{row}"].number_format = "@"
             sheet[f"C{row}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
             sheet[f"D{row}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
-            sheet[f"H{row}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            sheet[f"E{row}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            sheet[f"I{row}"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
             sheet.row_dimensions[row].height = 72
         sheet.freeze_panes = "A2"
         workbook.save(path)

@@ -104,12 +104,15 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(task["script"], "tmall-video-copy-generate.js")
         self.assertIn("myseller.taobao.com/home.htm/SellManage/on_sale", task["entry_url"])
         self.assertTrue(task["skip_auth"])
-        self.assertEqual(params["mode"]["default"], "current")
+        self.assertEqual(params["mode"]["default"], "new")
+        mode_options = {item["value"]: item["label"] for item in params["mode"]["options"]}
+        self.assertIn("推荐", mode_options["new"])
+        self.assertNotIn("推荐", mode_options["current"])
         self.assertEqual(params["input_file"]["type"], "file_excel")
         self.assertTrue(params["input_file"]["required"])
         self.assertEqual(
             params["input_file"]["templates"][0]["file"],
-            "templates/tmall-video-copy-template.csv",
+            "templates/tmall-video-copy-template.xlsx",
         )
         self.assertEqual(params["model_id"]["default"], "")
         self.assertEqual(
@@ -133,11 +136,17 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         )
         self.assertEqual(
             output["columns"],
-            ["款号", "ID", "视频标题", "视频描述", "参与活动", "定时/日", "定时/具体时间", "上传情况", "内容ID"],
+            ["款号", "ID", "逛逛标题", "搜推标题", "视频描述", "参与活动", "定时/日", "定时/具体时间", "上传情况", "内容ID"],
         )
-        self.assertTrue(
-            Path("adapters/bala-ai-video-assistant/templates/tmall-video-copy-template.csv").exists()
-        )
+        template_path = ROOT / "adapters" / "bala-ai-video-assistant" / "templates" / "tmall-video-copy-template.xlsx"
+        self.assertTrue(template_path.is_file())
+        from openpyxl import load_workbook
+        workbook = load_workbook(template_path, read_only=True, data_only=True)
+        try:
+            headers = [cell.value for cell in next(workbook.active.iter_rows(min_row=1, max_row=1))]
+        finally:
+            workbook.close()
+        self.assertEqual(headers, output["columns"])
 
     def test_manifest_declares_short_video_batch_upload_task(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -157,6 +166,10 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertIn("不跳转原操作页面", params["mode"]["hint"])
         self.assertEqual(params["input_file"]["type"], "file_excel")
         self.assertTrue(params["input_file"]["required"])
+        self.assertEqual(
+            params["input_file"]["templates"][0]["file"],
+            "templates/tmall-video-copy-template.xlsx",
+        )
         self.assertNotIn("video_override_path", params)
         self.assertEqual(params["video_dir"]["type"], "directory")
         self.assertTrue(params["video_dir"]["include_file_listing"])

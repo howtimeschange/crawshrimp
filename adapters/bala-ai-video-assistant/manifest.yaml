@@ -14,7 +14,7 @@ auth:
 tasks:
   - id: tmall_video_copy_generate
     name: AI生成视频标题和文案
-    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，调用设置中的文本大模型生成3组小红书视频标题与约30秒文案，并按短视频批量上传模板导出
+    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，调用设置中的文本大模型生成3组逛逛标题、搜推标题与约30秒文案，并按短视频批量上传模板导出
     script: tmall-video-copy-generate.js
     entry_url: https://myseller.taobao.com/home.htm/SellManage/on_sale?current=1&pageSize=20
     tab_match_prefixes:
@@ -26,23 +26,23 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
-          - value: current
-            label: 当前千牛页面（推荐）
           - value: new
-            label: 全新页面
-        hint: 默认复用当前已登录的 9222 千牛浏览器；脚本只读取商品标题和主图，不修改或提交商品。
+            label: 全新页面（推荐）
+          - value: current
+            label: 当前千牛页面
+        hint: 默认在当前 9222 登录态中新开千牛商品列表页；脚本只读取商品标题和主图，不修改或提交商品。
       - id: input_file
         type: file_excel
         label: 短视频批量上传模板
         required: true
         templates:
-          - file: templates/tmall-video-copy-template.csv
+          - file: templates/tmall-video-copy-template.xlsx
             label: 短视频批量上传模板
-            description: 至少填写“ID”列；“款号”可留空并从商品编辑页自动读取。每个商品会生成3行候选标题与视频描述，其余上传字段保持为空。
-            version: "2026.07.23.1"
-        hint: 支持你现有的“短视频批量上传模板1.xlsx”；必须包含“ID”列，“款号”可留空并从商品编辑页自动读取。商品 ID 会按文本处理，避免 Excel 科学计数法。
+            description: 至少填写“ID”列；“款号”可留空并从商品编辑页自动读取。每个商品会生成3行候选逛逛标题、搜推标题与视频描述，其余上传字段保持为空。
+            version: "2026.08.03.1"
+        hint: 支持你现有的短视频批量上传模板；必须包含“ID”列，“款号”可留空并从商品编辑页自动读取。商品 ID 会按文本处理，避免 Excel 科学计数法。
       - id: model_id
         type: select
         label: 文案生成模型
@@ -99,7 +99,8 @@ tasks:
         columns:
           - 款号
           - ID
-          - 视频标题
+          - 逛逛标题
+          - 搜推标题
           - 视频描述
           - 参与活动
           - 定时/日
@@ -129,11 +130,11 @@ tasks:
         label: 短视频批量上传模板
         required: true
         templates:
-          - file: templates/tmall-video-copy-template.csv
+          - file: templates/tmall-video-copy-template.xlsx
             label: 短视频批量上传模板
-            description: 填写款号、商品 ID、视频标题、视频描述和可选定时时间；运行结果会追加三个入口的状态、内容 ID、接口回执和刷新读回。
-            version: "2026.07.23.1"
-        hint: 商品 ID 与内容 ID 会按文本输出；定时日期和时间仅用于光合逛逛发布。
+            description: 填写款号、商品 ID、逛逛标题、搜推标题、视频描述、参与活动和可选定时时间；运行结果会追加三个入口的状态、内容 ID、接口回执和刷新读回。
+            version: "2026.08.03.1"
+        hint: 商品 ID 与内容 ID 会按文本输出；定时日期、定时时间和参与活动仅用于光合逛逛发布；搜推素材使用“搜推标题”。
       - id: video_dir
         type: directory
         label: 批量视频目录
@@ -174,7 +175,8 @@ tasks:
         columns:
           - 款号
           - ID
-          - 视频标题
+          - 逛逛标题
+          - 搜推标题
           - 视频描述
           - 参与活动
           - 定时/日
