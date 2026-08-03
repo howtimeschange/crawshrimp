@@ -114,11 +114,10 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             params["input_file"]["templates"][0]["file"],
             "templates/tmall-video-copy-template.xlsx",
         )
-        self.assertEqual(params["model_id"]["default"], "")
+        self.assertEqual(params["model_id"]["default"], "gpt-5.6-terra")
         self.assertEqual(
             model_ids,
             [
-                "",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",

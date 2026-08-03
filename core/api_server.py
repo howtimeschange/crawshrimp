@@ -2347,6 +2347,7 @@ BALA_VIDEO_TEMPLATE_CATALOG_JSON = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.j
 BALA_VIDEO_TEMPLATE_CATALOG_CSV = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.csv"
 BALA_SEEDANCE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "seedanceCLI"
 BALA_SEEDANCE_DEFAULT_MODEL = "doubao-seedance-2-0-260128"
+BALA_VIDEO_COPY_DEFAULT_MODEL = "gpt-5.6-terra"
 BALA_HAPPYHORSE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "bailianCLI"
 BALA_HAPPYHORSE_MODELS = {
     "t2v": "happyhorse-1.1-t2v",
@@ -4199,12 +4200,12 @@ async def _apply_video_copy_generation(data_rows: list, run_params: dict, wait_f
     if not source_rows:
         return data_rows
 
-    model_id = str(run_params.get("model_id") or "").strip()
+    model_id = str(run_params.get("model_id") or BALA_VIDEO_COPY_DEFAULT_MODEL).strip() or BALA_VIDEO_COPY_DEFAULT_MODEL
     concurrency = max(1, min(3, int(run_params.get("generation_concurrency") or 3)))
     semaphore = asyncio.Semaphore(concurrency)
     generated_by_index: dict[int, list[dict]] = {}
     log(
-        f"[llm] 准备使用 {model_id or '设置中的默认模型'} 为 {len(source_rows)} 个商品"
+        f"[llm] 准备使用 {model_id} 为 {len(source_rows)} 个商品"
         f"生成短视频标题和文案，并发上限 {concurrency}"
     )
 

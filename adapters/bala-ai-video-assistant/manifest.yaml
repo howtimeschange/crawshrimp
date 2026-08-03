@@ -14,7 +14,7 @@ auth:
 tasks:
   - id: tmall_video_copy_generate
     name: AI生成视频标题和文案
-    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，调用设置中的文本大模型生成3组逛逛标题、搜推标题与约30秒文案，并按短视频批量上传模板导出
+    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，默认用 gpt-5.6-terra 生成3组逛逛标题、搜推标题与约30秒文案，并按短视频批量上传模板导出
     script: tmall-video-copy-generate.js
     entry_url: https://myseller.taobao.com/home.htm/SellManage/on_sale?current=1&pageSize=20
     tab_match_prefixes:
@@ -46,10 +46,8 @@ tasks:
       - id: model_id
         type: select
         label: 文案生成模型
-        default: ""
+        default: gpt-5.6-terra
         options:
-          - value: ""
-            label: 使用设置中的默认模型（推荐）
           - value: gpt-5.6-sol
             label: 海外 · GPT-5.6 Sol
           - value: gpt-5.6-terra
@@ -76,7 +74,7 @@ tasks:
             label: 国内 · GLM 5.2
           - value: kimi-k2.7-code
             label: 国内 · Kimi K2.7 Code
-        hint: 可使用“设置 → AI 能力 → 文本大模型”的默认模型，也可在本次任务中覆盖；海外 Claude 模型走 Anthropic 兼容地址，其他海外模型走 OpenAI 兼容地址，国内模型走百炼 CodingPlan 兼容地址。
+        hint: 默认使用本次评测胜出的 gpt-5.6-terra；可在本次任务中覆盖。海外 Claude 模型走 Anthropic 兼容地址，其他海外模型走 OpenAI 兼容地址，国内模型走百炼 CodingPlan 兼容地址。
       - id: output_dir
         type: directory
         label: Excel 导出目录

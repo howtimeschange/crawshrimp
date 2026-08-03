@@ -300,6 +300,37 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row["逛逛标题"] and row["搜推标题"] and row["视频描述"] for row in rows))
         self.assertTrue(waits)
 
+    async def test_backend_uses_evaluated_default_model_when_omitted(self):
+        source = [{
+            "款号": "204125140101",
+            "ID": "850170525107",
+            "__generate_video_copy": True,
+            "__product_title": "巴拉巴拉童鞋儿童运动鞋男童透气跑步鞋",
+            "__main_image_urls": [f"https://img.example/{index}.jpg" for index in range(5)],
+        }]
+        logs = []
+
+        with patch.object(
+            llm_gateway,
+            "generate_video_copies",
+            return_value=(llm_gateway.normalize_video_copies(valid_scripts()), llm_gateway.LlmRoute(
+                model_id="gpt-5.6-terra",
+                protocol="openai",
+                base_url="https://openai.example/v1",
+                api_key="unit-key",
+            )),
+        ) as generate:
+            rows = await api_server._apply_video_copy_generation(
+                source,
+                {},
+                lambda payload=None: asyncio.sleep(0),
+                logs.append,
+            )
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(generate.call_args.kwargs["model_id"], "gpt-5.6-terra")
+        self.assertTrue(any("准备使用 gpt-5.6-terra" in item for item in logs))
+
     async def test_final_workbook_matches_batch_upload_headers_and_text_ids(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
