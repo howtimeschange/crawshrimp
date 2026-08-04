@@ -34,7 +34,7 @@
   const OCR_TOTAL_TIMEOUT_MS = 120000
   const CRAW_SHRIMP_LOCAL_BASE_URL = 'http://127.0.0.1:18765'
   const TESSERACT_VENDOR_PATH = '/adapter-assets/vipshop-ops-assistant/vendor/tesseract'
-  const TESSERACT_LANG = 'chi_sim+eng'
+  const TESSERACT_LANG = 'chi_sim'
   const VIPSHOP_MAX_UPLOAD_BYTES = 1024 * 1024
   const DEFAULT_SEMIR_LOGIN_WAIT_MS = 500000
   const SEMIR_LOGIN_WAIT_MS = Math.max(1000, Number(params.semir_login_wait_ms || DEFAULT_SEMIR_LOGIN_WAIT_MS) || DEFAULT_SEMIR_LOGIN_WAIT_MS)
@@ -2902,7 +2902,7 @@
     return {
       scriptUrl: compact(rawParams.tesseract_script_url || rawParams.ocr_tesseract_url || `${localVendorPath}/tesseract.min.js`),
       workerPath: compact(rawParams.tesseract_worker_url || `${localVendorPath}/worker.min.js`),
-      corePath: compact(rawParams.tesseract_core_path || localVendorPath),
+      corePath: compact(rawParams.tesseract_core_path || `${localVendorPath}/tesseract-core-lstm.wasm.js`),
       langPath: compact(rawParams.tesseract_lang_path || `${localVendorPath}/lang`),
       lang: compact(rawParams.tesseract_lang || rawParams.ocr_lang || TESSERACT_LANG),
       maxImages: ocrMaxImages(rawParams),

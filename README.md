@@ -16,7 +16,7 @@
 - 执行模式文案调整为「预检（不执行真实上传）」和「找图并且真实上传」，让运营能更清楚地区分预检与真实上传。
 - 默认上传明细模板改为 XLSX，CSV 模板继续保留给旧引用，避免 Windows Excel 识别 CSV 内容异常。
 - 唯品会适配器内置自己的 Tesseract OCR runtime，并从 `/adapter-assets/vipshop-ops-assistant/vendor/tesseract/...` 读取，不再隐式依赖天猫适配器资源。
-- 适配器包导入安装时会随包携带 OCR worker、core、wasm 和中英文语言包，异机只安装唯品会脚本也能完成详情图 OCR 定位。
+- 适配器包导入安装时会随包携带 OCR worker、内嵌 LSTM core 和 fast 中文语言包，异机只安装唯品会脚本也能完成详情图 OCR 定位，同时避免桌面更新包超过 R2 上传上限。
 
 完整变更见 [v2.4.5 Release Notes](release-notes/v2.4.5.md)。
 

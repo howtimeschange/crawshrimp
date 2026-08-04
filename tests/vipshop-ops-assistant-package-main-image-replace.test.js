@@ -1170,9 +1170,9 @@ test('Vipshop tesseract runtime config uses its own bundled OCR assets by defaul
 
   assert.equal(config.scriptUrl, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/tesseract.min.js')
   assert.equal(config.workerPath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/worker.min.js')
-  assert.equal(config.corePath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract')
+  assert.equal(config.corePath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/tesseract-core-lstm.wasm.js')
   assert.equal(config.langPath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/lang')
-  assert.equal(config.lang, 'chi_sim+eng')
+  assert.equal(config.lang, 'chi_sim')
 })
 
 test('visible alert confirm recognizes 确认 buttons', async () => {

@@ -115,16 +115,36 @@ class VipshopOpsManifestTests(unittest.TestCase):
         expected_files = [
             "tesseract.min.js",
             "worker.min.js",
-            "tesseract-core.wasm",
-            "tesseract-core.wasm.js",
+            "tesseract-core-lstm.wasm.js",
             "lang/chi_sim.traineddata.gz",
-            "lang/eng.traineddata.gz",
         ]
 
         for relative_path in expected_files:
             self.assertTrue(
                 (VIPSHOP_TESSERACT_VENDOR_PATH / relative_path).is_file(),
                 f"missing bundled Vipshop OCR asset: {relative_path}",
+            )
+
+        self.assertLess(
+            (VIPSHOP_TESSERACT_VENDOR_PATH / "lang/chi_sim.traineddata.gz").stat().st_size,
+            4 * 1024 * 1024,
+            "Vipshop OCR should use compact tessdata_fast Chinese data",
+        )
+
+        unused_assets = [
+            "tesseract-core.wasm",
+            "tesseract-core.wasm.js",
+            "tesseract-core-simd.wasm",
+            "tesseract-core-simd.wasm.js",
+            "tesseract-core-lstm.wasm",
+            "tesseract-core-simd-lstm.wasm",
+            "tesseract-core-simd-lstm.wasm.js",
+            "lang/eng.traineddata.gz",
+        ]
+        for relative_path in unused_assets:
+            self.assertFalse(
+                (VIPSHOP_TESSERACT_VENDOR_PATH / relative_path).exists(),
+                f"Vipshop OCR bundle should not include unused asset: {relative_path}",
             )
 
     def test_manifest_declares_hot_strategy_tracking_report(self):
