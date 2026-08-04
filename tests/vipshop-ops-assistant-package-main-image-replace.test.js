@@ -151,11 +151,13 @@ test('normalizes Vipshop upload function UI into internal operation scope', asyn
   assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({})), ['package', 'main_image'])
   assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['full'] })), ['package', 'main_image'])
   assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['main_image'] })), ['main_image'])
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['只传打标图'] })), ['main_image'])
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['package'] })), ['package'])
   assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['detail_image'] })), ['package'])
-  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['只传主图', '只传商详页'] })), ['package', 'main_image'])
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['只传打标图', '只传包装图（商详页+商品展示345）'] })), ['package', 'main_image'])
   assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ operation_scope: ['main_image'] })), ['main_image'])
 
-  const parsed = helpers.normalizePackageMainJobs({ rows }, { execute_mode: 'plan', upload_scope: ['detail_image'] })
+  const parsed = helpers.normalizePackageMainJobs({ rows }, { execute_mode: 'plan', upload_scope: ['package'] })
   assert.deepEqual(plain(parsed.jobs[0].operationScope), ['package'])
 })
 
@@ -181,7 +183,7 @@ test('classifies Vipshop package and main-image assets by full goods code', asyn
   assert.ok(plan.groups.unmatched.some(item => item.reason === '疑似整张预览或源文件，详情切片跳过'))
 })
 
-test('uses the Tmall packaging Semir root as Vipshop default cloud path', async () => {
+test('uses the Vipshop packaging visual root as default cloud path', async () => {
   const helpers = await loadExports()
   const parsed = helpers.normalizePackageMainJobs({
     rows: [{ 款号: '201326108015', 货号: '20132610801500311' }],
@@ -189,9 +191,12 @@ test('uses the Tmall packaging Semir root as Vipshop default cloud path', async 
 
   assert.equal(
     parsed.jobs[0].cloudPath,
-    '巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/',
+    '巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/',
   )
-  assert.equal(helpers.defaultSemirCloudPath(), '巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/')
+  assert.equal(
+    helpers.defaultSemirCloudPath(),
+    '巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/',
+  )
 })
 
 test('uses an independent Semir root and path features for Vipshop main/list images', async () => {
@@ -201,7 +206,7 @@ test('uses an independent Semir root and path features for Vipshop main/list ima
   }, { execute_mode: 'plan' })
   const job = parsed.jobs[0]
 
-  assert.equal(job.cloudPath, '巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/')
+  assert.equal(job.cloudPath, '巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/')
   assert.equal(job.mainImageCloudPath, '巴拉巴拉品牌事业部-市场系统//品牌视觉部/')
   assert.deepEqual(plain(job.mainImagePathFeatures), ['主图打标', '京东唯品', '回图/唯品'])
   assert.equal(helpers.defaultVipshopMainImageCloudRoot(), '巴拉巴拉品牌事业部-市场系统//品牌视觉部/')
@@ -263,6 +268,27 @@ test('collects color-specific 1200 and 950 images from Vipshop main-image cloud 
   assert.equal(plan.plan.plan.groups.listImage[0].file.includes('/2027/999/回图/唯品/'), true)
   assert.equal(plan.plan.plan.groups.mainSquare.some(item => item.file.includes('服饰产品包装')), false)
   assert.equal(calls.some(call => call.url.includes('/fengcloud/1/file/ls')), false)
+})
+
+test('accepts Vipshop marked main images under return need-upload folders', async () => {
+  const helpers = await loadExports()
+  const job = {
+    styleCode: '208926166212',
+    goodsCode: '20892616621200454',
+    mainImagePathFeatures: helpers.normalizeMainImagePathFeatures(),
+  }
+  const sourceConfig = {
+    relativePath: '品牌视觉部',
+    pathFeatures: helpers.normalizeMainImagePathFeatures(),
+  }
+  const main = image('品牌视觉部/巴拉供应商/小仙/主图打标（京东唯品）/2026/326/回图/第六批/需传/home+用品/20892616621200454-1200.jpg', 1200, 1200)
+  const list = image('品牌视觉部/巴拉供应商/小仙/主图打标（京东唯品）/2026/326/回图/第六批/需传/home+用品/20892616621200454-950.jpg', 950, 1200)
+  const plan = helpers.classifyVipshopAssets(job, [main, list])
+
+  assert.equal(helpers.itemMatchesMainImageSource(main, job, sourceConfig), true)
+  assert.equal(helpers.itemMatchesMainImageSource(list, job, sourceConfig), true)
+  assert.equal(plan.groups.mainSquare.length, 1)
+  assert.equal(plan.groups.listImage.length, 1)
 })
 
 test('prefers Vipshop package roots over logistics search hits', async () => {
@@ -391,6 +417,47 @@ test('matches Vipshop main/list image pairs named by full goods code and size su
   assert.ok(plan.groups.listImage.every(item => item.sourceMatch === '货号'))
 })
 
+test('downloads all color-specific Vipshop marked main/list images under one style', async () => {
+  const helpers = await loadExports()
+  const plan = helpers.classifyVipshopAssets({
+    styleCode: '209426108201',
+    goodsCode: '20942610820140627',
+    operationScope: ['main_image'],
+  }, [
+    image('/主图打标（京东唯品）/2026/426/回图/唯品/20942610820100102-1200.jpg', 1200, 1200),
+    image('/主图打标（京东唯品）/2026/426/回图/唯品/20942610820100102-950.jpg', 950, 1200),
+    image('/主图打标（京东唯品）/2026/426/回图/唯品/20942610820140627-1200.jpg', 1200, 1200),
+    image('/主图打标（京东唯品）/2026/426/回图/唯品/20942610820140627-950.jpg', 950, 1200),
+    image('/主图打标（京东唯品）/2026/426/回图/唯品/20942610820190001-1200.jpg', 1200, 1200),
+    image('/主图打标（京东唯品）/2026/426/回图/唯品/20942610820190001-950.jpg', 950, 1200),
+  ])
+  const entries = helpers.selectedVipshopAssetEntries({
+    styleCode: '209426108201',
+    goodsCode: '20942610820140627',
+    operationScope: ['main_image'],
+  }, plan)
+
+  assert.deepEqual(plain(plan.groups.mainSquareAllColors.map(item => item.targetGoodsCode).sort()), [
+    '20942610820100102',
+    '20942610820140627',
+    '20942610820190001',
+  ])
+  assert.deepEqual(plain(plan.groups.listImageAllColors.map(item => item.targetGoodsCode).sort()), [
+    '20942610820100102',
+    '20942610820140627',
+    '20942610820190001',
+  ])
+  assert.deepEqual(plain(entries.map(item => `${item.targetGoodsCode}:${item.usageKey}:${item.imageIndex}`).sort()), [
+    '20942610820100102:list_image:50',
+    '20942610820100102:main_square:1',
+    '20942610820140627:list_image:50',
+    '20942610820140627:main_square:1',
+    '20942610820190001:list_image:50',
+    '20942610820190001:main_square:1',
+  ])
+  assert.equal(helpers.extractStyleGoodsCodeFromItem(image('/唯品/20942610820140627-1200.jpg', 1200, 1200), '209426108201'), '20942610820140627')
+})
+
 test('keeps downloaded detail slices classified by original Semir filename', async () => {
   const helpers = await loadExports()
   const plan = helpers.classifyVipshopAssets({
@@ -455,7 +522,97 @@ test('does not use style-level package artwork as color-specific main/list image
 
   assert.equal(entries.some(item => item.usageKey === 'main_square'), false)
   assert.equal(entries.some(item => item.usageKey === 'list_image'), false)
-  assert.deepEqual(plain(entries.filter(item => item.usageKey === 'package_micro_square').map(item => item.imageIndex)), [3, 4])
+  assert.deepEqual(plain(entries.filter(item => item.usageKey === 'package_micro_square').map(item => item.imageIndex)), [])
+})
+
+test('uses style-folder micro detail images as Vipshop display positions 3 to 5', async () => {
+  const helpers = await loadExports()
+  const plan = helpers.classifyVipshopAssets({
+    styleCode: '201326108015',
+    goodsCode: '20132610801500311',
+  }, [
+    image('/01-产品包装/2026Q3/婴幼/o2o/201326108015/微详情/1200_12001.jpg', 1200, 1200),
+    image('/01-产品包装/2026Q3/婴幼/o2o/201326108015/微详情/1200_12002.jpg', 1200, 1200),
+    image('/01-产品包装/2026Q3/婴幼/o2o/201326108015/微详情/1200_12003.jpg', 1200, 1200),
+    image('/01-产品包装/2026Q3/婴幼/o2o/201326108015/源文件/1200_12004.jpg', 1200, 1200),
+  ])
+  const entries = helpers.selectedVipshopAssetEntries({
+    styleCode: '201326108015',
+    goodsCode: '20132610801500311',
+    operationScope: ['package'],
+  }, plan)
+
+  assert.equal(plan.groups.packageMicroSquare.length, 3)
+  assert.deepEqual(plain(entries.filter(item => item.usageKey === 'package_micro_square').map(item => item.imageIndex)), [3, 4, 15])
+})
+
+test('applies package micro display images to every Vipshop color at display positions 3 to 5', async () => {
+  const helpers = await loadExports()
+  const colors = [
+    { colourGSN: '20942610820190001', squareImages: [{ imageIndex: 1, imageUrl: 'old-main-black' }] },
+    { colourGSN: '20942610820140627', squareImages: [{ imageIndex: 1, imageUrl: 'old-main-green' }] },
+  ]
+  const records = [
+    { imageUrl: 'micro-1', asset: { filename: '1200_12001.jpg', width: 1200, height: 1200 } },
+    { imageUrl: 'micro-2', asset: { filename: '1200_12002.jpg', width: 1200, height: 1200 } },
+    { imageUrl: 'micro-3', asset: { filename: '1200_12003.jpg', width: 1200, height: 1200 } },
+  ]
+
+  assert.equal(helpers.applyPackageMicroSquareRecordsToColors(colors, records), 2)
+  assert.deepEqual(plain(colors.map(color => color.squareImages.map(item => [item.imageIndex, item.imageUrl]))), [
+    [[1, 'old-main-black'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3']],
+    [[1, 'old-main-green'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3']],
+  ])
+})
+
+test('limits package micro display images to matching 12-digit style inside merged link', async () => {
+  const helpers = await loadExports()
+  const colors = [
+    { colourGSN: '20892616621200388', squareImages: [{ imageIndex: 1, imageUrl: 'old-212-a' }] },
+    { colourGSN: '20892616621200454', squareImages: [{ imageIndex: 1, imageUrl: 'old-212-b' }] },
+    { colourGSN: '20892616621300355', squareImages: [{ imageIndex: 1, imageUrl: 'old-213-a' }] },
+  ]
+  const records = [
+    { imageUrl: 'micro-1', asset: { filename: '1200_12001.jpg', width: 1200, height: 1200 } },
+    { imageUrl: 'micro-2', asset: { filename: '1200_12002.jpg', width: 1200, height: 1200 } },
+    { imageUrl: 'micro-3', asset: { filename: '1200_12003.jpg', width: 1200, height: 1200 } },
+  ]
+  const targetColors = helpers.findStateColorsByStyleCode({ editData: { itemSkuAttr: colors } }, '208926166212')
+
+  assert.deepEqual(plain(helpers.goodsCodesFromColors(targetColors)), ['20892616621200388', '20892616621200454'])
+  assert.equal(helpers.applyPackageMicroSquareRecordsToColors(targetColors, records), 2)
+  assert.deepEqual(plain(colors.map(color => color.squareImages.map(item => [item.imageIndex, item.imageUrl]))), [
+    [[1, 'old-212-a'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3']],
+    [[1, 'old-212-b'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3']],
+    [[1, 'old-213-a']],
+  ])
+})
+
+test('applies marked main and list images by target goods code', async () => {
+  const helpers = await loadExports()
+  const colors = [
+    { colourGSN: '20942610820190001', squareImages: [], listImages: [] },
+    { colourGSN: '20942610820140627', squareImages: [], listImages: [] },
+  ]
+  const mainRecords = [
+    { imageUrl: 'black-main', asset: { targetGoodsCode: '20942610820190001', filename: '20942610820190001-1200.jpg', width: 1200, height: 1200 } },
+    { imageUrl: 'green-main', asset: { targetGoodsCode: '20942610820140627', filename: '20942610820140627-1200.jpg', width: 1200, height: 1200 } },
+  ]
+  const listRecords = [
+    { imageUrl: 'black-list', asset: { targetGoodsCode: '20942610820190001', filename: '20942610820190001-950.jpg', width: 950, height: 1200 } },
+    { imageUrl: 'green-list', asset: { targetGoodsCode: '20942610820140627', filename: '20942610820140627-950.jpg', width: 950, height: 1200 } },
+  ]
+
+  assert.equal(helpers.applyMainSquareRecordsToColors(colors, mainRecords), 2)
+  assert.equal(helpers.applyListImageRecordsToColors(colors, listRecords), 2)
+  assert.deepEqual(plain(colors.map(color => color.squareImages.map(item => [item.imageIndex, item.imageUrl]))), [
+    [[1, 'black-main']],
+    [[1, 'green-main']],
+  ])
+  assert.deepEqual(plain(colors.map(color => color.listImages.map(item => [item.imageIndex, item.imageUrl]))), [
+    [[50, 'black-list']],
+    [[50, 'green-list']],
+  ])
 })
 
 test('merged cloud sources do not promote package-source flat shots into main/list images', async () => {
@@ -467,8 +624,10 @@ test('merged cloud sources do not promote package-source flat shots into main/li
       const mountId = body.get('mount_id')
       const keyword = body.get('keyword')
       const packageItems = ['201326108015', '20132610801500311'].includes(keyword) ? [
-        image('巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/326包装图/幼童/7.27/201326108015/1200_12001.jpg', 1200, 1200),
-        image('巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/326包装图/幼童/7.27/201326108015/images/201326108015_01.jpg', 750, 1200),
+        image('品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q3/婴幼/o2o/201326108015/微详情/1200_12001.jpg', 1200, 1200),
+        image('品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q3/婴幼/o2o/201326108015/微详情/1200_12002.jpg', 1200, 1200),
+        image('品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q3/婴幼/o2o/201326108015/微详情/1200_12003.jpg', 1200, 1200),
+        image('品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q3/婴幼/o2o/201326108015/images/201326108015_01.jpg', 750, 1200),
         image('巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/全域/3p/幼童/201326108015 2-已写/201326108015-00311.jpg', 5000, 5000),
         image('巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/全域/3p/幼童/201326108015 2-已写/201326108015-00311-1.jpg', 5000, 5000),
       ] : []
@@ -520,11 +679,13 @@ test('merged cloud sources do not promote package-source flat shots into main/li
 
   assert.equal(result.plan.plan.groups.mainSquare.length, 0)
   assert.equal(result.plan.plan.groups.listImage.length, 0)
-  assert.equal(result.plan.plan.groups.packageMicroSquare.length, 1)
+  assert.equal(result.plan.plan.groups.packageMicroSquare.length, 3)
   assert.equal(result.plan.plan.groups.detailSlices.length, 1)
   assert.deepEqual(plain(result.downloadItems.map(item => item.filename).sort()), [
-    '201326108015_20132610801500311__detail_slice__2__201326108015_01.jpg',
+    '201326108015_20132610801500311__detail_slice__4__201326108015_01.jpg',
     '201326108015_20132610801500311__package_micro_square__1__1200_12001.jpg',
+    '201326108015_20132610801500311__package_micro_square__2__1200_12002.jpg',
+    '201326108015_20132610801500311__package_micro_square__3__1200_12003.jpg',
   ])
   assert.equal(infoCalls.every(call => call.mountId === 'pkg'), true)
   assert.equal(infoCalls.some(call => String(call.fullpath).includes('平拍原图')), false)
@@ -543,8 +704,64 @@ test('does not treat generic package files in a goods folder as main/list images
 
   assert.equal(plan.groups.mainSquare.length, 0)
   assert.equal(plan.groups.listImage.length, 0)
-  assert.equal(plan.groups.packageMicroSquare.length, 1)
+  assert.equal(plan.groups.packageMicroSquare.length, 0)
   assert.equal(plan.groups.detailSlices.length, 1)
+})
+
+test('classifies downloaded package assets by source path without artifact-dir code leakage', async () => {
+  const helpers = await loadExports()
+  const artifactDir = 'artifacts/vipshop-package-only-201326108015-200326108106-live'
+  const downloaded = [
+    {
+      fullpath: '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q3/婴幼/o2o/201326108015/微详情/1200_12001.jpg',
+      localPath: `${artifactDir}/201326108015_20132610801500311__package_micro_square__1__1200_12001.jpg`,
+      path: `${artifactDir}/201326108015_20132610801500311__package_micro_square__1__1200_12001.jpg`,
+      filename: '201326108015_20132610801500311__package_micro_square__1__1200_12001.jpg',
+      originalFilename: '1200_12001.jpg',
+      width: 1200,
+      height: 1200,
+    },
+    {
+      fullpath: '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q3/婴幼/o2o/201326108015/images/201326108015_01.jpg',
+      localPath: `${artifactDir}/201326108015_20132610801500311__detail_slice__4__201326108015_01.jpg`,
+      path: `${artifactDir}/201326108015_20132610801500311__detail_slice__4__201326108015_01.jpg`,
+      filename: '201326108015_20132610801500311__detail_slice__4__201326108015_01.jpg',
+      originalFilename: '201326108015_01.jpg',
+      width: 750,
+      height: 830,
+    },
+    {
+      fullpath: '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q3/婴幼/o2o/200326108106/微详情/1200_12001.jpg',
+      localPath: `${artifactDir}/200326108106_20032610810600488__package_micro_square__1__1200_12001.jpg`,
+      path: `${artifactDir}/200326108106_20032610810600488__package_micro_square__1__1200_12001.jpg`,
+      filename: '200326108106_20032610810600488__package_micro_square__1__1200_12001.jpg',
+      originalFilename: '1200_12001.jpg',
+      width: 1200,
+      height: 1200,
+    },
+  ]
+
+  const plan = helpers.classifyVipshopAssets({
+    styleCode: '201326108015',
+    goodsCode: '20132610801500311',
+  }, downloaded)
+  const entries = helpers.selectedVipshopAssetEntries({
+    styleCode: '201326108015',
+    goodsCode: '20132610801500311',
+    operationScope: ['package'],
+  }, plan)
+
+  assert.deepEqual(plain(plan.groups.packageMicroSquare.map(item => item.filename)), [
+    '201326108015_20132610801500311__package_micro_square__1__1200_12001.jpg',
+  ])
+  assert.deepEqual(plain(plan.groups.detailSlices.map(item => item.filename)), [
+    '201326108015_20132610801500311__detail_slice__4__201326108015_01.jpg',
+  ])
+  assert.deepEqual(plain(entries.map(item => item.path).sort()), [
+    `${artifactDir}/201326108015_20132610801500311__detail_slice__4__201326108015_01.jpg`,
+    `${artifactDir}/201326108015_20132610801500311__package_micro_square__1__1200_12001.jpg`,
+  ])
+  assert.equal(plan.groups.unmatched.some(item => item.filename.startsWith('200326108106_')), false)
 })
 
 test('coalesces detail-slice uploads for goods under the same product and style', async () => {
@@ -589,10 +806,43 @@ test('coalesces detail-slice uploads for goods under the same product and style'
   assert.deepEqual(plain(coalesced[1].assets.map(asset => asset.usageKey)), [
     'main_square',
     'list_image',
-    'package_micro_square',
   ])
   assert.equal(coalesced[0].forceColorSpecificDetail, false)
   assert.equal(coalesced[1].forceColorSpecificDetail, false)
+})
+
+test('coalesces all-color marked main/list uploads for goods under the same product and style', async () => {
+  const helpers = await loadExports()
+  const contexts = [
+    {
+      vendorProductId: '5649561937431629827',
+      merged: false,
+      job: { styleCode: '209426108201', goodsCode: '20942610820190001' },
+      assets: [
+        { usageKey: 'main_square', scope: 'main_image', targetGoodsCode: '20942610820190001' },
+        { usageKey: 'list_image', scope: 'main_image', targetGoodsCode: '20942610820190001' },
+        { usageKey: 'main_square', scope: 'main_image', targetGoodsCode: '20942610820140627' },
+        { usageKey: 'list_image', scope: 'main_image', targetGoodsCode: '20942610820140627' },
+      ],
+    },
+    {
+      vendorProductId: '5649561937431629827',
+      merged: false,
+      job: { styleCode: '209426108201', goodsCode: '20942610820140627' },
+      assets: [
+        { usageKey: 'main_square', scope: 'main_image', targetGoodsCode: '20942610820190001' },
+        { usageKey: 'list_image', scope: 'main_image', targetGoodsCode: '20942610820190001' },
+        { usageKey: 'main_square', scope: 'main_image', targetGoodsCode: '20942610820140627' },
+        { usageKey: 'list_image', scope: 'main_image', targetGoodsCode: '20942610820140627' },
+      ],
+    },
+  ]
+
+  const coalesced = helpers.coalesceLiveDetailContexts(contexts)
+
+  assert.equal(coalesced[0].assets.length, 4)
+  assert.equal(coalesced[1].assets.length, 0)
+  assert.equal(coalesced[1].styleSharedFromGoodsCode, '20942610820190001')
 })
 
 test('keeps separate detail-slice uploads for different styles inside one product', async () => {
@@ -624,6 +874,32 @@ test('keeps separate detail-slice uploads for different styles inside one produc
   assert.equal(coalesced[1].forceColorSpecificDetail, true)
 })
 
+test('marks mixed product color prefixes as merged even when backend sn matches requested style', async () => {
+  const helpers = await loadExports()
+  const mixedProduct = product({
+    sn: '208926166212',
+    itemSkuAttr: [
+      { colourGSN: '20892616621200388', colourName: '米白' },
+      { colourGSN: '20892616621200454', colourName: '蓝色' },
+      { colourGSN: '20892616621300355', colourName: '粉色' },
+    ],
+  })
+  const coalesced = helpers.coalesceLiveDetailContexts([{
+    vendorProductId: 'mixed-product',
+    merged: false,
+    product: mixedProduct,
+    job: { styleCode: '208926166212', goodsCode: '20892616621200388' },
+    assets: [{ usageKey: 'detail_slice', scope: 'package' }],
+  }])
+
+  assert.deepEqual(plain(helpers.productStylePrefixes(mixedProduct)), ['208926166212', '208926166213'])
+  assert.equal(helpers.hasMixedStylePrefixes(mixedProduct), true)
+  assert.equal(helpers.isMergedStyle({ styleCode: '208926166212' }, mixedProduct), true)
+  assert.equal(coalesced[0].merged, true)
+  assert.equal(coalesced[0].forceColorSpecificDetail, true)
+  assert.equal(coalesced[0].detailShareRole, 'single')
+})
+
 test('validates injected Vipshop image dimensions before live upload', async () => {
   const helpers = await loadExports()
 
@@ -637,6 +913,16 @@ test('validates injected Vipshop image dimensions before live upload', async () 
     helpers.validateInjectedVipshopAsset({ usageKey: 'list_image' }, { width: 1200, height: 1200 }),
     /商品列表图要求950x1200/,
   )
+})
+
+test('builds Vipshop image upload fields with both type and imageIndex', async () => {
+  const helpers = await loadExports()
+
+  assert.deepEqual(plain(helpers.buildVipshopImageUploadFields(601, 1)), {
+    type: '601',
+    imageIndex: '601',
+    vendorType: '1',
+  })
 })
 
 test('Vipshop OCR anchors detect wanted-info tail and balaOne head image', async () => {
@@ -887,6 +1173,7 @@ test('matches target color by colourGSN and marks 拼款 only when backend sn di
   const color = helpers.findTargetColor(detail, '20132610801500311')
 
   assert.equal(color.colourName, '白色调')
+  assert.equal(helpers.styleCodePrefix('20892616621200388'), '208926166212')
   assert.equal(helpers.isMergedStyle({ styleCode: '201326108015' }, detail), false)
   assert.equal(helpers.isMergedStyle({ styleCode: '209999999999' }, detail), true)
   assert.deepEqual(plain(helpers.buildMerchandiseQueryPayload(['20132610801500311'], 2, 50)), {

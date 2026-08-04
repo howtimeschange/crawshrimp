@@ -25,7 +25,7 @@
   const DOWNLOAD_RETRY_DELAY_MS = 1200
   const SEARCH_FALLBACK_ASSET_BUDGET = 1200
   const DEFAULT_FOLDER_SCAN_DEPTH = 5
-  const DEFAULT_PACKAGE_SEMIR_CLOUD_PATH = '巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/'
+  const DEFAULT_PACKAGE_SEMIR_CLOUD_PATH = '巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/'
   const DEFAULT_SEMIR_CLOUD_PATH = DEFAULT_PACKAGE_SEMIR_CLOUD_PATH
   const DEFAULT_MAIN_IMAGE_SEMIR_CLOUD_ROOT = '巴拉巴拉品牌事业部-市场系统//品牌视觉部/'
   const DEFAULT_MAIN_IMAGE_PATH_FEATURES = ['主图打标', '京东唯品', '回图/唯品']
@@ -35,6 +35,7 @@
   const CRAW_SHRIMP_LOCAL_BASE_URL = 'http://127.0.0.1:18765'
   const TESSERACT_VENDOR_PATH = '/adapter-assets/tmall-ops-assistant/vendor/tesseract'
   const TESSERACT_LANG = 'chi_sim+eng'
+  const VIPSHOP_MAX_UPLOAD_BYTES = 1024 * 1024
   const SEMIR_LOGIN_WAIT_MS = Math.max(1000, Number(params.semir_login_wait_ms || 60000) || 60000)
   const SEMIR_LOGIN_RETRY_MS = Math.min(5000, Math.max(1000, Number(params.semir_login_retry_ms || 5000) || 5000))
   const SEMIR_LOGIN_WAIT_MAX_ATTEMPTS = Math.max(1, Math.ceil(SEMIR_LOGIN_WAIT_MS / SEMIR_LOGIN_RETRY_MS))
@@ -53,6 +54,38 @@
 
   function normalizeComparableCode(value) {
     return normalizeCode(value).replace(/[^0-9A-Z]+/g, '')
+  }
+
+  function styleCodePrefix(value) {
+    const text = normalizeComparableCode(value)
+    if (!text) return ''
+    const match = text.match(/\d{12}/)
+    return match ? match[0] : text.slice(0, 12)
+  }
+
+  function productColorList(product = {}) {
+    const candidates = [
+      product?.itemSkuAttr,
+      product?.editData?.itemSkuAttr,
+      product?.info?.itemSkuAttr,
+    ]
+    const found = candidates.find(Array.isArray)
+    return found || []
+  }
+
+  function productStylePrefixes(product = {}) {
+    const prefixes = productColorList(product)
+      .map(color => styleCodePrefix(color?.colourGSN || color?.goodsCode || color?.msn))
+      .filter(Boolean)
+    return Array.from(new Set(prefixes))
+  }
+
+  function hasMixedStylePrefixes(product = {}) {
+    return productStylePrefixes(product).length > 1
+  }
+
+  function targetJobStylePrefix(job = {}) {
+    return styleCodePrefix(job?.styleCode || job?.goodsCode)
   }
 
   function normalizeHeader(value) {
@@ -207,7 +240,7 @@
       ) {
         full = true
       }
-      if (['main', 'mainimage', 'mainonly', 'onlymain'].includes(key) || /主图/.test(text)) {
+      if (['main', 'mainimage', 'mainonly', 'onlymain', 'markedimage', 'markimage', 'labelimage'].includes(key) || /主图|打标/.test(text)) {
         scope.add('main_image')
       }
       if (
@@ -315,7 +348,19 @@
     const path = typeof itemOrPath === 'string' ? itemOrPath : normalizedAssetFullpath(itemOrPath)
     const text = normalizeMainImageFeatureText(path)
     const normalizedFeatures = normalizeMainImagePathFeatures(features)
-    return normalizedFeatures.every(feature => text.includes(feature))
+    const missing = normalizedFeatures.filter(feature => !text.includes(feature))
+    if (!missing.length) return true
+    if (
+      missing.length === 1 &&
+      missing[0] === normalizeMainImageFeatureText('回图/唯品') &&
+      text.includes(normalizeMainImageFeatureText('主图打标')) &&
+      text.includes(normalizeMainImageFeatureText('京东唯品')) &&
+      text.includes(normalizeMainImageFeatureText('回图')) &&
+      /需传|唯品/.test(text)
+    ) {
+      return true
+    }
+    return false
   }
 
   function deriveJobCloudPath(rawPath, styleCode, overridePath = '') {
@@ -437,13 +482,12 @@
 
   function filePathOf(item) {
     if (typeof item === 'string') return normalizePath(item)
-    const localPath = normalizePath(item?.localPath || '')
-    if (localPath) return localPath
-    const fullpath = normalizePath(item?.fullpath || item?.relativePath || item?.relative_path || '')
+    const fullpath = normalizePath(item?.fullpath || item?.file || item?.relativePath || item?.relative_path || '')
     const pathValue = normalizePath(item?.path || '')
+    const localPath = normalizePath(item?.localPath || '')
     const filename = fileNameOf(item)
     if (fullpath && (!pathValue || pathValue === filename || !pathValue.includes('/'))) return fullpath
-    return normalizePath(pathValue || fullpath || filename || item?.name || '')
+    return normalizePath(fullpath || pathValue || localPath || filename || item?.name || '')
   }
 
   function fileExt(item) {
@@ -496,6 +540,37 @@
     const target = normalizeComparableCode(goodsCode)
     if (!target) return false
     return normalizeComparableCode(fileNameOf(item) || semanticFileNameOf(item)).includes(target)
+  }
+
+  function extractStyleGoodsCodesFromText(value, styleCode) {
+    const style = normalizeComparableCode(styleCode)
+    if (!style) return []
+    const text = normalizePath(value).toUpperCase()
+    if (!text) return []
+    const direct = new RegExp(`${escapeRegExp(style)}[\\s_-]*([0-9A-Z]{4,8})(?=[^0-9A-Z]|$)`, 'g')
+    const result = []
+    let match = null
+    while ((match = direct.exec(text))) {
+      const suffix = normalizeComparableCode(match[1])
+      if (suffix) result.push(`${style}${suffix}`)
+    }
+    return Array.from(new Set(result))
+  }
+
+  function extractStyleGoodsCodeFromItem(item, styleCode) {
+    const explicit = normalizeCode(item?.targetGoodsCode || item?.target_goods_code)
+    if (explicit) return explicit
+    const candidates = [
+      fileNameOf(item),
+      semanticFileNameOf(item),
+      filePathOf(item),
+      normalizedAssetFullpath(item),
+    ]
+    for (const value of candidates) {
+      const codes = extractStyleGoodsCodesFromText(value, styleCode)
+      if (codes.length) return codes[0]
+    }
+    return ''
   }
 
   function isExplicitVipshopMainName(item) {
@@ -583,6 +658,8 @@
     const groups = {
       mainSquare: [],
       listImage: [],
+      mainSquareAllColors: [],
+      listImageAllColors: [],
       packageMicroSquare: [],
       detailSlices: [],
       unmatched: [],
@@ -610,11 +687,16 @@
       const fullpath = filePathOf(item) || fileNameOf(item)
       const normalizedPath = normalizeComparableCode(fullpath)
       const matchedByGoods = goodsCode && normalizedPath.includes(goodsCode)
+      const targetGoodsCode = matchedByGoods
+        ? normalizeCode(job?.goodsCode)
+        : extractStyleGoodsCodeFromItem(item, styleCode)
       const dimension = parseImageDimensions(item)
       const file = {
         file: fullpath,
         filename: fileNameOf(item),
         fullpath,
+        path: normalizePath(item?.path || item?.localPath || fullpath),
+        localPath: normalizePath(item?.localPath || ''),
         __mount_id: item?.__mount_id || '',
         __mount_name: item?.__mount_name || '',
         __source_relative_path: item?.__source_relative_path || '',
@@ -622,7 +704,8 @@
         width: dimension.width,
         height: dimension.height,
         dimensionSource: dimension.source,
-        sourceMatch: matchedByGoods ? '货号' : '款号',
+        sourceMatch: matchedByGoods ? '货号' : (targetGoodsCode ? '款色号' : '款号'),
+        targetGoodsCode,
         sequence: index + 1,
       }
       const square = dimension.width === 1200 && dimension.height === 1200
@@ -637,14 +720,18 @@
       const styleSequenceDetail = isStyleSequenceDetailFile(item, styleCode)
       const otherStyleFolder = hasOtherStyleFolder(item, styleCode)
       const filenameMatchesGoods = fileNameMatchesGoodsCode(item, goodsCode)
+      const filenameMatchesTargetGoods = targetGoodsCode && fileNameMatchesGoodsCode(item, targetGoodsCode)
       const canUseAsMainImage = matchedByGoods && filenameMatchesGoods && !otherStyleFolder
+      const canUseAsAnyColorMainImage = targetGoodsCode && filenameMatchesTargetGoods && !otherStyleFolder
       const explicitMainName = isExplicitVipshopMainName(item)
       const explicitListName = isExplicitVipshopListName(item)
       const mainSourceHint = mainHint || vipMainFolderHint || explicitMainName || (!packageRootHint && !detailHint && !microHint)
-      const probableSquare = canUseAsMainImage && mainSourceHint && !detailHint && !microHint && !listHint && !explicitListName
+      const probableAnyColorSquare = canUseAsAnyColorMainImage && mainSourceHint && !detailHint && !microHint && !listHint && !explicitListName
         && (largeSquare || (!dimension.width && !dimension.height))
-      const probableList = canUseAsMainImage && !detailHint && !microHint
+      const probableSquare = canUseAsMainImage && probableAnyColorSquare
+      const probableAnyColorList = canUseAsAnyColorMainImage && !detailHint && !microHint
         && (listDimension || listHint || explicitListName)
+      const probableList = canUseAsMainImage && probableAnyColorList
       const probableMicro = square || (!dimension.width && !dimension.height && microHint)
       let recognized = false
 
@@ -652,12 +739,24 @@
         groups.unmatched.push({ ...file, reason: '疑似整张预览或源文件，详情切片跳过' })
         return
       }
-      if (probableMicro && (microHint || packageRootHint)) {
+      if (probableMicro && microHint) {
         groups.packageMicroSquare.push({ ...file, usage: '包装-微详情1200x1200' })
+        recognized = true
+      }
+      if (probableAnyColorSquare) {
+        groups.mainSquareAllColors.push({ ...file, usage: '主图-商品图片1200x1200' })
         recognized = true
       }
       if (probableSquare) {
         groups.mainSquare.push({ ...file, usage: '主图-商品图片1200x1200' })
+        recognized = true
+      }
+      if (probableAnyColorList) {
+        groups.listImageAllColors.push({
+          ...file,
+          usage: '主图-商品列表图950x1200',
+          note: dimension.width === 1200 ? '文件名/元数据为1200x950，已按文档950x1200类目兼容识别' : '',
+        })
         recognized = true
       }
       if (probableList) {
@@ -682,6 +781,8 @@
     }
     groups.mainSquare.sort(mainNatural)
     groups.listImage.sort(mainNatural)
+    groups.mainSquareAllColors.sort(mainNatural)
+    groups.listImageAllColors.sort(mainNatural)
     groups.packageMicroSquare.sort(natural)
     groups.detailSlices.sort(natural)
     groups.unmatched.sort(natural)
@@ -703,6 +804,10 @@
     }
   }
 
+  const VIPSHOP_DISPLAY_IMAGE_INDEXES = [1, 2, 3, 4, 15, 16, 17, 18, 19, 20, 21, 22]
+  const VIPSHOP_PACKAGE_MICRO_DISPLAY_INDEXES = VIPSHOP_DISPLAY_IMAGE_INDEXES.slice(2, 5)
+  const VIPSHOP_SQUARE_ALLOWED_INDEXES = VIPSHOP_DISPLAY_IMAGE_INDEXES
+
   function selectedVipshopAssetEntries(job, assetPlan) {
     const entries = []
     const push = (scope, usageKey, usage, imageIndex, item, index) => {
@@ -717,18 +822,40 @@
         groupIndex: index,
       })
     }
+    const firstByGoodsCode = items => {
+      const result = []
+      const seen = new Set()
+      for (const item of Array.isArray(items) ? items : []) {
+        const code = normalizeCode(item?.targetGoodsCode)
+        if (!code || seen.has(code)) continue
+        seen.add(code)
+        result.push(item)
+      }
+      return result
+    }
     if (hasScope(job.operationScope, 'main_image')) {
-      const listFile = assetPlan.groups.listImage[0]?.file || ''
-      assetPlan.groups.mainSquare.filter(item => item.file !== listFile).slice(0, 1).forEach((item, index) => {
-        push('main_image', 'main_square', '主图-商品图片1200x1200', 1, item, index)
-      })
-      assetPlan.groups.listImage.slice(0, 1).forEach((item, index) => {
-        push('main_image', 'list_image', '主图-商品列表图950x1200', 50, item, index)
-      })
+      const allMain = firstByGoodsCode(assetPlan.groups.mainSquareAllColors)
+      const allList = firstByGoodsCode(assetPlan.groups.listImageAllColors)
+      if (allMain.length || allList.length) {
+        allMain.forEach((item, index) => {
+          push('main_image', 'main_square', '主图-商品图片1200x1200', 1, item, index)
+        })
+        allList.forEach((item, index) => {
+          push('main_image', 'list_image', '主图-商品列表图950x1200', 50, item, index)
+        })
+      } else {
+        const listFile = assetPlan.groups.listImage[0]?.file || ''
+        assetPlan.groups.mainSquare.filter(item => item.file !== listFile).slice(0, 1).forEach((item, index) => {
+          push('main_image', 'main_square', '主图-商品图片1200x1200', 1, item, index)
+        })
+        assetPlan.groups.listImage.slice(0, 1).forEach((item, index) => {
+          push('main_image', 'list_image', '主图-商品列表图950x1200', 50, item, index)
+        })
+      }
     }
     if (hasScope(job.operationScope, 'package')) {
-      assetPlan.groups.packageMicroSquare.slice(0, 2).forEach((item, index) => {
-        push('package', 'package_micro_square', '包装-微详情1200x1200', index + 3, item, index)
+      assetPlan.groups.packageMicroSquare.slice(0, 3).forEach((item, index) => {
+        push('package', 'package_micro_square', '包装-微详情1200x1200', VIPSHOP_PACKAGE_MICRO_DISPLAY_INDEXES[index], item, index)
       })
       assetPlan.groups.detailSlices.slice(0, 50).forEach((item, index) => {
         push('package', 'detail_slice', '包装-商品详情切片', 601 + index, item, index)
@@ -741,6 +868,12 @@
     return asset?.usageKey === 'detail_slice'
   }
 
+  function isStyleSharedAsset(asset) {
+    if (!asset) return false
+    if (['detail_slice', 'package_micro_square'].includes(asset.usageKey)) return true
+    return ['main_square', 'list_image'].includes(asset.usageKey) && !!asset.targetGoodsCode
+  }
+
   function detailShareKey(context) {
     return [
       compact(context?.vendorProductId),
@@ -751,14 +884,19 @@
   function coalesceLiveDetailContexts(contexts = []) {
     const productStyleCodes = new Map()
     const detailGroups = new Map()
+    const styleGroups = new Map()
     for (const context of Array.isArray(contexts) ? contexts : []) {
       if (!context || !context.vendorProductId) continue
       const styleCode = normalizeCode(context.job?.styleCode)
       if (!styleCode) continue
       if (!productStyleCodes.has(context.vendorProductId)) productStyleCodes.set(context.vendorProductId, new Set())
       productStyleCodes.get(context.vendorProductId).add(styleCode)
-      if (!(context.assets || []).some(isSharedDetailAsset)) continue
       const key = detailShareKey(context)
+      if ((context.assets || []).some(isStyleSharedAsset)) {
+        if (!styleGroups.has(key)) styleGroups.set(key, [])
+        styleGroups.get(key).push(context)
+      }
+      if (!(context.assets || []).some(isSharedDetailAsset)) continue
       if (!detailGroups.has(key)) detailGroups.set(key, [])
       detailGroups.get(key).push(context)
     }
@@ -767,24 +905,31 @@
       if (!context) return context
       const key = detailShareKey(context)
       const group = detailGroups.get(key) || []
+      const styleGroup = styleGroups.get(key) || []
+      const styleSharedFromGoodsCode = styleGroup.length > 1 && styleGroup[0] !== context
+        ? normalizeCode(styleGroup[0].job?.goodsCode)
+        : ''
       const productHasMultipleStyles = (productStyleCodes.get(context.vendorProductId)?.size || 0) > 1
+      const productHasMixedStylePrefixes = isMergedStyle(context.job, context.product)
       const detailSharedGoodsCodes = group.map(item => normalizeCode(item.job?.goodsCode)).filter(Boolean)
       const base = {
         ...context,
-        merged: Boolean(context.merged || productHasMultipleStyles),
-        forceColorSpecificDetail: Boolean(context.forceColorSpecificDetail || productHasMultipleStyles),
+        merged: Boolean(context.merged || productHasMultipleStyles || productHasMixedStylePrefixes),
+        forceColorSpecificDetail: Boolean(context.forceColorSpecificDetail || productHasMultipleStyles || productHasMixedStylePrefixes),
         detailSharedKey: key,
+        styleSharedFromGoodsCode,
         detailSharedGoodsCodes: detailSharedGoodsCodes.length ? detailSharedGoodsCodes : [normalizeCode(context.job?.goodsCode)].filter(Boolean),
       }
       if (!group.length || group[0] === context) {
         return {
           ...base,
+          assets: styleSharedFromGoodsCode ? (context.assets || []).filter(asset => !isStyleSharedAsset(asset)) : context.assets,
           detailShareRole: group.length > 1 ? 'primary' : 'single',
         }
       }
       return {
         ...base,
-        assets: (context.assets || []).filter(asset => !isSharedDetailAsset(asset)),
+        assets: (context.assets || []).filter(asset => !isSharedDetailAsset(asset) && !isStyleSharedAsset(asset)),
         detailShareRole: 'shared_skip',
         detailSharedFromGoodsCode: normalizeCode(group[0].job?.goodsCode),
       }
@@ -902,9 +1047,9 @@
   }
 
   function isMergedStyle(job, product) {
-    const expected = normalizeCode(job?.styleCode)
-    const actual = normalizeCode(product?.sn || product?.osn)
-    return Boolean(expected && actual && expected !== actual)
+    const expected = targetJobStylePrefix(job)
+    const actual = styleCodePrefix(product?.sn || product?.osn)
+    return hasMixedStylePrefixes(product) || Boolean(expected && actual && expected !== actual)
   }
 
   function outputBase(job = {}, merchandise = {}, product = {}, color = {}) {
@@ -997,9 +1142,9 @@
     }
 
     if (hasScope(scope, 'package')) {
-      const micro = assetPlan.groups.packageMicroSquare.slice(0, 2)
-      if (micro.length) micro.forEach((item, index) => addFile('包装-微详情1200x1200', item, index, '/product/uploadSquareImage', String(index + 3)))
-      else addMissing('包装-微详情1200x1200', '未找到微详情目录下的1200x1200图片')
+      const micro = assetPlan.groups.packageMicroSquare.slice(0, 3)
+      if (micro.length) micro.forEach((item, index) => addFile('包装-微详情1200x1200', item, index, '/product/uploadSquareImage', String(VIPSHOP_PACKAGE_MICRO_DISPLAY_INDEXES[index])))
+      else addMissing('包装-微详情1200x1200', '未找到微详情目录下的1200x1200图片；需对应商品展示图第3/4/5张')
       const detail = assetPlan.groups.detailSlices
       if (detail.length) detail.forEach((item, index) => addFile('包装-商品详情切片', item, index, '/product/uploadSquareImage', String(601 + index)))
       else addMissing('包装-商品详情切片', '未找到 images/切片/商品详情 目录下的详情切片')
@@ -1547,13 +1692,14 @@
 
   function mainImageSourceSearchScore(item, job) {
     const fullpath = normalizedAssetFullpath(item)
+    const featureText = normalizeMainImageFeatureText(fullpath)
     let score = 0
     if (normalizeComparableCode(fullpath).includes(normalizeComparableCode(job?.goodsCode))) score += 100
     if (fileNameMatchesGoodsCode(item, job?.goodsCode)) score += 80
     if (isImageFile(item)) score += 40
     if (isDirectoryItem(item)) score += 20
     if (isExplicitVipshopMainName(item) || isExplicitVipshopListName(item)) score += 30
-    if (/\/回图\/唯品(\/|$)/.test(normalizeMainImageFeatureText(fullpath))) score += 25
+    if (featureText.includes(normalizeMainImageFeatureText('回图/唯品')) || (featureText.includes('回图') && featureText.includes('需传'))) score += 25
     score += Math.min(20, pathSegments(fullpath).length)
     return score
   }
@@ -1857,6 +2003,8 @@
     return Number(plan.selected || 0) * 10
       + (groups.mainSquare?.length ? 8 : 0)
       + (groups.listImage?.length ? 8 : 0)
+      + (groups.mainSquareAllColors?.length || 0)
+      + (groups.listImageAllColors?.length || 0)
       + (groups.packageMicroSquare?.length ? 4 : 0)
       + (groups.detailSlices?.length || 0)
   }
@@ -1968,6 +2116,8 @@
       groups: {
         mainSquare: mainPlan.groups?.mainSquare || [],
         listImage: mainPlan.groups?.listImage || [],
+        mainSquareAllColors: mainPlan.groups?.mainSquareAllColors || [],
+        listImageAllColors: mainPlan.groups?.listImageAllColors || [],
         packageMicroSquare: packagePlan.groups?.packageMicroSquare || [],
         detailSlices: packagePlan.groups?.detailSlices || [],
         unmatched: [
@@ -2023,8 +2173,9 @@
 
   function buildRuntimeFilename(job, item, entry, index) {
     const ext = fileExt(item) || 'jpg'
+    const targetCode = compact(entry?.targetGoodsCode || job.goodsCode)
     const stem = toSafeFilename(
-      `${job.styleCode}_${job.goodsCode}__${entry.usageKey || 'asset'}__${index + 1}__${getFileStem(item?.filename || item?.name || '')}`,
+      `${job.styleCode}_${targetCode}__${entry.usageKey || 'asset'}__${index + 1}__${getFileStem(item?.filename || item?.name || '')}`,
       'vipshop_asset',
     )
     return stem.toLowerCase().endsWith(`.${ext}`) ? stem : `${stem}.${ext}`
@@ -2089,7 +2240,7 @@
         downloadItems.push({
           url: downloadUrl,
           filename: runtimeFilename,
-          label: `${job.styleCode} / ${job.goodsCode} / ${entry.usage} / ${entry.filename || runtimeFilename}`,
+          label: `${job.styleCode} / ${entry.targetGoodsCode || job.goodsCode} / ${entry.usage} / ${entry.filename || runtimeFilename}`,
           headers: buildDownloadHeaders(),
           no_proxy: true,
         })
@@ -2271,11 +2422,22 @@
     return 'image/jpeg'
   }
 
+  function buildVipshopImageUploadFields(imageIndex, vendorType = 1) {
+    const type = String(imageIndex)
+    return {
+      type,
+      imageIndex: type,
+      vendorType: String(vendorType || 1),
+    }
+  }
+
   async function uploadVipshopImageFile(file, imageIndex, vendorType = 1) {
     const form = new FormData()
+    const fields = buildVipshopImageUploadFields(imageIndex, vendorType)
     form.append('image', file)
-    form.append('type', String(imageIndex))
-    form.append('vendorType', String(vendorType || 1))
+    form.append('type', fields.type)
+    form.append('imageIndex', fields.imageIndex)
+    form.append('vendorType', fields.vendorType)
     const response = await fetch(PDC_UPLOAD_SQUARE_IMAGE_URL, {
       method: 'POST',
       credentials: 'include',
@@ -2823,6 +2985,31 @@
     return matched
   }
 
+  function allStateColors(state) {
+    const colors = state.editData?.itemSkuAttr || state.info?.itemSkuAttr || []
+    return Array.isArray(colors) ? colors : []
+  }
+
+  function colorMatchesStylePrefix(color, styleCode) {
+    const target = styleCodePrefix(styleCode)
+    const actual = styleCodePrefix(color?.colourGSN)
+    return Boolean(target && actual && target === actual)
+  }
+
+  function findStateColorsByStyleCode(state, styleCode) {
+    const target = styleCodePrefix(styleCode)
+    if (!target) return []
+    return allStateColors(state).filter(color => colorMatchesStylePrefix(color, target))
+  }
+
+  function colorGoodsCode(color) {
+    return normalizeCode(color?.colourGSN || color?.goodsCode || color?.msn)
+  }
+
+  function goodsCodesFromColors(colors = []) {
+    return Array.from(new Set((Array.isArray(colors) ? colors : []).map(colorGoodsCode).filter(Boolean)))
+  }
+
   function cloneImageList(images = []) {
     return (Array.isArray(images) ? images : []).map(item => ({ ...item }))
   }
@@ -2847,9 +3034,99 @@
     syncSquareAliases(color)
   }
 
+  function colorListImageArray(color) {
+    if (!color) return []
+    if (Array.isArray(color.listImages)) return color.listImages
+    if (Array.isArray(color.listPics)) return color.listPics
+    color.listImages = []
+    return color.listImages
+  }
+
+  function syncListAliases(color) {
+    if (!color || !Array.isArray(color.listImages) || !Array.isArray(color.listPics)) return
+    if (color.listImages !== color.listPics) replaceArrayContents(color.listPics, color.listImages)
+  }
+
+  function groupUploadRecordsByTargetGoodsCode(records = [], fallbackGoodsCode = '') {
+    const groups = new Map()
+    for (const record of Array.isArray(records) ? records : []) {
+      const code = normalizeCode(record?.asset?.targetGoodsCode || fallbackGoodsCode)
+      if (!code) continue
+      if (!groups.has(code)) groups.set(code, [])
+      groups.get(code).push(record)
+    }
+    return groups
+  }
+
+  function applyMainSquareRecordsToColors(colors = [], records = [], fallbackGoodsCode = '') {
+    const colorState = { editData: { itemSkuAttr: Array.isArray(colors) ? colors : [] } }
+    let applied = 0
+    const recordsByGoods = groupUploadRecordsByTargetGoodsCode(records, fallbackGoodsCode)
+    for (const [goodsCode, group] of recordsByGoods.entries()) {
+      const color = findStateTargetColor(colorState, goodsCode)
+      if (!color || !group.length) continue
+      const record = group[0]
+      applySquareReplacementsToColor(color, [buildSavedImage(record.imageUrl, 1, record.asset, 0, true)], VIPSHOP_SQUARE_ALLOWED_INDEXES)
+      applied += 1
+    }
+    return applied
+  }
+
+  function applyListImageRecordsToColors(colors = [], records = [], fallbackGoodsCode = '') {
+    const colorState = { editData: { itemSkuAttr: Array.isArray(colors) ? colors : [] } }
+    let applied = 0
+    const recordsByGoods = groupUploadRecordsByTargetGoodsCode(records, fallbackGoodsCode)
+    for (const [goodsCode, group] of recordsByGoods.entries()) {
+      const color = findStateTargetColor(colorState, goodsCode)
+      if (!color || !group.length) continue
+      const record = group[0]
+      replaceArrayContents(colorListImageArray(color), [buildSavedImage(record.imageUrl, 50, record.asset, 0, false)])
+      syncListAliases(color)
+      if (Array.isArray(color.list_5_7)) replaceArrayContents(color.list_5_7, color.list_5_7)
+      applied += 1
+    }
+    return applied
+  }
+
+  function applyPackageMicroSquareRecordsToColors(colors = [], records = []) {
+    const replacements = (Array.isArray(records) ? records : []).map((record, index) => (
+      buildSavedImage(record.imageUrl, VIPSHOP_PACKAGE_MICRO_DISPLAY_INDEXES[index], record.asset, index + 2, true)
+    ))
+    if (!replacements.length) return 0
+    let applied = 0
+    for (const color of Array.isArray(colors) ? colors : []) {
+      applySquareReplacementsToColor(color, replacements, VIPSHOP_SQUARE_ALLOWED_INDEXES)
+      applied += 1
+    }
+    return applied
+  }
+
+  function imageListHasVisibleUrl(images = []) {
+    return (Array.isArray(images) ? images : []).some(item => compact(item?.imageUrl || item?.src || item?.url))
+  }
+
+  function setPdcShareDetailPic(editable, root, info, editData, value) {
+    const targets = [
+      info,
+      editData,
+      editable?.info,
+      editable?.$data?.info,
+      editable?.opts,
+      editable?.$data?.opts,
+      root?.$data?.info,
+      root?.$data?.editData,
+    ]
+    targets.forEach(target => {
+      if (target && typeof target === 'object') target.shareDetailPic = value
+    })
+  }
+
   function currentDetailImagesForContext(context, editable = null, root = null, targetColor = null, merged = false) {
     const editData = editable?.opts || editable?.$data?.opts || root?.$data?.editData || {}
-    if (merged && Array.isArray(targetColor?.detailImages)) return targetColor.detailImages
+    if (merged && imageListHasVisibleUrl(targetColor?.detailImages)) return targetColor.detailImages
+    if (imageListHasVisibleUrl(editData.detailImages)) return editData.detailImages
+    if (imageListHasVisibleUrl(targetColor?.detailImages)) return targetColor.detailImages
+    if (imageListHasVisibleUrl(context?.product?.detailImages)) return context.product.detailImages
     if (Array.isArray(editData.detailImages)) return editData.detailImages
     if (Array.isArray(targetColor?.detailImages)) return targetColor.detailImages
     if (Array.isArray(context?.product?.detailImages)) return context.product.detailImages
@@ -2948,48 +3225,35 @@
     const targetColor = findStateTargetColor({ info, editData }, context.job.goodsCode)
     if (!targetColor) throw new Error(`PDC 编辑页未找到目标货号颜色：${context.job.goodsCode}`)
 
+    const stateForColors = { info, editData }
+    const stateColors = allStateColors(stateForColors)
     const productForMerge = {
       vendorProductId: context.vendorProductId,
       sn: compact(info.sn || editData.sn || context.product?.sn),
+      itemSkuAttr: stateColors.length ? stateColors : context.product?.itemSkuAttr,
     }
     const merged = Boolean(context.forceColorSpecificDetail || context.merged || isMergedStyle(context.job, productForMerge))
     const mainRecords = uploadRecords.filter(record => record.usageKey === 'main_square')
     const listRecords = uploadRecords.filter(record => record.usageKey === 'list_image')
     const microRecords = uploadRecords.filter(record => record.usageKey === 'package_micro_square')
     const detailRecords = uploadRecords.filter(record => record.usageKey === 'detail_slice')
+    const targetStyleColors = findStateColorsByStyleCode(stateForColors, context.job.styleCode || context.job.goodsCode)
+    const microTargetColors = merged && targetStyleColors.length ? targetStyleColors : stateColors
+    const requestedDetailGoodsCodes = (Array.isArray(context.detailSharedGoodsCodes) && context.detailSharedGoodsCodes.length
+      ? context.detailSharedGoodsCodes
+      : [context.job.goodsCode]).map(normalizeCode).filter(Boolean)
+    const styleDetailGoodsCodes = merged ? goodsCodesFromColors(targetStyleColors) : []
     const detailTargetGoodsCodes = Array.from(new Set(
-      (Array.isArray(context.detailSharedGoodsCodes) && context.detailSharedGoodsCodes.length
-        ? context.detailSharedGoodsCodes
-        : [context.job.goodsCode]).map(normalizeCode).filter(Boolean),
+      (merged && styleDetailGoodsCodes.length ? styleDetailGoodsCodes : requestedDetailGoodsCodes),
     ))
     const detailTargetColors = findStateTargetColors({ info, editData }, detailTargetGoodsCodes)
     if (detailRecords.length && !detailTargetColors.length) {
       throw new Error(`PDC 编辑页未找到同款商品详情图目标货号颜色：${detailTargetGoodsCodes.join('、')}`)
     }
 
-    const mainSquareReplacements = []
-    mainRecords.forEach((record, index) => {
-      const imageIndex = index === 0 ? 1 : 2
-      mainSquareReplacements.push(buildSavedImage(record.imageUrl, imageIndex, record.asset, index, true))
-    })
-    if (mainSquareReplacements.length) {
-      applySquareReplacementsToColor(targetColor, mainSquareReplacements, [1, 2, 3, 4, 15, 16, 17, 18, 19, 20, 21, 22])
-    }
-
-    const microSquareReplacements = []
-    microRecords.forEach((record, index) => {
-      const imageIndex = 3 + index
-      microSquareReplacements.push(buildSavedImage(record.imageUrl, imageIndex, record.asset, index + 2, true))
-    })
-    if (microSquareReplacements.length) {
-      applySquareReplacementsToColor(targetColor, microSquareReplacements, [1, 2, 3, 4, 15, 16, 17, 18, 19, 20, 21, 22])
-    }
-
-    if (listRecords.length) {
-      const list = buildSavedImage(listRecords[0].imageUrl, 50, listRecords[0].asset, 0, false)
-      replaceArrayContents(targetColor.listImages || targetColor.listPics || [], [list])
-      if (Array.isArray(targetColor.list_5_7)) replaceArrayContents(targetColor.list_5_7, targetColor.list_5_7)
-    }
+    applyMainSquareRecordsToColors(stateColors, mainRecords, context.job.goodsCode)
+    applyPackageMicroSquareRecordsToColors(microTargetColors.length ? microTargetColors : [targetColor], microRecords)
+    applyListImageRecordsToColors(stateColors, listRecords, context.job.goodsCode)
 
     if (detailRecords.length) {
       const uploadedDetail = detailRecords.map((record, index) => buildSavedImage(record.imageUrl, 601 + index, record.asset, index, false))
@@ -3005,8 +3269,7 @@
         : { ok: true, images: makeDetailImages(uploadedDetail, merged ? targetColor.detailImages || [] : editData.detailImages || []), note: '未启用OCR锚点，使用旧合并逻辑' }
       if (!anchored.ok) throw new Error(anchored.note || '商详 OCR 锚点校验失败')
       if (merged) {
-        info.shareDetailPic = false
-        if (root?.$data?.info) root.$data.info.shareDetailPic = false
+        setPdcShareDetailPic(editable, root, info, editData, false)
         for (const color of detailTargetColors) {
           if (!Array.isArray(color.detailImages)) color.detailImages = []
           replaceArrayContents(color.detailImages, cloneImageList(anchored.images))
@@ -3015,8 +3278,7 @@
         const current = editData.detailImages || []
         replaceArrayContents(current, anchored.images)
         editData.detailImages = current
-        info.shareDetailPic = true
-        if (root?.$data?.info) root.$data.info.shareDetailPic = true
+        setPdcShareDetailPic(editable, root, info, editData, true)
       }
       detailOptions.detailApplyResult = anchored
     }
@@ -3121,18 +3383,65 @@
     return blob
   }
 
+  async function buildCompressedUploadFile(file, filename, maxBytes = VIPSHOP_MAX_UPLOAD_BYTES) {
+    const image = await loadImageElement(file)
+    const width = image.naturalWidth || image.width || 0
+    const height = image.naturalHeight || image.height || 0
+    if (!width || !height) throw new Error(`无法读取图片尺寸用于压缩：${file.name || filename || 'unknown'}`)
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('当前浏览器不支持图片压缩')
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, 0, width, height)
+    ctx.drawImage(image, 0, 0, width, height)
+    const name = toSafeFilename(filename || file.name || 'vipshop_upload.jpg')
+    let lastBlob = null
+    for (const quality of [0.92, 0.86, 0.8, 0.74, 0.68, 0.62, 0.56, 0.5]) {
+      const blob = await canvasToBlob(canvas, 'image/jpeg', quality)
+      lastBlob = blob
+      if (!Number(blob.size || 0) || Number(blob.size || 0) <= maxBytes) {
+        if (typeof File === 'function') return new File([blob], name, { type: 'image/jpeg' })
+        blob.name = name
+        return blob
+      }
+    }
+    if (typeof File === 'function') return new File([lastBlob], name, { type: 'image/jpeg' })
+    lastBlob.name = name
+    return lastBlob
+  }
+
   async function normalizeVipshopUploadFile(asset, file, dimensions) {
     const width = Number(dimensions?.width || 0)
     const height = Number(dimensions?.height || 0)
+    let currentFile = file
+    let currentDimensions = { width, height }
+    let transformed = false
+    let compressed = false
     if (asset.usageKey === 'main_square' && !(width === 1200 && height === 1200)) {
-      const nextFile = await buildResizedUploadFile(file, 1200, 1200, `vipshop_1200x1200_${file.name || asset.filename || 'main.jpg'}`)
-      return { file: nextFile, dimensions: { width: 1200, height: 1200 }, transformed: true }
+      currentFile = await buildResizedUploadFile(file, 1200, 1200, `vipshop_1200x1200_${file.name || asset.filename || 'main.jpg'}`)
+      currentDimensions = { width: 1200, height: 1200 }
+      transformed = true
     }
-    if (asset.usageKey === 'list_image' && !((width === 950 && height === 1200) || (width === 1200 && height === 950))) {
-      const nextFile = await buildResizedUploadFile(file, 950, 1200, `vipshop_950x1200_${file.name || asset.filename || 'list.jpg'}`)
-      return { file: nextFile, dimensions: { width: 950, height: 1200 }, transformed: true }
+    if (asset.usageKey === 'list_image' && !((currentDimensions.width === 950 && currentDimensions.height === 1200) || (currentDimensions.width === 1200 && currentDimensions.height === 950))) {
+      currentFile = await buildResizedUploadFile(currentFile, 950, 1200, `vipshop_950x1200_${file.name || asset.filename || 'list.jpg'}`)
+      currentDimensions = { width: 950, height: 1200 }
+      transformed = true
     }
-    return { file, dimensions: { width, height }, transformed: false }
+    if (Number(currentFile?.size || 0) > VIPSHOP_MAX_UPLOAD_BYTES) {
+      currentFile = await buildCompressedUploadFile(currentFile, `vipshop_${currentDimensions.width}x${currentDimensions.height}_${file.name || asset.filename || 'image.jpg'}`)
+      compressed = true
+      transformed = true
+    }
+    return {
+      file: currentFile,
+      dimensions: currentDimensions,
+      transformed,
+      compressed,
+      originalBytes: Number(file?.size || 0),
+      uploadBytes: Number(currentFile?.size || 0),
+    }
   }
 
   function validateInjectedVipshopAsset(asset, dimensions) {
@@ -3170,10 +3479,18 @@
         width: dimensions.width || assets[index]?.width || 0,
         height: dimensions.height || assets[index]?.height || 0,
         imageSize: dimensions.width && dimensions.height ? `${dimensions.width}x${dimensions.height}` : imageSizeOf(assets[index]),
-        transformNote: normalized.transformed ? `由云盘原图${sourceDimensions.width || 0}x${sourceDimensions.height || 0}生成唯品规格${dimensions.width}x${dimensions.height}` : '',
+        transformNote: compact([
+          normalized.transformed && (sourceDimensions.width !== dimensions.width || sourceDimensions.height !== dimensions.height)
+            ? `由云盘原图${sourceDimensions.width || 0}x${sourceDimensions.height || 0}生成唯品规格${dimensions.width}x${dimensions.height}`
+            : '',
+          normalized.compressed ? `上传前压缩${Math.ceil(Number(normalized.originalBytes || 0) / 1024)}KB->${Math.ceil(Number(normalized.uploadBytes || 0) / 1024)}KB` : '',
+        ].filter(Boolean).join('；')),
       }
       const validation = validateInjectedVipshopAsset(asset, dimensions)
       if (validation) validationErrors.push(`${asset.usage || asset.usageKey || '图片'}：${validation}`)
+      if (Number(normalized.file?.size || 0) > VIPSHOP_MAX_UPLOAD_BYTES) {
+        validationErrors.push(`${asset.usage || asset.usageKey || '图片'}：图片大小${Math.ceil(Number(normalized.file.size || 0) / 1024)}KB超过唯品限制1024KB`)
+      }
       enrichedAssets.push(asset)
       uploadFiles.push(normalized.file)
     }
@@ -3379,7 +3696,7 @@
       if (!plan.groups?.listImage?.[0]) missing.push('主图-商品列表图950x1200')
     }
     if (hasScope(context.job.operationScope, 'package')) {
-      if (!plan.groups?.packageMicroSquare?.length) missing.push('包装-微详情1200x1200')
+      if ((plan.groups?.packageMicroSquare?.length || 0) < 3) missing.push('包装-微详情1200x1200(商品展示图3/4/5)')
       if (!plan.groups?.detailSlices?.length) missing.push('包装-商品详情切片')
     }
     return missing
@@ -3420,6 +3737,7 @@
       current_detail_ocr_anchors: null,
       current_detail_ocr_result: null,
       current_detail_existing_images: [],
+      force_pdc_reload: !!nextContext,
       current_exec_no: Math.min(nextIndex + 1, contexts.length || nextIndex + 1),
       current_buyer_id: nextContext?.job?.goodsCode || '',
       current_store: nextContext?.vendorProductId || '',
@@ -3471,6 +3789,12 @@
       shouldUseCloudLookup,
       allowLiveExecution,
       parseImageDimensions,
+      styleCodePrefix,
+      productStylePrefixes,
+      hasMixedStylePrefixes,
+      findStateColorsByStyleCode,
+      goodsCodesFromColors,
+      extractStyleGoodsCodeFromItem,
       classifyVipshopAssets,
       selectedVipshopAssetEntries,
       coalesceLiveDetailContexts,
@@ -3485,6 +3809,7 @@
       vipshopMainAssetPriority,
       hasOtherStyleFolder,
       validateInjectedVipshopAsset,
+      buildVipshopImageUploadFields,
       collectAssetFiles,
       buildMerchandiseQueryPayload,
       buildProductDetailPayload,
@@ -3497,6 +3822,9 @@
       isSupportedExecutionOrigin,
       normalizeVipshopReadbackImageUrl,
       verifyImageUrlInDetail,
+      applyMainSquareRecordsToColors,
+      applyListImageRecordsToColors,
+      applyPackageMicroSquareRecordsToColors,
       replaceByImageIndex,
       makeDetailImages,
       classifyVipshopOcrAnchorText,
@@ -3697,14 +4025,25 @@
         }
       }
 
-      const executableLiveContexts = coalesceLiveDetailContexts(liveContexts)
-      const sharedDetailSkips = executableLiveContexts.filter(context => context.detailShareRole === 'shared_skip').length
+      const coalescedLiveContexts = coalesceLiveDetailContexts(liveContexts)
+      const skippedLiveContexts = coalescedLiveContexts.filter(context => !(context.assets || []).length)
+      skippedLiveContexts.forEach(context => {
+        outputRows.push(...buildLiveContextRows(
+          context,
+          '共享跳过',
+          `同商品同款素材已由货号 ${context.styleSharedFromGoodsCode || context.detailSharedFromGoodsCode || context.job.goodsCode} 覆盖上传`,
+        ))
+      })
+      const executableLiveContexts = coalescedLiveContexts.filter(context => (context.assets || []).length)
+      const sharedDetailSkips = coalescedLiveContexts.filter(context => context.detailShareRole === 'shared_skip').length
+      const sharedStyleSkips = skippedLiveContexts.length
       const summary = [
         `输入 ${shared.total_input_rows || jobs.length} 行，生成 ${jobs.length} 个款色任务`,
         `商品资料命中 ${merchandiseByGoods.size}/${jobs.length}`,
         `PDC详情读取 ${detailReads}`,
         `素材候选 ${assetFiles.length} 个`,
         sharedDetailSkips ? `同商品同款商品详情图共享跳过 ${sharedDetailSkips} 次重复上传` : '',
+        sharedStyleSkips ? `同商品同款展示/主图素材共享跳过 ${sharedStyleSkips} 次重复上传` : '',
         allowLiveExecution(params) ? `待线上替换 ${liveContexts.length} 个` : '未执行取消审核、上传、保存或提交审核',
       ].filter(Boolean).join('；')
       outputRows.unshift(summaryRow(summary, outputRows.some(row => ['预检失败', '未找到商品', '详情读取失败', '找图失败', '下载失败'].includes(row.执行结果)) ? '部分预检失败' : '预检完成'))
@@ -3732,9 +4071,22 @@
       const { context } = currentLiveContext(shared)
       if (!context) return advanceLiveJob([], shared)
       const targetUrl = pdcEditUrl(context.vendorProductId, context.vendorType)
-      if (!isPdcOrigin() || !String(location.href || '').includes(encodeURIComponent(context.vendorProductId)) && !String(location.href || '').includes(context.vendorProductId)) {
+      const currentUrl = String(location.href || '')
+      const onTargetEditPage = isPdcOrigin() &&
+        /\/product\/edit\//i.test(currentUrl) &&
+        (currentUrl.includes(encodeURIComponent(context.vendorProductId)) || currentUrl.includes(context.vendorProductId))
+      if (shared.force_pdc_reload && onTargetEditPage) {
+        return reloadPage('process_live_job', VIPSHOP_PAGE_WAIT_MS, {
+          ...shared,
+          force_pdc_reload: false,
+          pdc_wait_attempts: 0,
+          current_store: `刷新编辑页：${context.vendorProductId}`,
+        })
+      }
+      if (!onTargetEditPage) {
         return navigateTo(targetUrl, 'process_live_job', VIPSHOP_PAGE_WAIT_MS, {
           ...shared,
+          force_pdc_reload: false,
           pdc_wait_attempts: 0,
           current_buyer_id: context.job.goodsCode,
           current_store: context.vendorProductId,
@@ -3845,30 +4197,36 @@
           existingDetailImages: shared.current_detail_existing_images || [],
         })
         callSaveAndApprove(context)
-        const rows = result.uploadRecords.map(record => buildOutputRow(context.job, {
-          task: record.usage,
-          scope: record.asset.scope,
-          imageIndex: String(record.imageIndex),
-          file: record.asset.path,
-          dimension: imageSizeOf(record.asset),
-          endpoint: PDC_UPLOAD_SQUARE_IMAGE_URL,
-          status: '已上传待保存',
-          merchandiseNo: context.merchandise?.merchandiseNo,
-          vendorSpuId: context.vendorProductId,
-          prodSpuId: context.merchandise?.prodSpuId,
-          productStatus: statusLabel(context.product?.status),
-          productName: context.merchandise?.name || context.product?.title,
-          backendStyle: context.product?.sn || context.merchandise?.osn,
-          mergedStyle: context.merged ? '是' : '否',
-          colorName: context.color?.aliasesName || context.color?.colourName,
-          colorCode: context.color?.colourGSN,
-          colorMatch: context.color?.colourGSN ? '已匹配' : '',
-          note: compact([
-            record.asset.transformNote,
-            record.usageKey === 'detail_slice' ? result.applyResult?.detailApplyResult?.note : '',
-            record.imageUrl,
-          ].filter(Boolean).join('；')),
-        }))
+        const rows = result.uploadRecords.map(record => {
+          const recordColor = findTargetColor(context.product, record.asset?.targetGoodsCode || context.job.goodsCode) || context.color || {}
+          return buildOutputRow(context.job, {
+            task: record.usage,
+            scope: record.asset.scope,
+            imageIndex: String(record.imageIndex),
+            file: record.asset.path,
+            dimension: imageSizeOf(record.asset),
+            endpoint: PDC_UPLOAD_SQUARE_IMAGE_URL,
+            status: '已上传待保存',
+            merchandiseNo: context.merchandise?.merchandiseNo,
+            vendorSpuId: context.vendorProductId,
+            prodSpuId: context.merchandise?.prodSpuId,
+            productStatus: statusLabel(context.product?.status),
+            productName: context.merchandise?.name || context.product?.title,
+            backendStyle: context.product?.sn || context.merchandise?.osn,
+            mergedStyle: context.merged ? '是' : '否',
+            colorName: recordColor.aliasesName || recordColor.colourName,
+            colorCode: record.asset?.targetGoodsCode || recordColor.colourGSN,
+            colorMatch: recordColor.colourGSN ? '已匹配' : '',
+            note: compact([
+              record.asset.transformNote,
+              record.asset?.targetGoodsCode && normalizeCode(record.asset.targetGoodsCode) !== normalizeCode(context.job.goodsCode)
+                ? `同款其他色号=${record.asset.targetGoodsCode}`
+                : '',
+              record.usageKey === 'detail_slice' ? result.applyResult?.detailApplyResult?.note : '',
+              record.imageUrl,
+            ].filter(Boolean).join('；')),
+          })
+        })
         return nextPhase('verify_live_job', VIPSHOP_SAVE_WAIT_MS, {
           ...shared,
           current_live_uploads: result.uploadRecords,

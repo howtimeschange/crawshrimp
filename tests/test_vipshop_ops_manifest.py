@@ -56,13 +56,21 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertEqual(params["material_root"]["type"], "directory")
         self.assertTrue(params["material_root"]["include_file_listing"])
         self.assertEqual(params["material_images"]["type"], "file_images")
+        self.assertEqual(
+            params["cloud_path"]["default"],
+            "巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/",
+        )
+        self.assertIn("商品展示图第3/4/5张", params["cloud_path"]["hint"])
+        self.assertIn("页面 colourGSN", params["main_image_cloud_root"]["hint"])
         self.assertNotIn("operation_scope", params)
         self.assertEqual(params["upload_scope"]["label"], "上传功能")
         self.assertEqual(params["upload_scope"]["default"], ["full"])
         upload_options = {item["value"]: item["label"] for item in params["upload_scope"]["options"]}
         self.assertEqual(upload_options["full"], "完整上传")
-        self.assertEqual(upload_options["main_image"], "只传主图")
-        self.assertEqual(upload_options["detail_image"], "只传商详页")
+        self.assertEqual(upload_options["main_image"], "只传打标图")
+        self.assertEqual(upload_options["package"], "只传包装图（商详页+商品展示345）")
+        self.assertIn("打标图包含商品展示图第1张", params["upload_scope"]["hint"])
+        self.assertIn("包装图包含商详页图与商品展示图第3/4/5张", params["upload_scope"]["hint"])
         self.assertEqual(task["output"][0]["filename"], "唯品会包装主图替换预检_{timestamp}.xlsx")
         self.assertIn("V_SPU", output_columns)
         self.assertIn("P_SPU", output_columns)

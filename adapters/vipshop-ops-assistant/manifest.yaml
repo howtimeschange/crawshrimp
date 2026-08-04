@@ -61,10 +61,10 @@ tasks:
           - value: full
             label: 完整上传
           - value: main_image
-            label: 只传主图
-          - value: detail_image
-            label: 只传商详页
-        hint: 默认完整上传，即同时找图并上传主图/列表图和商详页图；如只处理单项，请取消“完整上传”后勾选对应功能。旧参数 operation_scope 仍兼容。
+            label: 只传打标图
+          - value: package
+            label: 只传包装图（商详页+商品展示345）
+        hint: 默认完整上传，即同时找图并上传打标图和包装图；打标图包含商品展示图第1张与商品列表图首图，包装图包含商详页图与商品展示图第3/4/5张。旧参数 operation_scope、detail_image 仍兼容。
       - id: enable_ocr_anchor_detection
         type: checkbox
         label: OCR识别商详保留图
@@ -100,16 +100,16 @@ tasks:
         type: text
         label: 包装图云盘主路径
         required: false
-        default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
-        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
-        hint: 默认与天猫包装图路径一致，在产品上新根目录内按款号搜索包装微详情和商品详情切片；最后一级若是款号，会按当前行款号自动替换。
+        default: "巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/"
+        placeholder: "巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/"
+        hint: 默认在品牌视觉部服饰产品包装根目录内按款号搜索；包装微详情从款号文件夹下“微详情”取 1200x1200 图并写入商品展示图第3/4/5张，商品详情切片仍从 images/切片/详情目录识别。
       - id: main_image_cloud_root
         type: text
         label: 主图打标云盘根路径
         required: false
         default: "巴拉巴拉品牌事业部-市场系统//品牌视觉部/"
         placeholder: "巴拉巴拉品牌事业部-市场系统//品牌视觉部/"
-        hint: 主图/列表图 1200 和 950 从该根路径下搜索，要求结果路径包含“主图打标（京东唯品）”和“回图/唯品”；年份、批次不需要填写。
+        hint: 主图/列表图 1200 和 950 从该根路径下搜索，要求结果路径包含“主图打标（京东唯品）”和“回图/唯品”；脚本会下载同款所有色号打标图，再按页面 colourGSN 匹配上传。
       - id: main_image_path_features
         type: textarea
         label: 主图路径特征
