@@ -48,7 +48,7 @@ async function loadExports(params = {}, fetchImpl = async () => jsonResponse({ c
   return exportsBox
 }
 
-async function runScript({ params = {}, shared = {}, phase = 'main', fetchImpl }) {
+async function runScript({ params = {}, shared = {}, phase = 'main', fetchImpl, locationHref = 'https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise', bodyText = '' }) {
   const scriptPath = path.resolve('adapters/vipshop-ops-assistant/vipshop-package-main-image-replace.js')
   const source = fs.readFileSync(scriptPath, 'utf8')
   const context = {
@@ -58,8 +58,8 @@ async function runScript({ params = {}, shared = {}, phase = 'main', fetchImpl }
       __CRAWSHRIMP_SHARED__: shared,
       __CRAWSHRIMP_EXPORTS__: null,
     },
-    document: { body: { innerText: '' } },
-    location: { href: 'https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise' },
+    document: { title: '', body: { innerText: bodyText, textContent: bodyText } },
+    location: { href: locationHref },
     fetch: fetchImpl,
     URLSearchParams,
     console,
@@ -1422,4 +1422,48 @@ test('live mode follows execute_mode without legacy allow_live gate', async () =
   assert.equal(result.meta.next_phase, 'navigate_nov_admin')
   assert.equal(result.meta.shared.live_blocked, undefined)
   assert.equal(result.meta.shared.execute_mode, 'live')
+})
+
+test('Semir cloud login page waits for user login for 500 seconds without calling APIs', async () => {
+  let fetchCalled = false
+  const result = await runScript({
+    phase: 'collect_cloud_assets',
+    locationHref: 'https://fmp.semirapp.com/web/index#/home/file',
+    bodyText: 'SEMIR 森马云盘 森马员工登录 前往统一认证中心登录 其他用户登录',
+    shared: {
+      jobs: [{ rowNo: 2, styleCode: '200326108106', goodsCode: '20032610810620410', operationScope: ['package'] }],
+      job_index: 0,
+    },
+    fetchImpl: async () => {
+      fetchCalled = true
+      throw new Error('login page should wait before hitting cloud APIs')
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'collect_cloud_assets')
+  assert.equal(result.meta.sleep_ms, 5000)
+  assert.equal(result.meta.shared.semir_login_wait_attempts, 1)
+  assert.match(result.meta.shared.current_store, /5\/500秒/)
+  assert.equal(fetchCalled, false)
+})
+
+test('Semir cloud 40106 login timeout waits instead of failing lookup', async () => {
+  const result = await runScript({
+    phase: 'collect_cloud_assets',
+    locationHref: 'https://fmp.semirapp.com/web/index#/home/file',
+    shared: {
+      jobs: [{ rowNo: 2, styleCode: '200326108106', goodsCode: '20032610810620410', operationScope: ['package'] }],
+      job_index: 0,
+    },
+    fetchImpl: async () => jsonResponse({ code: '40106', msg: '登录超时' }),
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'collect_cloud_assets')
+  assert.equal(result.meta.shared.semir_login_wait_attempts, 1)
+  assert.match(result.meta.shared.semir_login_wait_error, /登录态不可用/)
+  assert.match(result.meta.shared.current_store, /5\/500秒/)
 })

@@ -15,7 +15,7 @@ auth:
 tasks:
   - id: package_main_image_replace
     name: 【巴拉】包装+主图替换
-    description: 读取款号/货号清单，默认从森马云盘按款号查找并下载图包，再在唯品会商品资料/PDC 中匹配目标颜色，完成包装微详情、商品详情切片、主图和列表图替换；默认只做预检，选择线上替换时执行真实保存提交。
+    description: 读取款号/货号清单，默认从森马云盘按款号查找并下载图包，再在唯品会商品资料/PDC 中匹配目标颜色，完成包装微详情、商品详情切片、主图和列表图替换；默认只做预检且不执行真实上传，选择找图并且真实上传时执行真实保存提交。
     script: vipshop-package-main-image-replace.js
     entry_url: https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise
     tab_match_prefixes:
@@ -40,10 +40,10 @@ tasks:
         default: plan
         options:
           - value: plan
-            label: 找图+API 预检（推荐）
+            label: 预检（不执行真实上传）
           - value: live
-            label: 线上替换（需授权）
-        hint: 默认只做找图和接口预检；选择线上替换时脚本会取消审核/撤回、上传图片、保存并提交审核。
+            label: 找图并且真实上传
+        hint: 默认只做预检，不执行真实上传；选择找图并且真实上传时脚本会取消审核/撤回、上传图片、保存并提交审核。
       - id: upload_scope
         type: checkbox
         label: 上传功能
@@ -107,11 +107,11 @@ tasks:
         label: 款号货号表
         required: true
         templates:
-          - file: templates/vipshop-package-main-image-replace-template.csv
-            label: Excel / CSV 模板
+          - file: templates/vipshop-package-main-image-replace-template.xlsx
+            label: Excel 模板
             description: 填写“款号”“货号”两列；货号必须是完整款色号，避免相似颜色误匹配。
-            version: "2026.08.04.1"
-        hint: 必须包含“款号”“货号”两列；脚本按完整货号匹配 PDC 颜色，拼款时只规划目标货号对应颜色。
+            version: "2026.08.04.2"
+        hint: 必须包含“款号”“货号”两列；脚本按完整货号匹配 PDC 颜色，拼款时只规划目标货号对应颜色。默认模板为 xlsx，避免 Windows Excel 误识别 CSV 编码或长货号。
     trigger:
       type: manual
     output:

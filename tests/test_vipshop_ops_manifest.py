@@ -1,11 +1,13 @@
 from pathlib import Path
+import zipfile
 import unittest
 
 import yaml
 
 
 MANIFEST_PATH = Path("adapters/vipshop-ops-assistant/manifest.yaml")
-PACKAGE_MAIN_TEMPLATE_PATH = Path("adapters/vipshop-ops-assistant/templates/vipshop-package-main-image-replace-template.csv")
+PACKAGE_MAIN_TEMPLATE_XLSX_PATH = Path("adapters/vipshop-ops-assistant/templates/vipshop-package-main-image-replace-template.xlsx")
+PACKAGE_MAIN_TEMPLATE_CSV_PATH = Path("adapters/vipshop-ops-assistant/templates/vipshop-package-main-image-replace-template.csv")
 
 
 class VipshopOpsManifestTests(unittest.TestCase):
@@ -51,14 +53,22 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertEqual(params["mode"]["default"], "new")
         self.assertIn("推荐", params["mode"]["options"][1]["label"])
         self.assertEqual(params["execute_mode"]["default"], "plan")
-        self.assertIn("选择线上替换", params["execute_mode"]["hint"])
+        execute_options = {item["value"]: item["label"] for item in params["execute_mode"]["options"]}
+        self.assertEqual(execute_options["plan"], "预检（不执行真实上传）")
+        self.assertEqual(execute_options["live"], "找图并且真实上传")
+        self.assertIn("不执行真实上传", params["execute_mode"]["hint"])
+        self.assertIn("找图并且真实上传", params["execute_mode"]["hint"])
         self.assertEqual(params["input_file"]["type"], "file_excel")
         self.assertTrue(params["input_file"]["required"])
-        self.assertEqual(params["input_file"]["templates"][0]["file"], "templates/vipshop-package-main-image-replace-template.csv")
-        self.assertEqual(params["input_file"]["templates"][0]["version"], "2026.08.04.1")
-        template_header = PACKAGE_MAIN_TEMPLATE_PATH.read_text(encoding="utf-8").splitlines()[0]
+        self.assertEqual(params["input_file"]["templates"][0]["file"], "templates/vipshop-package-main-image-replace-template.xlsx")
+        self.assertEqual(params["input_file"]["templates"][0]["version"], "2026.08.04.2")
+        self.assertTrue(zipfile.is_zipfile(PACKAGE_MAIN_TEMPLATE_XLSX_PATH))
+        with zipfile.ZipFile(PACKAGE_MAIN_TEMPLATE_XLSX_PATH) as workbook:
+            self.assertIn("xl/worksheets/sheet1.xml", workbook.namelist())
+            self.assertIn("xl/workbook.xml", workbook.namelist())
+        template_header = PACKAGE_MAIN_TEMPLATE_CSV_PATH.read_text(encoding="utf-8").splitlines()[0]
         self.assertEqual(template_header, "款号,货号,包装图云盘主路径,打标图云盘根路径,备注")
-        self.assertNotIn("候选云盘路径", PACKAGE_MAIN_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        self.assertNotIn("候选云盘路径", PACKAGE_MAIN_TEMPLATE_CSV_PATH.read_text(encoding="utf-8"))
         self.assertEqual(
             params["cloud_path"]["default"],
             "巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/",

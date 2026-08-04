@@ -36,7 +36,8 @@
   const TESSERACT_VENDOR_PATH = '/adapter-assets/tmall-ops-assistant/vendor/tesseract'
   const TESSERACT_LANG = 'chi_sim+eng'
   const VIPSHOP_MAX_UPLOAD_BYTES = 1024 * 1024
-  const SEMIR_LOGIN_WAIT_MS = Math.max(1000, Number(params.semir_login_wait_ms || 60000) || 60000)
+  const DEFAULT_SEMIR_LOGIN_WAIT_MS = 500000
+  const SEMIR_LOGIN_WAIT_MS = Math.max(1000, Number(params.semir_login_wait_ms || DEFAULT_SEMIR_LOGIN_WAIT_MS) || DEFAULT_SEMIR_LOGIN_WAIT_MS)
   const SEMIR_LOGIN_RETRY_MS = Math.min(5000, Math.max(1000, Number(params.semir_login_retry_ms || 5000) || 5000))
   const SEMIR_LOGIN_WAIT_MAX_ATTEMPTS = Math.max(1, Math.ceil(SEMIR_LOGIN_WAIT_MS / SEMIR_LOGIN_RETRY_MS))
   const VIPSHOP_PAGE_WAIT_MS = Math.max(1000, Number(params.vipshop_page_wait_ms || 3000) || 3000)
@@ -1334,13 +1335,35 @@
   }
 
   function isSemirLoginTimeoutText(text) {
-    return /登录|login|unauthorized|会话|session/i.test(String(text || ''))
+    return /40106|登录超时|未登录|请登录|login\s*timeout|unauthorized|会话.*失效|session\s*(?:expired|timeout)|统一认证中心|森马员工登录|前往统一认证中心登录/i.test(String(text || ''))
   }
 
   function isSemirLoginTimeoutPayload(payload) {
-    const code = compact(payload?.code || payload?.status)
-    const message = compact(payload?.msg || payload?.message || payload?.error)
-    return ['401', '403', '10001', '10002'].includes(code) || isSemirLoginTimeoutText(message)
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
+    const code = compact(payload.error_code ?? payload.errorCode ?? payload.code ?? payload.status)
+    const message = compact(payload.error_msg || payload.errorMsg || payload.msg || payload.message || payload.error)
+    return ['401', '403', '40106', '10001', '10002'].includes(code) || isSemirLoginTimeoutText(message)
+  }
+
+  function createSemirLoginTimeoutError(url, response = null, payload = null, text = '') {
+    const message = compact(payload?.error_msg || payload?.errorMsg || payload?.msg || payload?.message || payload?.error || text)
+    const error = new Error(`森马云盘登录态不可用，请在当前浏览器完成登录后继续：${String(url || '')}${message ? `；${message.slice(0, 160)}` : ''}`)
+    error.isSemirLoginTimeout = true
+    error.status = response?.status || 0
+    error.payload = payload || null
+    error.responseText = String(text || '')
+    return error
+  }
+
+  function isSemirLoginTimeoutError(error) {
+    return !!(error?.isSemirLoginTimeout || isSemirLoginTimeoutPayload(error?.payload) || isSemirLoginTimeoutText(error?.message || error?.responseText))
+  }
+
+  function isSemirCloudLoginPageVisible() {
+    const href = String(location?.href || '')
+    if (!/^https:\/\/fmp\.semirapp\.com\//i.test(href)) return false
+    const text = compact(`${document?.title || ''}\n${document?.body?.innerText || document?.body?.textContent || ''}`)
+    return /\/login|[?&]login/i.test(href) || /森马员工登录|前往统一认证中心登录|其他用户登录|统一认证中心|非统一认证账号登录/.test(text)
   }
 
   async function fetchSemirJson(url, init = {}) {
@@ -1355,12 +1378,15 @@
     } catch (error) {
       payload = null
     }
-    if (payload == null) throw new Error(`森马云盘接口未返回 JSON：${url}；${text.slice(0, 160)}`)
-    if (!response.ok || isSemirLoginTimeoutPayload(payload)) {
+    if (payload == null) {
+      if (isSemirLoginTimeoutText(text)) throw createSemirLoginTimeoutError(url, response, payload, text)
+      throw new Error(`森马云盘接口未返回 JSON：${url}；${text.slice(0, 160)}`)
+    }
+    const loginBlocked = response.status === 401 || response.status === 403 || isSemirLoginTimeoutPayload(payload) || isSemirLoginTimeoutText(text)
+    if (!response.ok || loginBlocked) {
       const message = compact(payload?.msg || payload?.message || text.slice(0, 160) || response.statusText)
-      const error = new Error(`森马云盘接口失败 ${response.status}：${message}`)
-      error.isSemirLoginTimeout = response.status === 401 || response.status === 403 || isSemirLoginTimeoutPayload(payload)
-      throw error
+      if (loginBlocked) throw createSemirLoginTimeoutError(url, response, payload, message)
+      throw new Error(`森马云盘接口失败 ${response.status}：${message}`)
     }
     return payload
   }
@@ -1624,6 +1650,7 @@
         }
         return { ok: true, items: all, endpoint: `${attempt.method} ${attempt.endpoint}` }
       } catch (error) {
+        if (isSemirLoginTimeoutError(error)) throw error
         errors.push(String(error?.message || error))
       }
     }
@@ -1795,6 +1822,7 @@
           searchCount: searchItems.length,
         }))
       } catch (error) {
+        if (isSemirLoginTimeoutError(error)) throw error
         // Some visible mounts can deny search; skip them and keep probing.
       }
     }
@@ -1913,6 +1941,7 @@
       searchItems = await searchFiles(sourceConfig.mountId, job.styleCode)
       searchCount += searchItems.length
     } catch (error) {
+      if (isSemirLoginTimeoutError(error)) throw error
       listingIssues.push(`搜索款号失败：${String(error?.message || error)}`)
     }
     if (normalizeComparableCode(job.goodsCode) && normalizeComparableCode(job.goodsCode) !== normalizeComparableCode(job.styleCode)) {
@@ -1920,6 +1949,7 @@
         goodsSearchItems = await searchFiles(sourceConfig.mountId, job.goodsCode)
         searchCount += goodsSearchItems.length
       } catch (error) {
+        if (isSemirLoginTimeoutError(error)) throw error
         listingIssues.push(`搜索货号失败：${String(error?.message || error)}`)
       }
     }
@@ -3936,6 +3966,11 @@
       statusLabel,
       hasScope,
       isSupportedExecutionOrigin,
+      semirLoginWaitMessage,
+      isSemirLoginTimeoutText,
+      isSemirLoginTimeoutPayload,
+      isSemirLoginTimeoutError,
+      isSemirCloudLoginPageVisible,
       normalizeVipshopReadbackImageUrl,
       verifyImageUrlInDetail,
       applyMainSquareRecordsToColors,
@@ -4016,6 +4051,9 @@
       if (!/^https:\/\/fmp\.semirapp\.com\//i.test(String(location.href || ''))) {
         return navigateTo(SEMIR_ENTRY_URL, 'collect_cloud_assets', 2000, shared)
       }
+      if (isSemirCloudLoginPageVisible()) {
+        return waitForSemirLogin('collect_cloud_assets', shared, new Error('当前页面停留在森马云盘登录页'))
+      }
       const { jobs, index, job } = currentJobFromShared(shared)
       if (!job) return nextPhase('navigate_nov_admin', 0, shared)
       try {
@@ -4053,7 +4091,7 @@
           retry_delay_ms: DOWNLOAD_RETRY_DELAY_MS,
         }, nextShared)
       } catch (error) {
-        if (error?.isSemirLoginTimeout) return waitForSemirLogin('collect_cloud_assets', shared, error)
+        if (isSemirLoginTimeoutError(error)) return waitForSemirLogin('collect_cloud_assets', shared, error)
         const rows = [buildOutputRow(job, {
           task: '森马云盘找图',
           status: '找图失败',
