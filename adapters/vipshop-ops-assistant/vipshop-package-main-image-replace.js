@@ -2501,6 +2501,50 @@
       .filter(Boolean)
   }
 
+  function insertByImageIndex(existing, insertions, allowedIndexes) {
+    const allowed = (Array.isArray(allowedIndexes) ? allowedIndexes : [])
+      .map(Number)
+      .filter(Number.isFinite)
+    if (!allowed.length) return []
+    const orderedExisting = replaceByImageIndex(existing, [], allowed)
+    const preparedInsertions = (Array.isArray(insertions) ? insertions : [])
+      .filter(item => item?.imageUrl)
+      .map(item => ({ ...item }))
+    if (!preparedInsertions.length) return orderedExisting
+    const existingByIndex = new Map()
+    ;(Array.isArray(existing) ? existing : []).forEach(item => {
+      if (item?.imageUrl) existingByIndex.set(Number(item.imageIndex), { ...item })
+    })
+    const existingSlots = allowed.map(imageIndex => (
+      existingByIndex.has(Number(imageIndex))
+        ? { ...existingByIndex.get(Number(imageIndex)), imageIndex: Number(imageIndex) }
+        : null
+    ))
+    const insertPositions = preparedInsertions
+      .map(item => allowed.findIndex(imageIndex => Number(imageIndex) === Number(item.imageIndex)))
+      .filter(index => index >= 0)
+    const insertAt = insertPositions.length ? Math.min(...insertPositions) : 0
+    const mergedSlots = [
+      ...existingSlots.slice(0, insertAt),
+      ...preparedInsertions,
+      ...existingSlots.slice(insertAt).filter(Boolean),
+    ]
+    const seen = new Set()
+    const result = []
+    for (let index = 0; index < Math.min(mergedSlots.length, allowed.length); index += 1) {
+      const item = mergedSlots[index]
+      const url = compact(item?.imageUrl || item?.src || item?.url)
+      if (!url || seen.has(url)) continue
+      seen.add(url)
+      result.push({
+        ...item,
+        imageIndex: allowed[index],
+        index,
+      })
+    }
+    return result
+  }
+
   const SIZE_ANCHOR_RE = /(尺码表|尺码测量|尺码推荐|尺码推荐表|宝贝尺寸|宝贝尺码|商品尺码表|尺码信息|测量图)/i
   const WANTED_INFO_ANCHOR_RE = /(想要的信息看这里|想看的信息在这里|想要的信息|信息看这里)/i
   const WASH_FALLBACK_ANCHOR_RE = /(不同材质这样洗|不同材质|衣物洗涤|洗涤|水洗|洗唛)/i
@@ -2610,11 +2654,14 @@
       ...sourceBalaOneResults,
     ].sort((a, b) => a.globalIndex - b.globalIndex)
 
+    const allowFallbackAnchors = options.allowFallbackAnchors === true
     const priorities = [
       ['wanted_info', 'wanted_info'],
-      ['wash_fallback', 'wash_fallback'],
-      ['size', 'size'],
-      ['lower_preserve', 'lower_preserve'],
+      ...(allowFallbackAnchors ? [
+        ['wash_fallback', 'wash_fallback'],
+        ['size', 'size'],
+        ['lower_preserve', 'lower_preserve'],
+      ] : []),
     ]
     let stop = null
     let stopAnchorKind = ''
@@ -3027,10 +3074,13 @@
     if (color.squareMainImages !== color.squareImages) replaceArrayContents(color.squareImages, color.squareMainImages)
   }
 
-  function applySquareReplacementsToColor(color, replacements, allowedIndexes) {
+  function applySquareReplacementsToColor(color, replacements, allowedIndexes, options = {}) {
     if (!color || !Array.isArray(replacements) || !replacements.length) return
     const target = colorSquareImageArray(color)
-    replaceArrayContents(target, replaceByImageIndex(target, replacements, allowedIndexes))
+    const nextImages = options.mode === 'insert'
+      ? insertByImageIndex(target, replacements, allowedIndexes)
+      : replaceByImageIndex(target, replacements, allowedIndexes)
+    replaceArrayContents(target, nextImages)
     syncSquareAliases(color)
   }
 
@@ -3066,7 +3116,7 @@
       const color = findStateTargetColor(colorState, goodsCode)
       if (!color || !group.length) continue
       const record = group[0]
-      applySquareReplacementsToColor(color, [buildSavedImage(record.imageUrl, 1, record.asset, 0, true)], VIPSHOP_SQUARE_ALLOWED_INDEXES)
+      applySquareReplacementsToColor(color, [buildSavedImage(record.imageUrl, 1, record.asset, 0, true)], VIPSHOP_SQUARE_ALLOWED_INDEXES, { mode: 'insert' })
       applied += 1
     }
     return applied
@@ -3095,7 +3145,7 @@
     if (!replacements.length) return 0
     let applied = 0
     for (const color of Array.isArray(colors) ? colors : []) {
-      applySquareReplacementsToColor(color, replacements, VIPSHOP_SQUARE_ALLOWED_INDEXES)
+      applySquareReplacementsToColor(color, replacements, VIPSHOP_SQUARE_ALLOWED_INDEXES, { mode: 'insert' })
       applied += 1
     }
     return applied
@@ -3167,10 +3217,13 @@
     }
     try {
       const ocr = await runTesseractOcrForImages(images, rawParams)
-      const anchors = buildVipshopDetailAnchorsFromOcrResults(images, ocr.results, { source: 'tesseract_ocr' })
+      const anchors = buildVipshopDetailAnchorsFromOcrResults(images, ocr.results, {
+        source: 'tesseract_ocr',
+        allowFallbackAnchors: truthy(rawParams.allow_detail_anchor_fallback || rawParams.allow_detail_anchor_fallbacks),
+      })
       return {
         ok: Number.isFinite(Number(anchors.stopImageIndex)),
-        reason: Number.isFinite(Number(anchors.stopImageIndex)) ? '' : 'OCR 未识别到“想要的信息看这里”或洗涤/尺码等可靠保留锚点',
+        reason: Number.isFinite(Number(anchors.stopImageIndex)) ? '' : 'OCR 未识别到“想要的信息看这里”保留锚点',
         images,
         ocr,
         anchors,
@@ -3826,6 +3879,7 @@
       applyListImageRecordsToColors,
       applyPackageMicroSquareRecordsToColors,
       replaceByImageIndex,
+      insertByImageIndex,
       makeDetailImages,
       classifyVipshopOcrAnchorText,
       buildVipshopDetailAnchorsFromOcrResults,

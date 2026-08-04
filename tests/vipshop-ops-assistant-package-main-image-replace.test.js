@@ -549,8 +549,25 @@ test('uses style-folder micro detail images as Vipshop display positions 3 to 5'
 test('applies package micro display images to every Vipshop color at display positions 3 to 5', async () => {
   const helpers = await loadExports()
   const colors = [
-    { colourGSN: '20942610820190001', squareImages: [{ imageIndex: 1, imageUrl: 'old-main-black' }] },
-    { colourGSN: '20942610820140627', squareImages: [{ imageIndex: 1, imageUrl: 'old-main-green' }] },
+    {
+      colourGSN: '20942610820190001',
+      squareImages: [
+        { imageIndex: 1, imageUrl: 'old-main-black' },
+        { imageIndex: 3, imageUrl: 'old-black-3' },
+        { imageIndex: 4, imageUrl: 'old-black-4' },
+        { imageIndex: 15, imageUrl: 'old-black-15' },
+        { imageIndex: 16, imageUrl: 'old-black-16' },
+      ],
+    },
+    {
+      colourGSN: '20942610820140627',
+      squareImages: [
+        { imageIndex: 1, imageUrl: 'old-main-green' },
+        { imageIndex: 3, imageUrl: 'old-green-3' },
+        { imageIndex: 4, imageUrl: 'old-green-4' },
+        { imageIndex: 15, imageUrl: 'old-green-15' },
+      ],
+    },
   ]
   const records = [
     { imageUrl: 'micro-1', asset: { filename: '1200_12001.jpg', width: 1200, height: 1200 } },
@@ -560,17 +577,17 @@ test('applies package micro display images to every Vipshop color at display pos
 
   assert.equal(helpers.applyPackageMicroSquareRecordsToColors(colors, records), 2)
   assert.deepEqual(plain(colors.map(color => color.squareImages.map(item => [item.imageIndex, item.imageUrl]))), [
-    [[1, 'old-main-black'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3']],
-    [[1, 'old-main-green'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3']],
+    [[1, 'old-main-black'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3'], [16, 'old-black-3'], [17, 'old-black-4'], [18, 'old-black-15'], [19, 'old-black-16']],
+    [[1, 'old-main-green'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3'], [16, 'old-green-3'], [17, 'old-green-4'], [18, 'old-green-15']],
   ])
 })
 
 test('limits package micro display images to matching 12-digit style inside merged link', async () => {
   const helpers = await loadExports()
   const colors = [
-    { colourGSN: '20892616621200388', squareImages: [{ imageIndex: 1, imageUrl: 'old-212-a' }] },
-    { colourGSN: '20892616621200454', squareImages: [{ imageIndex: 1, imageUrl: 'old-212-b' }] },
-    { colourGSN: '20892616621300355', squareImages: [{ imageIndex: 1, imageUrl: 'old-213-a' }] },
+    { colourGSN: '20892616621200388', squareImages: [{ imageIndex: 1, imageUrl: 'old-212-a' }, { imageIndex: 3, imageUrl: 'old-212-a-3' }] },
+    { colourGSN: '20892616621200454', squareImages: [{ imageIndex: 1, imageUrl: 'old-212-b' }, { imageIndex: 3, imageUrl: 'old-212-b-3' }] },
+    { colourGSN: '20892616621300355', squareImages: [{ imageIndex: 1, imageUrl: 'old-213-a' }, { imageIndex: 3, imageUrl: 'old-213-a-3' }] },
   ]
   const records = [
     { imageUrl: 'micro-1', asset: { filename: '1200_12001.jpg', width: 1200, height: 1200 } },
@@ -582,17 +599,32 @@ test('limits package micro display images to matching 12-digit style inside merg
   assert.deepEqual(plain(helpers.goodsCodesFromColors(targetColors)), ['20892616621200388', '20892616621200454'])
   assert.equal(helpers.applyPackageMicroSquareRecordsToColors(targetColors, records), 2)
   assert.deepEqual(plain(colors.map(color => color.squareImages.map(item => [item.imageIndex, item.imageUrl]))), [
-    [[1, 'old-212-a'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3']],
-    [[1, 'old-212-b'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3']],
-    [[1, 'old-213-a']],
+    [[1, 'old-212-a'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3'], [16, 'old-212-a-3']],
+    [[1, 'old-212-b'], [3, 'micro-1'], [4, 'micro-2'], [15, 'micro-3'], [16, 'old-212-b-3']],
+    [[1, 'old-213-a'], [3, 'old-213-a-3']],
   ])
 })
 
 test('applies marked main and list images by target goods code', async () => {
   const helpers = await loadExports()
   const colors = [
-    { colourGSN: '20942610820190001', squareImages: [], listImages: [] },
-    { colourGSN: '20942610820140627', squareImages: [], listImages: [] },
+    {
+      colourGSN: '20942610820190001',
+      squareImages: [
+        { imageIndex: 1, imageUrl: 'old-black-main' },
+        { imageIndex: 3, imageUrl: 'old-black-detail-a' },
+        { imageIndex: 4, imageUrl: 'old-black-detail-b' },
+      ],
+      listImages: [],
+    },
+    {
+      colourGSN: '20942610820140627',
+      squareImages: [
+        { imageIndex: 1, imageUrl: 'old-green-main' },
+        { imageIndex: 3, imageUrl: 'old-green-detail-a' },
+      ],
+      listImages: [],
+    },
   ]
   const mainRecords = [
     { imageUrl: 'black-main', asset: { targetGoodsCode: '20942610820190001', filename: '20942610820190001-1200.jpg', width: 1200, height: 1200 } },
@@ -606,8 +638,8 @@ test('applies marked main and list images by target goods code', async () => {
   assert.equal(helpers.applyMainSquareRecordsToColors(colors, mainRecords), 2)
   assert.equal(helpers.applyListImageRecordsToColors(colors, listRecords), 2)
   assert.deepEqual(plain(colors.map(color => color.squareImages.map(item => [item.imageIndex, item.imageUrl]))), [
-    [[1, 'black-main']],
-    [[1, 'green-main']],
+    [[1, 'black-main'], [2, 'old-black-main'], [3, 'old-black-detail-a'], [4, 'old-black-detail-b']],
+    [[1, 'green-main'], [2, 'old-green-main'], [3, 'old-green-detail-a']],
   ])
   assert.deepEqual(plain(colors.map(color => color.listImages.map(item => [item.imageIndex, item.imageUrl]))), [
     [[50, 'black-list']],
@@ -969,6 +1001,51 @@ test('anchored Vipshop detail replacement preserves wanted-info image and later 
   ])
   assert.deepEqual(plain(result.images.map(item => item.imageIndex)), [601, 602, 603, 604])
   assert.match(result.note, /保留锚点及之后2张/)
+})
+
+test('anchored Vipshop detail replacement removes old images before wanted-info even when uploaded slice count is shorter', async () => {
+  const helpers = await loadExports()
+  const existing = [
+    ...Array.from({ length: 13 }, (_, index) => ({
+      imageUrl: `https://img.example/old-before-wanted-${index + 1}.jpg`,
+      imageIndex: 601 + index,
+    })),
+    { imageUrl: 'https://img.example/wanted-info.jpg', imageIndex: 614 },
+    { imageUrl: 'https://img.example/size-chart.jpg', imageIndex: 615 },
+  ]
+  const uploaded = Array.from({ length: 8 }, (_, index) => ({
+    imageUrl: `https://img.example/new-detail-${index + 1}.jpg`,
+    filename: `208926166212_0${index + 1}.jpg`,
+  }))
+  const result = helpers.buildAnchoredVipshopDetailImages(existing, uploaded, {
+    ocrStatus: 'recognized',
+    stopImageIndex: 13,
+    stopAnchorKind: 'wanted_info',
+    matchedText: '想要的信息看这里！',
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(plain(result.images.map(item => item.imageUrl)), [
+    ...uploaded.map(item => item.imageUrl),
+    'https://img.example/wanted-info.jpg',
+    'https://img.example/size-chart.jpg',
+  ])
+  assert.equal(result.images.some(item => /old-before-wanted/.test(item.imageUrl)), false)
+  assert.deepEqual(plain(result.images.map(item => item.imageIndex)), [601, 602, 603, 604, 605, 606, 607, 608, 609, 610])
+})
+
+test('Vipshop detail OCR requires wanted-info anchor by default', async () => {
+  const helpers = await loadExports()
+  const anchors = helpers.buildVipshopDetailAnchorsFromOcrResults([
+    { globalIndex: 0, imageUrl: 'https://img.example/old-01.jpg' },
+    { globalIndex: 1, imageUrl: 'https://img.example/lower.jpg' },
+  ], [
+    { globalIndex: 1, text: '去自由探索世界吧 模特展示', confidence: 86 },
+  ])
+
+  assert.equal(anchors.ocrStatus, 'no_stop_anchor')
+  assert.equal(anchors.stopImageIndex, undefined)
+  assert.equal(anchors.stopAnchorKind, undefined)
 })
 
 test('anchored Vipshop detail replacement places uploaded balaOne image first', async () => {
