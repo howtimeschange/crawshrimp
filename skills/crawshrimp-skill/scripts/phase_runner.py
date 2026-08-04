@@ -155,13 +155,13 @@ class WebPhaseRunner:
     def _is_navigation_error(self, error: str) -> bool:
         return any(marker in (error or "") for marker in NAVIGATION_ERROR_MARKERS)
 
-    async def _eval_with_reconnect(self, script: str) -> BrowserResult:
-        result = await self._execute(BrowserAction(kind="eval", script=script, user_gesture=True))
+    async def _eval_with_reconnect(self, script: str, *, timeout_ms: int = 8000) -> BrowserResult:
+        result = await self._execute(BrowserAction(kind="eval", script=script, user_gesture=True, timeout_ms=timeout_ms))
         retry = 0
         while not result.ok and self._is_navigation_error(result.error) and retry < 4:
             retry += 1
             await self._sleep(min(0.8 * retry + 0.4, 3.0))
-            result = await self._execute(BrowserAction(kind="eval", script=script, user_gesture=True))
+            result = await self._execute(BrowserAction(kind="eval", script=script, user_gesture=True, timeout_ms=timeout_ms))
         return result
 
     def _coerce_js_result(self, result: BrowserResult) -> tuple[bool, list[dict[str, Any]], dict[str, Any], str]:
@@ -185,6 +185,11 @@ class WebPhaseRunner:
         control_hook: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> PhaseRunResult:
         params_json = json.dumps(params or {}, ensure_ascii=False)
+        try:
+            eval_timeout_ms = int((params or {}).get("phase_eval_timeout_ms") or (params or {}).get("eval_timeout_ms") or 8000)
+        except (TypeError, ValueError):
+            eval_timeout_ms = 8000
+        eval_timeout_ms = max(1000, eval_timeout_ms)
         run_token = f"{int(time.time() * 1000)}-{secrets.token_hex(4)}"
         all_data: list[dict[str, Any]] = []
         page_shared: dict[str, Any] = {}
@@ -215,7 +220,7 @@ class WebPhaseRunner:
                     payload = self._build_phase_preamble(page, phase, run_token, shared, params_json) + script
                     timeout_retry = False
                     while True:
-                        raw_result = await self._eval_with_reconnect(payload)
+                        raw_result = await self._eval_with_reconnect(payload, timeout_ms=eval_timeout_ms)
                         success, rows, meta, error = self._coerce_js_result(raw_result)
                         if success:
                             break

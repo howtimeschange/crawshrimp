@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import inspect
 import json
+import mimetypes
 import re
 import shutil
 import tempfile
@@ -1198,7 +1200,57 @@ class ChromeCDPBackend:
             query = await self._send("DOM.querySelector", {"nodeId": root_id, "selector": selector})
             node_id = (query.get("result") or {}).get("nodeId")
             if not node_id:
-                return BrowserResult(ok=False, action=kind, error=f"file input not found: {selector}")
+                object_lookup = await self._send(
+                    "Runtime.evaluate",
+                    {
+                        "expression": f"document.querySelector({json.dumps(selector)})",
+                        "awaitPromise": True,
+                        "returnByValue": False,
+                    },
+                )
+                object_id = (((object_lookup.get("result") or {}).get("result") or {}).get("objectId"))
+                if object_id:
+                    requested = await self._send("DOM.requestNode", {"objectId": object_id})
+                    node_id = (requested.get("result") or {}).get("nodeId")
+            if not node_id:
+                runtime_files = []
+                for file_path in files:
+                    path = Path(file_path)
+                    runtime_files.append(
+                        {
+                            "name": path.name,
+                            "type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                            "data": base64.b64encode(path.read_bytes()).decode("ascii"),
+                        }
+                    )
+                runtime_expression = f"""
+(async () => {{
+  const input = document.querySelector({json.dumps(selector)});
+  if (!input) return {{ ok: false, error: 'file input not found', selector: {json.dumps(selector)} }};
+  if (typeof DataTransfer !== 'function' || typeof File !== 'function') {{
+    return {{ ok: false, error: 'DataTransfer/File API unavailable', selector: {json.dumps(selector)} }};
+  }}
+  const transfer = new DataTransfer();
+  const files = {json.dumps(runtime_files)};
+  for (const item of files) {{
+    const binary = atob(item.data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    transfer.items.add(new File([bytes], item.name, {{ type: item.type }}));
+  }}
+  input.files = transfer.files;
+  input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  return {{ ok: true, selector: {json.dumps(selector)}, fileCount: input.files.length, mode: 'runtime-data-transfer' }};
+}})()
+""".strip()
+                runtime_response = await self._send(
+                    "Runtime.evaluate",
+                    {"expression": runtime_expression, "awaitPromise": True, "returnByValue": True},
+                )
+                runtime_value = (((runtime_response.get("result") or {}).get("result") or {}).get("value") or {})
+                if runtime_value.get("ok"):
+                    return BrowserResult(ok=True, action=kind, data={"selector": selector, "files": files, "fileCount": len(files), "mode": "runtime-data-transfer"})
+                return BrowserResult(ok=False, action=kind, error=str(runtime_value.get("error") or f"file input not found: {selector}"))
             response = await self._send("DOM.setFileInputFiles", {"nodeId": node_id, "files": files})
             if response.get("error"):
                 return BrowserResult(ok=False, action=kind, error=json.dumps(response["error"], ensure_ascii=False))

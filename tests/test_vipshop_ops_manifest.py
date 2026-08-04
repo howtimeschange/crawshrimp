@@ -36,7 +36,6 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertIn("款号", output_columns)
         self.assertIn("数据来源接口", output_columns)
 
-
     def test_manifest_declares_package_main_image_replace(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
         tasks = {item["id"]: item for item in manifest["tasks"]}
@@ -69,6 +68,43 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertIn("P_SPU", output_columns)
         self.assertIn("目标颜色", output_columns)
         self.assertIn("接口路径", output_columns)
+
+    def test_manifest_declares_hot_strategy_tracking_report(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        tasks = {item["id"]: item for item in manifest["tasks"]}
+        task = tasks["hot_strategy_tracking_report"]
+        params = {item["id"]: item for item in task["params"]}
+        output = task["output"][0]
+        sheet_names = [item["name"] for item in output["sheets"]]
+
+        self.assertEqual(task["name"], "爆款策略追踪报表")
+        self.assertEqual(task["script"], "hot-strategy-tracking-report.js")
+        self.assertEqual(task["entry_url"], "https://compass.vip.com/frontend/index.html#/product/details")
+        self.assertIn("https://bct.vip.com/", task["tab_match_prefixes"])
+        self.assertIn("https://e.vip.com/", task["tab_match_prefixes"])
+        self.assertEqual(params["mode"]["default"], "new")
+        self.assertIn("compass_sales_detail", params["report_scope"]["default"])
+        self.assertIn("vipdirect_ads", params["report_scope"]["default"])
+        self.assertIn("tmax_goods", params["report_scope"]["default"])
+        self.assertIn("bct_gift", params["report_scope"]["default"])
+        self.assertIn("bct_scene", params["report_scope"]["default"])
+        self.assertEqual(params["brand_keyword"]["default"], "巴拉巴拉")
+        self.assertEqual(params["tmax_start_date"]["label"], "T-max开始日期")
+        self.assertEqual(params["tmax_end_date"]["label"], "T-max结束日期")
+        self.assertEqual(params["page_size"]["default"], 300)
+        self.assertEqual(output["filename"], "唯品会爆款策略追踪报表_{timestamp}.xlsx")
+        self.assertEqual(output["sheet_key"], "__sheet_name")
+        self.assertIn("魔方罗盘销售明细", sheet_names)
+        self.assertIn("唯直达投放效果", sheet_names)
+        self.assertIn("T-max效果", sheet_names)
+        self.assertIn("中台礼金", sheet_names)
+        self.assertIn("中台购物车跨品类券", sheet_names)
+        self.assertIn("数据来源接口", output["columns"])
+        self.assertIn("加购成本", output["columns"])
+        tmax_sheet = next(item for item in output["sheets"] if item["name"] == "T-max效果")
+        self.assertIn("商品ID", tmax_sheet["columns"])
+        self.assertIn("加购成本", tmax_sheet["columns"])
+        self.assertIn("销售额", tmax_sheet["columns"])
 
 
 if __name__ == "__main__":

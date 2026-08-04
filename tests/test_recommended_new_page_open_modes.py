@@ -13,6 +13,7 @@ MANIFESTS = {
 
 EXPECTED_TASKS = [
     ("vipshop-ops-assistant", "light_supply_goods_report"),
+    ("vipshop-ops-assistant", "package_main_image_replace"),
     ("weimob-ops-assistant", "goods_new_arrival_automation"),
     ("mop-ops-assistant", "cloud_folder_download"),
     ("mop-ops-assistant", "search_recommend_material_publish"),
