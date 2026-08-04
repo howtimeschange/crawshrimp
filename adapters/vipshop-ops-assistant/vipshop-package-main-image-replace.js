@@ -33,7 +33,7 @@
   const OCR_PER_IMAGE_TIMEOUT_MS = 18000
   const OCR_TOTAL_TIMEOUT_MS = 120000
   const CRAW_SHRIMP_LOCAL_BASE_URL = 'http://127.0.0.1:18765'
-  const TESSERACT_VENDOR_PATH = '/adapter-assets/tmall-ops-assistant/vendor/tesseract'
+  const TESSERACT_VENDOR_PATH = '/adapter-assets/vipshop-ops-assistant/vendor/tesseract'
   const TESSERACT_LANG = 'chi_sim+eng'
   const VIPSHOP_MAX_UPLOAD_BYTES = 1024 * 1024
   const DEFAULT_SEMIR_LOGIN_WAIT_MS = 500000

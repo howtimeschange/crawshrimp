@@ -1164,14 +1164,14 @@ test('anchored Vipshop detail replacement blocks when OCR stop anchor is missing
   assert.match(result.note, /已阻断详情图替换/)
 })
 
-test('Vipshop tesseract runtime config uses bundled project OCR assets by default', async () => {
+test('Vipshop tesseract runtime config uses its own bundled OCR assets by default', async () => {
   const helpers = await loadExports()
   const config = helpers.tesseractRuntimeConfig({})
 
-  assert.equal(config.scriptUrl, 'http://127.0.0.1:18765/adapter-assets/tmall-ops-assistant/vendor/tesseract/tesseract.min.js')
-  assert.equal(config.workerPath, 'http://127.0.0.1:18765/adapter-assets/tmall-ops-assistant/vendor/tesseract/worker.min.js')
-  assert.equal(config.corePath, 'http://127.0.0.1:18765/adapter-assets/tmall-ops-assistant/vendor/tesseract')
-  assert.equal(config.langPath, 'http://127.0.0.1:18765/adapter-assets/tmall-ops-assistant/vendor/tesseract/lang')
+  assert.equal(config.scriptUrl, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/tesseract.min.js')
+  assert.equal(config.workerPath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/worker.min.js')
+  assert.equal(config.corePath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract')
+  assert.equal(config.langPath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/lang')
   assert.equal(config.lang, 'chi_sim+eng')
 })
 

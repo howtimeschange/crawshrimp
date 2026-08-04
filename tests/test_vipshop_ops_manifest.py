@@ -8,6 +8,7 @@ import yaml
 MANIFEST_PATH = Path("adapters/vipshop-ops-assistant/manifest.yaml")
 PACKAGE_MAIN_TEMPLATE_XLSX_PATH = Path("adapters/vipshop-ops-assistant/templates/vipshop-package-main-image-replace-template.xlsx")
 PACKAGE_MAIN_TEMPLATE_CSV_PATH = Path("adapters/vipshop-ops-assistant/templates/vipshop-package-main-image-replace-template.csv")
+VIPSHOP_TESSERACT_VENDOR_PATH = Path("adapters/vipshop-ops-assistant/vendor/tesseract")
 
 
 class VipshopOpsManifestTests(unittest.TestCase):
@@ -109,6 +110,22 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertIn("P_SPU", output_columns)
         self.assertIn("目标颜色", output_columns)
         self.assertIn("接口路径", output_columns)
+
+    def test_package_main_image_replace_bundles_own_tesseract_assets(self):
+        expected_files = [
+            "tesseract.min.js",
+            "worker.min.js",
+            "tesseract-core.wasm",
+            "tesseract-core.wasm.js",
+            "lang/chi_sim.traineddata.gz",
+            "lang/eng.traineddata.gz",
+        ]
+
+        for relative_path in expected_files:
+            self.assertTrue(
+                (VIPSHOP_TESSERACT_VENDOR_PATH / relative_path).is_file(),
+                f"missing bundled Vipshop OCR asset: {relative_path}",
+            )
 
     def test_manifest_declares_hot_strategy_tracking_report(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
