@@ -42,7 +42,7 @@
   const VIPSHOP_PAGE_WAIT_MS = Math.max(1000, Number(params.vipshop_page_wait_ms || 3000) || 3000)
   const VIPSHOP_SAVE_WAIT_MS = Math.max(2000, Number(params.vipshop_save_wait_ms || 6000) || 6000)
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tif', 'tiff'])
-  const LIVE_AUTH_MESSAGE = '线上替换需要 execute_mode=live 且 allow_live=true；本脚本会取消审核/撤回、上传图片、保存并提交审核。'
+  const LIVE_AUTH_MESSAGE = '线上替换由 execute_mode=live 控制；本脚本会取消审核/撤回、上传图片、保存并提交审核。'
 
   function compact(value) {
     return String(value == null ? '' : value).replace(/\s+/g, ' ').trim()
@@ -107,6 +107,27 @@
       .replace(/\s+/g, ' ')
       .replace(/^_+|[ ._]+$/g, '')
     return text || fallback
+  }
+
+  function localPathSeparator(path) {
+    const raw = String(path || '')
+    return raw.includes('\\') && !raw.includes('/') ? '\\' : '/'
+  }
+
+  function joinLocalPath(...parts) {
+    const cleanParts = parts
+      .map(part => String(part || '').trim())
+      .filter(Boolean)
+    if (!cleanParts.length) return ''
+    const sep = localPathSeparator(cleanParts[0])
+    const first = cleanParts.shift()
+    const firstClean = sep === '\\'
+      ? first.replace(/[\\/]+$/g, '')
+      : first.replace(/\/+$/g, '')
+    const rest = cleanParts.map(part => sep === '\\'
+      ? part.replace(/^[\\/]+|[\\/]+$/g, '')
+      : part.replace(/^\/+|\/+$/g, ''))
+    return [firstClean, ...rest].filter(Boolean).join(sep)
   }
 
   function getFileStem(filename) {
@@ -286,7 +307,6 @@
 
   function allowLiveExecution(rawParams = params) {
     return normalizeExecuteMode(rawParams.execute_mode) === 'live'
-      && (truthy(rawParams.allow_live) || truthy(rawParams.allow_save) || truthy(rawParams.confirm_live))
   }
 
   function parseCloudPath(rawValue) {
@@ -398,12 +418,14 @@
       ]))
       const note = compact(rowValue(row, ['备注', 'note']))
       const rowCloudPath = rowValue(row, [
+        '包装图云盘主路径', '包装图云盘根路径', '包装图云盘路径', '包装云盘主路径',
         '云盘路径', '森马云盘路径', '图包地址', '包装云盘路径', '包装地址', 'cloud_path', 'semir_path', 'cloudPath',
       ])
       const rowCandidateCloudPaths = rowValue(row, [
         '候选云盘路径', '备用云盘路径', 'candidate_cloud_paths', 'fallback_cloud_paths',
       ])
       const rowMainImageCloudPath = rowValue(row, [
+        '打标图云盘根路径', '打标图云盘主路径', '打标图云盘路径', '打标图路径', '打标图图源',
         '主图云盘路径', '主图打标路径', '主图地址', '主图图源', 'main_image_cloud_path', 'main_image_cloud_root',
         'mainImageCloudPath', 'mainImageCloudRoot',
       ])
@@ -2181,6 +2203,31 @@
     return stem.toLowerCase().endsWith(`.${ext}`) ? stem : `${stem}.${ext}`
   }
 
+  function vipshopCloudDownloadRoot(job, rawParams = params) {
+    const explicit = compact(
+      rawParams.cloud_download_dir
+      || rawParams.cloud_export_dir
+      || rawParams.export_folder
+      || rawParams.export_dir
+      || rawParams.download_dir
+      || rawParams.local_download_dir,
+    )
+    if (!explicit) return ''
+    const runId = compact(rawParams.__task_run_id || rawParams.task_run_uid || rawParams.run_id)
+    const runFolder = runId ? toSafeFilename(`run_${runId}`, 'run') : ''
+    const codeFolder = toSafeFilename(`${job?.styleCode || 'unknown'}_${job?.goodsCode || 'vipshop'}`, 'vipshop_goods')
+    return joinLocalPath(explicit, '下载素材', runFolder, codeFolder)
+  }
+
+  function vipshopCloudDownloadUsagePrefix(entry) {
+    const key = compact(entry?.usageKey)
+    if (key === 'main_square') return '01_打标商品展示首图'
+    if (key === 'list_image') return '02_打标商品列表首图'
+    if (key === 'package_micro_square') return '03_包装微详情商品展示3_4_15'
+    if (key === 'detail_slice') return '04_包装商品详情切片'
+    return '99_未分类'
+  }
+
   async function buildVipshopDownloadPlan(job, sourceConfig) {
     const plan = (sourceConfig?.packageSource || sourceConfig?.mainImageSource)
       ? await collectVipshopAssetsFromSources(job, sourceConfig)
@@ -2189,6 +2236,7 @@
     const rows = []
     const downloadItems = []
     const planSourcePath = plan.sourceRelativePath || sourceConfig?.relativePath || ''
+    const localDownloadRoot = vipshopCloudDownloadRoot(job)
 
     if (!entries.length) {
       rows.push(buildOutputRow(job, {
@@ -2242,6 +2290,8 @@
           filename: runtimeFilename,
           label: `${job.styleCode} / ${entry.targetGoodsCode || job.goodsCode} / ${entry.usage} / ${entry.filename || runtimeFilename}`,
           headers: buildDownloadHeaders(),
+          target_dir: localDownloadRoot,
+          target_relative_path: localDownloadRoot ? `${vipshopCloudDownloadUsagePrefix(entry)}/${runtimeFilename}` : '',
           no_proxy: true,
         })
       } catch (error) {
@@ -2306,6 +2356,7 @@
     ]
     const nextIndex = index + 1
     const nextJob = jobs[nextIndex] || null
+    const completedJobs = Math.min(nextIndex, jobs.length)
     const baseShared = {
       ...state,
       result_rows: allRows,
@@ -2315,8 +2366,13 @@
       current_result_rows: [],
       last_download_result: null,
       pending_download_items: [],
-      current_exec_no: Math.min(nextIndex + 1, jobs.length || nextIndex + 1),
+      total_rows: jobs.length || state.total_rows || 0,
+      current_exec_no: nextJob ? Math.min(nextIndex + 1, jobs.length || nextIndex + 1) : (jobs.length || nextIndex),
+      current_row_no: nextJob?.rowNo || 0,
+      current_buyer_id: nextJob?.goodsCode || '',
       current_store: nextJob?.cloudPath || '',
+      search_total_codes: jobs.length || state.search_total_codes || 0,
+      search_completed_codes: completedJobs,
     }
     if (!nextJob) return nextPhase('navigate_nov_admin', sleepMs, baseShared)
     return nextPhase('collect_cloud_assets', sleepMs, baseShared)
@@ -3774,6 +3830,7 @@
     ]
     const nextIndex = index + 1
     const nextContext = contexts[nextIndex] || null
+    const completedContexts = Math.min(nextIndex, contexts.length)
     const nextShared = {
       ...state,
       live_rows: allRows,
@@ -3791,9 +3848,15 @@
       current_detail_ocr_result: null,
       current_detail_existing_images: [],
       force_pdc_reload: !!nextContext,
-      current_exec_no: Math.min(nextIndex + 1, contexts.length || nextIndex + 1),
+      total_rows: contexts.length || state.total_rows || 0,
+      current_exec_no: nextContext ? Math.min(nextIndex + 1, contexts.length || nextIndex + 1) : (contexts.length || nextIndex),
+      current_row_no: nextContext?.job?.rowNo || 0,
       current_buyer_id: nextContext?.job?.goodsCode || '',
       current_store: nextContext?.vendorProductId || '',
+      detail_total_targets: contexts.length || state.detail_total_targets || 0,
+      detail_completed_targets: completedContexts,
+      detail_current_target_index: nextContext ? Math.min(nextIndex + 1, contexts.length || nextIndex + 1) : (contexts.length || nextIndex),
+      detail_current_target: nextContext?.job?.goodsCode || '',
     }
     if (!nextContext) {
       const allData = [
@@ -3921,11 +3984,19 @@
         downloaded_asset_files: collectAssetFiles(params, shared),
         total_input_rows: parsed.totalRows,
         total_jobs: parsed.jobs.length,
+        total_rows: parsed.jobs.length,
         execute_mode: normalizeExecuteMode(params.execute_mode),
         use_cloud_lookup: shouldUseCloudLookup(params, shared),
         current_exec_no: 1,
+        current_row_no: parsed.jobs[0]?.rowNo || 0,
         current_buyer_id: parsed.jobs[0]?.goodsCode || '',
         current_store: parsed.jobs[0]?.cloudPath || '',
+        search_total_codes: parsed.jobs.length,
+        search_completed_codes: 0,
+        detail_total_targets: 0,
+        detail_completed_targets: 0,
+        detail_current_target_index: 0,
+        detail_current_target: '',
       }
 
       if (nextShared.use_cloud_lookup) {
@@ -3934,14 +4005,18 @@
         }
         return nextPhase('collect_cloud_assets', 0, nextShared)
       }
-      return nextPhase('navigate_nov_admin', 0, nextShared)
+      return nextPhase('navigate_nov_admin', 0, {
+        ...nextShared,
+        search_completed_codes: parsed.jobs.length,
+        current_store: '使用已选素材',
+      })
     }
 
     if (phase === 'collect_cloud_assets') {
       if (!/^https:\/\/fmp\.semirapp\.com\//i.test(String(location.href || ''))) {
         return navigateTo(SEMIR_ENTRY_URL, 'collect_cloud_assets', 2000, shared)
       }
-      const { job } = currentJobFromShared(shared)
+      const { jobs, index, job } = currentJobFromShared(shared)
       if (!job) return nextPhase('navigate_nov_admin', 0, shared)
       try {
         const sourceConfig = await resolveVipshopCloudSources(job)
@@ -3956,8 +4031,13 @@
           current_result_rows: plan.rows,
           pending_download_items: plan.downloadItems,
           last_download_result: null,
+          total_rows: jobs.length || shared.total_rows || 0,
+          current_exec_no: Math.min(index + 1, jobs.length || index + 1),
+          current_row_no: job.rowNo || 0,
           current_buyer_id: job.goodsCode,
           current_store: sourceLabel,
+          search_total_codes: jobs.length || shared.search_total_codes || 0,
+          search_completed_codes: Math.min(index, jobs.length || index),
           plan_summary: {
             selected: plan.plan?.selected,
             searchCount: plan.plan?.searchCount,
@@ -4112,9 +4192,17 @@
         merchandise_total: merchandiseResult.total,
         pdc_detail_reads: detailReads,
         asset_files: assetFiles.length,
+        total_rows: executableLiveContexts.length || jobs.length,
         current_exec_no: 1,
+        current_row_no: executableLiveContexts[0]?.job?.rowNo || 0,
         current_buyer_id: executableLiveContexts[0]?.job?.goodsCode || '',
         current_store: executableLiveContexts[0]?.vendorProductId || '',
+        search_total_codes: jobs.length,
+        search_completed_codes: jobs.length,
+        detail_total_targets: executableLiveContexts.length,
+        detail_completed_targets: 0,
+        detail_current_target_index: executableLiveContexts.length ? 1 : 0,
+        detail_current_target: executableLiveContexts[0]?.job?.goodsCode || '',
       }
       if (!allowLiveExecution(params)) return complete(outputRows, nextShared)
       if (!executableLiveContexts.length) return complete(outputRows, nextShared)
@@ -4142,7 +4230,9 @@
           ...shared,
           force_pdc_reload: false,
           pdc_wait_attempts: 0,
+          current_row_no: context.job.rowNo || 0,
           current_buyer_id: context.job.goodsCode,
+          detail_current_target: context.job.goodsCode,
           current_store: context.vendorProductId,
         })
       }
@@ -4188,6 +4278,10 @@
         ...shared,
         current_injected_assets: context.assets,
         current_unpublished: false,
+        current_row_no: context.job.rowNo || 0,
+        current_buyer_id: context.job.goodsCode,
+        detail_current_target: context.job.goodsCode,
+        current_store: `上传图片：${context.vendorProductId}`,
       })
     }
 
@@ -4287,6 +4381,7 @@
           live_rows: [...(Array.isArray(shared.live_rows) ? shared.live_rows : []), ...rows],
           live_verify_attempts: 0,
           apply_result: result.applyResult,
+          current_store: `保存提交读回：${context.vendorProductId}`,
         })
       } catch (error) {
         return advanceLiveJob(buildLiveContextRows(context, '上传/保存触发失败', error.message || String(error)), shared)

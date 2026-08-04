@@ -199,6 +199,34 @@ test('uses the Vipshop packaging visual root as default cloud path', async () =>
   )
 })
 
+test('initializes progress shared state for Vipshop package main-image replacement runs', async () => {
+  const result = await runScript({
+    params: {
+      execute_mode: 'plan',
+      input_file: {
+        rows: [
+          { __row_number: 2, 款号: '201326108015', 货号: '20132610801500311' },
+          { __row_number: 3, 款号: '200326108106', 货号: '20032610810600488' },
+        ],
+      },
+    },
+    fetchImpl: async () => {
+      throw new Error('main phase should not call network before navigation')
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'collect_cloud_assets')
+  assert.equal(result.meta.shared.total_rows, 2)
+  assert.equal(result.meta.shared.search_total_codes, 2)
+  assert.equal(result.meta.shared.search_completed_codes, 0)
+  assert.equal(result.meta.shared.detail_total_targets, 0)
+  assert.equal(result.meta.shared.current_exec_no, 1)
+  assert.equal(result.meta.shared.current_row_no, 2)
+  assert.equal(result.meta.shared.current_buyer_id, '20132610801500311')
+})
+
 test('uses an independent Semir root and path features for Vipshop main/list images', async () => {
   const helpers = await loadExports()
   const parsed = helpers.normalizePackageMainJobs({
@@ -218,6 +246,25 @@ test('uses an independent Semir root and path features for Vipshop main/list ima
     helpers.pathMatchesMainImagePathFeatures('品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q3/201326108015/20132610801500311_1200x1200.jpg'),
     false,
   )
+})
+
+test('row-level Vipshop package and marked-image cloud paths override form defaults', async () => {
+  const helpers = await loadExports()
+  const parsed = helpers.normalizePackageMainJobs({
+    rows: [{
+      款号: '201326108015',
+      货号: '20132610801500311',
+      包装图云盘主路径: '包装挂载//包装行路径/201326108015',
+      打标图云盘根路径: '打标挂载//打标行路径/回图/唯品',
+    }],
+  }, {
+    execute_mode: 'plan',
+    cloud_path: '包装挂载//外部默认包装/000000000000',
+    main_image_cloud_root: '打标挂载//外部默认打标',
+  })
+
+  assert.equal(parsed.jobs[0].cloudPath, '包装挂载//包装行路径/201326108015')
+  assert.equal(parsed.jobs[0].mainImageCloudPath, '打标挂载//打标行路径/回图/唯品')
 })
 
 test('collects color-specific 1200 and 950 images from Vipshop main-image cloud path features', async () => {
@@ -244,7 +291,10 @@ test('collects color-specific 1200 and 950 images from Vipshop main-image cloud 
     }
     throw new Error(`unexpected fetch ${url}`)
   }
-  const helpers = await loadExports({}, fetchImpl)
+  const helpers = await loadExports({
+    cloud_download_dir: '/tmp/vipshop-cloud-export',
+    __task_run_id: 77,
+  }, fetchImpl)
   const job = {
     styleCode: '201326108015',
     goodsCode: '20132610801500311',
@@ -260,6 +310,11 @@ test('collects color-specific 1200 and 950 images from Vipshop main-image cloud 
   assert.equal(sources.packageSource, null)
   assert.equal(sources.mainImageSource.relativePath, '品牌视觉部')
   assert.equal(plan.downloadItems.length, 2)
+  assert.equal(
+    plan.downloadItems[0].target_dir,
+    '/tmp/vipshop-cloud-export/下载素材/run_77/201326108015_20132610801500311',
+  )
+  assert.match(plan.downloadItems[0].target_relative_path, /^0[12]_打标商品/)
   assert.deepEqual(plain(plan.downloadItems.map(item => item.filename).sort()), [
     '201326108015_20132610801500311__list_image__2__20132610801500311_950x1200.jpg',
     '201326108015_20132610801500311__main_square__1__20132610801500311_1200x1200.jpg',
@@ -1350,19 +1405,21 @@ test('main phase performs read-only API dry-run and returns replacement rows', a
   assert.ok(rows.some(row => row.货号 === '20032610810600488' && row.备注.includes('取消提交审核')))
 })
 
-test('live mode is blocked before upload or save side effects', async () => {
+test('live mode follows execute_mode without legacy allow_live gate', async () => {
   const result = await runScript({
     params: {
       execute_mode: 'live',
+      use_semir_cloud: false,
       input_file: { rows: [{ 款号: '201326108015', 货号: '20132610801500311' }] },
     },
     fetchImpl: async () => {
-      throw new Error('live safety gate should not call network')
+      throw new Error('live mode should not call network before query phase')
     },
   })
 
   assert.equal(result.success, true)
-  assert.equal(result.meta.shared.live_blocked, true)
-  assert.equal(result.data[1].执行结果, '已阻断')
-  assert.match(result.data[1].备注, /allow_live=true/)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'navigate_nov_admin')
+  assert.equal(result.meta.shared.live_blocked, undefined)
+  assert.equal(result.meta.shared.execute_mode, 'live')
 })

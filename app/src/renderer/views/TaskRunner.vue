@@ -2518,7 +2518,7 @@ async function refreshDynamicParamPatches() {
 function buildRunParams(overrides = {}) {
   const params = {}
   for (const p of taskParams.value) {
-    if (!isParamVisibleInForm(p)) continue
+    if (!isParamVisibleInForm(p) && !shouldIncludeHiddenDefaultParam(p)) continue
 
     if (isSingleTemporalParamType(p.type)) {
       params[p.id] = values.value[p.id] || ''
@@ -3435,6 +3435,10 @@ function shouldShowDateRangeParam(param) {
   const controller = getControllerSelectForDateRange(param.id)
   if (!controller) return true
   return isCustomDateSelected(controller.id)
+}
+
+function shouldIncludeHiddenDefaultParam(param) {
+  return !!param?.hidden && Object.prototype.hasOwnProperty.call(param, 'default')
 }
 
 function getTemporalInputType(type) {

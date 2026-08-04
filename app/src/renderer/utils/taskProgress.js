@@ -88,6 +88,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
   Object.freeze({
+    adapterId: 'vipshop-ops-assistant',
+    taskId: 'package_main_image_replace',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
+  Object.freeze({
     adapterId: 'tmall-ops-assistant',
     taskId: 'tmall_ai_image_test_chain',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
@@ -434,6 +439,10 @@ function isSemirBatchAiGenerateTask(adapterId, taskId) {
 
 function isTmallAiImageTestChainTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'tmall-ops-assistant' && normalizeKeyPart(taskId) === 'tmall_ai_image_test_chain'
+}
+
+function isVipshopPackageMainImageReplaceTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'vipshop-ops-assistant' && normalizeKeyPart(taskId) === 'package_main_image_replace'
 }
 
 function isShenhuiPrepareUploadPackageTask(adapterId, taskId) {
@@ -1224,6 +1233,184 @@ function buildSemirBatchImageDownloadProgress(live = {}, liveStatus = '', isRunn
   }
 }
 
+function getVipshopPackageMainImagePhaseLabel(phase, downloadActive, sourceComplete, liveComplete, fallback = '进行中') {
+  const normalizedPhase = normalizeKeyPart(phase)
+  if (downloadActive) return '下载云盘素材'
+  if (liveComplete) return '上传替换完成'
+  if (normalizedPhase === 'main' || normalizedPhase === 'init') return '准备任务'
+  if (normalizedPhase === 'collect_cloud_assets') return '森马云盘找图'
+  if (normalizedPhase === 'after_cloud_download') return '汇总下载结果'
+  if (normalizedPhase === 'navigate_nov_admin') return '打开商品资料'
+  if (normalizedPhase === 'query_vipshop') return '商品资料预检'
+  if (normalizedPhase === 'process_live_job') return '线上替换'
+  if (normalizedPhase === 'detect_vipshop_detail_ocr_anchors') return 'OCR识别商详锚点'
+  if (normalizedPhase === 'after_files_injected') return '上传并套用图片'
+  if (normalizedPhase === 'verify_live_job') return '保存提交读回'
+  if (sourceComplete) return '素材已就绪'
+  return fallback
+}
+
+function buildVipshopPackageMainImageReplaceProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const phase = String(live?.phase || '').trim()
+  const normalizedPhase = normalizeKeyPart(phase)
+  const currentTarget = String(live?.detail_current_target || live?.buyer_id || '').trim()
+  const store = String(live?.store || '').trim()
+  const rowNo = toInt(live?.row_no)
+
+  const sourceTotal = toInt(live?.search_total_codes) || toInt(live?.total)
+  const sourceDoneRaw = toInt(live?.search_completed_codes)
+  const sourceDone = sourceTotal > 0 ? Math.min(sourceDoneRaw, sourceTotal) : sourceDoneRaw
+  const sourceCurrentRaw = toInt(live?.current)
+  const sourceCurrent = sourceTotal > 0
+    ? Math.min(Math.max(sourceCurrentRaw || sourceDone + 1, 0), sourceTotal)
+    : Math.max(sourceCurrentRaw, sourceDone)
+
+  const downloadTotal = toInt(live?.download_total)
+  const downloadCompletedRaw = toInt(live?.download_completed)
+  const downloadCompleted = downloadTotal > 0 ? Math.min(downloadCompletedRaw, downloadTotal) : downloadCompletedRaw
+  const downloadSuccess = toInt(live?.download_success)
+  const downloadFailed = toInt(live?.download_failed)
+  const downloadConcurrency = toInt(live?.download_concurrency)
+  const downloadRetryAttempts = toInt(live?.download_retry_attempts)
+  const downloadLastLabel = String(live?.download_last_label || '').trim()
+  const downloadCurrentLabel = String(live?.download_current_label || '').trim()
+  const downloadStarted = Boolean(live?.download_started) || downloadTotal > 0
+  const downloadActive = Boolean(live?.download_active) || (downloadStarted && downloadTotal > 0 && downloadCompleted < downloadTotal)
+  const downloadPercent = downloadTotal > 0 ? clampPercent((downloadCompleted / downloadTotal) * 100) : 0
+
+  const sourceUnitProgress = sourceTotal > 0
+    ? sourceDone + (downloadStarted && sourceDone < sourceTotal ? downloadPercent / 100 : 0)
+    : sourceCurrent
+  const sourcePercent = sourceTotal > 0 ? clampPercent((sourceUnitProgress / sourceTotal) * 100) : 0
+  const sourceComplete = sourceTotal > 0 && sourceDone >= sourceTotal && (!downloadStarted || downloadTotal <= 0 || downloadCompleted >= downloadTotal)
+  const sourceActivePhases = ['main', 'init', 'collect_cloud_assets', 'after_cloud_download', 'navigate_nov_admin', 'query_vipshop']
+  const sourceState = sourceComplete
+    ? 'complete'
+    : sourceCurrent > 0 || sourceActivePhases.includes(normalizedPhase) || downloadStarted
+      ? 'active'
+      : 'pending'
+
+  const liveTotal = toInt(live?.detail_total_targets)
+  const liveDoneRaw = toInt(live?.detail_completed_targets)
+  const liveDone = liveTotal > 0 ? Math.min(liveDoneRaw, liveTotal) : liveDoneRaw
+  const liveIndexRaw = toInt(live?.detail_current_target_index)
+  const liveIndex = liveTotal > 0
+    ? Math.min(Math.max(liveIndexRaw || liveDone + 1, 0), liveTotal)
+    : liveIndexRaw
+  const liveStartedPhases = ['process_live_job', 'detect_vipshop_detail_ocr_anchors', 'after_files_injected', 'verify_live_job']
+  const liveStarted = liveTotal > 0 || liveStartedPhases.includes(normalizedPhase)
+  const liveComplete = liveTotal > 0 && liveDone >= liveTotal
+  const livePercent = liveTotal > 0 ? clampPercent((Math.max(liveDone, liveIndex) / liveTotal) * 100) : 0
+  const liveState = liveComplete
+    ? 'complete'
+    : liveStarted && sourceComplete
+      ? 'active'
+      : 'pending'
+  const phaseLabel = getVipshopPackageMainImagePhaseLabel(phase, downloadActive, sourceComplete, liveComplete, statusLabel)
+
+  const sourceMain = sourceTotal > 0
+    ? sourceComplete
+      ? `${sourceDone} / ${sourceTotal} 个款色`
+      : `第 ${Math.max(sourceCurrent, 1)} / ${sourceTotal} 个款色`
+    : statusLabel
+  const liveMain = liveTotal > 0
+    ? liveComplete
+      ? `${liveDone} / ${liveTotal} 个款色`
+      : `第 ${Math.max(liveIndex, 1)} / ${liveTotal} 个款色`
+    : sourceComplete
+      ? '等待商品资料预检结果'
+      : '素材完成后开始'
+
+  const sourceCaptionParts = []
+  if (sourceTotal > 0) sourceCaptionParts.push(`已找图 ${sourceDone}/${sourceTotal}`)
+  if (downloadTotal > 0) sourceCaptionParts.push(`当前批下载 ${downloadCompleted}/${downloadTotal}`)
+  if (downloadSuccess > 0) sourceCaptionParts.push(`成功 ${downloadSuccess}`)
+  if (downloadFailed > 0) sourceCaptionParts.push(`失败 ${downloadFailed}`)
+  if (downloadConcurrency > 0) sourceCaptionParts.push(`并发 ${downloadConcurrency}`)
+  if (downloadRetryAttempts > 1) sourceCaptionParts.push(`重试 ${downloadRetryAttempts} 次`)
+
+  const liveCaptionParts = []
+  if (liveTotal > 0) liveCaptionParts.push(`已完成 ${liveDone}/${liveTotal}`)
+  if (rowNo > 0) liveCaptionParts.push(`源表行 ${rowNo}`)
+  if (currentTarget) liveCaptionParts.push(`当前 ${currentTarget}`)
+
+  const tracks = [
+    buildTrack({
+      id: 'vipshop-cloud-assets',
+      title: '上层 · 云盘找图下载',
+      main: sourceMain,
+      percentValue: sourcePercent,
+      percentLabel: sourceTotal > 0 ? `${sourcePercent}%` : statusLabel,
+      caption: sourceCaptionParts.join(' · ') || (downloadStarted ? '正在汇总下载结果' : '按款号和货号检索素材'),
+      detail: [
+        currentTarget ? `目标 ${currentTarget}` : '',
+        downloadCurrentLabel ? `当前文件 ${downloadCurrentLabel}` : '',
+        !downloadCurrentLabel && downloadLastLabel ? `最近文件 ${downloadLastLabel}` : '',
+        store && !liveStarted ? store : '',
+      ].filter(Boolean).join(' · '),
+      status: sourceState === 'complete' ? '已完成' : sourceState === 'active' ? '进行中' : '待开始',
+      tone: 'primary',
+      state: sourceState,
+      indeterminate: sourceTotal <= 0,
+      ariaLabel: '唯品云盘找图下载进度',
+      ariaText: [sourceMain, sourceTotal > 0 ? `${sourcePercent}%` : statusLabel, sourceCaptionParts.join('，')].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'vipshop-live-upload',
+      title: '下层 · 唯品上传替换',
+      main: liveMain,
+      percentValue: livePercent,
+      percentLabel: liveTotal > 0 ? `${livePercent}%` : (sourceComplete ? '待预检' : '待开始'),
+      caption: liveCaptionParts.join(' · ') || (sourceComplete ? '等待可执行款色队列' : '素材下载完成后进入预检'),
+      detail: store && liveStarted ? store : '',
+      status: liveState === 'complete' ? '已完成' : liveState === 'active' ? phaseLabel : '待开始',
+      tone: 'secondary',
+      state: liveState,
+      indeterminate: liveStarted && liveTotal <= 0,
+      ariaLabel: '唯品上传替换进度',
+      ariaText: [liveMain, liveTotal > 0 ? `${livePercent}%` : '', liveCaptionParts.join('，')].filter(Boolean).join('，'),
+    }),
+  ]
+
+  const overallPercent = liveStarted
+    ? clampPercent(50 + (livePercent * 0.5))
+    : clampPercent(sourcePercent * 0.5)
+
+  return {
+    title: '双阶段进度',
+    main: phaseLabel,
+    percentValue: overallPercent,
+    percentLabel: phaseLabel,
+    completed: liveStarted ? liveDone : sourceDone,
+    completedText: liveStarted && liveDone > 0 ? `已上传 ${liveDone} 个款色` : sourceDone > 0 ? `已找图 ${sourceDone} 个款色` : '',
+    batchText: '',
+    rowText: rowNo > 0 ? `源表行 ${rowNo}` : '',
+    targetText: currentTarget ? `目标 ${currentTarget}` : '',
+    storeText: store || '',
+    phaseText: phase ? `阶段 ${phase}` : '',
+    indeterminate: false,
+    ariaLabel: '唯品包装主图双阶段进度',
+    ariaText: [phaseLabel, sourceMain, liveMain].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      sourceTotal > 0 ? `找图 ${sourceDone}/${sourceTotal}` : '',
+      downloadTotal > 0 ? `下载 ${downloadCompleted}/${downloadTotal}` : '',
+      liveTotal > 0 ? `上传 ${liveDone}/${liveTotal}` : '',
+      currentTarget ? `目标 ${currentTarget}` : '',
+      store,
+    ]),
+    tracks,
+    sub: [
+      phaseLabel,
+      currentTarget ? `当前 ${currentTarget}` : '',
+      downloadFailed > 0 ? `下载失败 ${downloadFailed} 个` : '',
+      store,
+    ].filter(Boolean).join(' · ') || statusLabel,
+  }
+}
+
 function getShenhuiPrepareUploadPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
   const normalizedPhase = normalizeKeyPart(phase)
   if (normalizedPhase === 'finalize_all') return '整理打包'
@@ -1692,6 +1879,9 @@ export function buildTaskRunnerProgressSummary({
   const config = resolveTaskProgressConfig(adapterId, taskId)
   if (config.mode === 'enhanced' && isSemirBatchImageDownloadTask(adapterId, taskId)) {
     return buildSemirBatchImageDownloadProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isVipshopPackageMainImageReplaceTask(adapterId, taskId)) {
+    return buildVipshopPackageMainImageReplaceProgress(live, liveStatus, isRunning)
   }
   if (config.mode === 'enhanced' && isShenhuiPrepareUploadPackageTask(adapterId, taskId)) {
     return buildShenhuiPrepareUploadPackageProgress(live, liveStatus, isRunning)

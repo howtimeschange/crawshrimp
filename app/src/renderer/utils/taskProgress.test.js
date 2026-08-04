@@ -83,6 +83,74 @@ test('tmall material new 6.24 uses Semir batch download progress in task runner'
   assert.equal(summary.tracks[1].main, '1 / 2 个文件')
 })
 
+test('vipshop package main-image replace shows cloud and upload progress tracks', () => {
+  const config = resolveTaskProgressConfig('vipshop-ops-assistant', 'package_main_image_replace')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+
+  const cloudSummary = buildTaskRunnerProgressSummary({
+    adapterId: 'vipshop-ops-assistant',
+    taskId: 'package_main_image_replace',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'collect_cloud_assets',
+      current: 2,
+      total: 4,
+      buyer_id: '20132610801500311',
+      store: '包装:品牌视觉部/服饰包装组；主图:品牌视觉部/主图打标',
+      search_total_codes: 4,
+      search_completed_codes: 1,
+      download_total: 6,
+      download_completed: 3,
+      download_success: 3,
+      download_started: true,
+      download_active: true,
+    },
+  })
+
+  assert.equal(cloudSummary.title, '双阶段进度')
+  assert.equal(cloudSummary.ariaLabel, '唯品包装主图双阶段进度')
+  assert.equal(cloudSummary.main, '下载云盘素材')
+  assert.equal(cloudSummary.tracks.length, 2)
+  assert.equal(cloudSummary.tracks[0].title, '上层 · 云盘找图下载')
+  assert.equal(cloudSummary.tracks[0].main, '第 2 / 4 个款色')
+  assert.equal(cloudSummary.tracks[0].percentLabel, '37.5%')
+  assert.match(cloudSummary.tracks[0].caption, /当前批下载 3\/6/)
+  assert.equal(cloudSummary.tracks[1].title, '下层 · 唯品上传替换')
+  assert.equal(cloudSummary.tracks[1].percentLabel, '待开始')
+
+  const uploadSummary = buildTaskRunnerProgressSummary({
+    adapterId: 'vipshop-ops-assistant',
+    taskId: 'package_main_image_replace',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'verify_live_job',
+      current: 2,
+      total: 3,
+      row_no: 5,
+      buyer_id: '20942610820140627',
+      store: '保存提交读回：1469658525260218368',
+      search_total_codes: 4,
+      search_completed_codes: 4,
+      detail_total_targets: 3,
+      detail_completed_targets: 1,
+      detail_current_target_index: 2,
+      detail_current_target: '20942610820140627',
+    },
+  })
+
+  assert.equal(uploadSummary.main, '保存提交读回')
+  assert.equal(uploadSummary.tracks[0].state, 'complete')
+  assert.equal(uploadSummary.tracks[1].main, '第 2 / 3 个款色')
+  assert.equal(uploadSummary.tracks[1].percentLabel, '66.7%')
+  assert.match(uploadSummary.tracks[1].caption, /源表行 5/)
+  assert.match(uploadSummary.sub, /20942610820140627/)
+})
+
 test('shoe upload package shows independent download and organize progress tracks', () => {
   const config = resolveTaskProgressConfig('shenhui-new-arrival', 'prepare_shoe_upload_package')
   assert.equal(config.mode, 'enhanced')

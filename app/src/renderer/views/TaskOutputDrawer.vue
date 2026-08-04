@@ -79,11 +79,14 @@
       <div v-show="activeTab === 'files'" class="task-output-files">
         <div class="task-output-summary">{{ outputSummary.label }}</div>
         <div v-if="!files.length" class="task-output-empty">暂无输出文件</div>
-        <div v-for="file in files" :key="file" class="task-output-file-row">
-          <span :title="file">{{ fileName(file) }}</span>
+        <div v-for="entry in displayOutputEntries" :key="`${entry.kind}:${entry.path}`" class="task-output-file-row">
+          <span class="task-output-file-info" :title="entry.detail || entry.path">
+            <strong>{{ entry.label }}</strong>
+            <small v-if="entry.detail">{{ entry.detail }}</small>
+          </span>
           <div class="task-output-file-actions">
-            <button type="button" @click="$emit('open-file', file)">打开</button>
-            <slot name="file-actions" :file="file" />
+            <button type="button" @click="$emit('open-file', entry.path)">{{ entry.actionLabel }}</button>
+            <slot name="file-actions" :file="entry.path" />
           </div>
         </div>
       </div>
@@ -93,7 +96,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { summarizeOutputFiles } from '../utils/taskOutputSummary'
+import { buildOutputFileEntries, summarizeOutputFiles } from '../utils/taskOutputSummary'
 
 const props = defineProps({
   logs: { type: Array, default: () => [] },
@@ -109,14 +112,11 @@ const activeTab = ref('logs')
 const drawerState = ref('minimized')
 const logBodyEl = ref(null)
 const outputSummary = computed(() => summarizeOutputFiles(props.files))
+const displayOutputEntries = computed(() => buildOutputFileEntries(props.files))
 const latestLogPreview = computed(() => {
   const latest = props.logs?.length ? props.logs[props.logs.length - 1] : ''
   return String(latest || '').replace(/\s+/g, ' ').trim()
 })
-
-function fileName(path) {
-  return String(path || '').split('/').pop().split('\\').pop()
-}
 
 watch(() => props.logs.length, (nextLength, previousLength) => {
   if (props.autoOpenOnFirstLog && nextLength > previousLength && previousLength === 0 && drawerState.value === 'minimized') {
@@ -251,12 +251,26 @@ watch(() => props.files.length, (nextLength, previousLength) => {
   padding: 8px 0;
   border-bottom: 1px solid var(--subtle-border);
 }
-.task-output-file-row span {
+.task-output-file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
+}
+.task-output-file-info strong,
+.task-output-file-info small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.task-output-file-info strong {
   color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.task-output-file-info small {
+  color: var(--text3);
+  font-size: 11px;
 }
 .task-output-file-row button {
   border: 0;
