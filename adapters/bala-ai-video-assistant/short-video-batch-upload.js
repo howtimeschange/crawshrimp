@@ -10,6 +10,7 @@
   const SELL_EDIT_URL = 'https://sell.publish.tmall.com/tmall/publish.htm'
   const VIDEO_SELECTOR_API = 'mtop.taobao.seller.content.material.list'
   const GUANG_PUBLISH_API = 'mtop.taobao.media.guang.pcPublish.publish'
+  const GUANG_TOPIC_SEARCH_API = 'mtop.taobao.media.guang.topic.topicSearch'
   const RECOMMEND_PUBLISH_API = 'mtop.taobao.spongebob.item.material.publish'
   const READY_RETRY_LIMIT = 45
   const UPLOAD_RETRY_LIMIT = 90
@@ -514,25 +515,11 @@
   }
 
   function activityTopicSource(item = {}) {
-    return compact(item.source || item.topicSource || item.topic_source || item.subType)
+    return compact(item.topicSource || item.topic_source || item.source || item.subType)
   }
 
-  function titleWithActivity(description, activityName) {
-    const base = compact(description)
-    const name = normalizeActivityName(activityName)
-    if (!name) return base
-    if (base.includes(name) || base.includes(`#${name}`) || base.includes(`＃${name}`)) return base
-    return `${base} ${name}`.trim()
-  }
-
-  function titleRawWithActivity(description, activityName) {
-    const base = compact(description)
-    const name = normalizeActivityName(activityName)
-    if (!name) return ''
-    if (base.includes(name) || base.includes(`#${name}`) || base.includes(`＃${name}`)) {
-      return base.replace(new RegExp(`[#＃]?${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'g'), '{##[Topic]##}')
-    }
-    return `${base} {##[Topic]##}`.trim()
+  function activityTopicName(item = {}) {
+    return compact(item.title || item.name || item.topicName || item.topic_name)
   }
 
   function rotateLeft(value, amount) {
@@ -655,16 +642,31 @@
     return publishSession
   }
 
-  async function searchGuangActivityTopic(activityName) {
+  async function searchGuangActivityTopic(activityName, runtime = findPublishRuntime()) {
     const name = normalizeActivityName(activityName)
     if (!name) return null
-    const data = await callMtop('mtop.taobao.media.guang.hashtag.search', {
-      ugcScene: 'pc_newcreator_video',
-      searchText: name,
-      pageSize: 20,
+    const content = publishContent(runtime)
+    const config = publishConfig(runtime)
+    const data = await callMtop(GUANG_TOPIC_SEARCH_API, {
+      params: JSON.stringify({
+        ugcScene: 'pc_newcreator_video',
+        publishVersion: compact(config.publishVersion || '1'),
+        site: compact(config.site || 'guangguang'),
+        publishSession: compact(window.sessionId || content.umi_pub_session),
+        keyword: name,
+        cursor: '1',
+      }),
     }, { timeout: 20000 })
     const rows = extractArray(data)
-    return rows.find(item => compact(item?.name) === name) || rows[0] || null
+    return rows.find(item => activityTopicName(item) === name) || rows[0] || null
+  }
+
+  function normalizeGuangActivityTopic(item = {}, activityName = '') {
+    return {
+      ...(item || {}),
+      title: activityTopicName(item) || normalizeActivityName(activityName),
+      selectType: compact(item?.selectType) || 'manual',
+    }
   }
 
   async function applyGuangActivity(runtime, job) {
@@ -682,34 +684,25 @@
         titleElements: [],
         topics: [],
         topicId: '',
+        topicSource: '',
         activityName: '',
       }
     }
 
-    const topicInfo = {
-      type: 'Topic',
-      subType: 'hashtag_customize',
-      name: activityName,
-      ...(await searchGuangActivityTopic(activityName) || {}),
-    }
+    const topicInfo = normalizeGuangActivityTopic(await searchGuangActivityTopic(activityName, runtime), activityName)
     const topicId = activityTopicId(topicInfo)
     const topicSource = activityTopicSource(topicInfo)
-    const title = titleWithActivity(job.description, activityName)
-    const titleRaw = titleRawWithActivity(job.description, activityName)
-    const titleElements = [{
-      id: topicId,
-      name: activityName,
-      subType: compact(topicInfo.subType) || 'hashtag_customize',
-      type: 'Topic',
-    }]
-    const topics = topicId ? [{ topicId, topicInfo, topicSource }] : []
+    if (!topicId) throw new Error(`光合参与活动 ${activityName} 未匹配到可投稿话题ID`)
+    const title = job.description
+    const titleRaw = ''
+    const titleElements = []
+    const topics = [{ topicId, topicInfo, topicSource }]
 
     setContentValue(runtime, 'title', title)
     setContentValue(runtime, 'titleRaw', titleRaw)
     setContentValue(runtime, 'titleElements', titleElements)
     setContentValue(runtime, 'topics', topics)
     setContentValue(runtime, 'topicId', topicId)
-    setContentValue(runtime, 'topicSource', topicSource)
 
     return { title, titleRaw, titleElements, topics, topicId, topicSource, activityName }
   }
@@ -721,10 +714,15 @@
     const userId = compact(window.__USER_INFO__?.userId)
     if (!userId) throw new Error('当前发布器未提供用户标识，无法生成发布校验值')
     const cover = content.coverUser || {}
-    const topicId = compact(content.topicId)
+    const contentTopics = Array.isArray(content.topics) ? content.topics : []
+    const firstTopic = contentTopics[0] || {}
+    const firstTopicInfo = firstTopic.topicInfo || firstTopic
+    const topicId = compact(content.topicId || firstTopic.topicId || activityTopicId(firstTopicInfo))
     const topicSource = compact(
       content.topicSource ||
-      (Array.isArray(content.topics) ? content.topics[0]?.topicSource || content.topics[0]?.source : ''),
+      firstTopic.topicSource ||
+      firstTopic.source ||
+      activityTopicSource(firstTopicInfo),
     )
     const titleRaw = compact(content.titleRaw)
     const titleElements = Array.isArray(content.titleElements) && content.titleElements.length
@@ -1059,20 +1057,19 @@
 
   function validatePublishReadback(job, readback, scene) {
     if (compact(readback.shortTitle) !== titleForScene(job, scene)) throw new Error('发布器标题写入后读回不一致')
-    const expectedTitle = scene === 'pc_newcreator_video'
-      ? titleWithActivity(job.description, job.activity)
-      : job.description
-    if (compact(readback.title) !== compact(expectedTitle)) throw new Error('发布器描述写入后读回不一致')
+    if (compact(readback.title) !== compact(job.description)) throw new Error('发布器描述写入后读回不一致')
     if (scene === 'qn_material_manager' && compact(readback.editorTitle) !== job.description) {
       throw new Error('搜推素材富文本描述写入后读回不一致')
     }
     if (scene === 'pc_newcreator_video' && normalizeActivityName(job.activity)) {
       const activityName = normalizeActivityName(job.activity)
-      const elementMatched = (Array.isArray(readback.titleElements) ? readback.titleElements : [])
-        .some(item => compact(item?.type) === 'Topic' && compact(item?.name) === activityName)
       const topicMatched = (Array.isArray(readback.topics) ? readback.topics : [])
-        .some(item => compact(item?.topicInfo?.name || item?.name) === activityName)
-      if (!elementMatched && !topicMatched) throw new Error('光合参与活动写入后读回不一致')
+        .some(item => {
+          const topicInfo = item?.topicInfo || item || {}
+          const topicId = compact(item?.topicId || activityTopicId(topicInfo))
+          return Boolean(topicId) && activityTopicName(topicInfo) === activityName
+        })
+      if (!topicMatched) throw new Error('光合参与活动写入后读回不一致')
     }
     const itemId = normalizeItemId(readback.items?.[0]?.itemId || readback.items?.[0]?.id)
     if (itemId !== job.item_id) throw new Error('发布器关联商品写入后读回不一致')
@@ -1288,9 +1285,12 @@
       md5Hex,
       titleForScene,
       normalizeActivityName,
-      titleWithActivity,
-      titleRawWithActivity,
       activityTopicId,
+      activityTopicSource,
+      activityTopicName,
+      searchGuangActivityTopic,
+      normalizeGuangActivityTopic,
+      applyGuangActivity,
       buildDirectPublishRequest,
       buildProductSubmitRequest,
       findSellPageState,

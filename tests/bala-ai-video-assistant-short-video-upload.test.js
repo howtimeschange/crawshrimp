@@ -187,7 +187,8 @@ test('short video upload keeps the Excel description and uses API submission pat
 
   assert.equal(parsed.jobs[0].description, description)
   assert.match(SCRIPT_SOURCE, /setDescriptionEditorValue\(job\.description,\s*scene === 'qn_material_manager'\)/)
-  assert.match(SCRIPT_SOURCE, /mtop\.taobao\.media\.guang\.hashtag\.search/)
+  assert.match(SCRIPT_SOURCE, /mtop\.taobao\.media\.guang\.topic\.topicSearch/)
+  assert.doesNotMatch(SCRIPT_SOURCE, /mtop\.taobao\.media\.guang\.hashtag\.search/)
   assert.match(SCRIPT_SOURCE, /mtop\.taobao\.media\.guang\.pcPublish\.publish/)
   assert.match(SCRIPT_SOURCE, /mtop\.taobao\.spongebob\.item\.material\.publish/)
   assert.match(SCRIPT_SOURCE, /POST \/tmall\/submit\.htm/)
@@ -203,7 +204,42 @@ test('short video upload keeps the Excel description and uses API submission pat
 })
 
 test('short video upload applies separate titles and Guang activity readback', async () => {
-  const helpers = await loadExports({ window: { __USER_INFO__: { userId: '123456' } } })
+  const mtopCalls = []
+  const platformTopic = {
+    browseCount: '4486103643',
+    contentCount: '3229089',
+    cover: 'https://img.example.com/topic.jpg',
+    desc: '内容需要与穿搭/服饰相关',
+    firstCategoryNames: ['时尚'],
+    formatBrowseCount: '448610.4万',
+    formatUserCount: '7.6万',
+    formatValidContentCount: '322.9万',
+    iconType: '1',
+    prize: 'false',
+    sceneId: '533401179016',
+    site: 'tmallfashion',
+    source: 'user_select',
+    title: '夏日运动穿搭图鉴',
+    type: 'hashtag_publicActivity',
+    userCount: '75508',
+  }
+  const helpers = await loadExports({
+    window: {
+      __USER_INFO__: { userId: '123456' },
+      sessionId: 'publish-session-from-page',
+      lib: {
+        mtop: {
+          async request(options) {
+            mtopCalls.push(options)
+            return {
+              ret: ['SUCCESS::调用成功'],
+              data: { cursor: '1', topics: [platformTopic], hasNext: 'false' },
+            }
+          },
+        },
+      },
+    },
+  })
   const job = {
     item_id: '1027640116164',
     guang_title: '新生儿贴身衣认准新疆棉A类柔软透气',
@@ -214,50 +250,77 @@ test('short video upload applies separate titles and Guang activity readback', a
 
   assert.equal(helpers.titleForScene(job, 'pc_newcreator_video'), job.guang_title)
   assert.equal(helpers.titleForScene(job, 'qn_material_manager'), job.recommend_title)
-  assert.equal(
-    helpers.titleWithActivity(job.description, job.activity),
-    `${job.description} 夏日运动穿搭图鉴`,
-  )
-  assert.equal(
-    helpers.titleRawWithActivity(job.description, job.activity),
-    `${job.description} {##[Topic]##}`,
-  )
   assert.equal(helpers.activityTopicId({ sceneId: '1000001152' }), '1000001152')
+  assert.equal(helpers.activityTopicName(platformTopic), '夏日运动穿搭图鉴')
+
+  const content = {
+    id: 'content-draft',
+    shortTitle: job.guang_title,
+    title: '',
+    titleRaw: '',
+    titleElements: [],
+    topics: [],
+    topicId: '',
+    items: [{ itemId: '1027640116164', id: '1027640116164', source: 'selfShop', picUrl: 'https://img.example.com/item.jpg' }],
+    video: { fileId: 'file-id', statInfo: { audio: [] } },
+    coverUser: { url: 'https://img.example.com/cover.jpg', width: 800, height: 800, origin: 'intellect' },
+    downloadEnable: '0',
+  }
+  const config = {
+    bizCode: 'pc_video_seller_publish',
+    publishVersion: '1',
+    site: 'guangguang',
+    publishParams: {},
+    abParams: {},
+  }
 
   const runtime = {
+    actions: {
+      content: {
+        updateContentItem(value) {
+          return { payload: value }
+        },
+      },
+    },
+    dispatch(action) {
+      content[action.payload.key] = action.payload.value
+    },
     store: {
       getState() {
         return {
-          content: {
-            value: {
-              id: 'content-draft',
-              shortTitle: job.guang_title,
-              title: `${job.description} 夏日运动穿搭图鉴`,
-              titleRaw: `${job.description} {##[Topic]##}`,
-              titleElements: [{ id: '1000001152', type: 'Topic', name: '夏日运动穿搭图鉴' }],
-              topicId: '1000001152',
-              topicSource: 'hashtag_customize',
-              items: [{ itemId: '1027640116164', id: '1027640116164', source: 'selfShop', picUrl: 'https://img.example.com/item.jpg' }],
-              video: { fileId: 'file-id', statInfo: { audio: [] } },
-              coverUser: { url: 'https://img.example.com/cover.jpg', width: 800, height: 800, origin: 'intellect' },
-              downloadEnable: '0',
-            },
-          },
-          config: {
-            value: {
-              bizCode: 'pc_video_seller_publish',
-              publishParams: {},
-              abParams: {},
-            },
-          },
+          content: { value: content },
+          config: { value: config },
         }
       },
     },
   }
+
+  const write = await helpers.applyGuangActivity(runtime, job)
+  assert.equal(mtopCalls[0].api, 'mtop.taobao.media.guang.topic.topicSearch')
+  assert.deepEqual(JSON.parse(mtopCalls[0].data.params), {
+    ugcScene: 'pc_newcreator_video',
+    publishVersion: '1',
+    site: 'guangguang',
+    publishSession: 'publish-session-from-page',
+    keyword: '夏日运动穿搭图鉴',
+    cursor: '1',
+  })
+  assert.equal(write.title, job.description)
+  assert.equal(content.title, job.description)
+  assert.equal(content.titleRaw, '')
+  assert.deepEqual(plain(content.titleElements), [])
+  assert.equal(content.topicId, '533401179016')
+  assert.deepEqual(plain(content.topics), [{
+    topicId: '533401179016',
+    topicInfo: { ...platformTopic, selectType: 'manual' },
+    topicSource: 'user_select',
+  }])
+
   const request = helpers.buildDirectPublishRequest('pc_newcreator_video', runtime, 'publish-session')
-  assert.deepEqual(plain(request.topics), [{ topicId: '1000001152', source: 'hashtag_customize' }])
-  assert.equal(request.titleRaw, encodeURIComponent(`${job.description} {##[Topic]##}`))
-  assert.deepEqual(plain(request.titleElements), [{ id: '1000001152', type: 'Topic', name: '夏日运动穿搭图鉴' }])
+  assert.deepEqual(plain(request.topics), [{ topicId: '533401179016', source: 'user_select' }])
+  assert.equal(request.title, encodeURIComponent(job.description))
+  assert.equal('titleRaw' in request, false)
+  assert.equal('titleElements' in request, false)
 
   const noTopicIdRuntime = {
     store: {
@@ -265,11 +328,9 @@ test('short video upload applies separate titles and Guang activity readback', a
         return {
           content: {
             value: {
-              ...runtime.store.getState().content.value,
+              ...content,
               topicId: '',
-              topicSource: '',
               topics: [],
-              titleElements: [{ type: 'Topic', name: '夏日运动穿搭图鉴', subType: 'hashtag_customize' }],
             },
           },
           config: runtime.store.getState().config,
@@ -279,14 +340,13 @@ test('short video upload applies separate titles and Guang activity readback', a
   }
   const noTopicIdRequest = helpers.buildDirectPublishRequest('pc_newcreator_video', noTopicIdRuntime, 'publish-session')
   assert.deepEqual(plain(noTopicIdRequest.topics), [])
-  assert.deepEqual(plain(noTopicIdRequest.titleElements), [{ type: 'Topic', name: '夏日运动穿搭图鉴', subType: 'hashtag_customize' }])
 
   helpers.validatePublishReadback(job, {
     shortTitle: job.guang_title,
-    title: `${job.description} 夏日运动穿搭图鉴`,
-    titleRaw: `${job.description} {##[Topic]##}`,
-    titleElements: [{ type: 'Topic', name: '夏日运动穿搭图鉴' }],
-    topics: [{ topicInfo: { name: '夏日运动穿搭图鉴' } }],
+    title: job.description,
+    titleRaw: '',
+    titleElements: [],
+    topics: [{ topicId: '533401179016', topicInfo: { title: '夏日运动穿搭图鉴', sceneId: '533401179016' }, topicSource: 'user_select' }],
     items: [{ itemId: '1027640116164' }],
     onlineTime: null,
     coverUser: { url: 'https://img.example.com/cover.jpg' },
