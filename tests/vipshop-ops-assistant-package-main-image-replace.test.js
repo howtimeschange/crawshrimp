@@ -144,6 +144,21 @@ test('normalizes 款号+货号 rows and reports duplicate or invalid rows', asyn
   assert.equal(parsed.invalidRows[1].执行结果, '预检失败')
 })
 
+test('normalizes Vipshop upload function UI into internal operation scope', async () => {
+  const helpers = await loadExports()
+  const rows = [{ 款号: '201326108015', 货号: '20132610801500311' }]
+
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({})), ['package', 'main_image'])
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['full'] })), ['package', 'main_image'])
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['main_image'] })), ['main_image'])
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['detail_image'] })), ['package'])
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ upload_scope: ['只传主图', '只传商详页'] })), ['package', 'main_image'])
+  assert.deepEqual(plain(helpers.normalizeVipshopUploadScope({ operation_scope: ['main_image'] })), ['main_image'])
+
+  const parsed = helpers.normalizePackageMainJobs({ rows }, { execute_mode: 'plan', upload_scope: ['detail_image'] })
+  assert.deepEqual(plain(parsed.jobs[0].operationScope), ['package'])
+})
+
 test('classifies Vipshop package and main-image assets by full goods code', async () => {
   const helpers = await loadExports()
   const plan = helpers.classifyVipshopAssets({
@@ -301,6 +316,60 @@ test('matches hyphenated goods-code main images and keeps style-level detail sli
   assert.equal(plan.groups.listImage.length, 1)
   assert.equal(plan.groups.detailSlices.length, 2)
   assert.equal(plan.groups.detailSlices[0].sourceMatch, '款号')
+})
+
+test('precheck note separates goods-code matches from additional style candidates', async () => {
+  const helpers = await loadExports()
+  const assetPlan = helpers.classifyVipshopAssets({
+    styleCode: '209426108201',
+    goodsCode: '20942610820190001',
+    operationScope: ['main_image'],
+  }, [
+    image('/唯品/20942610820190001-1200.jpg', 1200, 1200),
+    image('/唯品/20942610820190001-950.jpg', 950, 1200),
+    image('/唯品/20942610820140627-1200.jpg', 1200, 1200),
+    image('/唯品/20942610820140627-950.jpg', 950, 1200),
+  ])
+  const rows = helpers.buildJobPlanRows(
+    { styleCode: '209426108201', goodsCode: '20942610820190001', operationScope: ['main_image'], executeMode: 'plan' },
+    { merchandiseNo: 'M1', vendorSpuId: 'V1', name: 'test product' },
+    product({ sn: '209426108201', itemSkuAttr: [{ colourGSN: '20942610820190001', colourName: '黑色调', squareImages: [] }] }),
+    { colourGSN: '20942610820190001', colourName: '黑色调' },
+    assetPlan,
+  )
+
+  assert.match(rows[0].备注, /素材按完整货号匹配 2 个/)
+  assert.match(rows[0].备注, /另有款号候选 2 个/)
+  assert.doesNotMatch(rows[0].备注, /未找到完整货号素材/)
+})
+
+test('verifies Vipshop readback image URLs across vpimg CDN host rewrites', async () => {
+  const helpers = await loadExports()
+  const uploadUrl = 'http://a.vpimg2.com/upload/merchandise/pdcvis/104218/2026/0804/183/6388ec27-669e-48dd-a14e-e421b29b9031.jpg'
+  const readbackProduct = product({
+    itemSkuAttr: [{
+      colourGSN: '20942610820140627',
+      colourName: '军绿-锁温贴身',
+      squareImages: [{
+        imageIndex: 1,
+        imageUrl: 'http://a.vpimg4.com/upload/merchandise/pdcvis/104218/2026/0804/183/6388ec27-669e-48dd-a14e-e421b29b9031.jpg',
+        imageSize: '1200x1200',
+      }],
+    }],
+  })
+
+  assert.equal(
+    helpers.normalizeVipshopReadbackImageUrl(uploadUrl),
+    '/upload/merchandise/pdcvis/104218/2026/0804/183/6388ec27-669e-48dd-a14e-e421b29b9031.jpg',
+  )
+  assert.equal(helpers.verifyImageUrlInDetail(uploadUrl, readbackProduct), true)
+  assert.equal(
+    helpers.verifyImageUrlInDetail(
+      'http://a.vpimg2.com/upload/merchandise/pdcvis/104218/2026/0804/183/not-the-upload.jpg',
+      readbackProduct,
+    ),
+    false,
+  )
 })
 
 test('matches Vipshop main/list image pairs named by full goods code and size suffix', async () => {

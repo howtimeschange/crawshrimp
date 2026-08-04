@@ -172,6 +172,56 @@
     return 'plan'
   }
 
+  function splitOptionValues(value) {
+    if (Array.isArray(value)) return value.flatMap(splitOptionValues)
+    if (value && typeof value === 'object') {
+      return Object.entries(value)
+        .filter(([, enabled]) => truthy(enabled))
+        .map(([key]) => key)
+    }
+    return String(value == null ? '' : value)
+      .split(/[\n,，、;；\t ]+/)
+      .map(compact)
+      .filter(Boolean)
+  }
+
+  function normalizeVipshopUploadScope(rawParams = params) {
+    const selected = splitOptionValues(
+      rawParams.upload_scope || rawParams.uploadScope || rawParams.upload_mode || rawParams.uploadMode
+        || rawParams.upload_function || rawParams.uploadFunction,
+    )
+    const legacy = selected.length
+      ? []
+      : splitOptionValues(rawParams.operation_scope || rawParams.operationScope)
+    const values = selected.length ? selected : legacy
+    if (!values.length) return ['package', 'main_image']
+
+    const scope = new Set()
+    let full = false
+    for (const value of values) {
+      const text = compact(value)
+      const key = normalizeKey(value)
+      if (
+        ['full', 'complete', 'completeupload', 'all', 'packageandmainimage', 'packagemainimage'].includes(key)
+        || /完整|全部/.test(text)
+      ) {
+        full = true
+      }
+      if (['main', 'mainimage', 'mainonly', 'onlymain'].includes(key) || /主图/.test(text)) {
+        scope.add('main_image')
+      }
+      if (
+        ['package', 'detail', 'detailimage', 'detailpage', 'detailonly', 'onlydetail'].includes(key)
+        || /商详|详情|包装/.test(text)
+      ) {
+        scope.add('package')
+      }
+    }
+    if (full) return ['package', 'main_image']
+    const normalized = ['package', 'main_image'].filter(key => scope.has(key))
+    return normalized.length ? normalized : ['package', 'main_image']
+  }
+
   function hasScope(scope, key) {
     if (!scope || (Array.isArray(scope) && scope.length === 0)) return true
     if (Array.isArray(scope)) return scope.includes(key)
@@ -345,7 +395,7 @@
             goodsCode,
             note,
             executeMode: normalizeExecuteMode(rawParams.execute_mode),
-            operationScope: rawParams.operation_scope || ['package', 'main_image'],
+            operationScope: normalizeVipshopUploadScope(rawParams),
             cloudPath: deriveJobCloudPath(
               rawParams.cloud_path || rawParams.semir_path || rawParams.cloudPath || defaultSemirCloudPath(rawParams),
               styleCode,
@@ -970,7 +1020,11 @@
         isMergedStyle(job, product) ? '拼款：只允许更新目标货号对应颜色' : '',
         statusNeedsUnpublish ? '当前状态需先取消提交审核/撤回后才能编辑' : '',
         assetPlan.goodsMatched ? `素材按完整货号匹配 ${assetPlan.goodsMatched} 个` : '',
-        assetPlan.styleFallback ? `未找到完整货号素材，按款号候选 ${assetPlan.styleFallback} 个` : '',
+        assetPlan.styleFallback
+          ? (assetPlan.goodsMatched
+              ? `另有款号候选 ${assetPlan.styleFallback} 个`
+              : `未找到完整货号素材，按款号候选 ${assetPlan.styleFallback} 个`)
+          : '',
         liveNote,
       ].filter(Boolean).join('；')),
     })
@@ -3266,12 +3320,28 @@
     }
   }
 
+  function normalizeVipshopReadbackImageUrl(value) {
+    const raw = compact(value)
+    if (!raw) return ''
+    try {
+      const parsed = new URL(raw, location.href)
+      if (/vpimg\d*\.com$/i.test(parsed.hostname)) return parsed.pathname
+      return parsed.href
+    } catch (error) {
+      return raw.replace(/^https?:\/\/a\.vpimg\d+\.com/i, '')
+    }
+  }
+
   function verifyImageUrlInDetail(url, product, context = null) {
     const text = JSON.stringify({
       product: product || {},
       pageState: context ? currentPdcStateSnapshotForVerify(context) : {},
     })
-    return !!url && text.includes(url)
+    if (!url) return false
+    if (text.includes(url)) return true
+    const normalizedUrl = normalizeVipshopReadbackImageUrl(url)
+    if (!normalizedUrl || normalizedUrl === url) return false
+    return text.replace(/https?:\/\/a\.vpimg\d+\.com/gi, '').includes(normalizedUrl)
   }
 
   function buildJobContexts(parsed, merchandiseResult, assetFiles, rawParams = params) {
@@ -3389,6 +3459,7 @@
       rowValue,
       splitCodes,
       normalizeExecuteMode,
+      normalizeVipshopUploadScope,
       normalizePackageMainJobs,
       parseCloudPath,
       deriveJobCloudPath,
@@ -3424,6 +3495,8 @@
       statusLabel,
       hasScope,
       isSupportedExecutionOrigin,
+      normalizeVipshopReadbackImageUrl,
+      verifyImageUrlInDetail,
       replaceByImageIndex,
       makeDetailImages,
       classifyVipshopOcrAnchorText,

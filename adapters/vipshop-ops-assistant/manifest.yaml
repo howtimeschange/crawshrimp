@@ -52,19 +52,19 @@ tasks:
           - value: "true"
             label: 已确认只处理本表货号并执行保存提交
         hint: 安全闸门。未勾选时即使执行模式为 live，也不会取消审核、上传、保存或提交。
-      - id: operation_scope
+      - id: upload_scope
         type: checkbox
-        label: 替换范围
+        label: 上传功能
         default:
-          - package
-          - main_image
-        ui_variant: dropdown_multi
+          - full
         options:
-          - value: package
-            label: 包装微详情+商品详情图
+          - value: full
+            label: 完整上传
           - value: main_image
-            label: 主图+商品列表图
-        hint: 包装会规划微详情 1200x1200 与详情切片；主图会规划商品图片 1200x1200 与列表图 950x1200。
+            label: 只传主图
+          - value: detail_image
+            label: 只传商详页
+        hint: 默认完整上传，即同时找图并上传主图/列表图和商详页图；如只处理单项，请取消“完整上传”后勾选对应功能。旧参数 operation_scope 仍兼容。
       - id: enable_ocr_anchor_detection
         type: checkbox
         label: OCR识别商详保留图
