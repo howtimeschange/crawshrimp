@@ -485,9 +485,14 @@ jobs:
     permissions:
       contents: read
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_R2_BUCKET: crawshrimp-desktop-updates
+      AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      CLOUDFLARE_R2_S3_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_S3_ENDPOINT }}
+      CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
 
     steps:
       - name: Checkout
@@ -528,14 +533,27 @@ jobs:
       - name: Validate release update artifacts
         run: node app/scripts/validate-update-artifacts.js release-assets --formal-release --version "${GITHUB_REF_NAME#v}"
 
+      - name: Ensure AWS CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            python3 -m pip install --user awscli
+            echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+            "${HOME}/.local/bin/aws" --version
+          else
+            aws --version
+          fi
+
       - name: Upload update assets to Cloudflare R2
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-            echo "::error::CLOUDFLARE_R2_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets are required"
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -z "${CLOUDFLARE_R2_S3_ENDPOINT:-}" ] || [ -z "${CLOUDFLARE_R2_BUCKET:-}" ]; then
+            echo "::error::CLOUDFLARE_R2_ACCESS_KEY_ID, CLOUDFLARE_R2_SECRET_ACCESS_KEY, CLOUDFLARE_R2_S3_ENDPOINT, and CLOUDFLARE_R2_BUCKET secrets are required"
             exit 1
           fi
+          aws --version
 
           upload_object() {
             local file="$1"
@@ -547,11 +565,11 @@ jobs:
               *.zip) content_type="application/zip" ;;
               *.exe) content_type="application/vnd.microsoft.portable-executable" ;;
             esac
-            npx --yes wrangler@4.110.0 r2 object put "${CLOUDFLARE_R2_BUCKET}/${name}" \
-              --remote \
-              --file="${file}" \
-              --content-type="${content_type}" \
-              --cache-control="${cache_control}"
+            aws s3 cp "${file}" "s3://${CLOUDFLARE_R2_BUCKET}/${name}" \
+              --endpoint-url "${CLOUDFLARE_R2_S3_ENDPOINT}" \
+              --content-type "${content_type}" \
+              --cache-control "${cache_control}" \
+              --only-show-errors
           }
 
           while IFS= read -r file; do
@@ -570,10 +588,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -z "${CLOUDFLARE_R2_S3_ENDPOINT:-}" ] || [ -z "${CLOUDFLARE_R2_BUCKET:-}" ]; then
+            echo "::error::CLOUDFLARE_R2_ACCESS_KEY_ID, CLOUDFLARE_R2_SECRET_ACCESS_KEY, CLOUDFLARE_R2_S3_ENDPOINT, and CLOUDFLARE_R2_BUCKET secrets are required"
+            exit 1
+          fi
           for metadata in latest-mac.yml latest.yml; do
             expected=$(find release-assets -name "${metadata}" -print -quit)
             actual="$(mktemp)"
-            npx --yes wrangler@4.110.0 r2 object get "${CLOUDFLARE_R2_BUCKET}/${metadata}" --remote --file="${actual}"
+            aws s3 cp "s3://${CLOUDFLARE_R2_BUCKET}/${metadata}" "${actual}" \
+              --endpoint-url "${CLOUDFLARE_R2_S3_ENDPOINT}" \
+              --only-show-errors
             cmp --silent "${expected}" "${actual}"
           done
 
