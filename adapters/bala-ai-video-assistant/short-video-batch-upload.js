@@ -166,6 +166,25 @@
     return { ...base, '上传情况': '预检失败', '备注': compact(message) }
   }
 
+  function skippedPrecheckFailureRow(row) {
+    return {
+      ...row,
+      '上传情况': '发布失败',
+      '内容ID': '',
+      '光合发布状态': '未执行',
+      '光合内容ID': '',
+      '光合接口回执': '',
+      '搜推素材状态': '未执行',
+      '搜推内容ID': '',
+      '搜推接口回执': '',
+      '商品视频绑定状态': '未执行',
+      '宝贝展示视频ID': '',
+      '商品提交回执': '',
+      '刷新读回': '',
+      '备注': `预检失败：${compact(row?.备注) || '未通过发布前检查'}`,
+    }
+  }
+
   function normalizeJobs(rawParams = params) {
     const rows = Array.isArray(rawParams.input_file?.rows) ? rawParams.input_file.rows : []
     const jobs = []
@@ -298,10 +317,45 @@
     return state.current_work && typeof state.current_work === 'object' ? state.current_work : {}
   }
 
+  function effectiveGuangContentId(job, work = {}) {
+    const published = normalizeContentId(work.guang_content_id)
+    if (published) return published
+    return job && !job.publish_guang ? normalizeContentId(job.existing_content_id) : ''
+  }
+
+  function contentIdAlreadyInResults(state, contentId, fields) {
+    const id = normalizeContentId(contentId)
+    if (!id) return false
+    return (Array.isArray(state?.results) ? state.results : []).some(row =>
+      fields.some(field => normalizeContentId(row?.[field]) === id),
+    )
+  }
+
+  function assertUnusedContentId(state, contentId, label, fields) {
+    const id = normalizeContentId(contentId)
+    if (!id) return
+    if (contentIdAlreadyInResults(state, id, fields)) {
+      throw new Error(`${label}接口返回了本次任务已使用过的内容ID ${id}，疑似仍停留在上一款发布状态，已停止写入成功`)
+    }
+  }
+
   function navigateTo(url, next, state = shared, label = '') {
     if (compact(location.href) !== url) location.href = url
     return nextPhase(next, 1200, {
       ...state,
+      page_ready_attempts: 0,
+      current_store: label || url,
+    })
+  }
+
+  function openPublishPageForJob(url, next, state, markerKey, label = '') {
+    const { index } = currentJob(state)
+    if (state?.[markerKey] === index) return null
+    if (compact(location.href) === url && typeof location.reload === 'function') location.reload()
+    else location.href = url
+    return nextPhase(next, 1200, {
+      ...state,
+      [markerKey]: index,
       page_ready_attempts: 0,
       current_store: label || url,
     })
@@ -797,8 +851,6 @@
     for (const value of nestedValues(payload)) {
       const id = normalizeContentId(value?.contentId || value?.content_id)
       if (id) return id
-      const primitive = normalizeContentId(value)
-      if (primitive) return primitive
     }
     return ''
   }
@@ -938,6 +990,7 @@
   function finishJob(state, patch = {}) {
     const { job, jobs, index } = currentJob(state)
     const work = { ...currentWork(state), ...patch }
+    const guangContentId = effectiveGuangContentId(job, work)
     const statuses = [
       work.guang_status && `光合：${work.guang_status}`,
       work.recommend_status && `搜推：${work.recommend_status}`,
@@ -946,9 +999,9 @@
     const row = {
       ...outputBase(job),
       '上传情况': statuses.join('；') || '已完成',
-      '内容ID': compact(work.guang_content_id || job?.existing_content_id),
+      '内容ID': guangContentId,
       '光合发布状态': compact(work.guang_status),
-      '光合内容ID': compact(work.guang_content_id || job?.existing_content_id),
+      '光合内容ID': guangContentId,
       '光合接口回执': compact(work.guang_receipt),
       '搜推素材状态': compact(work.recommend_status),
       '搜推内容ID': compact(work.recommend_content_id),
@@ -1297,7 +1350,11 @@
       productSubmitErrorMessages,
       outputBase,
       previewRow,
+      skippedPrecheckFailureRow,
       validatePublishReadback,
+      effectiveGuangContentId,
+      contentIdAlreadyInResults,
+      assertUnusedContentId,
     })
   }
   if (phase === '__exports__') return complete([])
@@ -1305,6 +1362,7 @@
   if (phase === 'main' || phase === 'init') {
     const { jobs, invalidRows } = normalizeJobs(params)
     const previewRows = [...invalidRows, ...jobs.map(previewRow)]
+    const liveInvalidRows = invalidRows.map(skippedPrecheckFailureRow)
     if (compact(params.execute_mode).toLowerCase() !== 'live') {
       return complete(previewRows, {
         jobs,
@@ -1314,25 +1372,28 @@
         current_store: '短视频批量上传预检完成',
       })
     }
-    if (!jobs.length || invalidRows.length) {
-      return complete(previewRows.length ? previewRows : [failureRow('', '', '', '', '', 'Excel 没有可执行数据行')], {
+    if (!jobs.length) {
+      const rows = liveInvalidRows.length ? liveInvalidRows : [skippedPrecheckFailureRow(failureRow('', '', '', '', '', 'Excel 没有可执行数据行'))]
+      return complete(rows, {
         jobs,
-        invalid_rows: invalidRows,
+        invalid_rows: rows,
         results: [],
-        total_rows: previewRows.length,
+        total_rows: rows.length,
       })
     }
     return nextPhase('navigate_guang', 0, {
       jobs,
-      invalid_rows: [],
+      invalid_rows: liveInvalidRows,
       results: [],
       job_index: 0,
       current_work: {},
-      total_rows: jobs.length,
+      total_rows: previewRows.length,
       current_exec_no: 1,
       current_row_no: jobs[0].row_no,
       current_buyer_id: jobs[0].style_code || jobs[0].item_id,
-      current_store: `准备上传 1/${jobs.length}`,
+      current_store: invalidRows.length
+        ? `已跳过 ${invalidRows.length} 行预检失败款号，准备上传 1/${jobs.length}`
+        : `准备上传 1/${jobs.length}`,
     })
   }
 
@@ -1346,6 +1407,8 @@
       })
       return routeAfterGuang(state)
     }
+    const opened = openPublishPageForJob(GUANG_URL, 'wait_guang_page', shared, 'guang_page_job_index', '进入光合视频发布器')
+    if (opened) return opened
     if (publishPageReady('https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video')) {
       return nextPhase('prepare_guang_upload', 0, shared)
     }
@@ -1420,6 +1483,7 @@
       const { job } = currentJob(shared)
       validatePublishReadback(job, currentWork(shared).guang_form_readback || {}, 'pc_newcreator_video')
       const result = await publishPreparedContent('pc_newcreator_video')
+      assertUnusedContentId(shared, result.contentId, '光合', ['内容ID', '光合内容ID'])
       return routeAfterGuang(mergeWork(shared, {
         guang_status: '发布成功',
         guang_content_id: result.contentId,
@@ -1431,6 +1495,8 @@
   }
 
   if (phase === 'navigate_recommend') {
+    const opened = openPublishPageForJob(RECOMMEND_URL, 'wait_recommend_page', shared, 'recommend_page_job_index', '进入千牛搜推素材视频发布器')
+    if (opened) return opened
     if (publishPageReady('https://huodong.taobao.com/wow/z/guang/publish-feeds/videoPreview')) {
       return nextPhase('prepare_recommend_upload', 0, shared)
     }
@@ -1494,6 +1560,7 @@
       const { job } = currentJob(shared)
       validatePublishReadback(job, currentWork(shared).recommend_form_readback || {}, 'qn_material_manager')
       const result = await publishPreparedContent('qn_material_manager')
+      assertUnusedContentId(shared, result.contentId, '搜推', ['搜推内容ID'])
       return routeAfterRecommend(mergeWork(shared, {
         recommend_status: '发布成功',
         recommend_content_id: result.contentId,
@@ -1506,7 +1573,7 @@
 
   if (phase === 'navigate_selector') {
     const { job } = currentJob(shared)
-    const guangContentId = currentWork(shared).guang_content_id || job?.existing_content_id
+    const guangContentId = effectiveGuangContentId(job, currentWork(shared))
     if (!guangContentId) {
       return finishJob(appendNote(mergeWork(shared, { product_status: '未执行' }), '没有光合内容ID，无法替换宝贝展示视频'))
     }
@@ -1524,7 +1591,7 @@
 
   if (phase === 'query_video_record') {
     const { job } = currentJob(shared)
-    const contentId = currentWork(shared).guang_content_id || job.existing_content_id
+    const contentId = effectiveGuangContentId(job, currentWork(shared))
     try {
       const record = await queryVideoRecord(contentId)
       if (record) {

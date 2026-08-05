@@ -139,6 +139,53 @@ test('short video upload blocks invalid title and missing video before live chan
   assert.match(parsed.invalidRows[0].备注, /20字限制/)
 })
 
+test('short video upload skips precheck failures and continues live jobs', async () => {
+  const result = await runAdapter({
+    params: {
+      execute_mode: 'live',
+      input_file: {
+        rows: [
+          inputRow({ 款号: '208326133202', ID: '1027640116165', 视频描述: '太短' }),
+          inputRow(),
+        ],
+      },
+      video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+      publish_targets: ['guang'],
+    },
+  })
+
+  assert.equal(result.success, true, JSON.stringify(result))
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'navigate_guang')
+  assert.equal(result.meta.shared.jobs.length, 1)
+  assert.equal(result.meta.shared.jobs[0].item_id, '1027640116164')
+  assert.equal(result.meta.shared.invalid_rows.length, 1)
+  assert.equal(result.meta.shared.invalid_rows[0].上传情况, '发布失败')
+  assert.equal(result.meta.shared.invalid_rows[0].光合发布状态, '未执行')
+  assert.equal(result.meta.shared.invalid_rows[0].搜推素材状态, '未执行')
+  assert.equal(result.meta.shared.invalid_rows[0].商品视频绑定状态, '未执行')
+  assert.match(result.meta.shared.invalid_rows[0].备注, /预检失败：模板第2行视频描述需为10-1000字/)
+  assert.match(result.meta.shared.current_store, /已跳过 1 行预检失败款号/)
+})
+
+test('short video upload marks all-invalid live workbooks as publish failures', async () => {
+  const result = await runAdapter({
+    params: {
+      execute_mode: 'live',
+      input_file: { rows: [inputRow({ 视频描述: '太短' })] },
+      video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+      publish_targets: ['guang'],
+    },
+  })
+
+  assert.equal(result.success, true, JSON.stringify(result))
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data.length, 1)
+  assert.equal(result.data[0].上传情况, '发布失败')
+  assert.equal(result.data[0].光合发布状态, '未执行')
+  assert.match(result.data[0].备注, /预检失败：模板第2行视频描述需为10-1000字/)
+})
+
 test('short video upload keeps legacy 视频标题 compatible for both publish surfaces', async () => {
   const helpers = await loadExports()
   const parsed = helpers.normalizeJobs({
@@ -173,8 +220,97 @@ test('short video upload extracts publish content id and platform error from cap
 
   assert.equal(helpers.extractContentIdFromCapture(successCapture), '582345678901')
   assert.equal(helpers.extractContentId({ ret: ['SUCCESS::调用成功'], data: 1936378810096513 }), '1936378810096513')
+  assert.equal(helpers.extractContentId({
+    ret: ['SUCCESS::调用成功'],
+    data: {
+      result: {
+        items: [{ itemId: '1027640116164' }],
+        topics: [{ topicId: '533401179016' }],
+      },
+    },
+  }), '')
   assert.equal(helpers.extractCaptureError(successCapture), '')
   assert.match(helpers.extractCaptureError(failedCapture), /FAIL_BIZ_DUPLICATE|内容重复/)
+})
+
+test('short video upload blocks stale Guang content ids from being reused as success', async () => {
+  const helpers = await loadExports()
+  const state = {
+    results: [{
+      ID: '1037634430273',
+      内容ID: '1112532794076472',
+      光合内容ID: '1112532794076472',
+    }],
+  }
+
+  assert.equal(helpers.contentIdAlreadyInResults(state, '1112532794076472', ['内容ID', '光合内容ID']), true)
+  assert.throws(
+    () => helpers.assertUnusedContentId(state, '1112532794076472', '光合', ['内容ID', '光合内容ID']),
+    /已使用过的内容ID 1112532794076472/,
+  )
+})
+
+test('short video upload reopens the Guang publisher for each live job', async () => {
+  const helpers = await loadExports()
+  const job = helpers.normalizeJobs({
+    input_file: { rows: [inputRow()] },
+    video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+    publish_targets: ['guang'],
+  }).jobs[0]
+  let reloads = 0
+  const result = await runAdapter({
+    phase: 'navigate_guang',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      current_work: {},
+    },
+    contextExtra: {
+      location: {
+        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
+        reload() {
+          reloads += 1
+        },
+      },
+    },
+  })
+
+  assert.equal(reloads, 1)
+  assert.equal(result.meta.next_phase, 'wait_guang_page')
+  assert.equal(result.meta.shared.guang_page_job_index, 0)
+})
+
+test('short video upload does not fall back to template content id after live Guang failure', async () => {
+  const helpers = await loadExports()
+  const job = helpers.normalizeJobs({
+    input_file: { rows: [inputRow({ 内容ID: '1112532794076472' })] },
+    video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+    publish_targets: ['guang', 'product'],
+  }).jobs[0]
+  const result = await runAdapter({
+    phase: 'navigate_selector',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      current_work: {
+        guang_status: '失败',
+        notes: ['光合接口返回了上一款内容ID'],
+      },
+    },
+  })
+
+  assert.equal(helpers.effectiveGuangContentId(job, {}), '')
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0].内容ID, '')
+  assert.equal(result.data[0].光合内容ID, '')
+  assert.match(result.data[0].上传情况, /光合：失败/)
+  assert.match(result.data[0].上传情况, /商品：未执行/)
+  assert.match(result.data[0].备注, /没有光合内容ID/)
+
+  const existingJob = { ...job, publish_guang: false }
+  assert.equal(helpers.effectiveGuangContentId(existingJob, {}), '1112532794076472')
 })
 
 test('short video upload keeps the Excel description and uses API submission paths', async () => {
