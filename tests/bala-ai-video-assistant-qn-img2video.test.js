@@ -99,6 +99,29 @@ function multiSlotTemplate(overrides = {}) {
   }
 }
 
+function directVideoJob(overrides = {}) {
+  return {
+    index: 1,
+    template: null,
+    templateId: '',
+    templateName: '',
+    generationMode: 'img2video',
+    ratio: '3:4',
+    prompt: '儿童模特自然展示上衣细节',
+    styleCode: '208326103207',
+    materialRefs: [
+      {
+        ref: 'https://img.example/208326103207-1.png',
+        url: 'https://img.example/208326103207-1.png',
+        source: 'remote',
+        name: '208326103207-1.png',
+        styleCode: '208326103207',
+      },
+    ],
+    ...overrides,
+  }
+}
+
 test('checkboxEnabled handles booleans, strings, arrays, and defaults', async () => {
   const helpers = await loadExports()
 
@@ -266,6 +289,102 @@ test('builds direct software-manager payload for jobs without a template', async
     },
   ])
   assert.equal(payload.data.itemVO, '{}')
+})
+
+test('extracts visible software-manager task IDs and finds the new one', async () => {
+  const helpers = await loadExports()
+  const ids = helpers.taskIdsFromText('款号 208326103207\n任务ID 159228616426\n任务 ID：162085738211\nTask ID: 162085738211')
+
+  assert.deepEqual(Array.from(ids), ['159228616426', '162085738211'])
+  assert.equal(helpers.findNewTaskId(['159228616426'], ids), '162085738211')
+})
+
+test('recovers a submit timeout when a new task ID appears immediately on the page', async () => {
+  const document = {
+    body: {
+      innerText: '历史任务\n任务ID 159228616426',
+      textContent: '',
+    },
+  }
+  let submitCalls = 0
+  const job = directVideoJob()
+
+  const result = await runScript({
+    phase: 'process_row',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      poll_timeout_ms: 600000,
+      poll_interval_ms: 5000,
+      submit_recovery_timeout_ms: 60000,
+      submit_recovery_interval_ms: 3000,
+      download_videos: true,
+    },
+    windowOverrides: {
+      document,
+      lib: {
+        mtop: {
+          request: async request => {
+            submitCalls += 1
+            assert.equal(request.api, 'mtop.taobao.qn.copilot.image.generate.video.submit')
+            document.body.innerText = '最新任务\n任务ID 162085738211\n历史任务\n任务ID 159228616426'
+            throw { ret: ['FAIL_SYS_SERVICE_TIMEOUT::请求服务超时'], traceId: 'trace-timeout' }
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(submitCalls, 1)
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'poll_job')
+  assert.deepEqual(result.meta.shared.results, [])
+  assert.equal(result.meta.shared.active_job.taskId, '162085738211')
+  assert.deepEqual(Array.from(result.meta.shared.active_job.preSubmitTaskIds), ['159228616426'])
+  assert.match(result.meta.shared.active_job.submitError, /FAIL_SYS_SERVICE_TIMEOUT|请求服务超时/)
+  assert.match(result.meta.shared.active_job.submitWarning, /找回任务ID/)
+})
+
+test('recover_submit_task phase continues polling once the page exposes a new task ID', async () => {
+  const job = directVideoJob()
+
+  const result = await runScript({
+    phase: 'recover_submit_task',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      active_job: {
+        ...job,
+        resolvedMaterials: job.materialRefs,
+        submitApi: 'mtop.taobao.qn.copilot.image.generate.video.submit',
+        taskId: '',
+        preSubmitTaskIds: ['159228616426'],
+        submitError: 'mtop.taobao.qn.copilot.image.generate.video.submit 返回失败：FAIL_SYS_SERVICE_TIMEOUT::请求服务超时',
+        submitWarning: '提交接口超时，正在从页面任务列表找回任务ID',
+      },
+      submit_recovery_started_at: Date.now(),
+      submit_recovery_attempts: 1,
+      submit_recovery_timeout_ms: 60000,
+      submit_recovery_interval_ms: 3000,
+      poll_interval_ms: 5000,
+    },
+    windowOverrides: {
+      document: {
+        body: {
+          innerText: '任务ID 162085738211\n任务ID 159228616426',
+          textContent: '',
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'poll_job')
+  assert.equal(result.meta.shared.active_job.taskId, '162085738211')
+  assert.equal(result.meta.shared.active_poll_attempts, 0)
+  assert.deepEqual(result.meta.shared.results, [])
 })
 
 test('buildTemplatePayload uses action template generate API with uploaded image', async () => {

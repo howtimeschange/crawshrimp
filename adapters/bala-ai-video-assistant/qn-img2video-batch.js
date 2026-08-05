@@ -631,6 +631,44 @@
     return cleanText(task?.submitTaskId || payload?.submitTaskId)
   }
 
+  function taskIdsFromText(value) {
+    const text = String(value ?? '')
+    const ids = []
+    const seen = new Set()
+    const patterns = [
+      /任务\s*ID\s*[:：]?\s*(\d{8,20})/gi,
+      /\btask\s*id\s*[:：]?\s*(\d{8,20})/gi,
+    ]
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0
+      let match
+      while ((match = pattern.exec(text))) {
+        const id = cleanText(match[1])
+        if (!id || seen.has(id)) continue
+        ids.push(id)
+        seen.add(id)
+      }
+    }
+    return ids
+  }
+
+  function collectVisibleTaskIds() {
+    const doc = window.document
+    const parts = []
+    if (doc?.body?.innerText) parts.push(doc.body.innerText)
+    if (doc?.body?.textContent && doc.body.textContent !== doc.body.innerText) parts.push(doc.body.textContent)
+    return taskIdsFromText(parts.join('\n'))
+  }
+
+  function findNewTaskId(beforeIds = [], afterIds = collectVisibleTaskIds()) {
+    const before = new Set((beforeIds || []).map(cleanText).filter(Boolean))
+    return (afterIds || []).map(cleanText).find(id => id && !before.has(id)) || ''
+  }
+
+  function isSubmitServiceTimeoutError(error) {
+    return /FAIL_SYS_SERVICE_TIMEOUT|SERVICE_TIMEOUT|请求服务超时|服务超时|超时|timeout/i.test(describeError(error, error?.message || ''))
+  }
+
   function normalizeTaskState(payload) {
     const task = payload?.result?.task || payload?.task || payload?.result || payload
     const status = task?.status
@@ -682,6 +720,8 @@
       poll_timeout_ms: parseInteger(rawParams.poll_timeout_minutes, 12, 1, 120) * 60 * 1000,
       poll_interval_ms: parseInteger(rawParams.poll_interval_seconds, 20, 5, 300) * 1000,
       submit_delay_ms: parseInteger(rawParams.submit_delay_ms, 2000, 0, 60000),
+      submit_recovery_timeout_ms: parseInteger(rawParams.submit_recovery_timeout_seconds, 180, 10, 900) * 1000,
+      submit_recovery_interval_ms: parseInteger(rawParams.submit_recovery_interval_seconds, 8, 3, 60) * 1000,
       download_videos: checkboxEnabled(rawParams.download_videos, true),
       download_concurrency: parseInteger(rawParams.download_concurrency, 2, 1, 8),
       output_dir: cleanText(rawParams.output_dir),
@@ -1004,9 +1044,13 @@
       current_buyer_id: job.templateName || job.templateId || job.styleCode,
     }
 
+    let materials = []
+    let payload = null
+    let preSubmitTaskIds = []
     try {
-      const materials = await resolveMaterialUrls(job)
-      const payload = buildGenerationPayload(job, materials)
+      materials = await resolveMaterialUrls(job)
+      payload = buildGenerationPayload(job, materials)
+      preSubmitTaskIds = collectVisibleTaskIds()
       const submit = await callMtop(payload.api, payload.data)
       const taskId = extractTaskId(submit)
       const submitTaskId = extractSubmitTaskId(submit)
@@ -1025,6 +1069,32 @@
         active_poll_attempts: 0,
       })
     } catch (error) {
+      if (payload && isSubmitServiceTimeoutError(error)) {
+        const visibleTaskIds = collectVisibleTaskIds()
+        const recoveredTaskId = findNewTaskId(preSubmitTaskIds, visibleTaskIds)
+        const now = Date.now()
+        const activeJob = {
+          ...job,
+          resolvedMaterials: materials,
+          submitApi: payload.api,
+          taskId: recoveredTaskId,
+          submitTaskId: '',
+          preSubmitTaskIds,
+          submitError: error?.message || String(error),
+          submitWarning: recoveredTaskId
+            ? '提交接口超时，但已从页面找回任务ID'
+            : '提交接口超时，正在从页面任务列表找回任务ID',
+        }
+        return nextPhase(recoveredTaskId ? 'poll_job' : 'recover_submit_task', recoveredTaskId ? 0 : (shared.submit_recovery_interval_ms || 8000), {
+          ...activeBase,
+          active_job: activeJob,
+          active_poll_started_at: recoveredTaskId ? now : 0,
+          active_poll_attempts: 0,
+          submit_recovery_started_at: now,
+          submit_recovery_attempts: 1,
+          last_submit_recovery_task_ids: visibleTaskIds,
+        })
+      }
       const failedRow = {
         ...buildOutputRow(job, {
           status: '提交失败',
@@ -1041,6 +1111,51 @@
         active_job: null,
       })
     }
+  }
+
+  async function runRecoverSubmitTaskPhase() {
+    const activeJob = shared.active_job
+    if (!activeJob) return nextPhase('process_row', 0, shared)
+    const attempts = Number(shared.submit_recovery_attempts || 0) + 1
+    const startedAt = Number(shared.submit_recovery_started_at || Date.now())
+    const visibleTaskIds = collectVisibleTaskIds()
+    const recoveredTaskId = findNewTaskId(activeJob.preSubmitTaskIds || [], visibleTaskIds)
+    if (recoveredTaskId) {
+      return nextPhase('poll_job', 0, {
+        ...shared,
+        active_job: {
+          ...activeJob,
+          taskId: recoveredTaskId,
+          submitWarning: '提交接口超时，但已从页面找回任务ID',
+        },
+        active_poll_started_at: Date.now(),
+        active_poll_attempts: 0,
+        submit_recovery_attempts: attempts,
+        last_submit_recovery_task_ids: visibleTaskIds,
+      })
+    }
+    if (Date.now() - startedAt >= Number(shared.submit_recovery_timeout_ms || 180000)) {
+      const state = { status: '', statusText: '提交超时', videoUrl: '', coverUrl: '', contentId: '' }
+      return nextPhase('process_row', shared.submit_delay_ms || 0, {
+        ...finishActiveJob(
+          {
+            ...activeJob,
+            submitWarning: '提交接口超时，页面未出现可识别的新任务ID',
+          },
+          state,
+          '提交失败',
+          '失败',
+          activeJob.submitError || '提交接口超时，未能找回任务ID',
+        ),
+        submit_recovery_attempts: attempts,
+        last_submit_recovery_task_ids: visibleTaskIds,
+      })
+    }
+    return nextPhase('recover_submit_task', shared.submit_recovery_interval_ms || 8000, {
+      ...shared,
+      submit_recovery_attempts: attempts,
+      last_submit_recovery_task_ids: visibleTaskIds,
+    })
   }
 
   async function runPollJobPhase() {
@@ -1102,6 +1217,7 @@
 
   function finishActiveJob(job, state, status, result, note = '', localVideoPath = '') {
     const index = Number(shared.job_index || 0)
+    const combinedNote = [job.submitWarning, note].map(cleanText).filter(Boolean).join('；')
     const row = {
       ...buildOutputRow(job, {
         status,
@@ -1116,7 +1232,7 @@
         localVideoPath,
         materials: job.resolvedMaterials || [],
         templatePreviewPath: shared.downloaded_template_previews?.[job.templateId] || '',
-        note,
+        note: combinedNote,
       }),
       主类目: shared.main_category || DEFAULT_CATEGORY,
     }
@@ -1166,6 +1282,10 @@
       buildGenerationPayload,
       extractTaskId,
       extractSubmitTaskId,
+      taskIdsFromText,
+      collectVisibleTaskIds,
+      findNewTaskId,
+      isSubmitServiceTimeoutError,
       normalizeTaskState,
       buildRunShared,
       buildOutputRow,
@@ -1185,6 +1305,7 @@
     if (phase === 'finalize_plan') return await runFinalizePlanPhase()
     if (phase === 'prepare_after_preview_downloads') return await runPrepareAfterPreviewDownloadsPhase()
     if (phase === 'process_row') return await runProcessRowPhase()
+    if (phase === 'recover_submit_task') return await runRecoverSubmitTaskPhase()
     if (phase === 'poll_job') return await runPollJobPhase()
     if (phase === 'finalize_video_download') return await runFinalizeVideoDownloadPhase()
     return fail(`未知 phase: ${phase}`)
