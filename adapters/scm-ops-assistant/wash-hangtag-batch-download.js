@@ -8,7 +8,8 @@
   const SCM_ENTRY_URL = 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index'
   const DOWNLOAD_RETRY_ATTEMPTS = 3
   const DOWNLOAD_RETRY_DELAY_MS = 1000
-  const DEFAULT_DELAY_MS = 700
+  const DEFAULT_QUERY_DELAY_MS = 700
+  const DEFAULT_DOWNLOAD_CONCURRENCY = 4
   const MAX_READ_ATTEMPTS = 24
 
   function compact(value) {
@@ -47,12 +48,6 @@
       else values.push(cleaned)
     }
     return uniqueValues(values)
-  }
-
-  function normalizePositiveInt(value, fallback, min, max) {
-    const number = Math.floor(Number(value))
-    if (!Number.isFinite(number)) return fallback
-    return Math.max(min, Math.min(max, number))
   }
 
   function textOf(value) {
@@ -458,7 +453,7 @@
         items,
         shared_key: options.shared_key || 'last_download_result',
         strict: false,
-        concurrency: normalizePositiveInt(options.concurrency, 4, 1, 8),
+        concurrency: DEFAULT_DOWNLOAD_CONCURRENCY,
         retry_attempts: DOWNLOAD_RETRY_ATTEMPTS,
         retry_delay_ms: DOWNLOAD_RETRY_DELAY_MS,
         next_phase: nextPhaseName,
@@ -515,9 +510,7 @@
     }
 
     if (phase === 'init') {
-      const allStyles = normalizeStyleCodes(params.style_codes)
-      const maxStyles = normalizePositiveInt(params.max_styles, 0, 0, 10000)
-      const styleCodes = maxStyles > 0 ? allStyles.slice(0, maxStyles) : allStyles
+      const styleCodes = normalizeStyleCodes(params.style_codes)
       if (!styleCodes.length) throw new Error('请至少输入一个款号')
       const packageRoot = buildPackageRoot(params.export_folder, params.package_name)
       return nextPhase('search_style', 0, buildRunShared(styleCodes, {
@@ -548,7 +541,6 @@
           'finalize_all',
           {
             shared_key: 'last_download_result',
-            concurrency: params.download_concurrency,
           },
           buildRunShared(styleCodes, {
             ...shared,
@@ -566,8 +558,7 @@
       const button = findSearchButton()
       if (!button) throw new Error('未找到 SCM 页面上的“搜索”按钮')
       clickLike(button)
-      const delayMs = normalizePositiveInt(params.request_delay_ms, DEFAULT_DELAY_MS, 200, 5000)
-      return nextPhase('read_style', delayMs, buildRunShared(styleCodes, {
+      return nextPhase('read_style', DEFAULT_QUERY_DELAY_MS, buildRunShared(styleCodes, {
         ...shared,
         current_style_code: styleCode,
         read_attempts: 0,

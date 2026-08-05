@@ -65,14 +65,14 @@ async function loadExports() {
   return exportsBox
 }
 
-async function runScript({ phase = 'main', params = {}, shared = {} } = {}) {
+async function runScript({ phase = 'main', params = {}, shared = {}, documentOverride = null, extraContext = {} } = {}) {
   const context = {
     window: {
       __CRAWSHRIMP_PARAMS__: params,
       __CRAWSHRIMP_PHASE__: phase,
       __CRAWSHRIMP_SHARED__: shared,
     },
-    document: {
+    document: documentOverride || {
       querySelectorAll() { return [] },
       querySelector() { return null },
     },
@@ -91,6 +91,7 @@ async function runScript({ phase = 'main', params = {}, shared = {} } = {}) {
     Map,
     URL,
     console,
+    ...extraContext,
   }
   context.globalThis = context
   return await vm.runInNewContext(SCRIPT_SOURCE, context, { filename: SCRIPT_PATH })
@@ -178,7 +179,7 @@ test('finalizes download rows with actual local paths and sizes', async () => {
   assert.equal(rows[1].备注, 'HTTP 403')
 })
 
-test('main phase initializes batch progress and package root', async () => {
+test('main phase initializes batch progress and package root without style limit', async () => {
   const result = await runScript({
     params: {
       style_codes: '208426103215\n208426103216',
@@ -191,7 +192,83 @@ test('main phase initializes batch progress and package root', async () => {
   assert.equal(result.success, true)
   assert.equal(result.meta.action, 'next_phase')
   assert.equal(result.meta.next_phase, 'search_style')
-  assert.deepEqual(plain(result.meta.shared.target_style_codes), ['208426103215'])
+  assert.deepEqual(plain(result.meta.shared.target_style_codes), ['208426103215', '208426103216'])
   assert.equal(result.meta.shared.package_root, '/tmp/scm-export/测试包')
   assert.equal(result.meta.shared.current_buyer_id, '208426103215')
+})
+
+test('retired runtime knobs keep internal defaults when old params remain', async () => {
+  const downloadResult = await runScript({
+    phase: 'search_style',
+    params: { download_concurrency: 8 },
+    shared: {
+      target_style_codes: ['208426103215'],
+      current_index: 1,
+      package_root: '/tmp/pkg',
+      planned_rows: [],
+      pending_download_items: [{ url: 'https://example.test/a.jpg', filename: 'a.jpg' }],
+    },
+  })
+  assert.equal(downloadResult.success, true)
+  assert.equal(downloadResult.meta.action, 'download_urls')
+  assert.equal(downloadResult.meta.concurrency, 4)
+
+  class FakeEvent {
+    constructor(type) {
+      this.type = type
+    }
+  }
+  class FakeHTMLInputElement {}
+  const input = {
+    type: 'text',
+    value: '',
+    dispatchEvent() {},
+  }
+  const visibleBox = {
+    getClientRects: () => [{}],
+    getBoundingClientRect: () => ({ width: 10, height: 10 }),
+  }
+  const field = {
+    ...visibleBox,
+    innerText: '款号',
+    querySelector: () => input,
+  }
+  const button = {
+    ...visibleBox,
+    innerText: '搜索',
+    disabled: false,
+    dispatchEvent() {},
+    scrollIntoView() {},
+    focus() {},
+    click() {},
+  }
+  const searchResult = await runScript({
+    phase: 'search_style',
+    params: { request_delay_ms: 5000 },
+    shared: {
+      target_style_codes: ['208426103215'],
+      current_index: 0,
+      package_root: '/tmp/pkg',
+      planned_rows: [],
+      pending_download_items: [],
+    },
+    documentOverride: {
+      querySelectorAll(selector) {
+        if (selector === 'label.q-field, .q-field') return [field]
+        if (selector === 'button') return [button]
+        return []
+      },
+      querySelector() { return null },
+    },
+    extraContext: {
+      HTMLInputElement: FakeHTMLInputElement,
+      Event: FakeEvent,
+      KeyboardEvent: FakeEvent,
+      MouseEvent: FakeEvent,
+    },
+  })
+  assert.equal(searchResult.success, true)
+  assert.equal(searchResult.meta.next_phase, 'read_style')
+  assert.equal(searchResult.meta.sleep_ms, 700)
+  assert.equal(input.value, '208426103215')
 })
