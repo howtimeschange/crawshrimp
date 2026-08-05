@@ -1075,6 +1075,7 @@ test('creator video task sends publish date filter and trusts API result rows', 
 
   const result = await runScript('creator-video-download.js', {
     href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    Date: fixedDateClass('2026-05-12T16:00:00.000Z'),
     params: {
       shop_regions: ['US'],
       publish_date_range: { start: '2026-05-05', end: '2026-05-07' },
