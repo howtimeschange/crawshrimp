@@ -94,6 +94,7 @@ _run_logs: dict = {}   # job_id -> list[str]
 _run_status: dict = {} # job_id -> {'status', 'run_id', 'records'}
 _run_controls: dict = {}  # job_id -> {'task', 'pause_requested', 'stop_requested', 'resume_event', ...}
 _task_locks: dict[str, asyncio.Lock] = {}
+_task_run_queues: dict[str, list[dict]] = {}
 
 ACTIVE_LIVE_STATUSES = {"running", "pausing", "paused", "stopping"}
 TMALL_OPS_ADAPTER_ID = "tmall-ops-assistant"
@@ -294,6 +295,53 @@ def _run_jids(adapter_id: str, task_id: str, instance_uid: str = "") -> list[str
     if instance_jid and instance_jid != task_jid:
         return [task_jid, instance_jid]
     return [task_jid]
+
+
+def _task_accepts_queued_runs(adapter_id: str, task_id: str, params: Optional[dict] = None) -> bool:
+    return (adapter_id, task_id) == (BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID)
+
+
+def _task_queue_snapshot(jid: str) -> list[dict]:
+    queued = _task_run_queues.get(jid) or []
+    return [
+        {
+            "request_id": str(item.get("request_id") or ""),
+            "adapter_id": str(item.get("adapter_id") or ""),
+            "task_id": str(item.get("task_id") or ""),
+            "instance_uid": str(item.get("instance_uid") or ""),
+            "status": "queued",
+            "position": index + 1,
+            "enqueued_at": str(item.get("enqueued_at") or ""),
+        }
+        for index, item in enumerate(queued)
+    ]
+
+
+def _enqueue_task_run(adapter_id: str, task_id: str, params: dict, runtime_options: dict) -> dict:
+    run_params = dict(params or {})
+    instance_uid = str(run_params.get("__task_instance_uid") or "").strip()
+    task_jid = _task_jid(adapter_id, task_id)
+    request_id = f"queued-{uuid4().hex}"
+    item = {
+        "request_id": request_id,
+        "adapter_id": adapter_id,
+        "task_id": task_id,
+        "instance_uid": instance_uid,
+        "params": run_params,
+        "runtime_options": dict(runtime_options or {}),
+        "enqueued_at": datetime.now().isoformat(),
+    }
+    queue = _task_run_queues.setdefault(task_jid, [])
+    queue.append(item)
+    return {
+        "ok": True,
+        "queued": True,
+        "status": "queued",
+        "message": "Task queued; it will start after the current run finishes",
+        "queued_request_id": request_id,
+        "queue_position": len(queue),
+        "queue": _task_queue_snapshot(task_jid),
+    }
 
 
 def _set_live_status(jids: list[str], status: dict) -> None:
@@ -2340,6 +2388,7 @@ def _semir_output_roots(runtime_dir: Path, exported_files: list, run_params: dic
 
 BALA_AI_VIDEO_ADAPTER_ID = "bala-ai-video-assistant"
 BALA_AI_FACE_BACKGROUND_TASK_ID = "bala_ai_face_background_generate"
+BALA_QN_VIDEO_TASK_ID = "qn_img2video_batch"
 BALA_SHORT_VIDEO_BATCH_UPLOAD_TASK_ID = "short_video_batch_upload"
 BALA_MODEL_LIBRARY_MANIFEST = "assets/model-library/manifest.json"
 BALA_VIDEO_TEMPLATE_DIR = Path.home() / "Downloads" / "巴拉AI视频模板库"
@@ -5555,6 +5604,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
     instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
     schedule_uid = str((params or {}).get("__task_schedule_uid") or "").strip()
+    queued_request_id = str((params or {}).get("__task_queue_request_id") or "").strip()
+    queued_enqueued_at = str((params or {}).get("__task_queue_enqueued_at") or "").strip()
     jid = _run_jid(adapter_id, task_id, instance_uid)
     live_jids = _run_jids(adapter_id, task_id, instance_uid)
     # 保留历史日志，新一轮运行用分隔线追加（不覆盖）
@@ -5576,6 +5627,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         'last_seen_at': datetime.now().isoformat(),
         'current_row': 0,
         'phase': '',
+        'queued_request_id': queued_request_id,
+        'queued_enqueued_at': queued_enqueued_at,
     })
 
     def log(msg: str):
@@ -5672,6 +5725,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'store': progress['store'],
             'current_source_filename': progress['current_source_filename'],
             'phase': progress['phase'],
+            'queued_request_id': queued_request_id,
+            'queued_enqueued_at': queued_enqueued_at,
             'completed': progress['completed'],
             'percent': progress['percent'],
             'progress_text': progress['progress_text'],
@@ -5826,6 +5881,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         'last_seen_at': datetime.now().isoformat(),
         'current_row': 0,
         'phase': 'starting',
+        'queued_request_id': queued_request_id,
+        'queued_enqueued_at': queued_enqueued_at,
     })
     runner = None
     data = []
@@ -6601,6 +6658,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 'last_seen_at': datetime.now().isoformat(),
                 'current_row': len(data),
                 'phase': 'error',
+                'queued_request_id': queued_request_id,
+                'queued_enqueued_at': queued_enqueued_at,
             })
             if schedule_uid:
                 _notify_task_schedule_result(
@@ -6630,6 +6689,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'last_seen_at': datetime.now().isoformat(),
             'current_row': len(data),
             'phase': 'done',
+            'queued_request_id': queued_request_id,
+            'queued_enqueued_at': queued_enqueued_at,
         }
         if approval_board_url:
             done_status['approval_board_url'] = approval_board_url
@@ -6720,6 +6781,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'last_seen_at': datetime.now().isoformat(),
             'current_row': len(data),
             'phase': 'stopped',
+            'queued_request_id': queued_request_id,
+            'queued_enqueued_at': queued_enqueued_at,
         }
         _set_live_status(live_jids, stopped_status)
         if instance_uid:
@@ -6777,6 +6840,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'last_seen_at': datetime.now().isoformat(),
             'current_row': len(data),
             'phase': 'stopped',
+            'queued_request_id': queued_request_id,
+            'queued_enqueued_at': queued_enqueued_at,
         }
         _set_live_status(live_jids, stopped_status)
         if instance_uid:
@@ -6817,6 +6882,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'last_seen_at': datetime.now().isoformat(),
             'current_row': 0,
             'phase': 'error',
+            'queued_request_id': queued_request_id,
+            'queued_enqueued_at': queued_enqueued_at,
         }
         _set_live_status(live_jids, error_status)
         if instance_uid:
@@ -10615,6 +10682,8 @@ async def _run_task_background(
     runtime_operation_token: str = "",
 ):
     instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
+    queued_request_id = str((params or {}).get("__task_queue_request_id") or "").strip()
+    queued_enqueued_at = str((params or {}).get("__task_queue_enqueued_at") or "").strip()
     jid = _run_jid(adapter_id, task_id, instance_uid)
     control_jids = _run_jids(adapter_id, task_id, instance_uid)
     lock = _task_lock(_task_jid(adapter_id, task_id))
@@ -10635,6 +10704,8 @@ async def _run_task_background(
                 'last_seen_at': datetime.now().isoformat(),
                 'current_row': int(live.get('current_row') or live.get('row_no') or 0),
                 'phase': live.get('phase') or 'error',
+                'queued_request_id': queued_request_id or live.get('queued_request_id') or '',
+                'queued_enqueued_at': queued_enqueued_at or live.get('queued_enqueued_at') or '',
             }
         _run_logs.setdefault(jid, []).append(f"[{adapter_id}/{task_id}] FATAL: {exc}")
         logger.exception("Background task crashed before cleanup: %s", jid)
@@ -10644,22 +10715,13 @@ async def _run_task_background(
                 _run_controls.pop(control_jid, None)
         if runtime_operation_token:
             runtime_install_guard.end_operation(runtime_operation_token)
+        _start_next_queued_task(_task_jid(adapter_id, task_id))
 
 
-async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] = None, runtime_options: Optional[dict] = None):
-    adapter_loader.scan_all()
-    m = adapter_loader.get_adapter(adapter_id)
-    if not m:
-        raise HTTPException(404, f"Adapter not found: {adapter_id}")
-    if not any(t.id == task_id for t in m.tasks):
-        raise HTTPException(404, f"Task not found: {task_id}")
-
+def _launch_task_run_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict) -> dict:
     run_params = dict(params or {})
     instance_uid = str(run_params.get("__task_instance_uid") or "").strip()
     control_jids = _run_jids(adapter_id, task_id, instance_uid)
-    if any(_task_is_active(control_jid) for control_jid in control_jids):
-        raise HTTPException(409, "任务正在运行中，请先暂停/继续/停止当前任务")
-
     run_control = _build_run_control()
     run_control["adapter_id"] = adapter_id
     run_control["task_id"] = task_id
@@ -10689,6 +10751,66 @@ async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] 
     for control_jid in control_jids:
         _run_controls[control_jid] = run_control
     return {"ok": True, "message": "Task started in background"}
+
+
+def _start_next_queued_task(task_jid: str) -> bool:
+    queue = _task_run_queues.get(task_jid) or []
+    if not queue:
+        _task_run_queues.pop(task_jid, None)
+        return False
+    if _task_is_active(task_jid):
+        return False
+
+    item = queue.pop(0)
+    if not queue:
+        _task_run_queues.pop(task_jid, None)
+
+    run_params = dict(item.get("params") or {})
+    request_id = str(item.get("request_id") or "").strip()
+    if request_id:
+        run_params["__task_queue_request_id"] = request_id
+    enqueued_at = str(item.get("enqueued_at") or "").strip()
+    if enqueued_at:
+        run_params["__task_queue_enqueued_at"] = enqueued_at
+    try:
+        _launch_task_run_background(
+            str(item.get("adapter_id") or ""),
+            str(item.get("task_id") or ""),
+            run_params,
+            dict(item.get("runtime_options") or {}),
+        )
+        return True
+    except Exception as exc:
+        logger.exception("Failed to start queued task %s: %s", request_id or task_jid, exc)
+        _run_logs.setdefault(task_jid, []).append(f"[queue] 排队任务启动失败: {exc}")
+        _start_next_queued_task(task_jid)
+        return False
+
+
+async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] = None, runtime_options: Optional[dict] = None):
+    adapter_loader.scan_all()
+    m = adapter_loader.get_adapter(adapter_id)
+    if not m:
+        raise HTTPException(404, f"Adapter not found: {adapter_id}")
+    if not any(t.id == task_id for t in m.tasks):
+        raise HTTPException(404, f"Task not found: {task_id}")
+
+    run_params = dict(params or {})
+    instance_uid = str(run_params.get("__task_instance_uid") or "").strip()
+    control_jids = _run_jids(adapter_id, task_id, instance_uid)
+    accepts_queue = _task_accepts_queued_runs(adapter_id, task_id, run_params)
+    task_jid = _task_jid(adapter_id, task_id)
+    has_active_run = any(_task_is_active(control_jid) for control_jid in control_jids)
+    has_queued_runs = bool(_task_run_queues.get(task_jid))
+    if has_active_run or (accepts_queue and has_queued_runs):
+        if accepts_queue:
+            queued = _enqueue_task_run(adapter_id, task_id, run_params, runtime_options or {})
+            if not has_active_run:
+                _start_next_queued_task(task_jid)
+            return queued
+        raise HTTPException(409, "任务正在运行中，请先暂停/继续/停止当前任务")
+
+    return _launch_task_run_background(adapter_id, task_id, run_params, runtime_options or {})
 
 
 @app.post("/tasks/{adapter_id}/{task_id}/run")
@@ -10825,7 +10947,7 @@ def task_status(adapter_id: str, task_id: str):
     jid = _task_jid(adapter_id, task_id)
     live = _run_status.get(jid)
     last = data_sink.get_latest_run(adapter_id, task_id)
-    return {"live": live, "last_run": last}
+    return {"live": live, "last_run": last, "queue": _task_queue_snapshot(jid)}
 
 
 @app.get("/task-instances/{instance_uid}/run-status")
@@ -10834,7 +10956,12 @@ def task_instance_run_status(instance_uid: str):
     jid = _instance_jid(instance_uid)
     live = _run_status.get(jid)
     last = _latest_instance_run(instance_uid)
-    return {"live": live, "last_run": last}
+    queue = []
+    for task_jid in list(_task_run_queues.keys()):
+        for item in _task_queue_snapshot(task_jid):
+            if str(item.get("instance_uid") or "") == instance_uid:
+                queue.append(item)
+    return {"live": live, "last_run": last, "queue": queue}
 
 
 @app.get("/tasks/{adapter_id}/{task_id}/logs")

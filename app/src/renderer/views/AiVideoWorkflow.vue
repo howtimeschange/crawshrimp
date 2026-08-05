@@ -832,8 +832,8 @@
             <div class="aiv-video-toolbar-actions">
               <button type="button" class="aiv-primary" @click="openVideoTaskDialog()">新增视频任务</button>
               <button type="button" class="aiv-ghost" @click="activeStep = 'results'">查看结果</button>
-              <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !selectedVisibleVideoTasks.length" @click="runSelectedVideoTasks('plan')">批量预检{{ selectedVisibleVideoTasks.length ? ` (${selectedVisibleVideoTasks.length})` : '' }}</button>
-              <button type="button" class="aiv-primary small" :disabled="videoIsRunning || !selectedVisibleVideoTasks.length" @click="runSelectedVideoTasks('live')">批量提交{{ selectedVisibleVideoTasks.length ? ` (${selectedVisibleVideoTasks.length})` : '' }}</button>
+              <button type="button" class="aiv-ghost small" :disabled="!selectedVisibleVideoTasks.length" @click="runSelectedVideoTasks('plan')">批量预检{{ selectedVisibleVideoTasks.length ? ` (${selectedVisibleVideoTasks.length})` : '' }}</button>
+              <button type="button" class="aiv-primary small" :disabled="!selectedVisibleVideoTasks.length" @click="runSelectedVideoTasks('live')">批量提交{{ selectedVisibleVideoTasks.length ? ` (${selectedVisibleVideoTasks.length})` : '' }}</button>
               <button type="button" class="aiv-ghost small" :disabled="!videoResults.length" @click="downloadCompletedVideoResults">只下载已完成视频</button>
             </div>
           </header>
@@ -940,7 +940,7 @@
               <span>展示下载后的本地 MP4、任务状态和批量进度</span>
             </div>
             <div class="aiv-inline-actions">
-              <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !hasRefreshableVideoTask" @click="refreshVideoResults">刷新状态</button>
+              <button type="button" class="aiv-ghost small" :disabled="!hasRefreshableVideoTask" @click="refreshVideoResults">刷新状态</button>
               <button type="button" class="aiv-ghost small" :disabled="!clearableVideoResults.length" @click="requestClearVideoHistory">清理历史</button>
               <button type="button" class="aiv-ghost small" :disabled="!videoOutputDir" @click="openOutputDir">打开输出目录</button>
             </div>
@@ -2719,6 +2719,7 @@ function persistedVideoTask(task = {}) {
     status: migrateBalaBusinessManagerText(task.status),
     providerTaskId: String(task.providerTaskId || ''),
     runId: String(task.runId || ''),
+    queuedRequestId: String(task.queuedRequestId || ''),
     assets: (task.assets || []).map(persistedVideoAsset),
     duration: Number(task.duration ?? gen.duration ?? 5),
     resolution: String(task.resolution || gen.resolution || ''),
@@ -2737,6 +2738,7 @@ function persistedVideoTask(task = {}) {
 }
 
 function persistedVideoResult(item = {}) {
+  const queuedRequestId = String(item.queuedRequestId || '')
   return {
     id: String(item.id || ''),
     taskRefId: String(item.taskRefId || ''),
@@ -2744,8 +2746,9 @@ function persistedVideoResult(item = {}) {
     template: migrateBalaBusinessManagerText(item.template),
     provider: migrateBalaBusinessManagerText(item.provider),
     providerKey: normalizeBalaVideoTaskProvider(item.providerKey || item.provider),
-    providerTaskId: String(item.providerTaskId || item.taskId || ''),
+    providerTaskId: queuedRequestId ? String(item.providerTaskId || '') : String(item.providerTaskId || item.taskId || ''),
     taskId: String(item.taskId || item.providerTaskId || ''),
+    queuedRequestId,
     providerStatus: migrateBalaBusinessManagerText(item.providerStatus),
     status: migrateBalaBusinessManagerText(item.status),
     progress: Number(item.progress || 0),
@@ -3149,10 +3152,9 @@ function videoTaskParamSummary(task = {}) {
   parts.push(`水印${gen.watermark ? '开' : '关'}`)
   return parts.filter(Boolean).join(' · ')
 }
-const hasRefreshableVideoTask = computed(() => videoTasks.some(task => String(task.providerTaskId || task.runId || '').trim()))
+const hasRefreshableVideoTask = computed(() => videoTasks.some(task => String(task.providerTaskId || task.runId || task.queuedRequestId || '').trim()))
 const materialIsRunning = computed(() => isActiveWorkflowStatus(materialTask.status))
 const aiIsRunning = computed(() => isActiveWorkflowStatus(aiTaskState.status))
-const videoIsRunning = computed(() => isActiveWorkflowStatus(videoStageState.status))
 function isVideoTaskBusy(task = {}) {
   return videoTaskBusyIds.has(String(task?.id || ''))
 }
@@ -6081,6 +6083,34 @@ function extractLiveVideoProgress(payload = {}) {
   return normalized <= 100 ? Math.round(normalized) : null
 }
 
+function qnQueuedRequestIdForTask(task = {}) {
+  const result = videoResultForTask(task)
+  return String(task?.queuedRequestId || result?.queuedRequestId || '').trim()
+}
+
+function qnQueuedItemForTask(status = {}, task = {}) {
+  const requestId = qnQueuedRequestIdForTask(task)
+  if (!requestId) return null
+  return (status?.queue || []).find(item => String(item?.request_id || '').trim() === requestId) || null
+}
+
+function qnLiveRunForQueuedTask(status = {}, task = {}) {
+  const requestId = qnQueuedRequestIdForTask(task)
+  const live = status?.live
+  if (!requestId || !live) return null
+  return String(live?.queued_request_id || '').trim() === requestId ? live : null
+}
+
+function qnWorkflowDisplayStatus(normalized = '') {
+  if (normalized === 'queued') return '排队中'
+  if (normalized === 'running') return '生成中'
+  return '已提交'
+}
+
+function qnRunIdFromSnapshot(snapshot = {}) {
+  return String(snapshot?.run_id || snapshot?.id || '').trim()
+}
+
 function workflowRunProgress(snapshot = {}) {
   const total = Number(snapshot?.total_rows || snapshot?.total || 0)
   const current = Number(snapshot?.current_row_no || snapshot?.current || 0)
@@ -6152,21 +6182,150 @@ async function refreshProviderVideoResult(item, { download = false } = {}) {
   return { result, item: next }
 }
 
+function qnVideoHistoryResultMatchesTask(item = {}, task = {}) {
+  const taskStyle = String(task?.styleCode || '').trim()
+  const rawStyle = String(item?.raw?.款号 || item?.raw?.style_code || item?.raw?.styleCode || '').trim()
+  if (taskStyle && rawStyle) return rawStyle === taskStyle
+  const rawTaskId = String(item?.raw?.提交任务ID || item?.raw?.视频任务ID || item?.raw?.任务ID || item?.taskId || '').trim()
+  const knownIds = new Set([task?.providerTaskId, task?.runId, task?.queuedRequestId]
+    .map(value => String(value || '').trim())
+    .filter(Boolean))
+  return Boolean(rawTaskId && knownIds.has(rawTaskId))
+}
+
+async function restoreQnVideoTaskFromRunHistory(task, preferredRunId = '') {
+  const data = await window.cs.getData(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID)
+  const runs = Array.isArray(data?.runs) ? data.runs : []
+  const target = String(preferredRunId || '').trim()
+  const orderedRuns = target
+    ? [
+      ...runs.filter(run => qnRunIdFromSnapshot(run) === target),
+      ...runs.filter(run => qnRunIdFromSnapshot(run) !== target),
+    ]
+    : runs
+  for (const run of orderedRuns.slice(0, 5)) {
+    const runId = qnRunIdFromSnapshot(run) || target
+    const outputFiles = parseRunOutputFiles(run?.output_files)
+    if (!outputFiles.length) continue
+    const rows = collectVideoResultRows({ rows: await readVideoRowsFromOutputFiles(outputFiles) })
+    const normalized = normalizeBalaVideoResultRows(rows, {
+      ...task,
+      providerLabel: providerLabel(task.provider),
+    })
+    if (!normalized.length) continue
+    const exactRun = Boolean(target && runId === target)
+    const scopedRows = exactRun ? normalized : normalized.filter(item => qnVideoHistoryResultMatchesTask(item, task))
+    if (!scopedRows.length) continue
+    upsertVideoResults(scopedRows.map(item => ({
+      ...item,
+      id: `${task.id}-${item.id}`,
+      taskRefId: task.id,
+      provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: runId || task.providerTaskId || '',
+    })))
+    const rowFailure = qnVideoResultFailure(scopedRows)
+    task.status = rowFailure ? '失败' : (scopedRows.some(item => item.status === '已完成') ? '已完成' : '生成中')
+    if (rowFailure) throw new Error(rowFailure)
+    return { restored: true, run, runId, rows: scopedRows }
+  }
+  const matchedRun = target ? runs.find(run => qnRunIdFromSnapshot(run) === target) : null
+  return matchedRun ? { restored: false, run: matchedRun, runId: qnRunIdFromSnapshot(matchedRun) || target, rows: [] } : null
+}
+
 async function refreshQnVideoTask(task) {
-  const runId = String(task?.runId || task?.providerTaskId || '').trim()
-  if (!runId) throw new Error(`${task?.styleCode || '生意管家'} 缺少运行 ID`)
+  let runId = String(task?.runId || task?.providerTaskId || '').trim()
+  const queuedRequestId = qnQueuedRequestIdForTask(task)
+  if (!runId && !queuedRequestId) throw new Error(`${task?.styleCode || '生意管家'} 缺少运行 ID`)
   const status = await window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID)
+  const queuedLive = qnLiveRunForQueuedTask(status, task)
+  if (queuedLive) {
+    const liveRunId = String(queuedLive.run_id || '').trim()
+    if (liveRunId) {
+      runId = liveRunId
+      task.runId = liveRunId
+      task.providerTaskId = liveRunId
+      task.queuedRequestId = ''
+    } else {
+      task.status = qnWorkflowDisplayStatus(normalizeWorkflowStageStatus(queuedLive.status))
+      upsertVideoResults([{
+        id: task.id,
+        taskRefId: task.id,
+        styleCode: task.styleCode,
+        template: task.template?.title || '不选模板',
+        provider: providerLabel(task.provider),
+        providerKey: task.provider,
+        providerTaskId: '',
+        taskId: queuedRequestId,
+        queuedRequestId,
+        providerStatus: normalizeWorkflowStageStatus(queuedLive.status),
+        status: task.status,
+        progress: 0,
+        progressSource: '',
+        path: '',
+        error: '',
+      }])
+      return
+    }
+  } else if (!runId && qnQueuedItemForTask(status, task)) {
+    task.status = '排队中'
+    upsertVideoResults([{
+      id: task.id,
+      taskRefId: task.id,
+      styleCode: task.styleCode,
+      template: task.template?.title || '不选模板',
+      provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: '',
+      taskId: queuedRequestId,
+      queuedRequestId,
+      providerStatus: 'queued',
+      status: '排队中',
+      progress: 0,
+      progressSource: '',
+      path: '',
+      error: '',
+    }])
+    return
+  }
   const snapshot = [status?.live, status?.last_run].find(candidate => (
-    String(candidate?.run_id || candidate?.id || '').trim() === runId
+    qnRunIdFromSnapshot(candidate) === runId
   ))
-  if (!snapshot) throw new Error(`${task.styleCode} 未找到对应的生意管家运行记录`)
+  if (!snapshot) {
+    const restored = await restoreQnVideoTaskFromRunHistory(task, runId)
+    if (restored?.restored) return
+    const historyStatus = normalizeWorkflowStageStatus(restored?.run?.status)
+    const historyProgress = workflowRunProgress(restored?.run || {})
+    const existing = videoResultForTask(task)
+    const terminalFailure = qnTerminalRunFailure(restored?.run || {})
+    task.status = terminalFailure ? '失败' : (historyStatus === 'running' ? '生成中' : '等待同步')
+    upsertVideoResults([{
+      id: task.id,
+      taskRefId: task.id,
+      styleCode: task.styleCode,
+      template: task.template?.title || '不选模板',
+      provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: runId,
+      taskId: runId,
+      queuedRequestId: '',
+      providerStatus: historyStatus === 'idle' ? 'waiting_sync' : historyStatus,
+      status: task.status,
+      progress: terminalFailure ? 100 : (historyProgress ?? Number(existing?.progress || 0)),
+      progressSource: historyProgress === null ? (existing?.progressSource || '') : 'workflow-history',
+      path: existing?.path || '',
+      videoUrl: existing?.videoUrl || '',
+      error: terminalFailure,
+    }])
+    return
+  }
   const normalized = normalizeWorkflowStageStatus(snapshot.status)
   if (['done', 'failed', 'stopped', 'partial'].includes(normalized)) {
     await finalizeQnVideoTask(task, runId, 'live', snapshot)
     task.status = normalized === 'done' ? '已完成' : '失败'
     return
   }
-  task.status = normalized === 'running' ? '生成中' : '已提交'
+  task.status = qnWorkflowDisplayStatus(normalized)
   const liveProgress = normalized === 'running' ? workflowRunProgress(snapshot) : null
   upsertVideoResults([{
     id: task.id,
@@ -6177,8 +6336,9 @@ async function refreshQnVideoTask(task) {
     providerKey: task.provider,
     providerTaskId: runId,
     taskId: runId,
+    queuedRequestId: '',
     providerStatus: normalized,
-    status: normalized === 'running' ? '生成中' : '已提交',
+    status: qnWorkflowDisplayStatus(normalized),
     progress: liveProgress ?? 0,
     progressSource: liveProgress === null ? '' : 'workflow',
     path: '',
@@ -6192,7 +6352,7 @@ function resetVideoResultPoll() {
 }
 
 function videoTaskNeedsResultPoll(task = {}) {
-  if (!String(task?.providerTaskId || task?.runId || '').trim()) return false
+  if (!String(task?.providerTaskId || task?.runId || task?.queuedRequestId || '').trim()) return false
   if (task.provider === 'qn') return !['已完成', '失败'].includes(String(task.status || '').trim())
   const providerStatus = String(task?.providerStatus || '').trim().toLowerCase()
   return !['succeeded', 'failed', 'error', 'canceled', 'cancelled', 'unknown'].includes(providerStatus)
@@ -6213,7 +6373,7 @@ function scheduleVideoResultPoll() {
 
 async function refreshVideoResults({ silent = false } = {}) {
   if (!silent) activeStep.value = 'results'
-  const refreshable = videoTasks.filter(task => String(task.providerTaskId || task.runId || '').trim())
+  const refreshable = videoTasks.filter(task => String(task.providerTaskId || task.runId || task.queuedRequestId || '').trim())
   if (!refreshable.length) {
     if (!silent) {
       videoStageState.status = 'failed'
@@ -6312,9 +6472,9 @@ function buildQnVideoTaskParams(task, mode = 'plan') {
     download_template_previews: Boolean(task.template),
     download_videos: mode === 'live',
     poll_timeout_minutes: 20,
-    poll_interval_seconds: 20,
+    poll_interval_seconds: 5,
     submit_delay_ms: 1200,
-    download_concurrency: 1,
+    download_concurrency: 2,
   }
 }
 
@@ -6342,6 +6502,7 @@ async function readVideoRowsFromOutputFiles(files = []) {
 }
 
 async function finalizeQnVideoTask(task, runId = '', mode = 'plan', terminalSnapshot = null) {
+  task.queuedRequestId = ''
   const terminalFailure = qnTerminalRunFailure(terminalSnapshot)
   if (terminalFailure) {
     task.status = '失败'
@@ -6662,10 +6823,41 @@ async function runVideoTaskInternal(task, mode = 'plan') {
       ).trim()
       const result = await window.cs.runTask(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID, params, {})
       if (!result?.ok) throw new Error(result?.message || result?.error || '视频任务启动失败')
+      const queuedRequestId = String(result.queued_request_id || result.queue_request_id || '').trim()
+      if (result.queued && queuedRequestId) {
+        task.queuedRequestId = queuedRequestId
+        task.runId = ''
+        task.providerTaskId = ''
+        task.status = '排队中'
+        upsertVideoResults([{
+          id: task.id,
+          taskRefId: task.id,
+          styleCode: task.styleCode,
+          template: task.template?.title || '不选模板',
+          provider: providerLabel(task.provider),
+          providerKey: task.provider,
+          providerTaskId: '',
+          taskId: queuedRequestId,
+          queuedRequestId,
+          providerStatus: 'queued',
+          status: '排队中',
+          progress: 0,
+          progressSource: '',
+          path: '',
+          error: '',
+        }])
+        activeStep.value = 'results'
+        videoStageState.status = 'queued'
+        videoStageState.progress = 0
+        videoStageState.message = `${task.styleCode} 已加入视频生成队列，前面任务完成后会自动提交。`
+        scheduleVideoResultPoll()
+        return
+      }
       const launch = await waitForQnVideoRunStart(previousRunId)
       const runId = launch.runId
       task.runId = runId
       task.providerTaskId = runId
+      task.queuedRequestId = ''
       if (launch.status === 'failed') {
         throw new Error(launch.snapshot?.error || '生意管家视频任务未成功启动，请重试。')
       }
@@ -6682,6 +6874,7 @@ async function runVideoTaskInternal(task, mode = 'plan') {
           providerKey: task.provider,
           providerTaskId: runId,
           taskId: runId,
+          queuedRequestId: '',
           providerStatus: launchStatus,
           status: task.status,
           progress: liveProgress ?? 0,
@@ -6757,6 +6950,7 @@ async function rerunVideoTask(task = {}, mode = 'live') {
   task.status = '待预检'
   task.providerTaskId = ''
   task.runId = ''
+  task.queuedRequestId = ''
   await runVideoTask(task, mode)
 }
 
@@ -7396,6 +7590,7 @@ function createVideoTaskFromDraft() {
     status: '待预检',
     providerTaskId: '',
     runId: '',
+    queuedRequestId: '',
     assets: assets.map(asset => ({ ...asset })),
     duration: gen.duration ?? videoTaskDraft.duration,
     resolution: gen.resolution || videoTaskDraft.resolution,
@@ -7561,7 +7756,7 @@ function canRefreshVideoResult(item) {
   const stage = videoResultStage(item).id
   if (!['submitted', 'queued', 'generating'].includes(stage)) return false
   const task = videoTaskForResult(item)
-  const providerTaskId = String(task?.providerTaskId || task?.runId || item?.providerTaskId || '').trim()
+  const providerTaskId = String(task?.providerTaskId || task?.runId || task?.queuedRequestId || item?.providerTaskId || item?.queuedRequestId || '').trim()
   return Boolean(task && providerTaskId)
 }
 

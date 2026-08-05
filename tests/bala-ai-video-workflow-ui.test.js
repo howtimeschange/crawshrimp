@@ -612,6 +612,7 @@ test('AI video workflow rebases runtime Excel paths into the selected workspace 
 
 test('AI video workflow status normalization maps runtime states to UI stages', () => {
   assert.equal(normalizeWorkflowStageStatus('running'), 'running')
+  assert.equal(normalizeWorkflowStageStatus('queued'), 'queued')
   assert.equal(normalizeWorkflowStageStatus('done'), 'done')
   assert.equal(normalizeWorkflowStageStatus('partial_failed'), 'partial')
   assert.equal(normalizeWorkflowStageStatus('error'), 'failed')
@@ -1217,6 +1218,8 @@ test('AI video workflow only downloads software-manager previews when a template
 
   assert.match(builder, /download_template_previews:\s*Boolean\(task\.template\)/)
   assert.match(builder, /ratio:\s*'3:4'/)
+  assert.match(builder, /poll_interval_seconds:\s*5/)
+  assert.match(builder, /download_concurrency:\s*2/)
 })
 
 test('legacy provider wording is migrated when persisted video tasks and results are restored', () => {
@@ -1845,6 +1848,7 @@ test('a submitted video task cannot be reset by preflight or create a duplicate 
   assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ status: '待预检' }), true)
   assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'plan-run', status: '预检完成，等待授权生成' }), true)
   assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'failed-run', status: '失败' }), true)
+  assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: '', status: '排队中' }), false)
   assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'live-run', status: '已提交 / 查看结果' }), false)
   assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'provider-task', status: '已下载' }), false)
   assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '已生成' }), false)
@@ -1856,6 +1860,32 @@ test('a submitted video task cannot be reset by preflight or create a duplicate 
     source,
     /async function runVideoTask\(task, mode = 'plan'\) \{\s*if \(!isVideoTaskSubmittable\(task\)\)[\s\S]*?不能重复提交[\s\S]*?return/,
   )
+})
+
+test('AI video workflow keeps business-manager video queue tickets separate from run ids', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const toolbar = source.slice(
+    source.indexOf('class="aiv-video-toolbar-actions"'),
+    source.indexOf('<div class="aiv-video-task-filterbar">'),
+  )
+
+  assert.doesNotMatch(toolbar, /videoIsRunning/)
+  assert.match(source, /queuedRequestId/)
+  assert.match(source, /task\.queuedRequestId = queuedRequestId/)
+  assert.match(source, /task\.queuedRequestId = ''/)
+  assert.match(source, /providerTaskId: queuedRequestId \? String\(item\.providerTaskId \|\| ''\)/)
+})
+
+test('business-manager refresh restores video results from run history before showing sync pending', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const start = source.indexOf('async function refreshQnVideoTask')
+  const end = source.indexOf('function resetVideoResultPoll', start)
+  const refreshSource = source.slice(start, end)
+
+  assert.match(source, /async function restoreQnVideoTaskFromRunHistory/)
+  assert.match(refreshSource, /restoreQnVideoTaskFromRunHistory\(task, runId\)/)
+  assert.match(refreshSource, /task\.status = terminalFailure \? '失败' : \(historyStatus === 'running' \? '生成中' : '等待同步'\)/)
+  assert.doesNotMatch(refreshSource, /if \(!snapshot\) throw new Error/)
 })
 
 test('new video task uses a tiled style library, selectable assets, and no split mode', () => {

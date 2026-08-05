@@ -660,6 +660,151 @@
     return taskIdsFromText(parts.join('\n'))
   }
 
+  function usableVideoUrl(value) {
+    const raw = cleanText(value)
+    if (!raw || /^blob:/i.test(raw)) return ''
+    if (/^data:video\//i.test(raw)) return raw
+    const url = normalizeRemoteUrl(raw)
+    if (!url) return ''
+    if (/\.(?:mp4|m4v|mov|webm)(?:[?#]|$)/i.test(url)) return url
+    if (/\.(?:png|jpe?g|webp|gif|svg)(?:[?#]|$)/i.test(url)) return ''
+    return /(?:video|media|play|download|vod|m3u8|alicdn|tbcdn|taobao)/i.test(url) ? url : ''
+  }
+
+  function elementText(element) {
+    return cleanText(element?.innerText || element?.textContent || '')
+  }
+
+  function elementAttribute(element, name) {
+    try {
+      if (typeof element?.getAttribute === 'function') return cleanText(element.getAttribute(name))
+    } catch {
+      // Ignore detached or framework-owned nodes that reject attribute reads.
+    }
+    return cleanText(element?.[name])
+  }
+
+  function videoUrlFromElement(element) {
+    const tag = cleanText(element?.tagName).toLowerCase()
+    const candidates = []
+    if (tag === 'video') {
+      candidates.push(element?.currentSrc, element?.src, elementAttribute(element, 'src'))
+      try {
+        candidates.push(element?.querySelector?.('source')?.src)
+        candidates.push(element?.querySelector?.('source')?.getAttribute?.('src'))
+      } catch {
+        // Best-effort DOM fallback only.
+      }
+    } else if (tag === 'source') {
+      candidates.push(element?.src, elementAttribute(element, 'src'))
+    } else if (tag === 'a') {
+      candidates.push(element?.href, elementAttribute(element, 'href'))
+    }
+    for (const name of [
+      'data-video-url',
+      'data-video-src',
+      'data-play-url',
+      'data-download-url',
+      'data-url',
+      'data-src',
+      'href',
+      'src',
+    ]) {
+      candidates.push(elementAttribute(element, name))
+    }
+    const dataset = element?.dataset || {}
+    for (const [key, value] of Object.entries(dataset)) {
+      if (/video|play|download|url|src/i.test(key)) candidates.push(value)
+    }
+    for (const value of candidates) {
+      const url = usableVideoUrl(value)
+      if (url) return url
+    }
+    return ''
+  }
+
+  function descendantsForVideoSearch(element) {
+    const selector = [
+      'video',
+      'source',
+      'a[href]',
+      '[data-video-url]',
+      '[data-video-src]',
+      '[data-play-url]',
+      '[data-download-url]',
+      '[data-url]',
+      '[data-src]',
+    ].join(',')
+    try {
+      return [element, ...Array.from(element?.querySelectorAll?.(selector) || [])].filter(Boolean)
+    } catch {
+      return [element].filter(Boolean)
+    }
+  }
+
+  function firstVideoUrlInElement(element) {
+    const seen = new Set()
+    for (const node of descendantsForVideoSearch(element)) {
+      const url = videoUrlFromElement(node)
+      if (!url || seen.has(url)) continue
+      return url
+    }
+    return ''
+  }
+
+  function taskCandidateElements(taskId) {
+    const id = cleanText(taskId)
+    const doc = window.document
+    if (!id || !doc) return []
+    const elements = []
+    try {
+      elements.push(...Array.from(doc.querySelectorAll?.('*') || []))
+    } catch {
+      // Some SPA roots can reject broad queries while mounting.
+    }
+    if (doc.body) elements.push(doc.body)
+    const seen = new Set()
+    const candidates = []
+    const add = (element) => {
+      if (!element || seen.has(element)) return
+      seen.add(element)
+      candidates.push(element)
+    }
+    for (const element of elements) {
+      if (!elementText(element).includes(id)) continue
+      let current = element
+      for (let depth = 0; current && depth < 6; depth += 1) {
+        add(current)
+        current = current.parentElement || current.parentNode
+      }
+    }
+    return candidates.sort((a, b) => elementText(a).length - elementText(b).length)
+  }
+
+  function visibleTaskStateFromPage(taskId) {
+    const id = cleanText(taskId)
+    if (!id) return null
+    for (const element of taskCandidateElements(id)) {
+      const videoUrl = firstVideoUrlInElement(element)
+      if (!videoUrl) continue
+      return {
+        task: { id, status: 1 },
+        status: 1,
+        statusText: '页面已生成',
+        parsedResult: {},
+        videoUrl,
+        coverUrl: '',
+        contentId: '',
+        fileId: '',
+        errorNotice: '',
+        done: true,
+        failed: false,
+        source: 'page',
+      }
+    }
+    return null
+  }
+
   function findNewTaskId(beforeIds = [], afterIds = collectVisibleTaskIds()) {
     const before = new Set((beforeIds || []).map(cleanText).filter(Boolean))
     return (afterIds || []).map(cleanText).find(id => id && !before.has(id)) || ''
@@ -1165,7 +1310,20 @@
     const startedAt = Number(shared.active_poll_started_at || Date.now())
     try {
       const payload = await callMtop('mtop.taobao.qn.copilot.quick.task.get', { id: activeJob.taskId })
-      const state = normalizeTaskState(payload)
+      const polledState = normalizeTaskState(payload)
+      const pageState = !polledState.videoUrl ? visibleTaskStateFromPage(activeJob.taskId) : null
+      const state = pageState?.done ? {
+        ...polledState,
+        ...pageState,
+        status: pageState.status ?? polledState.status,
+        statusText: pageState.statusText || polledState.statusText,
+        videoUrl: pageState.videoUrl || polledState.videoUrl,
+        coverUrl: pageState.coverUrl || polledState.coverUrl,
+        contentId: pageState.contentId || polledState.contentId,
+        fileId: pageState.fileId || polledState.fileId,
+        done: true,
+        failed: false,
+      } : polledState
       if (state.done) {
         const completedJob = {
           ...activeJob,
@@ -1180,6 +1338,7 @@
               active_job: completedJob,
               active_poll_attempts: attempts,
               last_task_payload: payload,
+              last_visible_task_state: pageState,
             },
             {
               sharedKey: 'last_download_result',
@@ -1201,8 +1360,36 @@
         ...shared,
         active_poll_attempts: attempts,
         last_task_payload: payload,
+        last_visible_task_state: pageState,
       })
     } catch (error) {
+      const pageState = visibleTaskStateFromPage(activeJob.taskId)
+      if (pageState?.done) {
+        const completedJob = {
+          ...activeJob,
+          taskState: pageState,
+        }
+        if (shared.download_videos && pageState.videoUrl) {
+          return downloadUrls(
+            [videoDownloadItem(completedJob, pageState)],
+            'finalize_video_download',
+            {
+              ...shared,
+              active_job: completedJob,
+              active_poll_attempts: attempts,
+              last_visible_task_state: pageState,
+              last_poll_error: error?.message || String(error),
+            },
+            {
+              sharedKey: 'last_download_result',
+              concurrency: shared.download_concurrency || 1,
+              timeoutSeconds: 300,
+              retryAttempts: 5,
+            },
+          )
+        }
+        return nextPhase('process_row', shared.submit_delay_ms || 0, finishActiveJob(completedJob, pageState, '已生成', '成功'))
+      }
       if (Date.now() - startedAt >= Number(shared.poll_timeout_ms || 0)) {
         const state = { status: '', statusText: '轮询失败', videoUrl: '', coverUrl: '', contentId: '' }
         return nextPhase('process_row', shared.submit_delay_ms || 0, finishActiveJob(activeJob, state, '轮询失败', '失败', error?.message || error))
@@ -1284,6 +1471,8 @@
       extractSubmitTaskId,
       taskIdsFromText,
       collectVisibleTaskIds,
+      usableVideoUrl,
+      visibleTaskStateFromPage,
       findNewTaskId,
       isSubmitServiceTimeoutError,
       normalizeTaskState,

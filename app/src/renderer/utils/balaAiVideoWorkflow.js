@@ -844,7 +844,8 @@ export function summarizeBalaMaterialGroups(groups = []) {
 
 export function normalizeWorkflowStageStatus(value = '') {
   const status = String(value || '').trim().toLowerCase()
-  if (['queued', 'running', 'pausing', 'paused', 'stopping'].includes(status)) return 'running'
+  if (['queued', 'pending', 'waiting'].includes(status)) return 'queued'
+  if (['running', 'pausing', 'paused', 'stopping'].includes(status)) return 'running'
   if (['done', 'completed', 'success'].includes(status)) return 'done'
   if (['partial', 'partial_failed'].includes(status)) return 'partial'
   if (['error', 'failed', 'failure'].includes(status)) return 'failed'
@@ -873,8 +874,9 @@ export function isActiveWorkflowStatus(value = '') {
 
 export function shouldCreateBalaVideoProviderRun(task = {}) {
   const providerTaskId = String(task?.providerTaskId || task?.runId || '').trim()
-  if (!providerTaskId) return true
   const status = String(task?.status || '').trim().toLowerCase()
+  if (/排队|队列|生成中|运行中|预检中|已提交|queued|running|submitted/.test(status)) return false
+  if (!providerTaskId) return true
   return /失败|错误|failed|error/.test(status) || /待预检|预检完成/.test(status)
 }
 

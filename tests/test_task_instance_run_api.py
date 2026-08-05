@@ -20,6 +20,10 @@ class TaskInstanceRunApiTests(unittest.IsolatedAsyncioTestCase):
         api_server._run_status.clear()
         api_server._run_controls.clear()
         api_server._task_locks.clear()
+        api_server._task_run_queues.clear()
+        original_guard = api_server.runtime_install_guard
+        api_server.runtime_install_guard = api_server.RuntimeInstallGuard()
+        self.addCleanup(lambda: setattr(api_server, "runtime_install_guard", original_guard))
 
     async def test_run_instance_injects_instance_uid(self):
         created = api_server.create_task_instance_endpoint(api_server.TaskInstanceCreateRequest(
@@ -117,6 +121,62 @@ class TaskInstanceRunApiTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_controls.clear()
             api_server._run_status.clear()
             api_server._run_logs.clear()
+
+    async def test_bala_qn_video_task_queues_while_previous_run_is_active(self):
+        fake_adapter = type("FakeAdapter", (), {
+            "tasks": [type("FakeTask", (), {"id": api_server.BALA_QN_VIDEO_TASK_ID})()],
+        })()
+        first_can_finish = asyncio.Event()
+        second_started = asyncio.Event()
+        seen_params = []
+
+        async def fake_execute(_adapter_id, _task_id, params, *_args, **_kwargs):
+            seen_params.append(dict(params or {}))
+            if len(seen_params) == 1:
+                await first_can_finish.wait()
+            else:
+                second_started.set()
+
+        with patch("core.api_server.adapter_loader.scan_all"):
+            with patch("core.api_server.adapter_loader.get_adapter", return_value=fake_adapter):
+                with patch("core.api_server._execute_task", side_effect=fake_execute):
+                    first = await api_server._start_task_run(
+                        api_server.BALA_AI_VIDEO_ADAPTER_ID,
+                        api_server.BALA_QN_VIDEO_TASK_ID,
+                        {"style_code": "208326100001"},
+                        {},
+                    )
+                    self.assertTrue(first["ok"])
+                    await asyncio.sleep(0)
+
+                    queued = await api_server._start_task_run(
+                        api_server.BALA_AI_VIDEO_ADAPTER_ID,
+                        api_server.BALA_QN_VIDEO_TASK_ID,
+                        {"style_code": "208326100002"},
+                        {},
+                    )
+                    self.assertTrue(queued["ok"])
+                    self.assertTrue(queued["queued"])
+                    self.assertEqual(queued["status"], "queued")
+                    self.assertEqual(queued["queue_position"], 1)
+                    self.assertEqual(len(api_server._task_run_queues[api_server._task_jid(
+                        api_server.BALA_AI_VIDEO_ADAPTER_ID,
+                        api_server.BALA_QN_VIDEO_TASK_ID,
+                    )]), 1)
+
+                    first_can_finish.set()
+                    await asyncio.wait_for(second_started.wait(), timeout=1)
+                    await asyncio.sleep(0)
+
+        self.assertEqual([item.get("style_code") for item in seen_params], [
+            "208326100001",
+            "208326100002",
+        ])
+        self.assertEqual(seen_params[1].get("__task_queue_request_id"), queued["queued_request_id"])
+        self.assertEqual(api_server.task_status(
+            api_server.BALA_AI_VIDEO_ADAPTER_ID,
+            api_server.BALA_QN_VIDEO_TASK_ID,
+        )["queue"], [])
 
     async def test_active_tasks_deduplicates_task_and_instance_control_aliases(self):
         task = asyncio.create_task(asyncio.sleep(60))

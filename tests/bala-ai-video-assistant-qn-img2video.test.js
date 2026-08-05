@@ -122,6 +122,41 @@ function directVideoJob(overrides = {}) {
   }
 }
 
+function domDescendants(node) {
+  const output = []
+  for (const child of node?.children || []) {
+    output.push(child)
+    output.push(...domDescendants(child))
+  }
+  return output
+}
+
+function makeDomElement({ tagName = 'div', text = '', attrs = {}, dataset = {}, children = [] } = {}) {
+  const element = {
+    tagName: String(tagName || 'div').toUpperCase(),
+    innerText: text,
+    textContent: text,
+    dataset,
+    children,
+    parentElement: null,
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null
+    },
+    querySelector(selector) {
+      const target = String(selector || '').toLowerCase()
+      return domDescendants(element).find(child => String(child?.tagName || '').toLowerCase() === target) || null
+    },
+    querySelectorAll() {
+      return domDescendants(element)
+    },
+  }
+  if (attrs.src) element.src = attrs.src
+  if (attrs.href) element.href = attrs.href
+  if (attrs.currentSrc) element.currentSrc = attrs.currentSrc
+  for (const child of children) child.parentElement = element
+  return element
+}
+
 test('checkboxEnabled handles booleans, strings, arrays, and defaults', async () => {
   const helpers = await loadExports()
 
@@ -297,6 +332,75 @@ test('extracts visible software-manager task IDs and finds the new one', async (
 
   assert.deepEqual(Array.from(ids), ['159228616426', '162085738211'])
   assert.equal(helpers.findNewTaskId(['159228616426'], ids), '162085738211')
+})
+
+test('polls visible completed software-manager card before waiting for stale MTop state', async () => {
+  const video = makeDomElement({
+    tagName: 'video',
+    attrs: { src: 'https://cdn.example/video/162359532252.mp4' },
+  })
+  const card = makeDomElement({
+    text: '任务ID 162359532252 展示视频 详情信息',
+    children: [video],
+  })
+  const body = makeDomElement({
+    text: '全部任务\n任务ID 162359532252 展示视频 详情信息',
+    children: [card],
+  })
+  const job = directVideoJob({ index: 46, outputDir: '/tmp/qn-video' })
+
+  const result = await runScript({
+    phase: 'poll_job',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      active_job: {
+        ...job,
+        resolvedMaterials: job.materialRefs,
+        submitApi: 'mtop.taobao.qn.copilot.image.generate.video.submit',
+        taskId: '162359532252',
+      },
+      active_poll_started_at: Date.now(),
+      active_poll_attempts: 0,
+      poll_timeout_ms: 600000,
+      poll_interval_ms: 20000,
+      download_videos: true,
+      download_concurrency: 2,
+    },
+    windowOverrides: {
+      document: {
+        body,
+        querySelectorAll() {
+          return [body, ...domDescendants(body)]
+        },
+      },
+      lib: {
+        mtop: {
+          request: async request => {
+            assert.equal(request.api, 'mtop.taobao.qn.copilot.quick.task.get')
+            return {
+              result: {
+                task: {
+                  id: '162359532252',
+                  status: 0,
+                  result: '{}',
+                },
+              },
+            }
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'download_urls')
+  assert.equal(result.meta.items[0].url, 'https://cdn.example/video/162359532252.mp4')
+  assert.equal(result.meta.concurrency, 2)
+  assert.equal(result.meta.shared.active_job.taskState.status, 1)
+  assert.equal(result.meta.shared.active_job.taskState.statusText, '页面已生成')
+  assert.equal(result.meta.shared.active_job.taskState.source, 'page')
 })
 
 test('recovers a submit timeout when a new task ID appears immediately on the page', async () => {
