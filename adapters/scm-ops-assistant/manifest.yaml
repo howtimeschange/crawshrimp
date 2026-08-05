@@ -1,0 +1,172 @@
+id: scm-ops-assistant
+name: SCM 运营助手
+version: 0.1.0
+author: codex
+description: "森马 SCM 后台质量协同自动化：批量下载洗唛文件、吊牌文件并导出中英文成分表"
+entry_url: https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index
+tab_match_prefixes:
+  - https://scm.semir.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://scm.semir.com/
+
+tasks:
+  - id: wash_hangtag_batch_download
+    name: 批量下载洗唛吊牌
+    description: 按款号批量查询 SCM 洗唛批复判定页，下载洗唛文件和吊牌文件，按款号整理目录，并导出中文成分、英文成分表格
+    script: wash-hangtag-batch-download.js
+    entry_url: https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index
+    tab_match_prefixes:
+      - https://scm.semir.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前 SCM 页面（推荐）
+          - value: new
+            label: 新开 SCM 页面
+      - id: style_codes
+        type: textarea
+        label: 款号
+        rows: 10
+        required: true
+        placeholder: "一行一个款号，例如：\n208426103215\n208426103216"
+        hint: 支持从 Excel 批量复制，换行、空格、逗号或顿号分隔；会自动去重。
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        required: true
+        placeholder: "点击选择导出目录"
+        hint: 洗唛、吊牌和结果 Excel 会保存到这个目录下的任务文件夹。
+      - id: package_name
+        type: text
+        label: 任务文件夹名
+        placeholder: "例如：26Q4洗唛吊牌"
+        hint: 可选。留空则按执行时间自动生成。
+        ui_span: half
+      - id: only_completed
+        type: checkbox
+        label: 仅下载已完成记录
+        default: true
+        hint: 开启后只导出 SCM 判定已完成的 SKC 行；页面上的品牌、年份、供应商等其它筛选条件会保持不变。
+      - id: max_styles
+        type: number
+        label: 限制款号数
+        default: 0
+        min: 0
+        max: 10000
+        step: 1
+        ui_span: half
+        hint: 0 表示不限制；可填 1-2 做冒烟验证。
+      - id: request_delay_ms
+        type: number
+        label: 查询间隔毫秒
+        default: 700
+        min: 200
+        max: 5000
+        step: 100
+        ui_span: half
+        hint: SCM 后台查询之间的等待时间，默认较温和。
+      - id: download_concurrency
+        type: number
+        label: 下载并发
+        default: 4
+        min: 1
+        max: 8
+        step: 1
+        ui_span: half
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "SCM洗唛吊牌下载结果_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 输出表
+          - 款号
+          - 款名
+          - 品牌
+          - 业绩季节
+          - 采购组
+          - 供应商编码
+          - 供应商名称
+          - SKC
+          - 色号
+          - 颜色名称
+          - 申请单号
+          - 采购单号
+          - 中文成分
+          - 英文成分
+          - 文件类型
+          - 文件名
+          - 源文件URL
+          - 本地文件
+          - 文件大小
+          - 下载结果
+          - 查询结果
+          - 备注
+          - 最后更新人
+          - 最后更新时间
+          - 抓取时间
+        sheets:
+          - name: 成分汇总
+            columns:
+              - 款号
+              - 款名
+              - 品牌
+              - 业绩季节
+              - 采购组
+              - 供应商编码
+              - 供应商名称
+              - 中文成分
+              - 英文成分
+              - SKC数量
+              - 洗唛文件数
+              - 吊牌文件数
+              - 查询结果
+              - 备注
+              - 抓取时间
+          - name: 下载明细
+            columns:
+              - 款号
+              - 款名
+              - 品牌
+              - 业绩季节
+              - 采购组
+              - 供应商编码
+              - 供应商名称
+              - SKC
+              - 色号
+              - 颜色名称
+              - 申请单号
+              - 采购单号
+              - 中文成分
+              - 英文成分
+              - 文件类型
+              - 文件名
+              - 源文件URL
+              - 本地文件
+              - 文件大小
+              - 下载结果
+              - 备注
+              - 最后更新人
+              - 最后更新时间
+              - 抓取时间
+          - name: 异常
+            columns:
+              - 款号
+              - SKC
+              - 文件类型
+              - 文件名
+              - 源文件URL
+              - 本地文件
+              - 文件大小
+              - 下载结果
+              - 查询结果
+              - 备注
+              - 抓取时间

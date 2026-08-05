@@ -4715,6 +4715,84 @@ def _finalize_plm_size_chart_downloader_outputs(
     return copied_refs or fallback_refs
 
 
+def _finalize_scm_ops_assistant_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    log,
+) -> list[str]:
+    fallback_refs = [
+        str(path)
+        for path in [*(runtime_files or []), *(exported_files or [])]
+        if str(path or "").strip()
+    ]
+
+    package_root = None
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        raw_root = str(row.get("__scm_package_root") or "").strip()
+        if raw_root:
+            package_root = Path(raw_root).expanduser()
+            break
+
+    if package_root is None:
+        export_folder = str((run_params or {}).get("export_folder") or "").strip()
+        if export_folder:
+            package_root = _expand_user_configured_local_path(export_folder)
+
+    if package_root is None:
+        return fallback_refs
+
+    package_root.mkdir(parents=True, exist_ok=True)
+
+    final_refs: list[str] = []
+    seen: set[str] = set()
+
+    if package_root.exists() and package_root.is_dir():
+        root_ref = str(package_root)
+        final_refs.append(root_ref)
+        seen.add(root_ref)
+
+    for file_path in exported_files or []:
+        source_key = str(file_path or "").strip()
+        if not source_key:
+            continue
+        source = Path(source_key).expanduser()
+        if not source.is_file():
+            continue
+        if _is_direct_child_file(source, package_root):
+            copied = source
+        else:
+            copied = _copy_file_to_unique_target(source, package_root / source.name)
+        copied_ref = str(copied)
+        if copied_ref not in seen:
+            final_refs.append(copied_ref)
+            seen.add(copied_ref)
+
+    for file_path in runtime_files or []:
+        source_key = str(file_path or "").strip()
+        if not source_key:
+            continue
+        source = Path(source_key).expanduser()
+        if not source.exists():
+            continue
+        try:
+            if not _is_within_directory(source, package_root):
+                continue
+        except Exception:
+            continue
+        source_ref = str(source)
+        if source_ref not in seen:
+            final_refs.append(source_ref)
+            seen.add(source_ref)
+
+    if final_refs and log:
+        log(f"SCM 洗唛吊牌已导出到任务文件夹：{package_root}")
+    return final_refs or fallback_refs
+
+
 def _copy_tmall_row_local_files(
     data_rows: list,
     target_root: Path,
@@ -6232,6 +6310,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     return merge_output_file_refs(packaged_refs)
                 except Exception as package_error:
                     log(f"[warn] PLM 尺码表导出目录复制失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
+            if adapter_id == 'scm-ops-assistant' and task_id == 'wash_hangtag_batch_download':
+                try:
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_scm_ops_assistant_outputs,
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] SCM 洗唛吊牌导出目录整理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
             if adapter_id == 'tmall-ops-assistant' and task_id in {
