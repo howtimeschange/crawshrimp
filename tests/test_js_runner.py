@@ -960,6 +960,25 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured.exception.partial_data, [{"id": "first"}, {"id": "second"}])
         self.assertEqual(runner.calls, ["main", "blocked"])
+        self.assertEqual(runner.last_runtime_shared, {"step": 2})
+        self.assertEqual(runner.last_runtime_phase, "blocked")
+
+    async def test_refresh_ws_url_keeps_existing_ws_when_cdp_list_temporarily_fails(self):
+        class RefreshFallbackRunner(JSRunner):
+            async def _bridge_get_tab(self, tab_id):
+                raise ConnectionError("读取标签页列表失败：无法连接 Chrome CDP")
+
+            async def _bridge_get_tabs(self):
+                raise AssertionError("should not be called after tab lookup transport failure")
+
+            async def _bridge_new_tab(self, url):
+                raise AssertionError("should not open a new tab after transport failure")
+
+        runner = RefreshFallbackRunner("ws://keep-current", tab_id="tab-1", tab_url="https://example.test/app")
+        await runner._refresh_ws_url()
+
+        self.assertEqual(runner.ws_url, "ws://keep-current")
+        self.assertEqual(runner.tab_id, "tab-1")
 
     async def test_run_script_file_complete_has_more_honors_sleep_ms_before_next_page(self):
         runner = CompleteSleepRunner()

@@ -65,6 +65,9 @@ class JSRunner:
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.runtime_output_files: list[str] = []
         self._click_download_ws = None
+        self.last_runtime_shared: dict = {}
+        self.last_runtime_page: int = 0
+        self.last_runtime_phase: str = ""
 
     def _next_id(self) -> int:
         self._msg_id += 1
@@ -2850,33 +2853,39 @@ class JSRunner:
         return await self.evaluate(expression, user_gesture=True)
 
     async def _refresh_ws_url(self) -> None:
-        tab = None
-        if self.tab_id:
-            tab = await self._bridge_get_tab(self.tab_id)
-        if not tab and self.tab_url:
-            prefix = str(self.tab_url).strip()
-            if prefix:
-                candidates = [
-                    candidate for candidate in await self._bridge_get_tabs()
-                    if candidate.get("type") == "page" and str(candidate.get("url", "")).startswith(prefix)
-                ]
-                if len(candidates) == 1:
-                    tab = candidates[0]
-                elif len(candidates) > 1:
-                    tab = candidates[0]
-        if not tab and self.tab_url:
-            try:
-                tab = await self._bridge_new_tab(str(self.tab_url).strip())
-                logger.info("运行中的 Chrome 标签页已丢失，重新打开入口页恢复连接: %s", self.tab_url)
-            except Exception as e:
-                logger.info("重新打开入口页失败: %s", e)
-        if not tab:
-            raise RuntimeError(f"导航后找不到原标签页: {self.tab_id}")
-        ws_url = tab.get("webSocketDebuggerUrl", "")
-        if not ws_url:
-            raise RuntimeError(f"标签页缺少 webSocketDebuggerUrl: {self.tab_id}")
-        self.tab_id = str(tab.get("id") or self.tab_id or "")
-        self.ws_url = ws_url
+        try:
+            tab = None
+            if self.tab_id:
+                tab = await self._bridge_get_tab(self.tab_id)
+            if not tab and self.tab_url:
+                prefix = str(self.tab_url).strip()
+                if prefix:
+                    candidates = [
+                        candidate for candidate in await self._bridge_get_tabs()
+                        if candidate.get("type") == "page" and str(candidate.get("url", "")).startswith(prefix)
+                    ]
+                    if len(candidates) == 1:
+                        tab = candidates[0]
+                    elif len(candidates) > 1:
+                        tab = candidates[0]
+            if not tab and self.tab_url:
+                try:
+                    tab = await self._bridge_new_tab(str(self.tab_url).strip())
+                    logger.info("运行中的 Chrome 标签页已丢失，重新打开入口页恢复连接: %s", self.tab_url)
+                except Exception as e:
+                    logger.info("重新打开入口页失败: %s", e)
+            if not tab:
+                raise RuntimeError(f"导航后找不到原标签页: {self.tab_id}")
+            ws_url = tab.get("webSocketDebuggerUrl", "")
+            if not ws_url:
+                raise RuntimeError(f"标签页缺少 webSocketDebuggerUrl: {self.tab_id}")
+            self.tab_id = str(tab.get("id") or self.tab_id or "")
+            self.ws_url = ws_url
+        except ConnectionError as e:
+            if self.ws_url:
+                logger.info("刷新 Chrome CDP 标签列表失败，继续使用当前 WebSocket: %s", e)
+                return
+            raise
 
     def _is_navigation_error(self, error: str) -> bool:
         return any(marker in (error or "") for marker in NAVIGATION_ERROR_MARKERS)
@@ -3018,10 +3027,17 @@ class JSRunner:
         run_token = f"{int(time.time() * 1000)}-{secrets.token_hex(4)}"
         self._file_payload_cache = {}
         self._page_file_cache_keys = set()
+        self.last_runtime_shared = {}
+        self.last_runtime_page = 0
+        self.last_runtime_phase = ""
 
         await self._persist_run_params(run_token, params_json)
 
         async def cooperate(kind: str, page: int, phase: str, shared: Optional[dict] = None, extra: Optional[dict] = None) -> None:
+            self.last_runtime_page = int(page or 0)
+            self.last_runtime_phase = str(phase or "")
+            if isinstance(shared, dict):
+                self.last_runtime_shared = dict(shared)
             if control_hook is None:
                 return
             payload = {
@@ -3069,7 +3085,10 @@ class JSRunner:
                         meta = result.meta or {}
                         action = meta.get("action") or "complete"
                         if "shared" in meta:
-                            shared = meta.get("shared")
+                            shared = meta.get("shared") if isinstance(meta.get("shared"), dict) else {}
+                        self.last_runtime_page = int(page or 0)
+                        self.last_runtime_phase = str(phase or "")
+                        self.last_runtime_shared = dict(shared or {})
 
                         if result.data:
                             all_data.extend(result.data)

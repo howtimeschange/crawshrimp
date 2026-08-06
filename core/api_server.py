@@ -631,6 +631,95 @@ def _str_from_mapping(source: Optional[dict], key: str) -> str:
     return str(source.get(key) or "").strip()
 
 
+def _is_bala_short_video_batch_upload(adapter_id: str, task_id: str) -> bool:
+    return adapter_id == "bala-ai-video-assistant" and task_id == "short_video_batch_upload"
+
+
+def _dict_rows(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [dict(row) for row in value if isinstance(row, dict)]
+
+
+def _short_video_cached_results_count(shared_state: Optional[dict]) -> Optional[int]:
+    if not isinstance(shared_state, dict):
+        return None
+    results = shared_state.get("results")
+    return len(results) if isinstance(results, list) else None
+
+
+def _short_video_content_id(value) -> str:
+    match = re.search(r"[0-9]{8,}", str(value or ""))
+    return match.group(0) if match else ""
+
+
+def _short_video_cached_rows_from_shared(shared_state: Optional[dict], error: str = "", phase: str = "") -> list[dict]:
+    if not isinstance(shared_state, dict):
+        return []
+
+    rows = [*_dict_rows(shared_state.get("invalid_rows")), *_dict_rows(shared_state.get("results"))]
+    jobs = _dict_rows(shared_state.get("jobs"))
+    try:
+        job_index = max(0, int(shared_state.get("job_index") or 0))
+    except Exception:
+        job_index = 0
+    job = jobs[job_index] if 0 <= job_index < len(jobs) else None
+    if not job:
+        return rows
+
+    item_id = str(job.get("item_id") or "").strip()
+    style_code = str(job.get("style_code") or "").strip()
+    already_reported = any(
+        (item_id and str(row.get("ID") or "").strip() == item_id)
+        or (style_code and str(row.get("款号") or "").strip() == style_code)
+        for row in rows
+    )
+    if already_reported:
+        return rows
+
+    work = dict(shared_state.get("current_work") or {}) if isinstance(shared_state.get("current_work"), dict) else {}
+    notes = [str(item or "").strip() for item in (work.get("notes") or []) if str(item or "").strip()] if isinstance(work.get("notes"), list) else []
+    interruption_note = f"任务异常中断，已导出中断前缓存结果：{str(error or '').strip() or '未知错误'}"
+    if phase:
+        interruption_note = f"{interruption_note}；阶段：{phase}"
+    notes.append(interruption_note)
+
+    guang_content_id = _short_video_content_id(work.get("guang_content_id"))
+    if not guang_content_id and not bool(job.get("publish_guang")):
+        guang_content_id = _short_video_content_id(job.get("existing_content_id"))
+
+    def target_status(work_key: str, enabled_key: str) -> str:
+        status = str(work.get(work_key) or "").strip()
+        if status:
+            return status
+        return "执行中断" if bool(job.get(enabled_key)) else "已关闭"
+
+    rows.append({
+        "款号": style_code,
+        "ID": item_id,
+        "逛逛标题": str(job.get("guang_title") or "").strip(),
+        "搜推标题": str(job.get("recommend_title") or "").strip(),
+        "视频描述": str(job.get("description") or "").strip(),
+        "参与活动": str(job.get("activity") or "").strip(),
+        "定时/日": str(job.get("schedule_day") or "").strip(),
+        "定时/具体时间": str(job.get("schedule_time") or "").strip(),
+        "上传情况": "执行中断",
+        "内容ID": guang_content_id,
+        "光合发布状态": target_status("guang_status", "publish_guang"),
+        "光合内容ID": guang_content_id,
+        "光合接口回执": str(work.get("guang_receipt") or "").strip(),
+        "搜推素材状态": target_status("recommend_status", "publish_recommend"),
+        "搜推内容ID": str(work.get("recommend_content_id") or "").strip(),
+        "搜推接口回执": str(work.get("recommend_receipt") or "").strip(),
+        "商品视频绑定状态": target_status("product_status", "bind_product"),
+        "宝贝展示视频ID": str(work.get("product_video_id") or "").strip(),
+        "商品提交回执": str(work.get("product_receipt") or "").strip(),
+        "刷新读回": str(work.get("refresh_readback") or "").strip(),
+        "备注": "；".join(dict.fromkeys(notes)),
+    })
+    return rows
+
+
 def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[dict] = None) -> dict:
     payload = dict(payload or {})
     incoming_shared = payload.get('shared') if isinstance(payload.get('shared'), dict) else {}
@@ -668,6 +757,7 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
     current_source_filename = _str_from_mapping(shared_state, 'current_source_filename')
     phase_name = str(payload.get('phase') or '').strip()
     records = _int_from_mapping(payload, 'records')
+    shared_results_count = _short_video_cached_results_count(shared_state)
 
     download_total = _int_from_mapping(run_control, 'download_total') if run_control else _int_from_mapping(payload, 'download_total', _int_from_mapping(payload, 'download_item_total'))
     download_completed = _int_from_mapping(run_control, 'download_completed') if run_control else _int_from_mapping(payload, 'download_completed')
@@ -722,6 +812,7 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
         "current_source_filename": current_source_filename,
         "phase": phase_name,
         "completed": records,
+        "shared_results_count": shared_results_count,
         "percent": percent,
         "progress_text": progress_text,
         "download_total": download_total,
@@ -5701,6 +5792,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         records = int(payload.get('records') or 0)
         progress = build_progress(payload)
+        progress_records = records
+        if _is_bala_short_video_batch_upload(adapter_id, task_id):
+            shared_count = progress.get('shared_results_count')
+            if shared_count is not None:
+                try:
+                    progress_records = max(0, int(shared_count or 0))
+                except Exception:
+                    progress_records = records
         current_row = int(progress['row_no'] or progress['current'] or 0)
         last_seen_at = datetime.now().isoformat()
         base_status = {
@@ -5708,7 +5807,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'adapter_id': adapter_id,
             'task_id': task_id,
             'instance_uid': instance_uid,
-            'records': records,
+            'records': progress_records,
             'last_seen_at': last_seen_at,
             'current_row': current_row,
             'current': progress['current'],
@@ -5727,7 +5826,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'phase': progress['phase'],
             'queued_request_id': queued_request_id,
             'queued_enqueued_at': queued_enqueued_at,
-            'completed': progress['completed'],
+            'completed': progress_records if _is_bala_short_video_batch_upload(adapter_id, task_id) else progress['completed'],
             'percent': progress['percent'],
             'progress_text': progress['progress_text'],
             'download_total': progress['download_total'],
@@ -5786,7 +5885,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     run_id,
                     phase=progress['phase'],
                     current_row=current_row,
-                    records_count=records,
+                    records_count=progress_records,
                 )
             except Exception as heartbeat_error:
                 logger.debug("task heartbeat update failed for %s: %s", jid, heartbeat_error)
@@ -5806,7 +5905,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             if progress['buyer_id']:
                 extra_parts.append(f"目标 {progress['buyer_id']}")
             suffix = f" · {' · '.join(extra_parts)}" if extra_parts else ""
-            log(f"[progress] 第 {progress['current']}/{progress['total']} 条 · 已完成 {records} 条{suffix}")
+            log(f"[progress] 第 {progress['current']}/{progress['total']} 条 · 已完成 {progress_records} 条{suffix}")
             run_control['last_progress_exec_no'] = progress['current']
 
         if (
@@ -6441,6 +6540,26 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
             return merge_output_file_refs(runtime_files, exported_files)
 
+        async def export_short_video_cached_rows_on_error(error_message: str) -> tuple[list[dict], list[str]]:
+            if not _is_bala_short_video_batch_upload(adapter_id, task_id) or not runner:
+                return [], []
+            cached_shared = {}
+            if run_control and isinstance(run_control.get('shared_progress'), dict):
+                cached_shared.update(run_control.get('shared_progress') or {})
+            runner_shared = getattr(runner, 'last_runtime_shared', None)
+            if isinstance(runner_shared, dict):
+                cached_shared.update(runner_shared)
+            phase_name = str(getattr(runner, 'last_runtime_phase', '') or '').strip()
+            cached_rows = _short_video_cached_rows_from_shared(cached_shared, error_message, phase_name)
+            cached_rows = _apply_final_export_guards(adapter_id, task_id, cached_rows)
+            if not cached_rows:
+                return [], []
+            runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
+            exported_files = await export_outputs(cached_rows)
+            finalized_files = await finalize_output_files(cached_rows, runtime_files, exported_files)
+            log(f"[warn] 短视频任务异常中断，已导出缓存结果 {len(cached_rows)} 行")
+            return cached_rows, finalized_files
+
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
         if not task.skip_auth and m.auth and m.auth.check_script:
             try:
@@ -6870,27 +6989,38 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     except Exception as e:
         err = str(e)
         log(f"[{adapter_id}/{task_id}] ERROR: {err}")
-        data_sink.fail_run(run_id, err)
+        if _is_bala_short_video_batch_upload(adapter_id, task_id) and 'export_short_video_cached_rows_on_error' in locals():
+            try:
+                recovered_rows, recovered_files = await export_short_video_cached_rows_on_error(err)
+                if recovered_rows:
+                    data = recovered_rows
+                    output_files = recovered_files
+            except Exception as export_error:
+                log(f"[warn] 短视频异常收尾导出失败: {export_error}")
+
+        data_sink.fail_run(run_id, err, records_count=len(data), output_files=output_files)
         error_status = {
             'status': 'error',
             'run_id': run_id,
             'adapter_id': adapter_id,
             'task_id': task_id,
             'instance_uid': instance_uid,
-            'records': 0,
+            'records': len(data),
             'error': err,
             'last_seen_at': datetime.now().isoformat(),
-            'current_row': 0,
+            'current_row': len(data),
             'phase': 'error',
             'queued_request_id': queued_request_id,
             'queued_enqueued_at': queued_enqueued_at,
         }
         _set_live_status(live_jids, error_status)
         if instance_uid:
+            if output_files:
+                _sync_task_instance_artifacts(instance_uid, output_files, run_id)
             data_sink.update_task_instance(
                 instance_uid,
                 status="failed",
-                summary={"records": 0, "error": err, "run_id": run_id},
+                summary={"records": len(data), "output_files": output_files, "error": err, "run_id": run_id},
             )
         if schedule_uid:
             _notify_task_schedule_result(
@@ -6898,8 +7028,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 instance_uid=instance_uid,
                 run_id=run_id,
                 status="failed",
-                records=0,
-                output_files=[],
+                records=len(data),
+                output_files=output_files,
                 error=err,
                 started_at=run_started_at,
                 finished_at=datetime.now().isoformat(),

@@ -92,6 +92,64 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persisted["organize_completed"], 4)
         self.assertEqual(persisted["organize_stage"], "复制命名")
 
+    async def test_short_video_progress_exposes_shared_results_count(self):
+        progress = api_server._build_live_progress(
+            {
+                "kind": "before_phase",
+                "records": 0,
+                "phase": "navigate_guang",
+                "shared": {
+                    "total_rows": 22,
+                    "current_exec_no": 5,
+                    "current_row_no": 6,
+                    "results": [
+                        {"ID": "100000001", "上传情况": "光合：成功"},
+                        {"ID": "100000002", "上传情况": "光合：失败"},
+                    ],
+                },
+            },
+            run_control={},
+        )
+
+        self.assertEqual(progress["completed"], 0)
+        self.assertEqual(progress["shared_results_count"], 2)
+
+    async def test_short_video_cached_rows_adds_current_interrupted_job(self):
+        rows = api_server._short_video_cached_rows_from_shared(
+            {
+                "invalid_rows": [{"ID": "bad-row", "上传情况": "发布失败"}],
+                "results": [{"ID": "100000001", "款号": "style-1", "上传情况": "光合：成功"}],
+                "jobs": [
+                    {"item_id": "100000001", "style_code": "style-1"},
+                    {
+                        "item_id": "100000002",
+                        "style_code": "style-2",
+                        "guang_title": "逛逛标题",
+                        "recommend_title": "搜推标题",
+                        "description": "这是一段可发布的视频描述",
+                        "publish_guang": True,
+                        "publish_recommend": True,
+                        "bind_product": True,
+                    },
+                ],
+                "job_index": 1,
+                "current_work": {
+                    "guang_status": "成功",
+                    "guang_content_id": "1234567890",
+                    "notes": ["光合已发布"],
+                },
+            },
+            "无法连接 Chrome CDP",
+            "wait_product_readback",
+        )
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[-1]["ID"], "100000002")
+        self.assertEqual(rows[-1]["上传情况"], "执行中断")
+        self.assertEqual(rows[-1]["光合内容ID"], "1234567890")
+        self.assertIn("无法连接 Chrome CDP", rows[-1]["备注"])
+        self.assertIn("wait_product_readback", rows[-1]["备注"])
+
     async def test_backend_instance_lock_windows_locks_first_byte(self):
         positions = []
 
@@ -413,6 +471,168 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         export_excel.assert_not_called()
         finish_run.assert_called_once_with(2101, 1, [board_url])
+
+    async def test_execute_short_video_batch_upload_exports_cached_rows_on_error(self):
+        class FakeBridge:
+            def __init__(self):
+                self.tab = {
+                    "id": "tab-1",
+                    "type": "page",
+                    "url": "https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video",
+                    "webSocketDebuggerUrl": "ws://example.invalid",
+                }
+
+            def get_tabs(self):
+                return []
+
+            def new_tab(self, url):
+                self.tab["url"] = str(url)
+                return dict(self.tab)
+
+            def get_tab(self, tab_id):
+                return dict(self.tab)
+
+            def find_tab(self, url):
+                return dict(self.tab)
+
+            def get_tab_ws_url(self, tab):
+                return tab["webSocketDebuggerUrl"]
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+                self.tab_id = kwargs.get("tab_id", "tab-1")
+                self.tab_url = kwargs.get("tab_url", "")
+                self.last_runtime_shared = {}
+                self.last_runtime_phase = ""
+
+            async def evaluate(self, expression):
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "success": True,
+                        "data": [{"href": self.tab_url}],
+                        "meta": {"has_more": False},
+                        "error": None,
+                    },
+                )()
+
+            async def navigate(self, url, wait_seconds=0):
+                self.tab_url = str(url)
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                self.last_runtime_phase = "wait_product_readback"
+                self.last_runtime_shared = {
+                    "total_rows": 3,
+                    "current_exec_no": 2,
+                    "current_row_no": 3,
+                    "current_buyer_id": "100000002",
+                    "invalid_rows": [{"ID": "bad-row", "上传情况": "发布失败"}],
+                    "results": [{"ID": "100000001", "款号": "style-1", "上传情况": "光合：成功"}],
+                    "jobs": [
+                        {"item_id": "100000001", "style_code": "style-1"},
+                        {
+                            "item_id": "100000002",
+                            "style_code": "style-2",
+                            "guang_title": "逛逛标题",
+                            "recommend_title": "搜推标题",
+                            "description": "这是一段可发布的视频描述",
+                            "publish_guang": True,
+                            "publish_recommend": True,
+                            "bind_product": True,
+                        },
+                    ],
+                    "job_index": 1,
+                    "current_work": {
+                        "guang_status": "成功",
+                        "guang_content_id": "1234567890",
+                        "notes": ["光合已发布"],
+                    },
+                }
+                if control_hook:
+                    await control_hook({
+                        "kind": "before_phase",
+                        "phase": self.last_runtime_phase,
+                        "shared": self.last_runtime_shared,
+                        "records": 0,
+                    })
+                raise RuntimeError("无法连接 Chrome CDP (http://127.0.0.1:9222)")
+
+        class FakeTask:
+            id = "short_video_batch_upload"
+            name = "短视频批量上传"
+            description = ""
+            entry_url = "https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video"
+            tab_match_prefixes = ["https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video"]
+            output = [
+                type(
+                    "Output",
+                    (),
+                    {
+                        "type": OutputType.excel,
+                        "filename": "短视频批量上传结果_{timestamp}.xlsx",
+                        "columns": None,
+                        "column_groups": None,
+                        "sheet_key": None,
+                        "sheets": None,
+                    },
+                )()
+            ]
+            script = "short-video-batch-upload.js"
+            skip_auth = True
+            params = []
+
+        class FakeAdapter:
+            id = "bala-ai-video-assistant"
+            name = "巴拉 AI 视频助手"
+            entry_url = "https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = None
+
+        exported_rows = []
+        exported_path = ""
+
+        def fake_export_excel(data_rows, *args, **kwargs):
+            nonlocal exported_path
+            exported_rows.extend([dict(row) for row in data_rows])
+            exported_path = str(Path(tmpdir) / "short-video-result.xlsx")
+            return exported_path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "short-video-batch-upload.js"
+            script_path.write_text("", encoding="utf-8")
+            run_control = api_server._build_run_control()
+            run_control["task"] = asyncio.current_task()
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                        with patch("core.js_runner.JSRunner", FakeRunner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=2201):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                                        with patch("core.api_server.data_sink.export_excel", side_effect=fake_export_excel):
+                                            with patch("core.api_server.data_sink.fail_run") as fail_run:
+                                                with self.assertRaisesRegex(RuntimeError, "无法连接 Chrome CDP"):
+                                                    await api_server._execute_task(
+                                                        "bala-ai-video-assistant",
+                                                        "short_video_batch_upload",
+                                                        {},
+                                                        {},
+                                                        run_control=run_control,
+                                                    )
+
+        self.assertEqual(len(exported_rows), 3)
+        self.assertEqual(exported_rows[-1]["ID"], "100000002")
+        self.assertEqual(exported_rows[-1]["上传情况"], "执行中断")
+        self.assertIn("无法连接 Chrome CDP", exported_rows[-1]["备注"])
+        fail_run.assert_called_once()
+        _, fail_kwargs = fail_run.call_args
+        self.assertEqual(fail_kwargs["records_count"], 3)
+        self.assertEqual(fail_kwargs["output_files"], [exported_path])
 
     async def test_lifespan_uses_instance_lock_as_startup_owner(self):
         calls = []
