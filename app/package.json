@@ -3,6 +3,7 @@
   "version": "2.4.7",
   "description": "Ecommerce automation, AI image and video, and cloud approval desktop app",
   "author": "howtimeschange",
+  "license": "Apache-2.0",
   "crawshrimpUpdateFeedUrl": "https://updates.crawshrimp.com/",
   "main": "src/main.js",
   "scripts": {

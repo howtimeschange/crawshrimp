@@ -4,7 +4,7 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/howtimeschange/crawshrimp?label=latest)](https://github.com/howtimeschange/crawshrimp/releases)
 [![Build Desktop App](https://github.com/howtimeschange/crawshrimp/actions/workflows/build-desktop.yml/badge.svg)](https://github.com/howtimeschange/crawshrimp/actions/workflows/build-desktop.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 抓虾把电商执行、AI 素材生产和团队协作放进同一套产品里：在已登录的 Chrome 中运行平台自动化，在桌面端完成 AI 生图、AI 生视频、按款号素材加工与提示词管理，并通过可选的云端审批台让审核人员和任务机协同完成测图、视频制作、上传与数据回收。
 
@@ -415,4 +415,4 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE). Copyright 2025-2026 xingyicheng/邢易成. See [NOTICE](NOTICE).
