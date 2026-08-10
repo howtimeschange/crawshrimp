@@ -872,6 +872,81 @@ def poll_workbench_run(
             }
 
 
+def refresh_workbench_run_once(
+    job_uid: str,
+    run_uid: str = "",
+    *,
+    settings: Mapping[str, Any] | None = None,
+    client_factory: Callable[..., OneXMImageClient] = OneXMImageClient,
+) -> dict:
+    uid = _compact(job_uid)
+    if not uid:
+        return {}
+    job = data_sink.get_ai_image_job(uid)
+    if not job:
+        return {}
+    summary = job.get("summary") if isinstance(job.get("summary"), Mapping) else {}
+    runs = [dict(run) for run in summary.get("runs") or [] if isinstance(run, Mapping)]
+    target_run_uid = _compact(run_uid)
+    target_runs = [
+        run
+        for run in runs
+        if (
+            (target_run_uid and _compact(run.get("run_uid")) == target_run_uid)
+            or (
+                not target_run_uid
+                and _compact(run.get("status")).lower() in {"queued", "running"}
+            )
+        )
+    ]
+    if not target_runs:
+        return job
+
+    resolved_settings = dict(settings or {})
+    if not resolved_settings:
+        from core.api_server import _resolve_one_xm_settings
+
+        resolved_settings = _resolve_one_xm_settings()
+
+    updated_job = job
+    for run in target_runs:
+        status = _compact(run.get("status")).lower()
+        if status in {"completed", "failed"}:
+            continue
+        poll_url = _compact(run.get("poll_url") or run.get("task_id"))
+        if not poll_url:
+            continue
+        run_job = {
+            **dict(updated_job),
+            "model_key": _compact(run.get("model_key") or updated_job.get("model_key")),
+            "model_key_tier": _compact(run.get("model_key_tier")),
+            "size": _compact(run.get("size")),
+            "params": {
+                **_params(updated_job),
+                "model_key_tier": _compact(run.get("model_key_tier")) or _params(updated_job).get("model_key_tier"),
+                "size": _compact(run.get("size")) or _params(updated_job).get("size"),
+            },
+        }
+        _, api_key = select_model_key(run_job, resolved_settings)
+        client = client_factory(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
+        current = client.get_task(poll_url)
+        patch = _workbench_run_patch(
+            current,
+            fallback_status=_compact(run.get("provider_status")) or "queued",
+            requested_count=int(run.get("requested_count") or 1),
+        )
+        if patch.get("status") == "failed" and _is_transient_workbench_failure(patch.get("error")):
+            patch = {
+                "provider_status": patch.get("provider_status") or run.get("provider_status") or "running",
+                "poll_after": patch.get("poll_after") or run.get("poll_after") or 5,
+                "last_refresh_error": patch.get("error") or "",
+            }
+            if patch["provider_status"] in FAILED_STATUSES:
+                patch["provider_status"] = "running"
+        updated_job = _update_workbench_run(uid, _compact(run.get("run_uid")), patch)
+    return updated_job
+
+
 def retry_workbench_run(
     job_uid: str,
     run_uid: str,

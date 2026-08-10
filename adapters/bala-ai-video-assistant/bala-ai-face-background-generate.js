@@ -40,6 +40,25 @@
     return stringList(value)
   }
 
+  function normalizeSourceModelRefIds(value) {
+    let raw = value
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw)
+      } catch {
+        raw = {}
+      }
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const result = {}
+    for (const [sourcePath, modelId] of Object.entries(raw)) {
+      const key = compact(sourcePath)
+      const value = compact(modelId)
+      if (key && value) result[key] = value
+    }
+    return result
+  }
+
   function normalizeOperationType(value) {
     const text = compact(value).toLowerCase()
     if (['background_swap', 'background', '换背景', 'ai换背景'].includes(text)) return 'background_swap'
@@ -55,8 +74,13 @@
     return 'AI换脸'
   }
 
-  function validationMessage(operationType, rawParams, modelRefIds, modelGroups) {
-    if (operationType === 'face_swap' && !modelRefIds.length && !modelGroups.length) return '缺少模特素材'
+  function validationMessage(operationType, rawParams, modelRefIds, modelGroups, sourceModelRefIds = {}) {
+    if (
+      operationType === 'face_swap'
+      && !modelRefIds.length
+      && !modelGroups.length
+      && !Object.keys(sourceModelRefIds).length
+    ) return '缺少模特素材'
     if (operationType === 'background_swap' && !compact(rawParams.background_prompt)) return '缺少背景Prompt'
     if (operationType === 'outfit_swap' && !stringList(rawParams.garment_images?.paths || rawParams.garment_images).length) return '缺少服装图'
     if (operationType === 'pose_swap' && !compact(rawParams.pose_prompt)) return '缺少姿势Prompt'
@@ -68,13 +92,15 @@
     const sourceImages = normalizeSourceImagePaths(rawParams.source_images)
     const directoryFiles = normalizeDirectoryFiles(rawParams.material_root_files)
     const modelRefIds = normalizeModelRefIds(rawParams.model_ref_ids)
+    const sourceModelRefIds = normalizeSourceModelRefIds(rawParams.source_model_ref_ids)
     const modelGroups = normalizeSelectedModelGroups(rawParams.model_groups)
     const backgroundPrompt = compact(rawParams.background_prompt)
     const garmentImages = stringList(rawParams.garment_images?.paths || rawParams.garment_images)
     const outfitReferenceImages = stringList(rawParams.outfit_reference_images?.paths || rawParams.outfit_reference_images)
     const variantReferenceImages = stringList(rawParams.variant_reference_images?.paths || rawParams.variant_reference_images)
     const posePrompt = compact(rawParams.pose_prompt)
-    const validation = validationMessage(operationType, rawParams, modelRefIds, modelGroups)
+    const sourceModelLines = Object.entries(sourceModelRefIds).map(([sourcePath, modelId]) => `${sourcePath} => ${modelId}`)
+    const validation = validationMessage(operationType, rawParams, modelRefIds, modelGroups, sourceModelRefIds)
     return [{
       '阶段': 'AI换图任务规划',
       '操作类型': operationLabel(operationType),
@@ -83,6 +109,7 @@
       '指定图片': sourceImages.join('\n'),
       '模特分组': modelGroups.join('、'),
       '指定模特图': modelRefIds.join('\n'),
+      '逐图模特': sourceModelLines.join('\n'),
       '背景Prompt': backgroundPrompt,
       '服装图文件': garmentImages.join('\n'),
       '搭配参考图文件': outfitReferenceImages.join('\n'),
@@ -113,6 +140,7 @@
       normalizeDirectoryFiles,
       normalizeSelectedModelGroups,
       normalizeModelRefIds,
+      normalizeSourceModelRefIds,
       normalizeOperationType,
       operationLabel,
       buildPlanRows,

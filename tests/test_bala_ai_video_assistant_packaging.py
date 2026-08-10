@@ -832,6 +832,50 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
 
             runtime_paths.reset_runtime_data_root_cache()
 
+    def test_apply_face_background_uses_per_source_model_assignments_without_cartesian_product(self):
+        manifest_path = ROOT / "adapters" / "bala-ai-video-assistant" / "assets" / "model-library" / "manifest.json"
+
+        async def wait_for_control(_status=None):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            data_root = base / "data"
+            boy_source = base / "208326121202" / "01_模拍原图" / "boy.jpg"
+            girl_source = base / "208326121202" / "01_模拍原图" / "girl.jpg"
+            boy_source.parent.mkdir(parents=True)
+            boy_source.write_bytes(b"fake jpg")
+            girl_source.write_bytes(b"fake jpg")
+
+            with patch.dict("os.environ", {"CRAWSHRIMP_DATA": str(data_root)}, clear=False):
+                runtime_paths.reset_runtime_data_root_cache()
+                data_sink.init_db()
+                with patch("core.adapter_loader.resolve_adapter_file", return_value=manifest_path):
+                    rows = asyncio.run(_apply_bala_ai_face_background_generate(
+                        {
+                            "source_images": {"paths": [str(boy_source), str(girl_source)]},
+                            "model_ref_ids": "100男/标准.jpg\n100女/标准.jpg",
+                            "source_model_ref_ids": {
+                                str(boy_source): "100男/标准.jpg",
+                                str(girl_source): "100女/标准.jpg",
+                            },
+                            "generation_mode": "create_only",
+                        },
+                        wait_for_control,
+                        lambda _message: None,
+                    ))
+
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(
+                    {Path(row["源图文件"]).name: row["模特ID"] for row in rows},
+                    {"boy.jpg": "100男/标准.jpg", "girl.jpg": "100女/标准.jpg"},
+                )
+                for row in rows:
+                    job = data_sink.get_ai_image_job(row["AI任务UID"])
+                    self.assertEqual(job["params"]["bala_model"]["id"], row["模特ID"])
+
+            runtime_paths.reset_runtime_data_root_cache()
+
     def test_apply_face_background_records_async_submission_handles(self):
         manifest_path = ROOT / "adapters" / "bala-ai-video-assistant" / "assets" / "model-library" / "manifest.json"
 

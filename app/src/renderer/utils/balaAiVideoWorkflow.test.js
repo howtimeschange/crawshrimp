@@ -205,8 +205,21 @@ test('video task list filters by state and submits only checked tasks in bulk', 
 test('generated or downloaded video tasks are excluded from resubmission candidates', async () => {
   assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '待生成' }), true)
   assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '失败', providerTaskId: 'retryable-run' }), true)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '失败', providerTaskId: 'retryable-run' }, {
+    status: '失败',
+    path: '/Users/xingyicheng/Downloads/AI视频',
+    error: '请求服务超时',
+  }), true)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '预检完成，等待授权生成', providerTaskId: 'plan-run' }, {
+    status: '待授权',
+    path: '/Users/xingyicheng/Downloads/AI视频',
+  }), true)
   assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '已生成' }), false)
   assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '已下载' }), false)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '待生成' }, {
+    status: '生成中',
+    path: '/Users/xingyicheng/Downloads/AI视频/result.mp4',
+  }), false)
   assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '待生成' }, {
     status: '生成完成待下载',
     videoUrl: 'https://cdn.example.com/generated.mp4',
@@ -234,17 +247,32 @@ test('find-materials page makes running, selected, and active states visually di
 
   assert.match(workflowSource, /\.aiv-material-task-state\.is-running\s*\{[\s\S]*?color:\s*var\(--blue\);/)
   assert.match(workflowSource, /\.aiv-thumb\.selected\s*\{[\s\S]*?box-shadow:[\s\S]*?0 0 0 3px rgba\(var\(--orange-rgb\), \.16\)/)
-  assert.match(workflowSource, /\.aiv-material-style-tabs button\.active\s*\{[\s\S]*?box-shadow:[\s\S]*?0 6px 16px rgba\(var\(--orange-rgb\), \.12\)/)
+  assert.match(workflowSource, /\.aiv-material-style-tab-item\.active \.aiv-material-style-tab\s*\{[\s\S]*?box-shadow:[\s\S]*?0 6px 16px rgba\(var\(--orange-rgb\), \.12\)/)
 })
 
 test('find-materials keeps batch stats in the results header and aligns selected-only filtering left', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
   assert.match(workflowSource, /class="aiv-panel-head aiv-material-results-head"/)
+  assert.match(workflowSource, /class="aiv-material-header-side"/)
   assert.match(workflowSource, /class="aiv-material-header-stats"/)
+  assert.match(workflowSource, /class="aiv-danger small aiv-material-clear-all"/)
+  assert.match(workflowSource, /@click="requestMaterialRecallClearAll"/)
+  assert.match(workflowSource, />\s*清空所有\s*<\/button>/)
+  assert.doesNotMatch(workflowSource, /清空回显记录/)
+  assert.match(workflowSource, /class="aiv-material-style-tabbar"/)
+  assert.match(workflowSource, /aiv-material-style-tab-item/)
+  assert.match(workflowSource, /class="aiv-material-style-tab-clear"/)
+  assert.match(workflowSource, /title="清空本款"/)
+  assert.match(workflowSource, /@click\.stop="requestMaterialRecallClearForStyle\(item\.styleCode\)"/)
+  assert.match(workflowSource, /pendingMaterialRecallClear/)
+  assert.match(workflowSource, /确认清空本款回显记录/)
   assert.match(workflowSource, /class="aiv-material-source-actions"/)
   assert.match(workflowSource, /\.aiv-material-source-actions\s*\{[\s\S]*?display:\s*flex;/)
   assert.match(workflowSource, /\.aiv-material-source-switcher > span\s*\{[\s\S]*?margin-left:\s*auto;/)
+  assert.match(workflowSource, /\.aiv-material-style-tabbar\s*\{[\s\S]*?justify-content:[\s\S]*?background:\s*var\(--bg2\);/)
+  assert.match(workflowSource, /\.aiv-material-style-tab-clear\s*\{[\s\S]*?background:\s*#b91c1c;/)
+  assert.match(workflowSource, /\.aiv-danger\.small\s*\{[\s\S]*?height:\s*28px;/)
 })
 
 test('find-materials uses a denser thumbnail grid without changing image selection controls', async () => {
@@ -258,7 +286,7 @@ test('find-materials uses one polished, compact component system across panels a
 
   assert.match(workflowSource, /\.aiv-material-stage \.aiv-panel\s*\{[\s\S]*?border-radius:\s*12px;[\s\S]*?box-shadow:/)
   assert.match(workflowSource, /\.aiv-material-stage \.aiv-field input,[\s\S]*?\.aiv-material-stage \.aiv-field textarea\s*\{[\s\S]*?transition:\s*border-color/)
-  assert.match(workflowSource, /\.aiv-material-stage \.aiv-material-style-tabs button\s*\{[\s\S]*?border-radius:\s*10px;[\s\S]*?transition:/)
+  assert.match(workflowSource, /\.aiv-material-stage \.aiv-material-style-tab\s*\{[\s\S]*?border-radius:\s*10px;[\s\S]*?transition:/)
   assert.match(workflowSource, /\.aiv-material-stage \.aiv-thumb\s*\{[\s\S]*?border-radius:\s*10px;[\s\S]*?transition:/)
 })
 
@@ -347,7 +375,12 @@ test('AI edit keeps media cards clean until hover and exposes face selection in 
   assert.match(workflowSource, /\.aiv-version-card \.aiv-selected-indicator\s*\{[\s\S]*?color:\s*#fff !important;/)
   assert.match(workflowSource, /v-if="previewEditAction === 'face_swap'" class="aiv-preview-model-picker"/)
   assert.match(workflowSource, /v-if="activeAction === 'face_swap'" class="aiv-selected-model-preview"/)
+  assert.match(workflowSource, /class="aiv-source-model-thumb"/)
+  assert.match(workflowSource, /sourceModelPreviewSource\(source\)/)
+  assert.match(workflowSource, /function sourceModelPreviewSource\(source = \{\}, version = null\)/)
   assert.match(workflowSource, /\.aiv-selected-model-thumb\s*\{[\s\S]*?max-height:\s*56px;/)
+  assert.match(workflowSource, /\.aiv-source-model-assignment\s*\{[\s\S]*?grid-template-columns:\s*34px minmax\(0, 1fr\) auto auto;/)
+  assert.match(workflowSource, /\.aiv-source-model-thumb\s*\{[\s\S]*?height:\s*42px;/)
   assert.match(workflowSource, /configuredAiImageModels/)
   assert.match(workflowSource, /shortDisplayName\(version\.label\)/)
 })

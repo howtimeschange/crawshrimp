@@ -86,7 +86,75 @@ test('pickBestFolder prefers latest selected model folder and ignores packaging 
   const result = helpers.pickBestFolder(folders, 'model', '208326102205', root)
 
   assert.equal(result.selected.filename, '208326102205-可选5.27-已选5.27')
+  assert.deepEqual(result.selectedFolders.map(item => item.filename), [
+    '208326102205-可选5.27-已选5.27',
+    '208326102205-可选5.20-已选5.20',
+  ])
   assert.equal(result.usedFallback, false)
+})
+
+test('buildCodePlan scans every top-ranked selected model folder', async () => {
+  const root = '巴拉货控/02 产品上新模块/2-2 巴拉产品上新'
+  const firstFolder = `${root}/2026年巴拉秋/模拍原图/期货/2P/中童/208326121202-品类已回5.21-AI新回字6.5已选6.5`
+  const secondFolder = `${root}/2026年巴拉秋/模拍原图/期货/2P/中童/208326121202-卫衣-已选7.24`
+  const helpers = await loadExports({
+    fetch: async (url) => {
+      const textUrl = String(url)
+      if (textUrl.includes('/fengcloud/2/file/search')) {
+        return jsonResponse({
+          total: 2,
+          list: [
+            { dir: '1', filename: '208326121202-品类已回5.21-AI新回字6.5已选6.5', fullpath: firstFolder, last_dateline: '1779000000' },
+            { dir: '1', filename: '208326121202-卫衣-已选7.24', fullpath: secondFolder, last_dateline: '1782100000' },
+          ],
+        })
+      }
+      if (textUrl.includes('/fengcloud/1/file/ls')) {
+        const decoded = decodeURIComponent(textUrl.replace(/\+/g, '%20'))
+        if (decoded.includes(firstFolder)) {
+          return jsonResponse({
+            total: 1,
+            list: [{
+              dir: 0,
+              filename: 'yz(1)-AI20832612120201315.jpg',
+              fullpath: `${firstFolder}/yz(1)-AI20832612120201315.jpg`,
+              filehash: 'first-ai',
+            }],
+          })
+        }
+        if (decoded.includes(secondFolder)) {
+          return jsonResponse({
+            total: 1,
+            list: [{
+              dir: 0,
+              filename: 'yz(1)-AI20832612120201315.jpg',
+              fullpath: `${secondFolder}/yz(1)-AI20832612120201315.jpg`,
+              filehash: 'second-ai',
+            }],
+          })
+        }
+        return jsonResponse({ total: 0, list: [] })
+      }
+      if (textUrl.includes('/fengcloud/2/file/info')) {
+        return jsonResponse({ uri: `https://download.example/${encodeURIComponent(textUrl)}` })
+      }
+      return jsonResponse({})
+    },
+  })
+
+  const plan = await helpers.buildCodePlan(
+    '208326121202',
+    { mountId: '2023', relativePath: root },
+    1,
+    1,
+    { folderScanDepth: 1, duplicateMode: 'first_per_hash', maxImageMb: 20 },
+  )
+
+  const modelRows = plan.rows.filter(row => row['素材来源'] === '模拍图' && row['下载结果'] === '')
+  assert.equal(modelRows.length, 2)
+  assert.deepEqual(Array.from(modelRows, row => String(row['选择文件夹'])), [secondFolder, firstFolder])
+  assert.equal(plan.downloadItems.length, 2)
+  assert.notEqual(plan.downloadItems[0].target_relative_path, plan.downloadItems[1].target_relative_path)
 })
 
 test('pickBestFolder prefers detail folders marked as written over packaging exact-code folders', async () => {

@@ -165,6 +165,8 @@ def build_material_batch(rows: list[dict], artifact_dir: str, api_base_url: str)
             "download_result": compact(row.get("下载结果")),
             "action": compact(row.get("处理动作")),
             "note": compact(row.get("备注")),
+            "folder": compact(row.get("选择文件夹") or row.get("__cloud_folder_path")),
+            "cloud_folder": compact(row.get("选择文件夹") or row.get("__cloud_folder_path")),
             "image_url": f"{api_base_url.rstrip('/')}/bala-ai-video-materials/api/{batch_id}/image/{asset_id}?token={token}",
         })
     batch = {
@@ -252,6 +254,24 @@ def _model_ref_ids(payload: dict) -> list[str]:
     return _list_paths(payload.get("model_ref_ids"))
 
 
+def _source_model_ref_ids(payload: dict) -> dict[str, str]:
+    raw = payload.get("source_model_ref_ids") if isinstance(payload, dict) else None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, str] = {}
+    for source_path, model_id in raw.items():
+        key = compact(source_path)
+        value = compact(model_id)
+        if key and value:
+            result[key] = value
+    return result
+
+
 def export_ai_input(batch: dict, operation_type: str, payload: dict) -> dict:
     operation = normalize_operation_type(operation_type)
     data = payload or {}
@@ -267,6 +287,9 @@ def export_ai_input(batch: dict, operation_type: str, payload: dict) -> dict:
         params["prompt_extra"] = prompt_extra
     if operation == "face_swap":
         params["model_ref_ids"] = "\n".join(_model_ref_ids(data))
+        source_model_refs = _source_model_ref_ids(data)
+        if source_model_refs:
+            params["source_model_ref_ids"] = source_model_refs
         params["model_groups"] = []
     elif operation == "background_swap":
         params["background_prompt"] = compact(data.get("background_prompt"))

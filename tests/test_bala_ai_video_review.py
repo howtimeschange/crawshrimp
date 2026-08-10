@@ -221,6 +221,72 @@ def test_refresh_materializes_remote_ai_result_before_marking_pending(tmp_path, 
     assert refreshed["status"] == "pending_approval"
 
 
+def test_refresh_polls_ai_job_before_materializing_review_asset(tmp_path, monkeypatch):
+    generated = tmp_path / "generated-after-poll.png"
+    generated.write_bytes(b"\x89PNG\r\n\x1a\n")
+    remote_url = "https://img.example/generated-after-poll.png"
+    refresh_calls = []
+    materialize_calls = []
+
+    monkeypatch.setattr(review.data_sink, "get_ai_image_job", lambda _job_uid: {
+        "job_uid": "job-late",
+        "status": "running",
+        "summary": {
+            "runs": [{
+                "run_uid": "run-late",
+                "status": "running",
+                "image_urls": [],
+            }],
+        },
+    })
+    monkeypatch.setattr(review.data_sink, "list_ai_image_assets", lambda _job_uid: [])
+
+    def fake_refresher(job_uid, run_uid):
+        refresh_calls.append((job_uid, run_uid))
+        return {
+            "job_uid": job_uid,
+            "status": "completed",
+            "summary": {
+                "image_urls": [remote_url],
+                "runs": [{
+                    "run_uid": run_uid,
+                    "status": "completed",
+                    "image_urls": [remote_url],
+                }],
+            },
+        }
+
+    def fake_materialize(job_uid, url):
+        materialize_calls.append((job_uid, url))
+        return {"ok": True, "job_uid": job_uid, "url": url, "path": str(generated)}
+
+    monkeypatch.setattr(ai_image_service, "materialize_remote_image", fake_materialize)
+    batch = {
+        "batch_id": "bala-review-late",
+        "status": "generating",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [{
+                "id": "ai-late",
+                "kind": "ai",
+                "job_uid": "job-late",
+                "run_uid": "run-late",
+                "path": "",
+                "status": "generating",
+            }],
+        }],
+    }
+
+    refreshed = review.refresh_generated_assets(batch, job_refresher=fake_refresher)
+    asset = refreshed["items"][0]["assets"][0]
+
+    assert refresh_calls == [("job-late", "run-late")]
+    assert materialize_calls == [("job-late", remote_url)]
+    assert asset["path"] == str(generated)
+    assert asset["status"] == "pending"
+    assert refreshed["status"] == "pending_approval"
+
+
 @pytest.mark.parametrize("terminal_status", ["failed", "cancelled", "canceled", "expired"])
 def test_refresh_marks_terminal_ai_image_job_as_failed(terminal_status, monkeypatch):
     monkeypatch.setattr(review.data_sink, "get_ai_image_job", lambda _job_uid: {

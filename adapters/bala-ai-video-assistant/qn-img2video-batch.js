@@ -636,8 +636,9 @@
     const ids = []
     const seen = new Set()
     const patterns = [
-      /任务\s*ID\s*[:：]?\s*(\d{8,20})/gi,
-      /\btask\s*id\s*[:：]?\s*(\d{8,20})/gi,
+      /任务\s*(?:ID|id|编号|号)\s*[:：#=-]?\s*(\d{8,20})/gi,
+      /\btask\s*(?:id|no|number)?\s*[:：#=-]?\s*(\d{8,20})/gi,
+      /\b(?:taskId|taskID|task_id|task-id|videoTaskId|video_task_id|video-task-id|quickTaskId|quick_task_id|quick-task-id|taskNo|task_no|task-no)\b["'\s:：=#-]*(\d{8,20})/gi,
     ]
     for (const pattern of patterns) {
       pattern.lastIndex = 0
@@ -652,11 +653,113 @@
     return ids
   }
 
+  function addUniqueText(parts, value) {
+    const text = String(value ?? '').trim()
+    if (text) parts.push(text)
+  }
+
+  function accessibleDocuments(rootDocument = window.document) {
+    const docs = []
+    const seen = new Set()
+    const add = (doc) => {
+      if (!doc || seen.has(doc)) return
+      seen.add(doc)
+      docs.push(doc)
+    }
+    add(rootDocument)
+    for (let index = 0; index < docs.length && index < 8; index += 1) {
+      const doc = docs[index]
+      let frames = []
+      try {
+        frames = Array.from(doc?.querySelectorAll?.('iframe,frame') || [])
+      } catch {
+        frames = []
+      }
+      for (const frame of frames) {
+        try {
+          add(frame.contentDocument || frame.contentWindow?.document)
+        } catch {
+          // Cross-origin frames are not readable; the top page text/attrs remain best-effort.
+        }
+      }
+    }
+    return docs
+  }
+
+  function taskSearchValuesFromElement(element, includeText = false) {
+    const values = []
+    if (!element) return values
+    if (includeText) {
+      addUniqueText(values, element?.innerText)
+      if (element?.textContent !== element?.innerText) addUniqueText(values, element?.textContent)
+    }
+    const commonAttrs = [
+      'title',
+      'aria-label',
+      'data-task-id',
+      'data-taskid',
+      'data-video-task-id',
+      'data-quick-task-id',
+      'data-task-no',
+      'data-id',
+      'data-url',
+      'href',
+      'src',
+      'poster',
+      'id',
+    ]
+    for (const name of commonAttrs) {
+      const attrValue = elementAttribute(element, name)
+      addUniqueText(values, attrValue)
+      if (attrValue) addUniqueText(values, `${name}=${attrValue}`)
+    }
+    try {
+      for (const name of Array.from(element?.getAttributeNames?.() || [])) {
+        if (/task|video|url|href|src|data-|aria-label|title/i.test(name)) {
+          const attrValue = elementAttribute(element, name)
+          addUniqueText(values, attrValue)
+          if (attrValue) addUniqueText(values, `${name}=${attrValue}`)
+        }
+      }
+    } catch {
+      // Attribute enumeration is optional; common attribute names above cover the normal page.
+    }
+    const dataset = element?.dataset || {}
+    for (const [key, value] of Object.entries(dataset)) {
+      if (/task|video|url|id|no/i.test(key)) {
+        addUniqueText(values, value)
+        if (value) addUniqueText(values, `${key}=${value}`)
+      }
+    }
+    return values
+  }
+
+  function taskIdsFromElement(element, includeText = true) {
+    return taskIdsFromText(taskSearchValuesFromElement(element, includeText).join('\n'))
+  }
+
+  function documentElementsForTaskSearch(doc) {
+    const elements = []
+    try {
+      elements.push(...Array.from(doc?.querySelectorAll?.('*') || []))
+    } catch {
+      // Some dynamic roots can reject broad queries while mounting.
+    }
+    if (doc?.body) elements.push(doc.body)
+    return elements
+  }
+
   function collectVisibleTaskIds() {
-    const doc = window.document
     const parts = []
-    if (doc?.body?.innerText) parts.push(doc.body.innerText)
-    if (doc?.body?.textContent && doc.body.textContent !== doc.body.innerText) parts.push(doc.body.textContent)
+    for (const doc of accessibleDocuments()) {
+      addUniqueText(parts, doc?.body?.innerText)
+      if (doc?.body?.textContent !== doc?.body?.innerText) addUniqueText(parts, doc?.body?.textContent)
+      addUniqueText(parts, doc?.title)
+      for (const element of documentElementsForTaskSearch(doc)) {
+        for (const value of taskSearchValuesFromElement(element, false)) addUniqueText(parts, value)
+      }
+    }
+    addUniqueText(parts, window.location?.href)
     return taskIdsFromText(parts.join('\n'))
   }
 
@@ -754,15 +857,9 @@
 
   function taskCandidateElements(taskId) {
     const id = cleanText(taskId)
-    const doc = window.document
-    if (!id || !doc) return []
+    if (!id) return []
     const elements = []
-    try {
-      elements.push(...Array.from(doc.querySelectorAll?.('*') || []))
-    } catch {
-      // Some SPA roots can reject broad queries while mounting.
-    }
-    if (doc.body) elements.push(doc.body)
+    for (const doc of accessibleDocuments()) elements.push(...documentElementsForTaskSearch(doc))
     const seen = new Set()
     const candidates = []
     const add = (element) => {
@@ -771,7 +868,8 @@
       candidates.push(element)
     }
     for (const element of elements) {
-      if (!elementText(element).includes(id)) continue
+      const elementIds = taskIdsFromElement(element, true)
+      if (!elementText(element).includes(id) && !elementIds.includes(id)) continue
       let current = element
       for (let depth = 0; current && depth < 6; depth += 1) {
         add(current)
@@ -802,6 +900,86 @@
         source: 'page',
       }
     }
+    return null
+  }
+
+  function visibleTaskStatesFromPage() {
+    const states = []
+    const seen = new Set()
+    const addState = (taskId, videoUrl, sourceElement) => {
+      const id = cleanText(taskId)
+      const url = usableVideoUrl(videoUrl)
+      if (!id && !url) return
+      const key = `${id || 'no-id'}\n${url || 'no-video'}`
+      if (seen.has(key)) return
+      seen.add(key)
+      states.push({
+        task: { id, status: url ? 1 : 0 },
+        status: url ? 1 : 0,
+        statusText: url ? '页面已生成' : '页面可见',
+        parsedResult: {},
+        videoUrl: url,
+        coverUrl: '',
+        contentId: '',
+        fileId: '',
+        errorNotice: '',
+        done: !!url,
+        failed: false,
+        source: 'page',
+        sourceText: elementText(sourceElement).slice(0, 200),
+      })
+    }
+
+    for (const doc of accessibleDocuments()) {
+      let videoNodes = []
+      try {
+        videoNodes = Array.from(doc?.querySelectorAll?.([
+          'video',
+          'source',
+          'a[href]',
+          '[data-video-url]',
+          '[data-video-src]',
+          '[data-play-url]',
+          '[data-download-url]',
+          '[data-url]',
+          '[data-src]',
+        ].join(',')) || [])
+      } catch {
+        videoNodes = []
+      }
+      if (doc?.body) videoNodes.push(doc.body)
+      for (const node of videoNodes) {
+        const videoUrl = firstVideoUrlInElement(node)
+        if (!videoUrl) continue
+        let current = node
+        let addedWithId = false
+        for (let depth = 0; current && depth < 8; depth += 1) {
+          const ids = taskIdsFromElement(current, true)
+          for (const id of ids) {
+            addState(id, videoUrl, current)
+            addedWithId = true
+          }
+          current = current.parentElement || current.parentNode
+        }
+        if (!addedWithId) addState('', videoUrl, node)
+      }
+    }
+    return states
+  }
+
+  function findRecoverableVisibleTaskState(beforeIds = [], options = {}) {
+    const before = new Set((beforeIds || []).map(cleanText).filter(Boolean))
+    const states = visibleTaskStatesFromPage()
+    const newest = states.find(state => {
+      const id = cleanText(state?.task?.id)
+      return id && !before.has(id)
+    })
+    if (newest) return newest
+    if (options.allowKnownIds) {
+      const known = states.find(state => cleanText(state?.task?.id))
+      if (known) return known
+    }
+    if (options.allowIdlessVideo) return states.find(state => state?.videoUrl) || null
     return null
   }
 
@@ -1160,6 +1338,74 @@
     })
   }
 
+  function recoveredSubmitTaskId(pageState, recoveredTaskId = '') {
+    return cleanText(recoveredTaskId || pageState?.task?.id || pageState?.taskId)
+  }
+
+  function recoverSubmitWarning(pageState, recoveredTaskId = '', isFallback = false) {
+    if (pageState?.done && pageState?.videoUrl) {
+      return isFallback
+        ? '提交接口超时，未发现新的任务ID；已按页面可见已生成视频恢复'
+        : '提交接口超时，但已从页面已生成视频恢复'
+    }
+    if (recoveredTaskId) return '提交接口超时，但已从页面找回任务ID'
+    return '提交接口超时，正在从页面任务列表找回任务ID'
+  }
+
+  function continueRecoveredSubmit(activeJob, pageState, recoveredTaskId, attempts, visibleTaskIds, isFallback = false, baseShared = shared) {
+    const taskId = recoveredSubmitTaskId(pageState, recoveredTaskId)
+    const nextActiveJob = {
+      ...activeJob,
+      taskId,
+      submitWarning: recoverSubmitWarning(pageState, taskId, isFallback),
+    }
+    if (pageState?.done && pageState.videoUrl) {
+      const completedJob = {
+        ...nextActiveJob,
+        taskState: pageState,
+      }
+      if (baseShared.download_videos) {
+        return downloadUrls(
+          [videoDownloadItem(completedJob, pageState)],
+          'finalize_video_download',
+          {
+            ...baseShared,
+            active_job: completedJob,
+            active_poll_started_at: Date.now(),
+            active_poll_attempts: 0,
+            submit_recovery_attempts: attempts,
+            last_submit_recovery_task_ids: visibleTaskIds,
+            last_visible_submit_recovery_state: pageState,
+          },
+          {
+            sharedKey: 'last_download_result',
+            concurrency: baseShared.download_concurrency || 1,
+            timeoutSeconds: 300,
+            retryAttempts: 5,
+          },
+        )
+      }
+      return nextPhase('process_row', baseShared.submit_delay_ms || 0, {
+        ...finishActiveJob(completedJob, pageState, '已生成', '成功'),
+        submit_recovery_attempts: attempts,
+        last_submit_recovery_task_ids: visibleTaskIds,
+        last_visible_submit_recovery_state: pageState,
+      })
+    }
+    if (taskId) {
+      return nextPhase('poll_job', 0, {
+        ...baseShared,
+        active_job: nextActiveJob,
+        active_poll_started_at: Date.now(),
+        active_poll_attempts: 0,
+        submit_recovery_attempts: attempts,
+        last_submit_recovery_task_ids: visibleTaskIds,
+        last_visible_submit_recovery_state: pageState || null,
+      })
+    }
+    return null
+  }
+
   async function runProcessRowPhase() {
     const jobs = Array.isArray(shared.jobs) ? shared.jobs : []
     const index = Number(shared.job_index || 0)
@@ -1216,7 +1462,8 @@
     } catch (error) {
       if (payload && isSubmitServiceTimeoutError(error)) {
         const visibleTaskIds = collectVisibleTaskIds()
-        const recoveredTaskId = findNewTaskId(preSubmitTaskIds, visibleTaskIds)
+        const visiblePageState = findRecoverableVisibleTaskState(preSubmitTaskIds)
+        const recoveredTaskId = recoveredSubmitTaskId(visiblePageState, findNewTaskId(preSubmitTaskIds, visibleTaskIds))
         const now = Date.now()
         const activeJob = {
           ...job,
@@ -1226,9 +1473,11 @@
           submitTaskId: '',
           preSubmitTaskIds,
           submitError: error?.message || String(error),
-          submitWarning: recoveredTaskId
-            ? '提交接口超时，但已从页面找回任务ID'
-            : '提交接口超时，正在从页面任务列表找回任务ID',
+          submitWarning: recoverSubmitWarning(visiblePageState, recoveredTaskId),
+        }
+        if (visiblePageState?.done || recoveredTaskId) {
+          const recovered = continueRecoveredSubmit(activeJob, visiblePageState, recoveredTaskId, 1, visibleTaskIds, false, activeBase)
+          if (recovered) return recovered
         }
         return nextPhase(recoveredTaskId ? 'poll_job' : 'recover_submit_task', recoveredTaskId ? 0 : (shared.submit_recovery_interval_ms || 8000), {
           ...activeBase,
@@ -1264,22 +1513,16 @@
     const attempts = Number(shared.submit_recovery_attempts || 0) + 1
     const startedAt = Number(shared.submit_recovery_started_at || Date.now())
     const visibleTaskIds = collectVisibleTaskIds()
-    const recoveredTaskId = findNewTaskId(activeJob.preSubmitTaskIds || [], visibleTaskIds)
-    if (recoveredTaskId) {
-      return nextPhase('poll_job', 0, {
-        ...shared,
-        active_job: {
-          ...activeJob,
-          taskId: recoveredTaskId,
-          submitWarning: '提交接口超时，但已从页面找回任务ID',
-        },
-        active_poll_started_at: Date.now(),
-        active_poll_attempts: 0,
-        submit_recovery_attempts: attempts,
-        last_submit_recovery_task_ids: visibleTaskIds,
-      })
+    const timedOut = Date.now() - startedAt >= Number(shared.submit_recovery_timeout_ms || 180000)
+    const visiblePageState = findRecoverableVisibleTaskState(activeJob.preSubmitTaskIds || [], {
+      allowKnownIds: timedOut,
+    })
+    const recoveredTaskId = recoveredSubmitTaskId(visiblePageState, findNewTaskId(activeJob.preSubmitTaskIds || [], visibleTaskIds))
+    const recovered = continueRecoveredSubmit(activeJob, visiblePageState, recoveredTaskId, attempts, visibleTaskIds, timedOut && !!visiblePageState, shared)
+    if (recovered) {
+      return recovered
     }
-    if (Date.now() - startedAt >= Number(shared.submit_recovery_timeout_ms || 180000)) {
+    if (timedOut) {
       const state = { status: '', statusText: '提交超时', videoUrl: '', coverUrl: '', contentId: '' }
       return nextPhase('process_row', shared.submit_delay_ms || 0, {
         ...finishActiveJob(
@@ -1472,6 +1715,8 @@
       taskIdsFromText,
       collectVisibleTaskIds,
       usableVideoUrl,
+      visibleTaskStatesFromPage,
+      findRecoverableVisibleTaskState,
       visibleTaskStateFromPage,
       findNewTaskId,
       isSubmitServiceTimeoutError,

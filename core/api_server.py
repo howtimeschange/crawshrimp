@@ -298,7 +298,10 @@ def _run_jids(adapter_id: str, task_id: str, instance_uid: str = "") -> list[str
 
 
 def _task_accepts_queued_runs(adapter_id: str, task_id: str, params: Optional[dict] = None) -> bool:
-    return (adapter_id, task_id) == (BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID)
+    return (adapter_id, task_id) in {
+        (BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID),
+        (BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_FACE_BACKGROUND_TASK_ID),
+    }
 
 
 def _task_queue_snapshot(jid: str) -> list[dict]:
@@ -2714,6 +2717,48 @@ def _bala_models_for_generation(run_params: dict) -> tuple[list[dict], list[str]
     return selected, warnings
 
 
+def _bala_source_model_ref_ids(run_params: dict) -> dict[str, str]:
+    raw = (run_params or {}).get("source_model_ref_ids")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, str] = {}
+    for source_path, model_id in raw.items():
+        key = str(source_path or "").strip()
+        value = str(model_id or "").strip()
+        if key and value:
+            result[key] = value
+    return result
+
+
+def _bala_source_model_lookup_key(path: str | Path) -> str:
+    return str(Path(path).expanduser().resolve(strict=False))
+
+
+def _bala_source_models_for_generation(run_params: dict) -> tuple[dict[str, dict], list[str]]:
+    requested = _bala_source_model_ref_ids(run_params)
+    if not requested:
+        return {}, []
+    library, errors = _load_bala_model_library()
+    if errors:
+        return {}, errors
+    by_id = {str(item.get("id") or ""): item for item in library}
+    result: dict[str, dict] = {}
+    missing: list[str] = []
+    for source_path, model_id in requested.items():
+        item = by_id.get(model_id)
+        if not item:
+            missing.append(model_id)
+            continue
+        result[_bala_source_model_lookup_key(source_path)] = item
+    warnings = [f"未找到逐图指定模特图: {'、'.join(sorted(set(missing)))}"] if missing else []
+    return result, warnings
+
+
 def _bala_param_image_paths(run_params: dict, key: str) -> list[Path]:
     value = (run_params or {}).get(key)
     raw = value.get("paths") if isinstance(value, dict) else value
@@ -3020,22 +3065,36 @@ async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_con
     sources, source_errors = _bala_source_images_for_generation(run_params)
     models: list[dict] = [{}]
     model_warnings: list[str] = []
+    source_models: dict[str, dict] = {}
+    source_model_refs_requested = False
     if operation_type == "face_swap":
+        source_model_refs_requested = bool(_bala_source_model_ref_ids(run_params))
+        source_models, source_model_warnings = _bala_source_models_for_generation(run_params)
         models, model_warnings = _bala_models_for_generation(run_params)
+        model_warnings = [*source_model_warnings, *model_warnings]
     if source_errors and not sources:
         return [{**_bala_ai_error_row("；".join(source_errors)), "操作类型": operation_label}]
     if operation_type == "face_swap" and not models:
         return [{**_bala_ai_error_row("；".join(model_warnings or ["没有可用的巴拉 AI 模特素材"])), "操作类型": operation_label}]
+    if operation_type == "face_swap" and source_model_refs_requested and not source_models:
+        return [{**_bala_ai_error_row("；".join(model_warnings or ["逐图模特映射没有匹配到可用模特素材"])), "操作类型": operation_label}]
 
     max_combinations = _task_int_param(run_params, "max_combinations", 12, min_value=1, max_value=100)
     submit_async = str((run_params or {}).get("generation_mode") or "submit_async").strip() != "create_only"
     rows: list[dict] = []
     combinations: list[tuple[int, Path, dict]] = []
     for source_index, source_path in enumerate(sources, start=1):
-        for model_item in models:
-            combinations.append((source_index, source_path, model_item))
-            if len(combinations) >= max_combinations:
-                break
+        if operation_type == "face_swap" and source_models:
+            model_item = source_models.get(_bala_source_model_lookup_key(source_path))
+            if model_item:
+                combinations.append((source_index, source_path, model_item))
+            else:
+                model_warnings.append(f"源图未绑定模特: {source_path.name}")
+        else:
+            for model_item in models:
+                combinations.append((source_index, source_path, model_item))
+                if len(combinations) >= max_combinations:
+                    break
         if len(combinations) >= max_combinations:
             break
 
@@ -3077,7 +3136,8 @@ async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_con
 
     await wait_for_control({"records": len(rows), "current_row": len(rows), "phase": "create-ai-image-jobs"})
     if not rows:
-        return [{**_bala_ai_error_row("没有生成任何任务组合"), "操作类型": operation_label}]
+        detail = "；".join(model_warnings) if model_warnings else "没有生成任何任务组合"
+        return [{**_bala_ai_error_row(detail), "操作类型": operation_label}]
 
     review_mode = str((run_params or {}).get("review_mode") or "").strip()
     if review_mode == "create_review_batch":
@@ -7263,6 +7323,7 @@ class BalaMaterialExportAiInputRequest(BaseModel):
     operation_type: str = "face_swap"
     selected_asset_ids: List[str] = []
     model_ref_ids: List[str] = []
+    source_model_ref_ids: dict = {}
     background_prompt: str = ""
     garment_images: dict = {}
     outfit_reference_images: dict = {}
@@ -8329,6 +8390,31 @@ def _mutate_bala_review_batch_checked(batch_id: str, token: str, mutation: Calla
         raise HTTPException(404, str(exc)) from exc
 
 
+def _refresh_bala_ai_image_job_for_review(job_uid: str, run_uid: str = "") -> dict:
+    try:
+        return ai_image_service.refresh_workbench_run_once(
+            job_uid,
+            run_uid,
+            settings=_resolve_one_xm_settings(),
+        )
+    except ai_image_service.MissingModelKeyError as exc:
+        logger.info("Skip Bala review AI job refresh for %s: %s", job_uid, exc)
+    except Exception as exc:
+        logger.warning("Unable to refresh Bala review AI job %s/%s: %s", job_uid, run_uid, exc)
+    return data_sink.get_ai_image_job(job_uid) or {}
+
+
+def _refresh_bala_review_batch_checked(batch_id: str, token: str) -> dict:
+    return _mutate_bala_review_batch_checked(
+        batch_id,
+        token,
+        lambda batch: bala_ai_video_review.refresh_generated_assets(
+            batch,
+            job_refresher=_refresh_bala_ai_image_job_for_review,
+        ),
+    )
+
+
 def _bala_review_find_asset(batch: dict, asset_id: str) -> tuple[dict, dict]:
     target = str(asset_id or "").strip()
     for item in batch.get("items") or []:
@@ -8637,7 +8723,7 @@ def get_bala_ai_model_library_image(model_id: str):
 
 @app.get("/bala-ai-video-review/api/{batch_id}")
 def get_bala_ai_video_review_batch(batch_id: str, token: str = ""):
-    return _load_bala_review_batch_checked(batch_id, token)
+    return _refresh_bala_review_batch_checked(batch_id, token)
 
 
 @app.get("/bala-ai-video-review-workspace/api/batches")
@@ -8690,11 +8776,7 @@ def delete_bala_ai_video_review_asset(batch_id: str, asset_id: str, token: str =
 
 @app.post("/bala-ai-video-review/api/{batch_id}/refresh")
 def refresh_bala_ai_video_review_batch(batch_id: str, token: str = ""):
-    return _mutate_bala_review_batch_checked(
-        batch_id,
-        token,
-        bala_ai_video_review.refresh_generated_assets,
-    )
+    return _refresh_bala_review_batch_checked(batch_id, token)
 
 
 @app.post("/bala-ai-video-review/api/{batch_id}/regenerate")

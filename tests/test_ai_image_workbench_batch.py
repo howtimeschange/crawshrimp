@@ -274,6 +274,45 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
             "https://img.example/task-one-b.png",
         ])
 
+    def test_refresh_workbench_run_once_persists_provider_completion_without_waiting(self):
+        run_uid = "run-refresh-once"
+        data_sink.update_ai_image_job(self.job["job_uid"], {
+            "status": "running",
+            "summary": {
+                "runs": [{
+                    "run_uid": run_uid,
+                    "prompt": "one",
+                    "requested_count": 1,
+                    "status": "running",
+                    "provider_status": "running",
+                    "task_id": "task-refresh-once",
+                    "poll_url": "https://api.example/images/tasks/task-refresh-once",
+                    "poll_after": 5,
+                    "image_urls": [],
+                    "output_files": [],
+                }],
+            },
+        })
+        client = FakeWorkbenchClient(poll_responses=[{
+            "id": "task-refresh-once",
+            "status": "succeeded",
+            "data": [{"url": "https://img.example/refresh-once.png"}],
+        }])
+
+        refreshed = ai_image_service.refresh_workbench_run_once(
+            self.job["job_uid"],
+            run_uid,
+            settings=self._settings(),
+            client_factory=lambda *_args, **_kwargs: client,
+        )
+
+        self.assertEqual(client.get_calls, ["https://api.example/images/tasks/task-refresh-once"])
+        run = refreshed["summary"]["runs"][0]
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["provider_status"], "succeeded")
+        self.assertEqual(run["image_urls"], ["https://img.example/refresh-once.png"])
+        self.assertEqual(refreshed["status"], "completed")
+
     def test_poll_workbench_run_retries_transient_504_with_fresh_task(self):
         run_uid = "run-retry-504"
         data_sink.update_ai_image_job(self.job["job_uid"], {

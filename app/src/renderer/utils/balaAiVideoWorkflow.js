@@ -274,6 +274,38 @@ function materialFilenameKey(asset = {}) {
   return compact(asset?.filename || asset?.name || filenameFromPath(asset?.path)).toLocaleLowerCase()
 }
 
+function materialFolderKey(asset = {}) {
+  return compact(
+    asset?.folder
+    || asset?.cloudFolder
+    || asset?.cloud_folder
+    || asset?.__cloud_folder_path
+    || asset?.['选择文件夹'],
+  ).toLocaleLowerCase()
+}
+
+function sameMaterialAsset(left = {}, right = {}) {
+  const rightPath = compact(right?.path)
+  const rightId = compact(right?.id)
+  if (rightPath && compact(left?.path) === rightPath) return true
+  if (rightId && compact(left?.id) === rightId) return true
+
+  const leftFilename = materialFilenameKey(left)
+  const rightFilename = materialFilenameKey(right)
+  if (!leftFilename || leftFilename !== rightFilename) return false
+
+  const leftFolder = materialFolderKey(left)
+  const rightFolder = materialFolderKey(right)
+  return !leftFolder || !rightFolder || leftFolder === rightFolder
+}
+
+function materialDedupeKey(asset = {}) {
+  const filename = materialFilenameKey(asset)
+  if (!filename) return ''
+  const folder = materialFolderKey(asset)
+  return folder ? `${filename}@@${folder}` : filename
+}
+
 export function sortBalaMaterialAssets(assets = []) {
   return [...(assets || [])].sort((left, right) => {
     const selection = Number(Boolean(right?.selected)) - Number(Boolean(left?.selected))
@@ -302,14 +334,7 @@ function mergeMaterialAsset(existing = {}, incoming = {}) {
 export function mergeBalaMaterialAssets(existingAssets = [], incomingAssets = []) {
   const merged = (existingAssets || []).map(asset => ({ ...asset, versions: [...(asset?.versions || [])] }))
   for (const candidate of incomingAssets || []) {
-    const candidatePath = compact(candidate?.path)
-    const candidateId = compact(candidate?.id)
-    const candidateFilename = materialFilenameKey(candidate)
-    const index = merged.findIndex((asset) => (
-      (candidatePath && compact(asset?.path) === candidatePath)
-      || (candidateId && compact(asset?.id) === candidateId)
-      || (candidateFilename && materialFilenameKey(asset) === candidateFilename)
-    ))
+    const index = merged.findIndex(asset => sameMaterialAsset(asset, candidate))
     if (index < 0) merged.push({ ...candidate, versions: [...(candidate?.versions || [])] })
     else merged[index] = mergeMaterialAsset(merged[index], candidate)
   }
@@ -584,7 +609,7 @@ function dedupeBalaMaterialGroup(group = {}) {
   for (const key of ['modelPhotos', 'detailPhotos', 'otherPhotos']) {
     result[key] = result[key].filter((asset) => {
       asset.selected = Boolean(asset.selected || isBalaAiNamedMaterial(asset.filename || asset.name || asset.path))
-      const filename = materialFilenameKey(asset)
+      const filename = materialDedupeKey(asset)
       if (!filename || !seenFilenames.has(filename)) {
         if (filename) seenFilenames.add(filename)
         return true
@@ -693,6 +718,19 @@ function materialAssetFromWorkspaceFile(file = {}) {
   }
 }
 
+function preserveRecoverableWorkspaceVersion(version = {}) {
+  if (version?.pending) return true
+  const status = compact(version?.status || version?.reviewStatus).toLowerCase()
+  if (['running', 'generating', 'queued'].includes(status)) return true
+  return Boolean(
+    compact(version?.jobUid || version?.job_uid)
+    || compact(version?.runUid || version?.run_uid)
+    || compact(version?.remoteAssetId || version?.remote_asset_id)
+    || compact(version?.reviewBoardUrl || version?.review_board_url)
+    || compact(version?.imageUrl || version?.image_url),
+  )
+}
+
 export function reconcileBalaWorkspaceFiles(existingGroups = [], files = []) {
   const preferredPaths = new Set((existingGroups || []).flatMap(group => (
     ['modelPhotos', 'detailPhotos', 'otherPhotos']
@@ -722,7 +760,7 @@ export function reconcileBalaWorkspaceFiles(existingGroups = [], files = []) {
           if (assetPath) changedPaths.add(assetPath)
         }
         asset.versions = (asset.versions || []).filter(version => (
-          !version?.previewPath || byPath.has(compact(version.previewPath))
+          !version?.previewPath || byPath.has(compact(version.previewPath)) || preserveRecoverableWorkspaceVersion(version)
         ))
         kept.push(asset)
         byPath.delete(assetPath)
@@ -885,8 +923,11 @@ export function isBalaVideoTaskSubmitEligible(task = {}, result = {}) {
     .map(value => String(value || '').trim().toLowerCase())
     .filter(Boolean)
     .join(' ')
+  const localVideoPath = [result?.path, result?.local_video_path]
+    .map(value => String(value || '').trim())
+    .find(value => value && isBalaVideoFilePath(value))
   const hasGeneratedOutput = Boolean(
-    String(result?.path || result?.local_video_path || result?.videoUrl || result?.video_url || '').trim(),
+    localVideoPath || String(result?.videoUrl || result?.video_url || '').trim(),
   )
   if (hasGeneratedOutput || /已下载|已生成|生成完成|已完成|downloaded|completed|succeeded/.test(status)) {
     return false
@@ -1233,20 +1274,39 @@ function persistedBalaWorkspaceVersion(version = {}) {
   }
 }
 
+function persistedBalaWorkspaceSource(source = {}, sourceType = 'model') {
+  return {
+    id: compact(source?.id),
+    path: compact(source?.path),
+    sourceType: compact(source?.sourceType || source?.source_type || sourceType),
+    name: compact(source?.name || source?.filename),
+    filename: compact(source?.filename || source?.name),
+    folder: compact(source?.folder || source?.cloudFolder || source?.cloud_folder),
+    selected: Boolean(source?.selected),
+    editSelected: Boolean(source?.editSelected),
+    reviewStatus: normalizeBalaReviewStatus(source?.reviewStatus || source?.status),
+    remoteAssetId: compact(source?.remoteAssetId || source?.remote_asset_id),
+    reviewBoardUrl: compact(source?.reviewBoardUrl || source?.review_board_url),
+    versions: (source?.versions || [])
+      .filter(version => !version?.deleted)
+      .map(persistedBalaWorkspaceVersion),
+  }
+}
+
 export function serializeBalaImageWorkspaceState(styleWorkspaces = []) {
-  return (styleWorkspaces || []).map(style => ({
-    styleCode: compact(style?.styleCode || style?.style_code),
-    modelPhotos: (style?.modelPhotos || []).map(source => ({
-      id: compact(source?.id),
-      path: compact(source?.path),
-      reviewStatus: normalizeBalaReviewStatus(source?.reviewStatus || source?.status),
-      remoteAssetId: compact(source?.remoteAssetId || source?.remote_asset_id),
-      reviewBoardUrl: compact(source?.reviewBoardUrl || source?.review_board_url),
-      versions: (source?.versions || [])
-        .filter(version => !version?.deleted)
-        .map(persistedBalaWorkspaceVersion),
-    })).filter(source => source.id || source.path),
-  })).filter(style => style.styleCode && style.modelPhotos.length)
+  return (styleWorkspaces || []).map((style) => {
+    const modelPhotos = (style?.modelPhotos || [])
+      .map(source => persistedBalaWorkspaceSource(source, 'model'))
+      .filter(source => source.id || source.path)
+    const detailPhotos = (style?.detailPhotos || [])
+      .map(source => persistedBalaWorkspaceSource(source, 'detail'))
+      .filter(source => source.id || source.path)
+    return {
+      styleCode: compact(style?.styleCode || style?.style_code),
+      modelPhotos,
+      detailPhotos,
+    }
+  }).filter(style => style.styleCode && (style.modelPhotos.length || style.detailPhotos.length))
 }
 
 export function restoreBalaImageWorkspaceState(styleWorkspaces = [], snapshot = []) {
@@ -1254,16 +1314,21 @@ export function restoreBalaImageWorkspaceState(styleWorkspaces = [], snapshot = 
   for (const style of styleWorkspaces || []) {
     const savedStyle = savedStyles.get(compact(style?.styleCode || style?.style_code))
     if (!savedStyle) continue
-    for (const source of style?.modelPhotos || []) {
-      const savedSource = (savedStyle.modelPhotos || []).find(candidate => (
-        (compact(source?.id) && compact(source?.id) === compact(candidate?.id))
-        || (compact(source?.path) && compact(source?.path) === compact(candidate?.path))
-      ))
-      if (!savedSource) continue
-      source.reviewStatus = normalizeBalaReviewStatus(savedSource.reviewStatus)
-      source.remoteAssetId = compact(savedSource.remoteAssetId || savedSource.remote_asset_id)
-      source.reviewBoardUrl = compact(savedSource.reviewBoardUrl || savedSource.review_board_url)
-      source.versions = mergeBalaWorkspaceVersions(source.versions, savedSource.versions)
+    for (const key of ['modelPhotos', 'detailPhotos']) {
+      const savedSources = savedStyle[key] || []
+      for (const source of style?.[key] || []) {
+        const savedSource = savedSources.find(candidate => (
+          (compact(source?.id) && compact(source?.id) === compact(candidate?.id))
+          || (compact(source?.path) && compact(source?.path) === compact(candidate?.path))
+        ))
+        if (!savedSource) continue
+        source.selected = Boolean(source.selected || savedSource.selected)
+        source.editSelected = Boolean(source.editSelected || savedSource.editSelected)
+        source.reviewStatus = normalizeBalaReviewStatus(savedSource.reviewStatus)
+        source.remoteAssetId = compact(savedSource.remoteAssetId || savedSource.remote_asset_id)
+        source.reviewBoardUrl = compact(savedSource.reviewBoardUrl || savedSource.review_board_url)
+        source.versions = mergeBalaWorkspaceVersions(source.versions, savedSource.versions)
+      }
     }
   }
   return styleWorkspaces

@@ -130,6 +130,39 @@ test('material recall keeps one card per filename inside the same style and sour
   assert.equal(merged[0].modelPhotos[0].selected, true)
 })
 
+test('material recall keeps same filename from different selected cloud folders', () => {
+  const merged = balaWorkflow.mergeBalaMaterialGroups([{
+    styleCode: '208326121202',
+    modelPhotos: [{
+      id: 'selected-june',
+      path: '/tmp/june/208326121202-01315.jpg',
+      name: '208326121202-01315.jpg',
+      folder: '模拍原图/期货/2P/中童/208326121202-品类已回5.21-AI新回字6.5已选6.5',
+      selected: true,
+      versions: [],
+    }],
+    detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [],
+  }], [{
+    styleCode: '208326121202',
+    modelPhotos: [{
+      id: 'selected-july',
+      path: '/tmp/july/208326121202-01315.jpg',
+      name: '208326121202-01315.jpg',
+      folder: '模拍原图/期货/2P/中童/208326121202-卫衣-已选7.24',
+      selected: true,
+      versions: [],
+    }],
+    detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [],
+  }])
+
+  assert.equal(merged[0].modelPhotos.length, 2)
+  assert.deepEqual(merged[0].modelPhotos.map(asset => asset.folder), [
+    '模拍原图/期货/2P/中童/208326121202-品类已回5.21-AI新回字6.5已选6.5',
+    '模拍原图/期货/2P/中童/208326121202-卫衣-已选7.24',
+  ])
+  assert.equal(merged[0].modelPhotos.every(asset => asset.selected), true)
+})
+
 test('material batch recovery includes restored AI result versions and relinks new batch ids', () => {
   const groups = [{
     styleCode: '208326102205',
@@ -268,9 +301,45 @@ test('workspace file sync invalidates thumbnails only for paths that actually ch
   const end = source.indexOf('\nasync function syncWorkspaceFiles', start)
   const syncSource = source.slice(start, end)
 
-  assert.match(syncSource, /reconcileBalaWorkspaceFiles\(styleWorkspaces, files\)/)
+  assert.match(syncSource, /const visibleFiles = filesAfterMaterialRecallClear\(files\)/)
+  assert.match(syncSource, /reconcileBalaWorkspaceFiles\(styleWorkspaces, visibleFiles\)/)
   assert.match(syncSource, /releaseWorkspaceImagePreviews\(result\.changedPaths\)/)
   assert.doesNotMatch(syncSource, /releaseWorkspacePreviews\(\)/)
+})
+
+test('material workspace exposes a clear recalled history action that filters old scanned files', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(source, /materialRecallClearedAt/)
+  assert.match(source, /materialRecallStyleClearedAt/)
+  assert.doesNotMatch(source, /清空回显记录/)
+  assert.match(source, /清空所有/)
+  assert.match(source, /清空本款/)
+  assert.match(source, /class="aiv-danger small aiv-material-clear-all"/)
+  assert.match(source, /@click="requestMaterialRecallClearAll"/)
+  assert.match(source, /class="aiv-material-style-tab-clear"/)
+  assert.match(source, /@click\.stop="requestMaterialRecallClearForStyle\(item\.styleCode\)"/)
+  assert.match(source, /class="aiv-material-style-tabbar"/)
+  assert.match(source, /pendingMaterialRecallClear/)
+  assert.match(source, /function confirmMaterialRecallClear/)
+  assert.match(source, /materialGroups\.length/)
+  assert.doesNotMatch(source, /materialGroups\.value\.length/)
+  assert.match(source, /function clearMaterialRecallHistoryForStyle/)
+  assert.match(source, /function workspaceFileStyleCode\(file = \{\}\)/)
+  assert.match(source, /function filesAfterMaterialRecallClear\(files = \[\]\)/)
+  assert.match(source, /hasGlobalClear && modifiedAt <= clearedAt/)
+  assert.match(source, /materialRecallStyleClearedAt\[workspaceFileStyleCode\(file\)\]/)
+})
+
+test('AI image submit clears only the selected input state after task acceptance', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const submitStart = source.indexOf('async function startAiImageGeneration()')
+  const submitEnd = source.indexOf('\nasync function pollAiImageTask', submitStart)
+  const submitSource = source.slice(submitStart, submitEnd)
+
+  assert.match(source, /function clearAiEditInputSelections\(entries = \[\]\)/)
+  assert.match(submitSource, /if \(!result\?\.ok\) throw new Error/)
+  assert.match(submitSource, /clearAiEditInputSelections\(selectedSources\)/)
+  assert.match(submitSource, /if \(result\.queued && queuedRequestId\)/)
 })
 
 test('workspace snapshot restore normalizes cached material groups before rendering', () => {
@@ -760,6 +829,8 @@ test('AI video workflow wires outfit references and settings handoff in the fixe
   assert.match(source, /outfit_reference_images/)
   assert.match(source, /variant_reference_images/)
   assert.match(source, /开始生图/)
+  assert.match(source, /继续提交生图/)
+  assert.doesNotMatch(source, /:disabled="aiIsRunning \|\| !configuredAiImageModels\.length"/)
   assert.match(source, /emit\('open-settings', 'ai-video'\)/)
   assert.match(appSource, /<AiVideoWorkflow[\s\S]*@open-settings="openSettingsPanel"/)
 })
@@ -1079,7 +1150,7 @@ test('video generation keeps task controls independent, submits asynchronously, 
   const templateSource = source.split('<script setup>')[0]
 
   assert.match(source, /const videoTaskBusyIds = reactive\(new Set\(\)\)/)
-  assert.match(templateSource, /:disabled="isVideoTaskBusy\(task\) \|\| \(!isVideoTaskSubmittable\(task\) && !videoTaskHasViewableResult\(task\)\)"[^>]*@click="handleVideoTaskAction\(task\)">\{\{ videoTaskActionLabel\(task\) \}\}/)
+  assert.match(templateSource, /:disabled="isVideoTaskBusy\(task\) \|\| \(!videoTaskNeedsRerun\(task\) && !isVideoTaskSubmittable\(task\) && !videoTaskHasViewableResult\(task\)\)"[^>]*@click="handleVideoTaskAction\(task\)">\{\{ videoTaskActionLabel\(task\) \}\}/)
   assert.doesNotMatch(templateSource, /@click="runVideoTask\(task, 'live'\)">授权生成并下载<\/button>/)
   assert.match(source, /wait:\s*false/)
   assert.match(source, /finally\s*\{[\s\S]*?videoTaskBusyIds\.delete\(/)
@@ -1144,11 +1215,19 @@ test('failed video tasks expose a one-click rerun path', () => {
   const templateSource = source.split('<script setup>')[0]
 
   assert.match(source, /function videoTaskHasFailedResult\(task = \{\}\)/)
-  assert.match(source, /function videoTaskActionLabel\(task = \{\}\)[\s\S]*?return '重跑'/)
+  assert.match(source, /function videoTaskHasFailedState\(task = \{\}\)/)
+  assert.match(source, /function videoTaskNeedsRerun\(task = \{\}\)[\s\S]*?!videoTaskHasViewableResult\(task\)[\s\S]*?videoTaskHasFailedResult\(task\)[\s\S]*?videoTaskHasFailedState\(task\)/)
+  assert.doesNotMatch(source, /function videoTaskNeedsRerun\(task = \{\}\)[\s\S]*?return isVideoTaskSubmittable\(task\)/)
+  assert.match(source, /function videoTaskActionLabel\(task = \{\}\)[\s\S]*?return '失败重跑'/)
+  assert.match(source, /async function handleVideoTaskAction\(task = \{\}\)[\s\S]*?if \(videoTaskNeedsRerun\(task\)\) \{[\s\S]*?await rerunVideoTask\(task, 'live'\)/)
   assert.match(source, /async function rerunVideoTask\(task = \{\}, mode = 'live'\)/)
   assert.match(source, /function clearVideoTaskResultRecords\(task = \{\}\)[\s\S]*?clearBalaVideoTaskHistory/)
+  assert.match(source, /status:\s*'失败'[\s\S]*?path:\s*''[\s\S]*?error:\s*videoStageState\.error/)
+  assert.match(source, /function canRerunVideoResult\(item = \{\}\)[\s\S]*?videoResultStage\(item\)\.id === 'failed'[\s\S]*?!videoResultHasOutput\(item\)/)
+  assert.doesNotMatch(source, /function canRerunVideoResult\(item = \{\}\)[\s\S]*?isVideoTaskSubmittable\(task\)/)
   assert.match(source, /async function rerunVideoResult\(item = \{\}\)/)
   assert.match(templateSource, /@click="rerunVideoResult\(item\)">重跑<\/button>/)
+  assert.match(templateSource, /v-if="!videoResultHasOutput\(item\) && !canRerunVideoResult\(item\) && !canRefreshVideoResult\(item\) && !canDownloadVideoResult\(item\)"/)
 })
 
 test('TaskRunner opens Bala image review drawer after AI generation', () => {
@@ -1324,14 +1403,15 @@ test('AI video task summary uses live counts and failed results expose their rea
   assert.match(templateSource, /\{\{ item\.error \}\}/)
 })
 
-test('failed video results without an output hide file actions and return to generation', () => {
+test('failed video results without an output hide file actions and prefer rerun before returning to generation', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const templateSource = source.split('<script setup>')[0]
 
   assert.match(templateSource, /v-if="videoResultHasOutput\(item\)"[^>]*@click="openVideoResult\(item\)"/)
   assert.match(templateSource, /v-else-if="canRefreshVideoResult\(item\)"[^>]*@click="refreshSingleVideoResult\(item\)"/)
   assert.match(templateSource, /v-else-if="canDownloadVideoResult\(item\)"[^>]*@click="downloadVideoResult\(item\)"/)
-  assert.match(templateSource, /v-if="!videoResultHasOutput\(item\) && !canRefreshVideoResult\(item\) && !canDownloadVideoResult\(item\)"[\s\S]{0,180}@click="activeStep = 'templates'"/)
+  assert.match(templateSource, /v-else-if="canRerunVideoResult\(item\)"[^>]*@click="rerunVideoResult\(item\)"/)
+  assert.match(templateSource, /v-if="!videoResultHasOutput\(item\) && !canRerunVideoResult\(item\) && !canRefreshVideoResult\(item\) && !canDownloadVideoResult\(item\)"[\s\S]{0,220}@click="activeStep = 'templates'"/)
 })
 
 test('video task directory and image pickers use accessible explicit controls', () => {
@@ -1343,7 +1423,7 @@ test('video task directory and image pickers use accessible explicit controls', 
   assert.doesNotMatch(templateSource, /@dblclick="openImagePreview\(asset, videoTaskDraft\.styleCode\)"/)
   assert.match(templateSource, /:aria-pressed="videoTaskDraft\.assetIds\.includes\(asset\.id\)"/)
   assert.match(templateSource, /:aria-pressed="asset\.selected"/)
-  assert.match(templateSource, /:aria-pressed="selectedModel\?\.id === model\.id"/)
+  assert.match(templateSource, /:aria-pressed="modelLibraryCardSelected\(model\)"/)
   assert.match(templateSource, /:aria-pressed="selectedTemplateId === template\.id"/)
   assert.match(templateSource, /class="aiv-vtask-card-zoom"/)
 })
@@ -1461,6 +1541,9 @@ test('deleting an AI result requires confirmation and removes the authorized loc
   assert.doesNotMatch(deleteSource, /reviewAsset\?\.reviewBoardUrl \|\| reviewBoardUrl\.value/)
   assert.doesNotMatch(source, /lastDeletedVersion/)
   assert.doesNotMatch(templateSource, /撤销删除/)
+  assert.match(source, /function reviewAssetsForGeneratedVersion/)
+  assert.match(source, /const archiveAsset = reviewAsset \|\|/)
+  assert.match(source, /await archiveReviewAssetToWorkspace\(archiveAsset, styleCode\)/)
 })
 
 test('precise image edits archive the generated result inside the selected workspace before adding history', () => {
@@ -1719,14 +1802,30 @@ test('AI image workspace metadata survives reload without persisting thumbnail p
         status: 'approved',
       }],
     }],
+    detailPhotos: [{
+      id: 'detail-1',
+      path: '/tmp/detail.jpg',
+      thumbnailDataUrl: 'data:image/webp;base64,detail-payload',
+      reviewStatus: 'pending',
+      versions: [{
+        id: 'detail-version',
+        remoteAssetId: '208326102205-ai-detail-1',
+        jobUid: 'detail-job',
+        operationType: 'background_swap',
+        previewPath: '/tmp/detail-ai.png',
+        status: 'pending',
+      }],
+    }],
   }]
 
   const snapshot = balaWorkflow.serializeBalaImageWorkspaceState(original)
   assert.doesNotMatch(JSON.stringify(snapshot), /huge-payload/)
+  assert.doesNotMatch(JSON.stringify(snapshot), /detail-payload/)
 
   const restored = [{
     styleCode: '208326102205',
     modelPhotos: [{ id: 'source-1', path: '/tmp/source.jpg', versions: [] }],
+    detailPhotos: [{ id: 'detail-1', path: '/tmp/detail.jpg', versions: [] }],
   }]
   balaWorkflow.restoreBalaImageWorkspaceState(restored, snapshot)
 
@@ -1742,6 +1841,24 @@ test('AI image workspace metadata survives reload without persisting thumbnail p
     reviewBoardUrl: 'http://127.0.0.1/review/face?token=face',
     status: 'approved',
   }])
+  assert.deepEqual(restored[0].detailPhotos[0].versions.map(version => ({
+    jobUid: version.jobUid,
+    previewPath: version.previewPath,
+    status: version.status,
+  })), [{
+    jobUid: 'detail-job',
+    previewPath: '/tmp/detail-ai.png',
+    status: 'pending',
+  }])
+})
+
+test('AI face swap supports per-source model assignments in one batch', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(source, /const sourceModelAssignments = reactive\(\{\}\)/)
+  assert.match(source, /function openModelLibraryForSource\(source = \{\}, version = null\)/)
+  assert.match(source, /source_model_ref_ids: sourceModelRefIds/)
+  assert.match(source, /model_ref_ids: \[\.\.\.new Set\(modelRefIds\)\]/)
+  assert.match(source, /modelLibraryCardSelected\(model\)/)
 })
 
 test('workflow restores all persisted review batches and routes decisions through each asset board', () => {

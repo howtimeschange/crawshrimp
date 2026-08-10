@@ -491,6 +491,112 @@ test('recover_submit_task phase continues polling once the page exposes a new ta
   assert.deepEqual(result.meta.shared.results, [])
 })
 
+test('recover_submit_task phase finds new task ID from page attributes when body text is stale', async () => {
+  const job = directVideoJob()
+  const marker = makeDomElement({
+    attrs: { 'data-task-id': '162085738211', title: '最新任务' },
+    dataset: { taskId: '162085738211' },
+  })
+  const body = makeDomElement({
+    text: '历史任务\n任务ID 159228616426',
+    children: [marker],
+  })
+
+  const result = await runScript({
+    phase: 'recover_submit_task',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      active_job: {
+        ...job,
+        resolvedMaterials: job.materialRefs,
+        submitApi: 'mtop.taobao.qn.copilot.image.generate.video.submit',
+        taskId: '',
+        preSubmitTaskIds: ['159228616426'],
+        submitError: 'mtop.taobao.qn.copilot.image.generate.video.submit 返回失败：FAIL_SYS_SERVICE_TIMEOUT::请求服务超时',
+        submitWarning: '提交接口超时，正在从页面任务列表找回任务ID',
+      },
+      submit_recovery_started_at: Date.now(),
+      submit_recovery_attempts: 1,
+      submit_recovery_timeout_ms: 60000,
+      submit_recovery_interval_ms: 3000,
+      poll_interval_ms: 5000,
+    },
+    windowOverrides: {
+      document: {
+        body,
+        querySelectorAll() {
+          return [body, marker]
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'poll_job')
+  assert.equal(result.meta.shared.active_job.taskId, '162085738211')
+  assert.deepEqual(result.meta.shared.results, [])
+})
+
+test('recover_submit_task phase downloads visible completed video at recovery timeout', async () => {
+  const job = directVideoJob({ index: 52, outputDir: '/tmp/qn-video' })
+  const video = makeDomElement({
+    tagName: 'video',
+    attrs: { src: 'https://cdn.example/video/163470662368.mp4' },
+  })
+  const card = makeDomElement({
+    text: '任务ID 163470662368 展示视频 视频分镜',
+    children: [video],
+  })
+  const body = makeDomElement({
+    text: '任务ID 163470662368 展示视频 视频分镜',
+    children: [card],
+  })
+
+  const result = await runScript({
+    phase: 'recover_submit_task',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      active_job: {
+        ...job,
+        resolvedMaterials: job.materialRefs,
+        submitApi: 'mtop.taobao.qn.copilot.image.generate.video.submit',
+        taskId: '',
+        preSubmitTaskIds: ['163470662368'],
+        submitError: 'mtop.taobao.qn.copilot.image.generate.video.submit 返回失败：FAIL_SYS_SERVICE_TIMEOUT::请求服务超时',
+        submitWarning: '提交接口超时，正在从页面任务列表找回任务ID',
+      },
+      submit_recovery_started_at: Date.now() - 70000,
+      submit_recovery_attempts: 1,
+      submit_recovery_timeout_ms: 60000,
+      submit_recovery_interval_ms: 3000,
+      poll_interval_ms: 5000,
+      download_videos: true,
+      download_concurrency: 2,
+      output_dir: '/tmp/qn-video',
+    },
+    windowOverrides: {
+      document: {
+        body,
+        querySelectorAll() {
+          return [body, card, video]
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'download_urls')
+  assert.equal(result.meta.next_phase, 'finalize_video_download')
+  assert.equal(result.meta.items[0].url, 'https://cdn.example/video/163470662368.mp4')
+  assert.equal(result.meta.shared.active_job.taskId, '163470662368')
+  assert.equal(result.meta.shared.active_job.taskState.statusText, '页面已生成')
+  assert.match(result.meta.shared.active_job.submitWarning, /未发现新的任务ID|页面可见已生成视频/)
+})
+
 test('buildTemplatePayload uses action template generate API with uploaded image', async () => {
   const helpers = await loadExports()
   const [job] = helpers.buildJobs([

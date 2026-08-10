@@ -149,6 +149,8 @@ function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), f
         sourceType,
         isAi,
         version: `${stat.mtimeMs.toString(16)}-${stat.size.toString(16)}`,
+        modifiedAt: new Date(stat.mtimeMs).toISOString(),
+        mtimeMs: stat.mtimeMs,
         size: stat.size,
       })
     }

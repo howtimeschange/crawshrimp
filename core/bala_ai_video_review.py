@@ -411,7 +411,10 @@ def _job_failure_note(job: Mapping[str, Any], run_uid: str = "") -> str:
     return ""
 
 
-def refresh_generated_assets(batch: dict) -> dict:
+def refresh_generated_assets(
+    batch: dict,
+    job_refresher: Callable[[str, str], Mapping[str, Any] | None] | None = None,
+) -> dict:
     for asset in _all_assets(batch):
         if asset.get("kind") != "ai":
             continue
@@ -421,6 +424,10 @@ def refresh_generated_assets(batch: dict) -> dict:
             continue
         job_uid = _text(asset.get("job_uid"))
         job = data_sink.get_ai_image_job(job_uid) or {} if job_uid else {}
+        if job_uid and job_refresher and asset.get("status") in {STATUS_GENERATING, "running", "queued", "pending_generation"}:
+            refreshed = job_refresher(job_uid, _text(asset.get("run_uid")))
+            if isinstance(refreshed, Mapping):
+                job = refreshed
         paths = _job_output_paths(job_uid, job)
         if not paths:
             failure_note = _job_failure_note(job, _text(asset.get("run_uid")))

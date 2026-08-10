@@ -112,6 +112,8 @@ test('workspace image listing only returns real regular images with their curren
     assert.equal(assets[0].styleCode, '208326102205')
     assert.equal(assets[0].sourceType, 'model')
     assert.match(assets[0].version, /-/)
+    assert.equal(typeof assets[0].mtimeMs, 'number')
+    assert.equal(Number.isFinite(Date.parse(assets[0].modifiedAt)), true)
   })
 })
 

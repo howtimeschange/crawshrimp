@@ -151,38 +151,64 @@
               <strong>素材回显</strong>
               <span>按款号分组选择进入 AI 改图的模拍图和细节图</span>
             </div>
-            <div class="aiv-material-header-stats" aria-label="找图批次概览">
-              <div class="aiv-material-stat">
-                <strong>{{ materialGroups.length }}</strong>
-                <span>款号</span>
+            <div class="aiv-material-header-side">
+              <div class="aiv-material-header-stats" aria-label="找图批次概览">
+                <div class="aiv-material-stat">
+                  <strong>{{ materialGroups.length }}</strong>
+                  <span>款号</span>
+                </div>
+                <div class="aiv-material-stat">
+                  <strong>{{ materialSummary.modelCount + materialSummary.detailCount }}</strong>
+                  <span>已回显素材</span>
+                </div>
+                <div class="aiv-material-stat selected">
+                  <strong>{{ selectedMaterialCount }}</strong>
+                  <span>已选择</span>
+                </div>
+                <p class="aiv-material-selection-summary">{{ materialTaskStage.detail }}</p>
               </div>
-              <div class="aiv-material-stat">
-                <strong>{{ materialSummary.modelCount + materialSummary.detailCount }}</strong>
-                <span>已回显素材</span>
-              </div>
-              <div class="aiv-material-stat selected">
-                <strong>{{ selectedMaterialCount }}</strong>
-                <span>已选择</span>
-              </div>
-              <p class="aiv-material-selection-summary">{{ materialTaskStage.detail }}</p>
+              <button
+                type="button"
+                class="aiv-danger small aiv-material-clear-all"
+                :disabled="materialIsRunning"
+                @click="requestMaterialRecallClearAll"
+              >
+                清空所有
+              </button>
             </div>
           </header>
-          <div class="aiv-material-style-tabs" role="tablist" aria-label="素材款号">
-            <button
-              v-for="item in materialGroups"
-              :id="`material-style-tab-${item.styleCode}`"
-              :key="item.styleCode"
-              type="button"
-              role="tab"
-              :class="{ active: activeMaterialStyleCode === item.styleCode }"
-              :aria-selected="activeMaterialStyleCode === item.styleCode"
-              :aria-controls="`material-style-panel-${item.styleCode}`"
-              :tabindex="activeMaterialStyleCode === item.styleCode ? 0 : -1"
-              @click="selectMaterialStyle(item.styleCode)"
-            >
-              <strong>{{ item.styleCode }}</strong>
-              <span>{{ item.modelPhotos.length }} 模拍 / {{ item.detailPhotos.length }} 细节</span>
-            </button>
+          <div class="aiv-material-style-tabbar">
+            <div class="aiv-material-style-tabs" role="tablist" aria-label="素材款号">
+              <div
+                v-for="item in materialGroups"
+                :key="item.styleCode"
+                :class="['aiv-material-style-tab-item', { active: activeMaterialStyleCode === item.styleCode }]"
+              >
+                <button
+                  :id="`material-style-tab-${item.styleCode}`"
+                  type="button"
+                  class="aiv-material-style-tab"
+                  role="tab"
+                  :aria-selected="activeMaterialStyleCode === item.styleCode"
+                  :aria-controls="`material-style-panel-${item.styleCode}`"
+                  :tabindex="activeMaterialStyleCode === item.styleCode ? 0 : -1"
+                  @click="selectMaterialStyle(item.styleCode)"
+                >
+                  <strong>{{ item.styleCode }}</strong>
+                  <span>{{ item.modelPhotos.length }} 模拍 / {{ item.detailPhotos.length }} 细节</span>
+                </button>
+                <button
+                  type="button"
+                  class="aiv-material-style-tab-clear"
+                  :disabled="materialIsRunning"
+                  :aria-label="`清空 ${item.styleCode} 本款回显记录`"
+                  title="清空本款"
+                  @click.stop="requestMaterialRecallClearForStyle(item.styleCode)"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
           </div>
 
           <div v-if="activeMaterialGroup" class="aiv-material-source-switcher">
@@ -450,7 +476,7 @@
 
             <label class="aiv-field">
               <span>生图模型</span>
-              <select v-if="configuredAiImageModels.length" v-model="selectedAiImageModelId" :disabled="aiIsRunning">
+              <select v-if="configuredAiImageModels.length" v-model="selectedAiImageModelId">
                 <option v-for="model in configuredAiImageModels" :key="model.id" :value="model.id">{{ model.label }}</option>
               </select>
               <div v-else class="aiv-model-config-empty">
@@ -486,10 +512,10 @@
             <button
               type="button"
               class="aiv-primary wide"
-              :disabled="aiIsRunning || !configuredAiImageModels.length"
+              :disabled="!configuredAiImageModels.length"
               @click="startAiImageGeneration"
             >
-              {{ aiIsRunning ? '正在生图...' : '开始生图' }}
+              {{ aiIsRunning ? '继续提交生图' : '开始生图' }}
             </button>
             <button type="button" class="aiv-ghost wide" @click="sendReviewToVideo">进入生视频</button>
           </footer>
@@ -591,6 +617,32 @@
                         </button>
                       </div>
                     </article>
+                    <div v-if="activeAction === 'face_swap'" class="aiv-source-model-assignment">
+                      <div class="aiv-source-model-thumb">
+                        <img
+                          v-if="sourceModelPreviewSource(source) && !brokenPreviews[sourceModelPreviewSource(source)]"
+                          :src="sourceModelPreviewSource(source)"
+                          :alt="sourceModelAlt(source)"
+                          @error="markPreviewBroken(sourceModelPreviewSource(source))"
+                        />
+                        <span v-else aria-hidden="true">模特</span>
+                      </div>
+                      <div class="aiv-source-model-copy">
+                        <span>换脸模特</span>
+                        <strong :title="sourceModelLabel(source)">{{ sourceModelLabel(source) }}</strong>
+                      </div>
+                      <button type="button" class="aiv-ghost small" @click="openModelLibraryForSource(source)">
+                        {{ sourceAssignedModel(source) ? '更换' : '指定' }}
+                      </button>
+                      <button
+                        v-if="sourceAssignedModel(source)"
+                        type="button"
+                        class="aiv-ghost small"
+                        @click="clearSourceModelAssignment(source)"
+                      >
+                        清除
+                      </button>
+                    </div>
                   </section>
                   <span class="aiv-edit-lane-connector" aria-hidden="true">→</span>
                   <section class="aiv-edit-ai-zone" aria-label="AI 改图区">
@@ -919,7 +971,7 @@
                 <button v-if="task.provider === 'qn'" type="button" class="aiv-ghost small" @click="openTemplateLibrary(task.styleCode)">模板</button>
                 <button v-if="task.provider !== 'qn'" type="button" class="aiv-ghost small" @click="openAiCapabilitySettings(task.provider)">配置</button>
                 <button type="button" class="aiv-ghost small" :disabled="isVideoTaskBusy(task) || !isVideoTaskSubmittable(task)" @click="runVideoTask(task, 'plan')">预检</button>
-                <button type="button" class="aiv-primary small" :disabled="isVideoTaskBusy(task) || (!isVideoTaskSubmittable(task) && !videoTaskHasViewableResult(task))" @click="handleVideoTaskAction(task)">{{ videoTaskActionLabel(task) }}</button>
+                <button type="button" class="aiv-primary small" :disabled="isVideoTaskBusy(task) || (!videoTaskNeedsRerun(task) && !isVideoTaskSubmittable(task) && !videoTaskHasViewableResult(task))" @click="handleVideoTaskAction(task)">{{ videoTaskActionLabel(task) }}</button>
               </div>
             </div>
           </article>
@@ -1010,7 +1062,7 @@
                     <button v-if="videoResultHasOutput(item)" type="button" class="aiv-primary small" @click="openVideoResult(item)">打开文件</button>
                     <button v-if="isClearableVideoResult(item)" type="button" class="aiv-ghost small aiv-result-clear" @click="requestClearVideoResult(item)">清除</button>
                     <button
-                      v-if="!videoResultHasOutput(item) && !canRefreshVideoResult(item) && !canDownloadVideoResult(item)"
+                      v-if="!videoResultHasOutput(item) && !canRerunVideoResult(item) && !canRefreshVideoResult(item) && !canDownloadVideoResult(item)"
                       type="button"
                       class="aiv-primary small"
                       @click="activeStep = 'templates'"
@@ -1286,6 +1338,38 @@
       </section>
     </div>
 
+    <div v-if="pendingMaterialRecallClear" class="aiv-modal" @click.self="closeMaterialRecallClearConfirmation">
+      <section
+        class="aiv-modal-panel aiv-confirm-panel"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="aiv-material-clear-title"
+        aria-describedby="aiv-material-clear-description"
+        tabindex="-1"
+        data-aiv-dialog
+        @keydown.esc.prevent="closeMaterialRecallClearConfirmation"
+        @keydown="trapDialogFocus"
+      >
+        <header class="aiv-modal-head">
+          <div>
+            <strong id="aiv-material-clear-title">{{ materialRecallClearTitle }}</strong>
+            <span>{{ materialRecallClearSubtitle }}</span>
+          </div>
+        </header>
+        <div class="aiv-confirm-copy">
+          <strong>{{ materialRecallClearSummary }}</strong>
+          <span id="aiv-material-clear-description">旧图片文件仍保留在工作区；确认后当前回显列表会清空，下一次找图只回显新生成的素材。</span>
+        </div>
+        <footer class="aiv-modal-foot">
+          <span>此操作会同步清理后续 AI 改图和生视频的本地工作台状态</span>
+          <div class="aiv-modal-foot-actions">
+            <button type="button" class="aiv-ghost" @click="closeMaterialRecallClearConfirmation">取消</button>
+            <button type="button" class="aiv-danger" @click="confirmMaterialRecallClear">确认清空</button>
+          </div>
+        </footer>
+      </section>
+    </div>
+
     <PromptLibraryPickerModal
       :open="promptLibraryOpen"
       title="从 Prompt 库选择"
@@ -1441,13 +1525,13 @@
               <article
                 v-for="model in modelSamples"
                 :key="model.id"
-                :class="['aiv-model-card', { selected: selectedModel?.id === model.id }]"
+                :class="['aiv-model-card', { selected: modelLibraryCardSelected(model) }]"
                 role="button"
                 tabindex="0"
-                :aria-pressed="selectedModel?.id === model.id"
-                @click="selectedModel = model"
-                @keydown.enter.prevent="selectedModel = model"
-                @keydown.space.prevent="selectedModel = model"
+                :aria-pressed="modelLibraryCardSelected(model)"
+                @click="selectModelFromLibrary(model)"
+                @keydown.enter.prevent="selectModelFromLibrary(model)"
+                @keydown.space.prevent="selectModelFromLibrary(model)"
               >
                 <div class="aiv-model-image">
                   <img
@@ -1472,7 +1556,7 @@
           </div>
         </div>
         <footer class="aiv-modal-foot">
-          <span class="aiv-picker-selection-summary">{{ selectedModel ? `已选 ${selectedModel.label}` : '请选择一个模特素材' }}</span>
+          <span class="aiv-picker-selection-summary">{{ modelLibrarySelectionSummary }}</span>
           <button type="button" class="aiv-primary" @click="closeModelLibrary">确认选择</button>
         </footer>
       </section>
@@ -1998,6 +2082,7 @@ import {
   selectNewTaskRun,
   selectVisibleEditableVersions,
   isBalaVideoTaskSubmitEligible,
+  serializeBalaImageWorkspaceState,
   summarizeBalaMaterialGroups,
   toBalaBridgeStringArray,
   waitForNewTaskRun,
@@ -2038,8 +2123,13 @@ const activeAction = ref('face_swap')
 const materialPanelExpanded = ref(true)
 const materialShowSelectedOnly = ref(false)
 const materialDisplayMode = ref('grid')
+const materialRecallClearedAt = ref('')
+const materialRecallStyleClearedAt = reactive({})
+const pendingMaterialRecallClear = ref(null)
 const selectedTemplateId = ref('')
 const selectedModel = ref(null)
+const sourceModelAssignments = reactive({})
+const modelLibraryTarget = ref({ scope: 'default', key: '' })
 const showSelectedVersionsOnly = ref(false)
 const previewImage = ref(null)
 const localMaterialLibraryOpen = ref(false)
@@ -2442,6 +2532,28 @@ function cloneWorkspaceValue(value, fallback = null) {
   }
 }
 
+function replaceSourceModelAssignments(assignments = {}) {
+  for (const key of Object.keys(sourceModelAssignments)) delete sourceModelAssignments[key]
+  if (!assignments || typeof assignments !== 'object' || Array.isArray(assignments)) return
+  for (const [sourcePath, model] of Object.entries(assignments)) {
+    const key = String(sourcePath || '').trim()
+    if (!key || !model || typeof model !== 'object') continue
+    const modelId = String(model.id || '').trim()
+    if (!modelId) continue
+    sourceModelAssignments[key] = cloneWorkspaceValue(model, { id: modelId })
+  }
+}
+
+function replaceMaterialRecallStyleClears(payload = {}) {
+  for (const key of Object.keys(materialRecallStyleClearedAt)) delete materialRecallStyleClearedAt[key]
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return
+  for (const [styleCode, clearedAt] of Object.entries(payload)) {
+    const key = String(styleCode || '').trim()
+    const value = String(clearedAt || '').trim()
+    if (key && value) materialRecallStyleClearedAt[key] = value
+  }
+}
+
 function workspaceStateRegistry() {
   try {
     const saved = JSON.parse(localStorage.getItem(BALA_AI_VIDEO_WORKSPACE_STATE_STORAGE_KEY) || '{}')
@@ -2482,9 +2594,11 @@ function workspaceSnapshot() {
       task: cloneWorkspaceValue(materialTask, {}),
       batch: cloneWorkspaceValue(materialBatch.value, null),
       boardUrl: materialBoardUrl.value,
+      recallClearedAt: materialRecallClearedAt.value,
+      recallStyleClearedAt: cloneWorkspaceValue(materialRecallStyleClearedAt, {}),
     },
     image: {
-      styles: cloneWorkspaceValue(styleWorkspaces, []),
+      styles: serializeBalaImageWorkspaceState(styleWorkspaces),
       reviewStyles: cloneWorkspaceValue(reviewStyles, []),
       reviewBatch: cloneWorkspaceValue(reviewBatch.value, null),
       reviewBoardUrl: reviewBoardUrl.value,
@@ -2493,6 +2607,7 @@ function workspaceSnapshot() {
       prompt: aiPrompt.value,
       prompts: cloneWorkspaceValue(aiActionPrompts, {}),
       selectedModel: cloneWorkspaceValue(selectedModel.value, null),
+      sourceModelAssignments: cloneWorkspaceValue(sourceModelAssignments, {}),
       garmentImagePaths: [...garmentImagePaths.value],
       outfitReferencePaths: [...outfitReferencePaths.value],
       variantReferencePaths: [...variantReferencePaths.value],
@@ -2511,20 +2626,42 @@ function workspaceRecoveryManifest() {
     workspaceDir: snapshot.workspaceDir,
     updatedAt: snapshot.updatedAt,
     activeStep: snapshot.activeStep,
+    image: {
+      styles: snapshot.image.styles,
+      reviewStyles: snapshot.image.reviewStyles,
+      reviewBoardUrl: snapshot.image.reviewBoardUrl,
+      activeAction: snapshot.image.activeAction,
+      selectedModel: snapshot.image.selectedModel,
+      sourceModelAssignments: snapshot.image.sourceModelAssignments,
+    },
     video: snapshot.video,
   }
 }
 
 function restoreWorkspaceVideoManifest(snapshot = {}, workspace = workspaceDir.value) {
   if (!snapshot || snapshot.workspaceDir !== workspace) return false
+  let restored = false
+  const image = snapshot.image || {}
+  if (Array.isArray(image.styles) && image.styles.length) {
+    replaceStyleWorkspaces(cloneWorkspaceValue(image.styles, []))
+    reviewStyles.splice(0, reviewStyles.length, ...(cloneWorkspaceValue(image.reviewStyles, []) || []))
+    reviewBoardUrl.value = String(image.reviewBoardUrl || '')
+    activeAction.value = aiActions.some(action => action.id === image.activeAction) ? image.activeAction : activeAction.value
+    selectedModel.value = cloneWorkspaceValue(image.selectedModel, null)
+    replaceSourceModelAssignments(image.sourceModelAssignments || {})
+    restored = true
+  }
   const video = snapshot.video || {}
   const tasks = Array.isArray(video.tasks) ? video.tasks.map(persistedVideoTask).filter(item => item.id) : []
   const results = Array.isArray(video.results) ? video.results.map(persistedVideoResult).filter(item => item.id) : []
-  if (!tasks.length && !results.length) return false
-  videoTasks.splice(0, videoTasks.length, ...tasks)
-  videoResults.splice(0, videoResults.length, ...results)
-  restoreWorkspaceActiveStep(snapshot)
-  return true
+  if (tasks.length || results.length) {
+    videoTasks.splice(0, videoTasks.length, ...tasks)
+    videoResults.splice(0, videoResults.length, ...results)
+    restored = true
+  }
+  if (restored) restoreWorkspaceActiveStep(snapshot)
+  if (reviewStyles.length) buildVideoJobsFromReview()
+  return restored
 }
 
 function scheduleWorkspaceManifestPersist() {
@@ -2641,6 +2778,8 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   const material = snapshot.material || {}
   materialBatch.value = cloneWorkspaceValue(material.batch, null)
   materialBoardUrl.value = String(material.boardUrl || '')
+  materialRecallClearedAt.value = String(material.recallClearedAt || '')
+  replaceMaterialRecallStyleClears(material.recallStyleClearedAt || {})
   Object.assign(materialTask, cloneWorkspaceValue(material.task, {}))
 
   const image = snapshot.image || {}
@@ -2654,6 +2793,7 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   Object.assign(aiActionPrompts, { ...AI_ACTION_PROMPT_DEFAULTS, ...(image.prompts || {}) })
   if (!image.prompts && image.prompt) aiPrompt.value = String(image.prompt || aiPrompt.value)
   selectedModel.value = cloneWorkspaceValue(image.selectedModel, null)
+  replaceSourceModelAssignments(image.sourceModelAssignments || {})
   garmentImagePaths.value = Array.isArray(image.garmentImagePaths) ? image.garmentImagePaths.filter(Boolean) : []
   outfitReferencePaths.value = Array.isArray(image.outfitReferencePaths) ? image.outfitReferencePaths.filter(Boolean) : []
   variantReferencePaths.value = Array.isArray(image.variantReferencePaths) ? image.variantReferencePaths.filter(Boolean) : []
@@ -3194,7 +3334,7 @@ function toggleAllVisibleVideoTaskSelection() {
   }
 }
 const hasOpenModal = computed(() => Boolean(
-  previewImage.value || pendingVersionDeletion.value || pendingVideoHistoryCleanup.value || localMaterialLibraryOpen.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || reviewBulkConfirmation.value || promptLibraryOpen.value,
+  previewImage.value || pendingVersionDeletion.value || pendingVideoHistoryCleanup.value || pendingMaterialRecallClear.value || localMaterialLibraryOpen.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || reviewBulkConfirmation.value || promptLibraryOpen.value,
 ))
 const templateCategories = computed(() => {
   const names = [...new Set(templateSamples.map(item => item.title).filter(Boolean))]
@@ -3247,12 +3387,23 @@ let previewAnnotationReject = null
 let previewAnnotationTimer = null
 let workspaceFileSyncTimer = null
 
+function pruneSourceModelAssignments() {
+  const validKeys = new Set(styleWorkspaces.flatMap(style => workspaceImageSources(style).flatMap(source => [
+    modelAssignmentKey(source),
+    ...(source.versions || []).map(version => modelAssignmentKey(source, version)),
+  ])).filter(Boolean))
+  for (const key of Object.keys(sourceModelAssignments)) {
+    if (!validKeys.has(key)) delete sourceModelAssignments[key]
+  }
+}
+
 function replaceStyleWorkspaces(groups = [], { preserveView = false } = {}) {
   const normalizedGroups = mergeBalaMaterialGroups([], groups)
   if (!preserveView) {
     for (const key of Object.keys(materialRenderLimits)) delete materialRenderLimits[key]
   }
   styleWorkspaces.splice(0, styleWorkspaces.length, ...normalizedGroups)
+  pruneSourceModelAssignments()
   if (!normalizedGroups.some(group => group.styleCode === activeMaterialStyleCode.value)) {
     activeMaterialStyleCode.value = normalizedGroups[0]?.styleCode || ''
   }
@@ -3559,6 +3710,82 @@ function modelPreviewSource(model = {}) {
   return previewSourceFor({ imageUrl: model.imageUrl, path: model.path })
 }
 
+function modelAssignmentKey(asset = {}, version = null) {
+  return String(version?.previewPath || version?.path || asset?.path || '').trim()
+}
+
+function assignedModelForKey(key = '') {
+  const value = sourceModelAssignments[String(key || '').trim()]
+  return value && typeof value === 'object' && String(value.id || '').trim() ? value : null
+}
+
+function sourceAssignedModel(source = {}, version = null) {
+  return assignedModelForKey(modelAssignmentKey(source, version))
+}
+
+function sourceModelForDisplay(source = {}, version = null) {
+  return sourceAssignedModel(source, version) || selectedModel.value || null
+}
+
+function modelForAiInput(entry = {}) {
+  return sourceModelForDisplay(entry.asset, entry.version)
+}
+
+function sourceModelPreviewSource(source = {}, version = null) {
+  const model = sourceModelForDisplay(source, version)
+  return model ? modelPreviewSource(model) : ''
+}
+
+function sourceModelAlt(source = {}, version = null) {
+  const model = sourceModelForDisplay(source, version)
+  return model?.label || model?.name || model?.id || '换脸模特'
+}
+
+function sourceModelLabel(source = {}) {
+  const assigned = sourceAssignedModel(source)
+  if (assigned) return assigned.label || assigned.name || assigned.id
+  if (selectedModel.value) return `默认 ${selectedModel.value.label || selectedModel.value.name || selectedModel.value.id}`
+  return '未指定'
+}
+
+function openModelLibraryForSource(source = {}, version = null) {
+  const key = modelAssignmentKey(source, version)
+  if (!key) return
+  openModelLibrary({ scope: 'source', key })
+}
+
+function clearSourceModelAssignment(source = {}, version = null) {
+  const key = modelAssignmentKey(source, version)
+  if (key) delete sourceModelAssignments[key]
+}
+
+function selectModelFromLibrary(model = {}) {
+  if (!model?.id) return
+  const target = modelLibraryTarget.value || {}
+  if (target.scope === 'source' && target.key) {
+    sourceModelAssignments[target.key] = cloneWorkspaceValue(model, { id: model.id })
+    return
+  }
+  selectedModel.value = model
+}
+
+function modelLibraryCardSelected(model = {}) {
+  const target = modelLibraryTarget.value || {}
+  const current = target.scope === 'source' && target.key
+    ? assignedModelForKey(target.key)
+    : selectedModel.value
+  return Boolean(current?.id && current.id === model.id)
+}
+
+const modelLibrarySelectionSummary = computed(() => {
+  const target = modelLibraryTarget.value || {}
+  if (target.scope === 'source') {
+    const model = assignedModelForKey(target.key)
+    return model ? `本图已选 ${model.label || model.name || model.id}` : '请选择这张图的模特素材'
+  }
+  return selectedModel.value ? `已选 ${selectedModel.value.label}` : '请选择一个默认模特素材'
+})
+
 function localVideoPathFor(item = {}) {
   return [item.path, item.local_video_path, item.videoUrl, item.video_url]
     .map(value => String(value || '').trim())
@@ -3749,11 +3976,38 @@ function releaseWorkspaceImagePreviews(paths = []) {
   }
 }
 
+function workspaceFileModifiedTime(file = {}) {
+  const numeric = Number(file?.mtimeMs || file?.mtime || 0)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric
+  const parsed = Date.parse(file?.modifiedAt || file?.modified_at || '')
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function workspaceFileStyleCode(file = {}) {
+  const direct = String(file?.styleCode || file?.style_code || '').trim()
+  if (direct) return direct
+  const match = String(file?.path || '').match(/(?:^|[\\/])(\d{12})(?:[\\/]|$)/)
+  return match?.[1] || ''
+}
+
+function filesAfterMaterialRecallClear(files = []) {
+  const clearedAt = Date.parse(materialRecallClearedAt.value || '')
+  const hasGlobalClear = Number.isFinite(clearedAt) && clearedAt > 0
+  return (files || []).filter((file) => {
+    const modifiedAt = workspaceFileModifiedTime(file)
+    if (hasGlobalClear && modifiedAt <= clearedAt) return false
+    const styleClearedAt = Date.parse(materialRecallStyleClearedAt[workspaceFileStyleCode(file)] || '')
+    return !(Number.isFinite(styleClearedAt) && styleClearedAt > 0 && modifiedAt <= styleClearedAt)
+  })
+}
+
 function applyWorkspaceFileSync(files = []) {
   const restoreScroll = preserveMaterialScrollPosition()
-  const result = reconcileBalaWorkspaceFiles(styleWorkspaces, files)
+  const visibleFiles = filesAfterMaterialRecallClear(files)
+  const result = reconcileBalaWorkspaceFiles(styleWorkspaces, visibleFiles)
   if (!result.changed) return
   styleWorkspaces.splice(0, styleWorkspaces.length, ...result.groups)
+  pruneSourceModelAssignments()
   releaseWorkspaceImagePreviews(result.changedPaths)
   restoreScroll()
 }
@@ -3765,6 +4019,157 @@ async function syncWorkspaceFiles() {
   } catch {
     // Folder changes can race Finder writes; the next poll will retry safely.
   }
+}
+
+function materialRecallStyleSummary(styleCode = '') {
+  const code = String(styleCode || '').trim()
+  const style = styleWorkspaces.find(item => item.styleCode === code)
+  if (!style) return code
+  return `${code} · ${style.modelPhotos?.length || 0} 模拍 / ${style.detailPhotos?.length || 0} 细节`
+}
+
+const materialRecallClearTitle = computed(() => (
+  pendingMaterialRecallClear.value?.scope === 'all' ? '确认清空所有回显记录' : '确认清空本款回显记录'
+))
+
+const materialRecallClearSubtitle = computed(() => {
+  const pending = pendingMaterialRecallClear.value
+  if (pending?.scope === 'all') return '会清空整个素材回显栏的本机记录'
+  return `会清空 ${pending?.styleCode || '当前款号'} 的本机回显记录`
+})
+
+const materialRecallClearSummary = computed(() => {
+  const pending = pendingMaterialRecallClear.value
+  if (pending?.scope === 'all') return `${materialGroups.length} 个款号、${materialSummary.value.modelCount + materialSummary.value.detailCount} 张回显素材将从本机工作台移除`
+  return materialRecallStyleSummary(pending?.styleCode)
+})
+
+function requestMaterialRecallClearAll() {
+  pendingMaterialRecallClear.value = { scope: 'all' }
+}
+
+function requestMaterialRecallClearForStyle(styleCode = activeMaterialStyleCode.value) {
+  const code = String(styleCode || '').trim()
+  if (!code) return
+  pendingMaterialRecallClear.value = { scope: 'style', styleCode: code }
+}
+
+function closeMaterialRecallClearConfirmation() {
+  pendingMaterialRecallClear.value = null
+}
+
+function confirmMaterialRecallClear() {
+  const pending = pendingMaterialRecallClear.value
+  if (!pending) return
+  pendingMaterialRecallClear.value = null
+  if (pending.scope === 'all') clearMaterialRecallHistory()
+  else clearMaterialRecallHistoryForStyle(pending.styleCode)
+}
+
+function clearMaterialRecallHistory() {
+  resetMaterialPoll()
+  resetAiPoll()
+  aiReviewPollToken += 1
+  materialPollRunId = ''
+  aiPollRunId = ''
+  activeAiPlaceholderIds.clear()
+  materialRecallClearedAt.value = new Date().toISOString()
+  replaceMaterialRecallStyleClears({})
+  materialBatch.value = null
+  materialBoardUrl.value = ''
+  reviewBatch.value = null
+  reviewBoardUrl.value = ''
+  reviewStyles.splice(0, reviewStyles.length)
+  videoJobs.splice(0, videoJobs.length)
+  videoTaskDraft.assetIds = []
+  selectedReviewAssetIds.clear()
+  replaceSourceModelAssignments({})
+  replaceStyleWorkspaces([])
+  updateMaterialTask({
+    status: 'idle',
+    message: '已清空本机回显记录；旧文件仍保留在工作区，下一次找图只回显新生成的素材。',
+    progress: 0,
+    searchProgress: 0,
+    downloadProgress: 0,
+    currentStyle: '',
+    totalStyles: 0,
+    completedStyles: 0,
+    searchTotal: 0,
+    searchCompleted: 0,
+    downloadTotal: 0,
+    downloadCompleted: 0,
+    downloaded: 0,
+    failed: 0,
+    runId: '',
+    error: '',
+    logs: [],
+    outputFiles: [],
+  })
+  Object.assign(aiTaskState, {
+    status: 'idle',
+    message: '已清空旧素材回显，请重新找图后再进入 AI 改图。',
+    error: '',
+    progress: 0,
+    runId: '',
+    outputFiles: [],
+    logs: [],
+  })
+  releaseWorkspacePreviews()
+  persistWorkspaceState()
+  void flushWorkspaceManifest()
+}
+
+function workspacePreviewPathsForStyle(style = {}) {
+  return workspaceImageSources(style).flatMap(source => [
+    source.path,
+    source.previewPath,
+    ...(source.versions || []).flatMap(version => [version.path, version.previewPath]),
+  ]).map(item => String(item || '').trim()).filter(Boolean)
+}
+
+function pruneWorkflowStateForStyle(styleCode = '') {
+  const code = String(styleCode || '').trim()
+  if (!code) return
+  const reviewNext = reviewStyles.filter(style => style.styleCode !== code)
+  reviewStyles.splice(0, reviewStyles.length, ...reviewNext)
+  const jobNext = videoJobs.filter(job => job.styleCode !== code)
+  videoJobs.splice(0, videoJobs.length, ...jobNext)
+  const removedTaskIds = new Set(videoTasks.filter(task => task.styleCode === code).map(task => task.id).filter(Boolean))
+  const taskNext = videoTasks.filter(task => task.styleCode !== code)
+  videoTasks.splice(0, videoTasks.length, ...taskNext)
+  const resultNext = videoResults.filter(item => item.styleCode !== code && !removedTaskIds.has(item.taskRefId) && !removedTaskIds.has(item.id))
+  videoResults.splice(0, videoResults.length, ...resultNext)
+  for (const taskId of removedTaskIds) selectedVideoTaskIds.delete(taskId)
+  if (videoTaskDraft.styleCode === code) {
+    videoTaskDraft.styleCode = videoJobs[0]?.styleCode || ''
+    videoTaskDraft.assetIds = []
+    resetVideoTaskDraftAssets()
+  } else {
+    videoTaskDraft.assetIds = videoTaskDraft.assetIds.filter(assetId => !String(assetId || '').startsWith(`${code}-`))
+  }
+  selectedReviewAssetIds.clear()
+  if (previewImage.value?.styleCode === code) closePreview()
+}
+
+function clearMaterialRecallHistoryForStyle(styleCode = activeMaterialStyleCode.value) {
+  const code = String(styleCode || '').trim()
+  if (!code) return
+  const removed = styleWorkspaces.filter(style => style.styleCode === code)
+  const remaining = styleWorkspaces.filter(style => style.styleCode !== code)
+  materialRecallStyleClearedAt[code] = new Date().toISOString()
+  delete materialExpanded[code]
+  delete materialRenderLimits[materialRenderKey(code, 'model')]
+  delete materialRenderLimits[materialRenderKey(code, 'detail')]
+  replaceStyleWorkspaces(remaining)
+  pruneWorkflowStateForStyle(code)
+  releaseWorkspaceImagePreviews(removed.flatMap(workspacePreviewPathsForStyle))
+  updateMaterialTask({
+    status: 'idle',
+    message: `已清空 ${code} 本机回显记录；旧文件仍保留在工作区，下一次找图只回显本款新生成的素材。`,
+    error: '',
+  })
+  persistWorkspaceState()
+  void flushWorkspaceManifest()
 }
 
 function resetWorkflowWorkspace() {
@@ -3779,6 +4184,9 @@ function resetWorkflowWorkspace() {
   videoResults.splice(0, videoResults.length)
   activeAction.value = 'face_swap'
   selectedModel.value = null
+  replaceSourceModelAssignments({})
+  materialRecallClearedAt.value = ''
+  replaceMaterialRecallStyleClears({})
   garmentImagePaths.value = []
   outfitReferencePaths.value = []
   variantReferencePaths.value = []
@@ -4395,7 +4803,7 @@ function isAiVersionGenerating(version = {}) {
 }
 
 function requestDeleteGeneratedVersion(style, source, version) {
-  const filePath = String(version?.previewPath || version?.path || '').trim()
+  const filePath = resolveDeletableVersionPath(style, source, version)
   pendingVersionDeletion.value = { style, source, version, path: filePath }
   deleteVersionBusy.value = false
   deleteVersionError.value = filePath ? '' : '当前结果没有可删除的本地图片文件'
@@ -4414,6 +4822,80 @@ function sameDeletedVersion(asset, target) {
   const assetId = String(asset.id || '').replace(/^vasset-/, '').trim()
   const assetPath = String(asset.previewPath || asset.path || '').trim()
   return Boolean((targetId && (asset.id === targetId || assetId === targetId)) || (targetPath && assetPath === targetPath))
+}
+
+function workspaceArchivedPathForVersion(style = {}, version = {}) {
+  const styleCode = String(style?.styleCode || '').trim()
+  const targetDir = aiResultDirectoryForStyle(styleCode)
+  const candidates = reviewAssetsForGeneratedVersion(styleCode, version)
+  for (const asset of candidates) {
+    const path = String(asset.path || asset.previewPath || '').trim()
+    if (path && pathInsideDirectory(path, targetDir)) return path
+  }
+  return ''
+}
+
+function reviewAssetsForGeneratedVersion(styleCode = '', version = {}) {
+  return reviewStyles
+    .filter(reviewStyle => !styleCode || reviewStyle.styleCode === styleCode)
+    .flatMap(reviewStyle => reviewStyle.assets || [])
+    .filter(asset => asset.kind === 'ai' && sameDeletedVersion(asset, version))
+}
+
+function resolveDeletableVersionPath(style = {}, source = {}, version = {}) {
+  const directPath = String(version?.previewPath || version?.path || '').trim()
+  const styleCode = String(style?.styleCode || '').trim()
+  if (directPath && pathInsideDirectory(directPath, aiResultDirectoryForStyle(styleCode))) return directPath
+  const archivedPath = workspaceArchivedPathForVersion(style, version)
+  if (archivedPath) {
+    version.previewPath = archivedPath
+    version.path = archivedPath
+    if (source && typeof source === 'object') {
+      const match = (source.versions || []).find(item => sameDeletedVersion(item, version))
+      if (match) {
+        match.previewPath = archivedPath
+        match.path = archivedPath
+      }
+    }
+    return archivedPath
+  }
+  return directPath
+}
+
+async function ensureDeletableVersionPath(target = {}) {
+  const resolved = resolveDeletableVersionPath(target.style, target.source, target.version)
+  if (resolved && pathInsideDirectory(resolved, aiResultDirectoryForStyle(target.style?.styleCode))) return resolved
+  const styleCode = String(target.style?.styleCode || '').trim()
+  const reviewAsset = reviewAssetsForGeneratedVersion(styleCode, target.version).find(Boolean)
+  const archiveAsset = reviewAsset || {
+    ...(target.version || {}),
+    kind: 'ai',
+    path: resolved,
+    previewPath: resolved,
+    jobUid: target.version?.jobUid || target.version?.job_uid,
+    job_uid: target.version?.jobUid || target.version?.job_uid,
+  }
+  const archivedPath = await archiveReviewAssetToWorkspace(reviewAsset, styleCode)
+    || await archiveReviewAssetToWorkspace(archiveAsset, styleCode)
+  if (!archivedPath) return resolved
+  if (reviewAsset) {
+    reviewAsset.path = archivedPath
+    reviewAsset.previewPath = archivedPath
+  }
+  if (target.version && typeof target.version === 'object') {
+    target.version.previewPath = archivedPath
+    target.version.path = archivedPath
+  }
+  if (target.source && typeof target.source === 'object') {
+    const match = (target.source.versions || []).find(item => sameDeletedVersion(item, target.version))
+    if (match) {
+      match.previewPath = archivedPath
+      match.path = archivedPath
+    }
+  }
+  syncWorkspaceVersionsFromReviewStyles(reviewStyles)
+  persistAiImageWorkspaceState()
+  return archivedPath
 }
 
 function purgeDeletedGeneratedVersion({ style, source, version }) {
@@ -4453,6 +4935,8 @@ async function confirmDeleteGeneratedVersion() {
   deleteVersionBusy.value = true
   deleteVersionError.value = ''
   try {
+    target.path = await ensureDeletableVersionPath(target)
+    if (!target.path) throw new Error('当前结果没有可删除的本地图片文件')
     if (!target.localDeleted) {
       await window.cs.deleteBalaWorkspaceImage(workspaceDir.value, target.path)
       target.localDeleted = true
@@ -4534,6 +5018,17 @@ function selectedSourceAssetsForAi() {
       .filter(version => version.editSelected)
       .map(version => ({ style, asset, version })),
   ]))
+}
+
+function clearAiEditInputSelections(entries = []) {
+  let changed = false
+  for (const { asset, version } of entries || []) {
+    const target = version || asset
+    if (!target?.editSelected) continue
+    target.editSelected = false
+    changed = true
+  }
+  if (changed) persistAiImageWorkspaceState()
 }
 
 function errorText(error) {
@@ -4677,7 +5172,7 @@ function findAiEditInputForReviewAsset(asset = {}) {
   const jobUid = compactText(asset?.jobUid || asset?.job_uid)
   const runUid = compactText(asset?.runUid || asset?.run_uid)
   for (const style of workspaceStylesForReviewAsset(asset)) {
-    for (const source of style.modelPhotos || []) {
+    for (const source of workspaceImageSources(style)) {
       const sourcePath = compactText(source.path)
       const sourceId = compactText(source.id)
       if (
@@ -4706,7 +5201,7 @@ function findParentAiEditSourceForReviewAsset(asset = {}) {
   const sourceAssetId = compactText(asset?.sourceAssetId || asset?.source_asset_id)
   const sourcePath = compactText(asset?.sourcePath || asset?.source_path)
   for (const style of workspaceStylesForReviewAsset(asset)) {
-    for (const source of style.modelPhotos || []) {
+    for (const source of workspaceImageSources(style)) {
       const sourceId = compactText(source.id)
       const path = compactText(source.path)
       if ((sourceAssetId && sourceId === sourceAssetId) || (sourcePath && path === sourcePath)) {
@@ -4836,7 +5331,16 @@ async function openReviewWorkspace() {
 }
 
 function operationMetaForDraft() {
-  if (activeAction.value === 'face_swap') return selectedModel.value?.label || '等待模特素材确认'
+  if (activeAction.value === 'face_swap') {
+    const labels = selectedSourceAssetsForAi()
+      .map(entry => modelForAiInput(entry))
+      .map(model => model?.label || model?.name || model?.id || '')
+      .filter(Boolean)
+    const uniqueLabels = [...new Set(labels)]
+    if (uniqueLabels.length === 1) return uniqueLabels[0]
+    if (uniqueLabels.length > 1) return `${uniqueLabels.length} 个模特：${uniqueLabels.slice(0, 2).join('、')}${uniqueLabels.length > 2 ? '...' : ''}`
+    return '等待模特素材确认'
+  }
   if (activeAction.value === 'background_swap') return aiPrompt.value || '背景 Prompt'
   if (activeAction.value === 'outfit_swap') return selectedPathSummary([...garmentImagePaths.value, ...outfitReferencePaths.value, ...variantReferencePaths.value])
   if (activeAction.value === 'pose_swap') return aiPrompt.value || '姿势 Prompt'
@@ -4995,13 +5499,13 @@ function appendAiGeneratingVersions(selectedSources = selectedSourceAssetsForAi(
   return created
 }
 
-function updateAiGeneratingVersions(progress = aiTaskState.progress) {
+function updateAiGeneratingVersions(progress = aiTaskState.progress, placeholderIds = activeAiPlaceholderIds) {
   const value = Math.max(2, Math.min(95, Math.round(Number(progress) || 0)))
   let changed = false
   for (const style of styleWorkspaces) {
     for (const source of workspaceImageSources(style)) {
       for (const version of source.versions || []) {
-        if (!activeAiPlaceholderIds.has(version.id) || version.status !== 'running') continue
+        if (!placeholderIds.has(version.id) || version.status !== 'running') continue
         version.progress = value
         changed = true
       }
@@ -5010,12 +5514,12 @@ function updateAiGeneratingVersions(progress = aiTaskState.progress) {
   if (changed) persistAiImageWorkspaceState()
 }
 
-function finishAiGeneratingVersions(status = 'failed') {
+function finishAiGeneratingVersions(status = 'failed', placeholderIds = activeAiPlaceholderIds) {
   let changed = false
   for (const style of styleWorkspaces) {
     for (const source of workspaceImageSources(style)) {
       for (const version of source.versions || []) {
-        if (!activeAiPlaceholderIds.has(version.id)) continue
+        if (!placeholderIds.has(version.id)) continue
         version.status = status
         version.progress = status === 'failed' ? 100 : Math.max(95, version.progress || 0)
         version.pending = false
@@ -5023,7 +5527,24 @@ function finishAiGeneratingVersions(status = 'failed') {
       }
     }
   }
-  activeAiPlaceholderIds.clear()
+  if (placeholderIds === activeAiPlaceholderIds) activeAiPlaceholderIds.clear()
+  else for (const id of placeholderIds) activeAiPlaceholderIds.delete(id)
+  if (changed) persistAiImageWorkspaceState()
+}
+
+function queueAiGeneratingVersions(placeholderIds = activeAiPlaceholderIds) {
+  let changed = false
+  for (const style of styleWorkspaces) {
+    for (const source of workspaceImageSources(style)) {
+      for (const version of source.versions || []) {
+        if (!placeholderIds.has(version.id)) continue
+        version.status = 'queued'
+        version.progress = Math.max(2, Number(version.progress) || 0)
+        version.pending = true
+        changed = true
+      }
+    }
+  }
   if (changed) persistAiImageWorkspaceState()
 }
 
@@ -5117,9 +5638,28 @@ async function startAiImageGeneration() {
     updateAiTaskState({ status: 'failed', error: '尚未配置可用生图模型，请先到设置页配置 1XM 图片模型', message: '尚未配置可用生图模型，请先到设置页配置 1XM 图片模型' })
     return
   }
-  if (activeAction.value === 'face_swap' && !selectedModel.value) {
-    updateAiTaskState({ status: 'failed', error: 'AI 换脸需要先选择模特素材', message: 'AI 换脸需要先选择模特素材' })
-    return
+  const sourceModelRefIds = {}
+  const modelRefIds = []
+  if (activeAction.value === 'face_swap') {
+    const missingModelSources = []
+    selectedSources.forEach((entry, index) => {
+      const model = modelForAiInput(entry)
+      const sourcePath = selectedInputPaths[index]
+      if (!model?.id) {
+        missingModelSources.push(fileNameFromPath(sourcePath))
+        return
+      }
+      sourceModelRefIds[sourcePath] = model.id
+      modelRefIds.push(model.id)
+    })
+    if (missingModelSources.length) {
+      updateAiTaskState({
+        status: 'failed',
+        error: `AI 换脸需要为每张输入图选择模特素材：${missingModelSources.join('、')}`,
+        message: `AI 换脸需要为每张输入图选择模特素材：${missingModelSources.join('、')}`,
+      })
+      return
+    }
   }
   if (activeAction.value === 'background_swap' && !String(aiPrompt.value || '').trim()) {
     updateAiTaskState({ status: 'failed', error: 'AI 换背景需要填写背景 Prompt', message: 'AI 换背景需要填写背景 Prompt' })
@@ -5137,6 +5677,7 @@ async function startAiImageGeneration() {
   const generation = resolveSelectedAiImageGenerationParams()
   const promptText = String(aiPrompt.value || '').trim()
   const promptExtra = ['background_swap', 'pose_swap'].includes(activeAction.value) ? '' : promptText
+  let placeholderIds = new Set()
   resetAiPoll()
   aiReviewPollToken += 1
   updateAiTaskState({
@@ -5149,7 +5690,8 @@ async function startAiImageGeneration() {
     logs: [],
   })
   try {
-    appendAiGeneratingVersions(selectedSources)
+    const placeholders = appendAiGeneratingVersions(selectedSources)
+    placeholderIds = new Set(placeholders.map(item => item.id).filter(Boolean))
     const ref = await ensureBalaMaterialBatchAvailable(parseBalaMaterialBoardUrl(materialBoardUrl.value))
     const selectedIds = selectedMaterialAssetIds()
     const sourceIds = [...new Set(selectedSources.map(({ asset, version }) => (
@@ -5159,7 +5701,8 @@ async function startAiImageGeneration() {
     const exportResult = await window.cs.exportBalaAiInput(ref.batchId, ref.token, {
       operation_type: activeAction.value,
       selected_asset_ids: sourceIds,
-      model_ref_ids: selectedModel.value ? [selectedModel.value.id] : [],
+      model_ref_ids: [...new Set(modelRefIds)],
+      source_model_ref_ids: sourceModelRefIds,
       background_prompt: activeAction.value === 'background_swap' ? promptText : '',
       garment_images: activeAction.value === 'outfit_swap' ? { paths: toBalaBridgeStringArray(garmentImagePaths.value) } : { paths: [] },
       outfit_reference_images: activeAction.value === 'outfit_swap' ? { paths: toBalaBridgeStringArray(outfitReferencePaths.value) } : { paths: [] },
@@ -5205,6 +5748,19 @@ async function startAiImageGeneration() {
       {},
     )
     if (!result?.ok) throw new Error(result?.message || result?.error || 'AI 改图任务启动失败')
+    clearAiEditInputSelections(selectedSources)
+    const queuedRequestId = String(result.queued_request_id || result.queue_request_id || '').trim()
+    if (result.queued && queuedRequestId) {
+      queueAiGeneratingVersions(placeholderIds)
+      updateAiTaskState({
+        status: 'queued',
+        message: `AI 改图任务已排队：${queuedRequestId}`,
+        error: '',
+        progress: 2,
+        runId: queuedRequestId,
+      })
+      return
+    }
     const launch = await waitForAiImageRunStart(previousRunId)
     aiPollRunId = launch.runId
     updateAiTaskState({ runId: aiPollRunId })
@@ -5233,7 +5789,7 @@ async function startAiImageGeneration() {
       error: message,
       message,
     })
-    finishAiGeneratingVersions('failed')
+    if (placeholderIds.size) finishAiGeneratingVersions('failed', placeholderIds)
   }
 }
 
@@ -5964,8 +6520,21 @@ function videoTaskHasFailedResult(task = {}) {
   return Boolean(result && videoResultStage(result).id === 'failed')
 }
 
+function videoTaskHasFailedState(task = {}) {
+  const statusText = [
+    task?.status,
+    task?.providerStatus,
+    task?.error,
+  ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean).join(' ')
+  return /失败|错误|failed|error|cancelled|canceled|stopped|partial/.test(statusText)
+}
+
+function videoTaskNeedsRerun(task = {}) {
+  return !videoTaskHasViewableResult(task) && (videoTaskHasFailedResult(task) || videoTaskHasFailedState(task))
+}
+
 function videoTaskActionLabel(task = {}) {
-  if (videoTaskHasFailedResult(task) && isVideoTaskSubmittable(task)) return '重跑'
+  if (videoTaskNeedsRerun(task)) return '失败重跑'
   return videoTaskHasViewableResult(task) ? '查看视频' : '生成视频'
 }
 
@@ -6008,7 +6577,7 @@ async function handleVideoTaskAction(task = {}) {
     await playVideoResult(result)
     return
   }
-  if (videoTaskHasFailedResult(task)) {
+  if (videoTaskNeedsRerun(task)) {
     await rerunVideoTask(task, 'live')
     return
   }
@@ -6908,7 +7477,7 @@ async function runVideoTaskInternal(task, mode = 'plan') {
       taskId: '',
       status: '失败',
       progress: 100,
-      path: task.outputDir || videoOutputDir.value,
+      path: '',
       error: videoStageState.error,
     }])
   }
@@ -6956,7 +7525,7 @@ async function rerunVideoTask(task = {}, mode = 'live') {
 
 function canRerunVideoResult(item = {}) {
   const task = videoTaskForResult(item)
-  return Boolean(task && videoResultStage(item).id === 'failed' && isVideoTaskSubmittable(task))
+  return Boolean(task && videoResultStage(item).id === 'failed' && !videoResultHasOutput(item))
 }
 
 async function rerunVideoResult(item = {}) {
@@ -7821,7 +8390,12 @@ async function loadVideoProviderStatus() {
   }
 }
 
-function openModelLibrary() {
+function openModelLibrary(target = null) {
+  if (target && target.scope === 'source' && target.key) {
+    modelLibraryTarget.value = { scope: 'source', key: String(target.key || '').trim() }
+  } else {
+    modelLibraryTarget.value = { scope: 'default', key: '' }
+  }
   lastFocusedElement.value = document.activeElement
   modelLibraryOpen.value = true
 }
@@ -7917,6 +8491,7 @@ function closeVideoTaskDialog() {
 
 function closeTopDialog() {
   if (pendingVersionDeletion.value) closeDeleteConfirmation()
+  else if (pendingMaterialRecallClear.value) closeMaterialRecallClearConfirmation()
   else if (previewImage.value) closePreview()
   else if (videoTaskDialogOpen.value) closeVideoTaskDialog()
   else if (reviewBulkConfirmation.value) cancelReviewBulkAction()
@@ -8000,6 +8575,7 @@ watch([
   aiPrompt,
   aiActionPrompts,
   selectedModel,
+  sourceModelAssignments,
   garmentImagePaths,
   outfitReferencePaths,
   variantReferencePaths,
@@ -8009,6 +8585,8 @@ watch([
   activeMaterialStyleCode,
   activeMaterialSource,
   materialDisplayMode,
+  materialRecallClearedAt,
+  materialRecallStyleClearedAt,
 ], () => {
   persistWorkspaceState()
 }, { deep: true })
@@ -8229,6 +8807,8 @@ function localFileUrl(path) {
 
 .aiv-primary:disabled,
 .aiv-ghost:disabled,
+.aiv-danger:disabled,
+.aiv-material-style-tab-clear:disabled,
 .aiv-action-option:disabled {
   opacity: .55;
   cursor: not-allowed;
@@ -8536,9 +9116,16 @@ function localFileUrl(path) {
   min-height: 66px;
 }
 
-.aiv-material-header-stats {
+.aiv-material-header-side {
   min-width: 0;
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.aiv-material-header-stats {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 0;
@@ -8651,21 +9238,21 @@ function localFileUrl(path) {
   background: var(--bg);
 }
 
-.aiv-material-stage .aiv-material-style-tabs {
+.aiv-material-stage .aiv-material-style-tabbar {
   padding: 10px 14px 11px;
   background: rgba(255, 255, 255, .012);
 }
 
-.aiv-material-stage .aiv-material-style-tabs button {
+.aiv-material-stage .aiv-material-style-tab {
   min-height: 54px;
-  padding: 9px 11px;
+  padding: 9px 34px 9px 11px;
   border-color: rgba(255, 255, 255, .09);
   border-radius: 10px;
   background: rgba(255, 255, 255, .026);
   transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .16s ease;
 }
 
-.aiv-material-stage .aiv-material-style-tabs button:hover {
+.aiv-material-stage .aiv-material-style-tab:hover {
   border-color: rgba(var(--orange-rgb), .48);
   background: rgba(var(--orange-rgb), .065);
   transform: translateY(-1px);
@@ -8970,21 +9557,36 @@ function localFileUrl(path) {
   gap: 12px;
 }
 
-.aiv-material-style-tabs {
+.aiv-material-style-tabbar {
   min-width: 0;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--bg2);
+}
+
+.aiv-material-style-tabs {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
   gap: 8px;
   overflow-x: auto;
-  background: var(--bg2);
   scrollbar-width: thin;
 }
 
-.aiv-material-style-tabs button {
+.aiv-material-style-tab-item {
   min-width: 158px;
-  padding: 8px 10px;
   flex: 0 0 auto;
+  position: relative;
+}
+
+.aiv-material-style-tab {
+  width: 100%;
+  min-height: 54px;
+  padding: 8px 34px 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text2);
@@ -8993,33 +9595,61 @@ function localFileUrl(path) {
   cursor: pointer;
 }
 
-.aiv-material-style-tabs button:hover {
+.aiv-material-style-tab:hover {
   border-color: rgba(var(--orange-rgb), 0.34);
 }
 
-.aiv-material-style-tabs button:focus-visible,
+.aiv-material-style-tab:focus-visible,
+.aiv-material-style-tab-clear:focus-visible,
 .aiv-material-source-tabs button:focus-visible {
   outline: 2px solid rgba(var(--orange-rgb), 0.72);
   outline-offset: 2px;
 }
 
-.aiv-material-style-tabs button.active {
+.aiv-material-style-tab-item.active .aiv-material-style-tab {
   border-color: var(--orange);
   color: var(--text);
   background: var(--orange-bg);
   box-shadow: inset 0 -2px 0 var(--orange), 0 6px 16px rgba(var(--orange-rgb), .12);
 }
 
-.aiv-material-style-tabs strong,
-.aiv-material-style-tabs span {
+.aiv-material-style-tab strong,
+.aiv-material-style-tab span {
   display: block;
   white-space: nowrap;
 }
 
-.aiv-material-style-tabs span {
+.aiv-material-style-tab span {
   margin-top: 4px;
   color: var(--text3);
   font-size: 11px;
+}
+
+.aiv-material-style-tab-clear {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(248, 113, 113, .62);
+  border-radius: 999px;
+  color: #fff;
+  background: #b91c1c;
+  display: grid;
+  place-items: center;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.aiv-material-style-tab-clear:hover {
+  background: #991b1b;
+}
+
+.aiv-material-clear-all {
+  flex: 0 0 auto;
 }
 
 .aiv-material-tab-panel {
@@ -10078,6 +10708,64 @@ function localFileUrl(path) {
 .aiv-original-card {
   aspect-ratio: 3 / 4;
   overflow: hidden;
+}
+
+.aiv-source-model-assignment {
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px;
+  border: 1px solid rgba(var(--orange-rgb), .28);
+  border-radius: 8px;
+  background: var(--bg2);
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.aiv-source-model-assignment div {
+  min-width: 0;
+}
+
+.aiv-source-model-thumb {
+  width: 34px;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid rgba(var(--orange-rgb), .32);
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--orange-text);
+  background: var(--bg);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.aiv-source-model-thumb img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.aiv-source-model-assignment span,
+.aiv-source-model-assignment strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiv-source-model-assignment span {
+  color: var(--text3);
+  font-size: 10px;
+}
+
+.aiv-source-model-assignment strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .aiv-origin-label {
@@ -12968,6 +13656,16 @@ function localFileUrl(path) {
   border-radius: 8px;
   color: #fff;
   background: #b91c1c;
+}
+
+.aiv-danger.small {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .aiv-modal-head,

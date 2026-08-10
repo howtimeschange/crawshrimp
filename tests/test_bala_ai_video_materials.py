@@ -21,6 +21,7 @@ def test_build_material_batch_groups_downloaded_images_by_style_and_source(tmp_p
             "本地文件": str(model),
             "下载结果": "已下载",
             "处理动作": "保留模拍图",
+            "选择文件夹": "模拍原图/208326100202-已选",
         },
         {
             "输入款号": "208326100202",
@@ -53,6 +54,8 @@ def test_build_material_batch_groups_downloaded_images_by_style_and_source(tmp_p
     assert [asset["source_type"] for asset in batch["items"][0]["assets"]] == ["model", "detail"]
     assert batch["items"][0]["assets"][0]["selected"] is False
     assert batch["items"][0]["assets"][1]["selected"] is False
+    assert batch["items"][0]["assets"][0]["folder"] == "模拍原图/208326100202-已选"
+    assert batch["items"][0]["assets"][0]["cloud_folder"] == "模拍原图/208326100202-已选"
     assert "/thumbnail/" in batch["items"][0]["assets"][0]["thumbnail_url"]
     assert "token=" in batch["board_url"]
 
@@ -155,3 +158,39 @@ def test_export_ai_input_preserves_visual_model_picker_selection_for_face_swap(t
     assert params["source_images"]["paths"] == [str(model_source)]
     assert params["model_ref_ids"] == "100女/标准.jpg\n73男/微笑.jpg"
     assert params["model_groups"] == []
+
+
+def test_export_ai_input_preserves_per_source_model_mapping_for_face_swap(tmp_path):
+    boy_source = tmp_path / "boy.jpg"
+    girl_source = tmp_path / "girl.jpg"
+    boy_source.write_bytes(b"\xff\xd8\xff")
+    girl_source.write_bytes(b"\xff\xd8\xff")
+    batch = {
+        "batch_id": "bala-material-face-source-model-test",
+        "token": "token-test",
+        "workflow": "bala_ai_video_material_selection",
+        "items": [{
+            "style_code": "208326121202",
+            "assets": [
+                {"id": "asset-boy", "source_type": "model", "path": str(boy_source), "selected": True},
+                {"id": "asset-girl", "source_type": "model", "path": str(girl_source), "selected": True},
+            ],
+        }],
+    }
+
+    result = materials.export_ai_input(batch, "face_swap", {
+        "selected_asset_ids": ["asset-boy", "asset-girl"],
+        "model_ref_ids": ["100男/标准.jpg", "100女/标准.jpg"],
+        "source_model_ref_ids": {
+            str(boy_source): "100男/标准.jpg",
+            str(girl_source): "100女/标准.jpg",
+        },
+    })
+
+    params = result["next_task"]["params"]
+    assert params["source_images"]["paths"] == [str(boy_source), str(girl_source)]
+    assert params["model_ref_ids"] == "100男/标准.jpg\n100女/标准.jpg"
+    assert params["source_model_ref_ids"] == {
+        str(boy_source): "100男/标准.jpg",
+        str(girl_source): "100女/标准.jpg",
+    }

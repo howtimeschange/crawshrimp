@@ -101,6 +101,65 @@ def test_bala_review_decisions_and_export_video_input(tmp_path, monkeypatch):
     assert payload["next_task"]["params"]["material_images"]["paths"]
 
 
+def test_bala_review_get_refreshes_late_ai_results(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    generated = tmp_path / "generated.png"
+    generated.write_bytes(b"\x89PNG\r\n\x1a\n")
+    remote_url = "https://img.example/get-refresh.png"
+    artifact_dir = runtime_paths.child_dir("bala-ai-video-review")
+    review.save_review_batch({
+        "batch_id": "bala-get-refresh",
+        "token": "token-get-refresh",
+        "workflow": "bala_ai_video_image_review",
+        "status": "generating",
+        "artifact_dir": str(artifact_dir),
+        "items": [{
+            "style_code": "208326100202",
+            "assets": [{
+                "id": "ai-late",
+                "kind": "ai",
+                "job_uid": "job-late",
+                "run_uid": "run-late",
+                "path": "",
+                "status": "generating",
+            }],
+        }],
+    })
+    refresh_calls = []
+
+    def fake_refresh_job(job_uid, run_uid):
+        refresh_calls.append((job_uid, run_uid))
+        return {
+            "job_uid": job_uid,
+            "status": "completed",
+            "summary": {
+                "image_urls": [remote_url],
+                "runs": [{"run_uid": run_uid, "status": "completed", "image_urls": [remote_url]}],
+            },
+        }
+
+    monkeypatch.setattr(api_server, "_refresh_bala_ai_image_job_for_review", fake_refresh_job)
+    monkeypatch.setattr(review.data_sink, "get_ai_image_job", lambda _job_uid: {})
+    monkeypatch.setattr(review.data_sink, "list_ai_image_assets", lambda _job_uid: [])
+    monkeypatch.setattr(ai_image_service, "materialize_remote_image", lambda job_uid, url: {
+        "ok": True,
+        "job_uid": job_uid,
+        "url": url,
+        "path": str(generated),
+    })
+
+    batch = api_server.get_bala_ai_video_review_batch("bala-get-refresh", token="token-get-refresh")
+    asset = batch["items"][0]["assets"][0]
+
+    assert refresh_calls == [("job-late", "run-late")]
+    assert asset["path"] == str(generated)
+    assert asset["status"] == "pending"
+    assert batch["status"] == "pending_approval"
+    persisted = review.load_review_batch("bala-get-refresh")
+    assert persisted["items"][0]["assets"][0]["path"] == str(generated)
+
+
 def test_regenerate_endpoint_returns_the_newest_retry_asset(tmp_path, monkeypatch):
     monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
     runtime_paths.reset_runtime_data_root_cache()
@@ -343,10 +402,10 @@ def test_review_delete_is_not_undone_by_concurrent_refresh(tmp_path, monkeypatch
     delete_finished = threading.Event()
     original_refresh = review.refresh_generated_assets
 
-    def delayed_refresh(batch):
+    def delayed_refresh(batch, **kwargs):
         refresh_loaded.set()
         delete_finished.wait(0.2)
-        return original_refresh(batch)
+        return original_refresh(batch, **kwargs)
 
     monkeypatch.setattr(review, "refresh_generated_assets", delayed_refresh)
 

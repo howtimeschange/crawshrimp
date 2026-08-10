@@ -218,6 +218,9 @@
       })
     return {
       selected: candidates[0]?.item || null,
+      selectedFolders: candidates.length
+        ? candidates.filter(entry => entry.rank === candidates[0].rank).map(entry => entry.item)
+        : [],
       candidates: candidates.map(entry => entry.item),
       usedFallback: !!candidates[0] && candidates[0].rank > 1,
     }
@@ -327,6 +330,23 @@
       if (!key || seen.has(key)) continue
       seen.add(key)
       result.push(item)
+    }
+    return result
+  }
+
+  function dedupeAssetEntries(entries, duplicateMode) {
+    if (normalizeDuplicateMode(duplicateMode) === 'all') {
+      return Array.isArray(entries) ? entries.slice() : []
+    }
+    const result = []
+    const seen = new Set()
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const item = entry?.item || {}
+      const hash = compact(item?.filehash || '')
+      const key = hash || compact(getFileStem(itemName(item))).toLowerCase() || compact(item?.fullpath || '').toLowerCase()
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      result.push(entry)
     }
     return result
   }
@@ -636,25 +656,31 @@
       return { rows, downloadItems }
     }
 
-    const folderItem = folderChoice.selected
-    const collected = await collectDescendantImages(sourceConfig.mountId, folderItem, options.folderScanDepth || 2)
+    const folderItems = folderChoice.selectedFolders?.length ? folderChoice.selectedFolders : [folderChoice.selected]
     const classifiedRows = []
     const keptItems = []
-    for (const item of collected.assets) {
-      const classification = classifyVideoAsset(sourceType, item)
-      if (!classification.keep) {
-        classifiedRows.push(rowForAsset(inputCode, sourceType, folderItem, item, classification))
-        continue
+    const collectedErrors = []
+    let collectedAssetCount = 0
+    for (const folderItem of folderItems) {
+      const collected = await collectDescendantImages(sourceConfig.mountId, folderItem, options.folderScanDepth || 2)
+      collectedAssetCount += collected.assets.length
+      collectedErrors.push(...collected.errors)
+      for (const item of collected.assets) {
+        const classification = classifyVideoAsset(sourceType, item)
+        if (!classification.keep) {
+          classifiedRows.push(rowForAsset(inputCode, sourceType, folderItem, item, classification))
+          continue
+        }
+        keptItems.push({ folderItem, item, classification })
       }
-      keptItems.push({ item, classification })
     }
 
-    const dedupedItems = dedupeAssets(keptItems.map(entry => entry.item), options.duplicateMode)
-    const keptByPath = new Set(dedupedItems.map(item => String(item?.fullpath || itemName(item))))
+    const finalItems = dedupeAssetEntries(keptItems, options.duplicateMode)
+    const keptByPath = new Set(finalItems.map(entry => String(entry.item?.fullpath || itemName(entry.item))))
     for (const entry of keptItems) {
       const pathKey = String(entry.item?.fullpath || itemName(entry.item))
       if (keptByPath.has(pathKey)) continue
-      classifiedRows.push(rowForAsset(inputCode, sourceType, folderItem, entry.item, {
+      classifiedRows.push(rowForAsset(inputCode, sourceType, entry.folderItem, entry.item, {
         ...entry.classification,
         keep: false,
         action: '已过滤',
@@ -662,22 +688,41 @@
       }))
     }
 
-    const finalItems = keptItems.filter(entry => keptByPath.has(String(entry.item?.fullpath || itemName(entry.item))))
     if (!finalItems.length) {
-      rows.push(rowForNotice(inputCode, sourceType, '文件夹内无可用图片', '未匹配到素材', `已选择文件夹：${folderItem.fullpath || itemName(folderItem)}；候选图片 ${collected.assets.length} 张，过滤后 0 张`))
+      rows.push(rowForNotice(
+        inputCode,
+        sourceType,
+        '文件夹内无可用图片',
+        '未匹配到素材',
+        `已选择文件夹：${folderItems.map(item => item.fullpath || itemName(item)).join('；')}；候选图片 ${collectedAssetCount} 张，过滤后 0 张`,
+      ))
       rows.push(...classifiedRows)
-      for (const error of collected.errors.slice(0, 5)) {
+      for (const error of collectedErrors.slice(0, 5)) {
         rows.push(rowForNotice(inputCode, sourceType, '子文件夹列目录失败', '已跳过', error))
       }
       return { rows, downloadItems }
     }
 
+    const packageNameCounts = new Map()
+    for (const entry of finalItems) {
+      const filename = compact(entry.classification?.packageFilename || itemName(entry.item)).toLowerCase()
+      if (!filename) continue
+      packageNameCounts.set(filename, (packageNameCounts.get(filename) || 0) + 1)
+    }
+
     for (let index = 0; index < finalItems.length; index += 1) {
-      const { item, classification } = finalItems[index]
+      const { folderItem, item, classification } = finalItems[index]
+      const runtimeFilename = buildRuntimeFilename(inputCode, sourceType, item, index)
+      const rawPackageFilename = classification.packageFilename || itemName(item) || runtimeFilename
+      const packageKey = compact(rawPackageFilename).toLowerCase()
+      const downloadFilename = packageNameCounts.get(packageKey) > 1
+        ? runtimeFilename
+        : toSafeFilename(rawPackageFilename, runtimeFilename)
       const baseRow = rowForAsset(inputCode, sourceType, folderItem, item, classification, {
         '__code_index': codeIndex,
         '__total_codes': totalCodes,
         '__compress_threshold_bytes': Number(options.maxImageMb || 20) * 1024 * 1024,
+        '__package_filename': downloadFilename,
       })
       if (fileSizeBytes(item) > Number(baseRow.__compress_threshold_bytes || 0)) {
         baseRow['压缩结果'] = '待压缩'
@@ -698,8 +743,6 @@
           continue
         }
 
-        const runtimeFilename = buildRuntimeFilename(inputCode, sourceType, item, index)
-        const downloadFilename = toSafeFilename(classification.packageFilename || runtimeFilename, runtimeFilename)
         rows.push({
           ...baseRow,
           '__runtime_filename': runtimeFilename,
@@ -723,7 +766,7 @@
     }
 
     rows.push(...classifiedRows)
-    for (const error of collected.errors.slice(0, 5)) {
+    for (const error of collectedErrors.slice(0, 5)) {
       rows.push(rowForNotice(inputCode, sourceType, '子文件夹列目录失败', '已跳过', error))
     }
 
@@ -835,6 +878,7 @@
       isModelWhiteBackgroundFilename,
       classifyVideoAsset,
       dedupeAssets,
+      dedupeAssetEntries,
       buildRuntimeFilename,
       buildFolderHashRoute,
       buildSearchHashRoute,

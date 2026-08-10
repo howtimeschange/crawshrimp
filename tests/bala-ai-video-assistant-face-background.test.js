@@ -131,3 +131,21 @@ test('buildPlanRows validates four AI operation types independently', async () =
   })
   assert.equal(invalidRows[0]['执行结果'], '缺少背景Prompt')
 })
+
+test('buildPlanRows accepts per-source model assignments for face swap', async () => {
+  const helpers = await loadExports()
+
+  const rows = helpers.buildPlanRows({
+    operation_type: 'face_swap',
+    source_images: { paths: ['/tmp/boy.jpg', '/tmp/girl.jpg'] },
+    source_model_ref_ids: {
+      '/tmp/boy.jpg': '100男/标准.jpg',
+      '/tmp/girl.jpg': '100女/标准.jpg',
+    },
+  })
+
+  assert.equal(rows[0]['操作类型'], 'AI换脸')
+  assert.equal(rows[0]['指定模特图'], '')
+  assert.equal(rows[0]['逐图模特'], '/tmp/boy.jpg => 100男/标准.jpg\n/tmp/girl.jpg => 100女/标准.jpg')
+  assert.equal(rows[0]['执行结果'], '待后端创建AI生图任务')
+})
