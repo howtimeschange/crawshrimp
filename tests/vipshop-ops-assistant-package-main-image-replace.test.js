@@ -1313,6 +1313,10 @@ test('matches target color by colourGSN and marks 拼款 only when backend sn di
     pageSize: 50,
     param: { msnSet: ['20132610801500311'] },
   })
+  assert.equal(
+    helpers.buildPdcProductListPayload('20232610812520510', 3, 20, 1),
+    'snList=20232610812520510&barcodeList=&categoryIds=&brandSn=&vendorType=1&pageNo=3&pageSize=20&order=0',
+  )
   assert.equal(helpers.buildProductDetailPayload('1469658525260218368', 1), 'vendorProductId=1469658525260218368&vendorType=1')
 })
 
@@ -1419,6 +1423,144 @@ test('main phase performs read-only API dry-run and returns replacement rows', a
   assert.ok(rows.some(row => row.货号 === '20132610801500311' && row.图片用途 === '主图-商品图片1200x1200' && row.执行结果 === '计划替换'))
   assert.ok(rows.some(row => row.货号 === '20132610801500311' && row.图片用途 === '包装-商品详情切片' && row.图片索引 === '601'))
   assert.ok(rows.some(row => row.__sheet_name === '包装主图替换计划' && row.货号 === '20032610810600488' && row.备注.includes('取消提交审核')))
+})
+
+test('query phase falls back to PDC product list when old merchandise query misses goods code', async () => {
+  const calls = []
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), body: String(options.body || ''), contentType: options.headers?.['Content-Type'] })
+    if (String(url).includes('/normal/normalMerchandiseQuery')) {
+      const payload = JSON.parse(options.body)
+      assert.deepEqual(payload.param.msnSet, [
+        '20842613320200311',
+        '20232610812520510',
+        '20842610321210501',
+      ])
+      return jsonResponse({
+        code: '200',
+        total: 1,
+        data: [{
+          merchandiseNo: '6922065779670516997',
+          name: '新疆棉连体衣',
+          msn: '20842613320200311',
+          osn: '208426133202',
+          vendorSpuId: '5637177038309171200',
+          prodSpuId: 'SPU-OLD-HIT',
+        }],
+      })
+    }
+    if (String(url).includes('/product/getListForVc')) {
+      assert.match(options.headers?.['Content-Type'], /application\/x-www-form-urlencoded/)
+      const body = new URLSearchParams(String(options.body || ''))
+      const code = body.get('snList')
+      if (code === '20232610812520510') {
+        return jsonResponse({
+          code: 200,
+          msg: '成功',
+          result: {
+            total: 1,
+            list: [{
+              vendorProductId: '3198477845265240066',
+              title: '巴拉巴拉童装裤子男童束脚裤中大童长裤2026秋新款儿童工装裤',
+              sn: '202326108125',
+              status: '审核通过',
+              statusCode: 13,
+              colorImageInfo: [{ name: '冷灰20510', count: 6 }],
+            }],
+          },
+        })
+      }
+      if (code === '20842610321210501') {
+        return jsonResponse({ code: 200, msg: '成功', result: { total: 0, list: [] } })
+      }
+      throw new Error(`unexpected PDC list lookup ${code}`)
+    }
+    if (String(url).includes('/product/queryVendorProductByVpIdForVc')) {
+      const body = new URLSearchParams(String(options.body || ''))
+      const vendorProductId = body.get('vendorProductId')
+      if (vendorProductId === '3198477845265240066') {
+        return jsonResponse({ code: 200, result: product({
+          vendorProductId,
+          sn: '202326108125',
+          title: '巴拉巴拉童装裤子男童束脚裤中大童长裤2026秋新款儿童工装裤',
+          status: '13',
+          itemSkuAttr: [{
+            colourGSN: '20232610812520510',
+            colourName: '冷灰20510',
+            imageGroupIdStr: '3198477845265240068',
+            sizeAttr: [],
+            colourImages: [],
+            squareImages: [],
+          }],
+        }) })
+      }
+      if (vendorProductId === '5637177038309171200') {
+        return jsonResponse({ code: 200, result: product({
+          vendorProductId,
+          sn: '208426133202',
+          title: '新疆棉连体衣',
+          status: '13',
+          itemSkuAttr: [{
+            colourGSN: '20842613320200311',
+            colourName: '白色调00311',
+            imageGroupIdStr: '5637177038309171201',
+            sizeAttr: [],
+            colourImages: [],
+            squareImages: [],
+          }],
+        }) })
+      }
+      throw new Error(`unexpected product detail ${vendorProductId}`)
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+
+  const result = await runScript({
+    phase: 'query_vipshop',
+    params: { execute_mode: 'plan' },
+    shared: {
+      jobs: [
+        { rowNo: 2, styleCode: '208426133202', goodsCode: '20842613320200311', executeMode: 'plan', operationScope: ['precheck_only'] },
+        { rowNo: 3, styleCode: '202326108125', goodsCode: '20232610812520510', executeMode: 'plan', operationScope: ['precheck_only'] },
+        { rowNo: 4, styleCode: '208426103212', goodsCode: '20842610321210501', executeMode: 'plan', operationScope: ['precheck_only'] },
+      ],
+      result_rows: [],
+      total_input_rows: 3,
+      total_jobs: 3,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(calls.filter(call => call.url.includes('/normal/normalMerchandiseQuery')).length, 1)
+  assert.deepEqual(
+    calls
+      .filter(call => call.url.includes('/product/getListForVc'))
+      .map(call => new URLSearchParams(call.body).get('snList')),
+    ['20232610812520510', '20842610321210501'],
+  )
+  assert.deepEqual(
+    calls
+      .filter(call => call.url.includes('/product/queryVendorProductByVpIdForVc'))
+      .map(call => new URLSearchParams(call.body).get('vendorProductId'))
+      .sort(),
+    ['3198477845265240066', '5637177038309171200'],
+  )
+
+  const detailRows = result.data.filter(row => row.__sheet_name === '包装主图替换计划')
+  assert.ok(detailRows.some(row =>
+    row.货号 === '20232610812520510' &&
+    row.V_SPU === '3198477845265240066' &&
+    row.后台款号 === '202326108125' &&
+    row.目标颜色 === '冷灰20510' &&
+    row.执行结果 === '预检通过' &&
+    row.接口路径.includes('/product/getListForVc')
+  ))
+  assert.ok(detailRows.some(row =>
+    row.货号 === '20842610321210501' &&
+    row.执行结果 === '未找到商品' &&
+    row.备注.includes('PDC 商品资料页均未命中')
+  ))
 })
 
 test('execution summary lists live successes and merchandise lookup failures by goods code', async () => {

@@ -24,6 +24,7 @@
   const SEMIR_ENTRY_URL = 'https://fmp.semirapp.com/web/index#/home/file'
   const VIPSHOP_NOV_ENTRY_URL = 'https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise'
   const VIPSHOP_MERCHANDISE_QUERY_URL = 'https://nov-admin.vip.com/normal/normalMerchandiseQuery'
+  const PDC_PRODUCT_LIST_URL = 'https://pdc-portal.vip.com/product/getListForVc'
   const PDC_PRODUCT_DETAIL_URL = 'https://pdc-portal.vip.com/product/queryVendorProductByVpIdForVc'
   const PDC_UNPUBLISH_URL = 'https://pdc-portal.vip.com/product/unPublishProduct'
   const PDC_PUBLISH_URL = 'https://pdc-portal.vip.com/product/publishProduct'
@@ -984,6 +985,25 @@
     }
   }
 
+  function buildPdcProductListPayload(goodsCode, pageNo = 1, pageSize = 20, vendorType = 1) {
+    return new URLSearchParams({
+      snList: normalizeCode(goodsCode),
+      barcodeList: '',
+      categoryIds: '',
+      brandSn: '',
+      vendorType: String(vendorType || 1),
+      pageNo: String(pageNo || 1),
+      pageSize: String(pageSize || 20),
+      order: '0',
+    }).toString()
+  }
+
+  function shouldUsePdcProductListFallback(rawParams = params) {
+    if (falsey(rawParams.use_pdc_product_list_fallback)) return false
+    if (falsey(rawParams.enable_pdc_product_list_fallback)) return false
+    return true
+  }
+
   function buildProductDetailPayload(vendorProductId, vendorType = 1) {
     return new URLSearchParams({
       vendorProductId: compact(vendorProductId),
@@ -1048,7 +1068,85 @@
       allRows.push(...rows)
       if (!rows.length || allRows.length >= total) break
     }
+    if (!shouldUsePdcProductListFallback(rawParams)) {
+      return { rows: allRows, total }
+    }
+    const indexed = indexMerchandiseRows(allRows)
+    const missingGoodsCodes = Array.from(new Set((goodsCodes || []).map(normalizeCode).filter(Boolean)))
+      .filter(goodsCode => !indexed.has(goodsCode))
+    for (const goodsCode of missingGoodsCodes) {
+      let row = null
+      try {
+        row = await queryPdcProductListMerchandiseRow(goodsCode, rawParams)
+      } catch (error) {
+        row = null
+      }
+      if (row) {
+        allRows.push(row)
+        indexed.set(goodsCode, row)
+      }
+    }
+    total = Math.max(total, allRows.length)
     return { rows: allRows, total }
+  }
+
+  async function queryPdcProductListRows(goodsCode, rawParams = params) {
+    const pageSize = Math.max(1, Math.min(100, positiveInt(rawParams.pdc_page_size, 20)))
+    const maxPages = Math.max(1, Math.min(100, positiveInt(rawParams.pdc_max_pages, DEFAULT_MAX_PAGES)))
+    const rows = []
+    let total = 0
+    for (let pageNo = 1; pageNo <= maxPages; pageNo += 1) {
+      const json = await postForm(
+        PDC_PRODUCT_LIST_URL,
+        buildPdcProductListPayload(goodsCode, pageNo, pageSize, rawParams.vendor_type || 1),
+      )
+      const result = json.result || {}
+      const list = Array.isArray(result.list) ? result.list : (Array.isArray(json.data) ? json.data : [])
+      total = Number(result.total || json.total || list.length || total)
+      rows.push(...list)
+      if (!list.length || rows.length >= total) break
+    }
+    return { rows, total }
+  }
+
+  function selectPdcProductListRow(goodsCode, rows = []) {
+    const candidates = Array.isArray(rows) ? rows.filter(Boolean) : []
+    if (!candidates.length) return null
+    const target = normalizeComparableCode(goodsCode)
+    const style = styleCodePrefix(goodsCode)
+    const score = row => {
+      const text = normalizeComparableCode(JSON.stringify(row || {}))
+      let value = 0
+      if (target && text.includes(target)) value += 100
+      if (normalizeComparableCode(row?.msn || row?.goodsNo) === target) value += 80
+      if (style && normalizeComparableCode(row?.sn || row?.osn) === style) value += 40
+      if (compact(row?.vendorProductId || row?.vendorSpuId)) value += 10
+      return value
+    }
+    return candidates
+      .map((row, index) => ({ row, index, score: score(row) }))
+      .sort((a, b) => b.score - a.score || a.index - b.index)[0].row
+  }
+
+  function pdcProductListRowToMerchandiseRow(row, goodsCode) {
+    return {
+      ...row,
+      __source: 'pdc_getListForVc',
+      merchandiseNo: compact(row?.merchandiseNo),
+      msn: normalizeCode(row?.msn || row?.goodsNo || goodsCode),
+      osn: normalizeCode(row?.osn || row?.sn || styleCodePrefix(goodsCode)),
+      vendorSpuId: compact(row?.vendorSpuId || row?.vendorProductId),
+      prodSpuId: compact(row?.prodSpuId || row?.prodProductId || row?.productId),
+      skuStatus: row?.skuStatus || row?.statusCode || row?.status,
+      name: compact(row?.name || row?.title),
+    }
+  }
+
+  async function queryPdcProductListMerchandiseRow(goodsCode, rawParams = params) {
+    const result = await queryPdcProductListRows(goodsCode, rawParams)
+    const row = selectPdcProductListRow(goodsCode, result.rows)
+    if (!row) return null
+    return pdcProductListRowToMerchandiseRow(row, goodsCode)
   }
 
   async function queryProductDetail(vendorProductId, vendorType = 1) {
@@ -1115,6 +1213,24 @@
       执行结果: '',
       备注: '',
     }
+  }
+
+  function merchandisePrecheckEndpoint(merchandise = {}) {
+    return merchandise?.__source === 'pdc_getListForVc'
+      ? `${VIPSHOP_MERCHANDISE_QUERY_URL}；${PDC_PRODUCT_LIST_URL}；${PDC_PRODUCT_DETAIL_URL}`
+      : `${VIPSHOP_MERCHANDISE_QUERY_URL}；${PDC_PRODUCT_DETAIL_URL}`
+  }
+
+  function missingMerchandiseEndpoint(rawParams = params) {
+    return shouldUsePdcProductListFallback(rawParams)
+      ? '/normal/normalMerchandiseQuery；/product/getListForVc'
+      : '/normal/normalMerchandiseQuery'
+  }
+
+  function missingMerchandiseNote(rawParams = params) {
+    return shouldUsePdcProductListFallback(rawParams)
+      ? '旧商品资料接口和 PDC 商品资料页均未命中'
+      : '旧商品资料接口未命中'
   }
 
   function buildOutputRow(job = {}, options = {}) {
@@ -1197,7 +1313,7 @@
     rows.push({
       ...base,
       图片用途: '商品资料预检',
-      接口路径: `${VIPSHOP_MERCHANDISE_QUERY_URL}；${PDC_PRODUCT_DETAIL_URL}`,
+      接口路径: merchandisePrecheckEndpoint(merchandise),
       执行结果: color?.colourGSN ? '预检通过' : '预检失败',
       备注: compact([
         isMergedStyle(job, product) ? '拼款：只允许更新目标货号对应颜色' : '',
@@ -3942,7 +4058,7 @@
     return Promise.all(parsed.jobs.map(async job => {
       const merchandise = merchandiseByGoods.get(normalizeCode(job.goodsCode))
       if (!merchandise) {
-        return { job, merchandise: null, error: '按完整货号查询唯品会商品资料未命中' }
+        return { job, merchandise: null, error: missingMerchandiseNote(rawParams) }
       }
       const product = await queryProductDetail(merchandise.vendorSpuId, rawParams.vendor_type || 1)
       const color = findTargetColor(product, job.goodsCode)
@@ -4096,8 +4212,13 @@
       buildVipshopImageUploadFields,
       collectAssetFiles,
       buildMerchandiseQueryPayload,
+      buildPdcProductListPayload,
+      shouldUsePdcProductListFallback,
       buildProductDetailPayload,
       indexMerchandiseRows,
+      merchandisePrecheckEndpoint,
+      missingMerchandiseEndpoint,
+      missingMerchandiseNote,
       findTargetColor,
       isMergedStyle,
       buildJobPlanRows,
@@ -4275,8 +4396,8 @@
           outputRows.push(buildOutputRow(job, {
             task: '商品资料预检',
             status: '未找到商品',
-            endpoint: '/normal/normalMerchandiseQuery',
-            note: '按完整货号查询唯品会商品资料未命中',
+            endpoint: missingMerchandiseEndpoint(params),
+            note: missingMerchandiseNote(params),
           }))
           continue
         }
