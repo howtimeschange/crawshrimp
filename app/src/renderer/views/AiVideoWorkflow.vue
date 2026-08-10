@@ -1358,13 +1358,22 @@
         </header>
         <div class="aiv-confirm-copy">
           <strong>{{ materialRecallClearSummary }}</strong>
-          <span id="aiv-material-clear-description">旧图片文件仍保留在工作区；确认后当前回显列表会清空，下一次找图只回显新生成的素材。</span>
+          <span id="aiv-material-clear-description">{{ materialRecallClearDescription }}</span>
+          <div v-if="materialRecallClearError" class="aiv-inline-error" role="alert">{{ materialRecallClearError }}</div>
         </div>
         <footer class="aiv-modal-foot">
           <span>此操作会同步清理后续 AI 改图和生视频的本地工作台状态</span>
           <div class="aiv-modal-foot-actions">
-            <button type="button" class="aiv-ghost" @click="closeMaterialRecallClearConfirmation">取消</button>
-            <button type="button" class="aiv-danger" @click="confirmMaterialRecallClear">确认清空</button>
+            <button type="button" class="aiv-ghost" :disabled="materialRecallClearBusy" @click="closeMaterialRecallClearConfirmation">取消</button>
+            <button type="button" class="aiv-ghost" :disabled="materialRecallClearBusy" @click="confirmMaterialRecallClear(false)">仅清除记录</button>
+            <button
+              type="button"
+              class="aiv-danger"
+              :disabled="materialRecallClearBusy || !materialRecallClearLocalPathCount"
+              @click="confirmMaterialRecallClear(true)"
+            >
+              {{ materialRecallClearBusy ? '正在清理...' : '清除本地图片' }}
+            </button>
           </div>
         </footer>
       </section>
@@ -2123,9 +2132,10 @@ const activeAction = ref('face_swap')
 const materialPanelExpanded = ref(true)
 const materialShowSelectedOnly = ref(false)
 const materialDisplayMode = ref('grid')
-const materialRecallClearedAt = ref('')
-const materialRecallStyleClearedAt = reactive({})
+const materialRecallHiddenPaths = reactive(new Set())
 const pendingMaterialRecallClear = ref(null)
+const materialRecallClearBusy = ref(false)
+const materialRecallClearError = ref('')
 const selectedTemplateId = ref('')
 const selectedModel = ref(null)
 const sourceModelAssignments = reactive({})
@@ -2544,13 +2554,11 @@ function replaceSourceModelAssignments(assignments = {}) {
   }
 }
 
-function replaceMaterialRecallStyleClears(payload = {}) {
-  for (const key of Object.keys(materialRecallStyleClearedAt)) delete materialRecallStyleClearedAt[key]
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return
-  for (const [styleCode, clearedAt] of Object.entries(payload)) {
-    const key = String(styleCode || '').trim()
-    const value = String(clearedAt || '').trim()
-    if (key && value) materialRecallStyleClearedAt[key] = value
+function replaceMaterialRecallHiddenPaths(paths = []) {
+  materialRecallHiddenPaths.clear()
+  for (const path of Array.isArray(paths) ? paths : []) {
+    const key = normalizedWorkspacePath(path)
+    if (key) materialRecallHiddenPaths.add(key)
   }
 }
 
@@ -2594,8 +2602,7 @@ function workspaceSnapshot() {
       task: cloneWorkspaceValue(materialTask, {}),
       batch: cloneWorkspaceValue(materialBatch.value, null),
       boardUrl: materialBoardUrl.value,
-      recallClearedAt: materialRecallClearedAt.value,
-      recallStyleClearedAt: cloneWorkspaceValue(materialRecallStyleClearedAt, {}),
+      recallHiddenPaths: [...materialRecallHiddenPaths],
     },
     image: {
       styles: serializeBalaImageWorkspaceState(styleWorkspaces),
@@ -2778,8 +2785,7 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   const material = snapshot.material || {}
   materialBatch.value = cloneWorkspaceValue(material.batch, null)
   materialBoardUrl.value = String(material.boardUrl || '')
-  materialRecallClearedAt.value = String(material.recallClearedAt || '')
-  replaceMaterialRecallStyleClears(material.recallStyleClearedAt || {})
+  replaceMaterialRecallHiddenPaths(material.recallHiddenPaths || [])
   Object.assign(materialTask, cloneWorkspaceValue(material.task, {}))
 
   const image = snapshot.image || {}
@@ -3976,29 +3982,9 @@ function releaseWorkspaceImagePreviews(paths = []) {
   }
 }
 
-function workspaceFileModifiedTime(file = {}) {
-  const numeric = Number(file?.mtimeMs || file?.mtime || 0)
-  if (Number.isFinite(numeric) && numeric > 0) return numeric
-  const parsed = Date.parse(file?.modifiedAt || file?.modified_at || '')
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function workspaceFileStyleCode(file = {}) {
-  const direct = String(file?.styleCode || file?.style_code || '').trim()
-  if (direct) return direct
-  const match = String(file?.path || '').match(/(?:^|[\\/])(\d{12})(?:[\\/]|$)/)
-  return match?.[1] || ''
-}
-
 function filesAfterMaterialRecallClear(files = []) {
-  const clearedAt = Date.parse(materialRecallClearedAt.value || '')
-  const hasGlobalClear = Number.isFinite(clearedAt) && clearedAt > 0
-  return (files || []).filter((file) => {
-    const modifiedAt = workspaceFileModifiedTime(file)
-    if (hasGlobalClear && modifiedAt <= clearedAt) return false
-    const styleClearedAt = Date.parse(materialRecallStyleClearedAt[workspaceFileStyleCode(file)] || '')
-    return !(Number.isFinite(styleClearedAt) && styleClearedAt > 0 && modifiedAt <= styleClearedAt)
-  })
+  if (!materialRecallHiddenPaths.size) return files || []
+  return (files || []).filter(file => !materialRecallHiddenPaths.has(normalizedWorkspacePath(file?.path)))
 }
 
 function applyWorkspaceFileSync(files = []) {
@@ -4044,50 +4030,143 @@ const materialRecallClearSummary = computed(() => {
   return materialRecallStyleSummary(pending?.styleCode)
 })
 
+function materialRecallBasePathsForStyle(style = {}) {
+  return workspaceImageSources(style).flatMap(source => [
+    source.path,
+    source.previewPath,
+  ]).map(normalizedWorkspacePath).filter(Boolean)
+}
+
+function materialRecallStylesForPending(pending = {}) {
+  if (pending?.scope === 'all') return [...styleWorkspaces]
+  const code = String(pending?.styleCode || '').trim()
+  return code ? styleWorkspaces.filter(style => style.styleCode === code) : []
+}
+
+function materialRecallLocalPathsForPending(pending = pendingMaterialRecallClear.value) {
+  return [...new Set(materialRecallStylesForPending(pending).flatMap(materialRecallBasePathsForStyle))]
+}
+
+const materialRecallClearLocalPathCount = computed(() => materialRecallLocalPathsForPending().length)
+
+const materialRecallClearDescription = computed(() => {
+  const count = materialRecallClearLocalPathCount.value
+  return `可选择仅清除本机回显记录，或同时删除 ${count} 张当前回显的本地图片；下一次对同款重新找图后，会重新按规则全量回显符合条件的素材。`
+})
+
+function pathHasStyleCode(path = '', styleCode = '') {
+  const code = String(styleCode || '').trim()
+  if (!code) return false
+  return normalizedWorkspacePath(path).split('/').includes(code)
+}
+
+function releaseMaterialRecallHiddenPathsForStyles(styleCodes = []) {
+  if (!materialRecallHiddenPaths.size) return false
+  const codes = [...new Set((styleCodes || []).map(code => String(code || '').trim()).filter(Boolean))]
+  if (!codes.length) {
+    materialRecallHiddenPaths.clear()
+    return true
+  }
+  let changed = false
+  for (const path of [...materialRecallHiddenPaths]) {
+    if (!codes.some(code => pathHasStyleCode(path, code))) continue
+    materialRecallHiddenPaths.delete(path)
+    changed = true
+  }
+  return changed
+}
+
+function applyMaterialRecallHiddenPaths(styleCodes = [], paths = [], { replaceAll = false } = {}) {
+  if (replaceAll) replaceMaterialRecallHiddenPaths(paths)
+  else {
+    releaseMaterialRecallHiddenPathsForStyles(styleCodes)
+    for (const path of paths) {
+      const key = normalizedWorkspacePath(path)
+      if (key) materialRecallHiddenPaths.add(key)
+    }
+  }
+}
+
+async function deleteMaterialRecallLocalImages(paths = []) {
+  const targets = [...new Set((paths || []).map(normalizedWorkspacePath).filter(Boolean))]
+  if (!targets.length) return { deleted: 0 }
+  if (!workspaceDir.value) throw new Error('请先使用系统文件夹选择器选择工作区')
+  if (typeof window.cs?.deleteBalaWorkspaceImage !== 'function') throw new Error('当前运行环境不支持安全删除工作区图片')
+  let deleted = 0
+  for (const path of targets) {
+    const result = await window.cs.deleteBalaWorkspaceImage(workspaceDir.value, path)
+    if (result?.ok === false) throw new Error(result?.error || `删除本地图片失败：${path}`)
+    deleted += 1
+  }
+  return { deleted }
+}
+
 function requestMaterialRecallClearAll() {
+  materialRecallClearBusy.value = false
+  materialRecallClearError.value = ''
   pendingMaterialRecallClear.value = { scope: 'all' }
 }
 
 function requestMaterialRecallClearForStyle(styleCode = activeMaterialStyleCode.value) {
   const code = String(styleCode || '').trim()
   if (!code) return
+  materialRecallClearBusy.value = false
+  materialRecallClearError.value = ''
   pendingMaterialRecallClear.value = { scope: 'style', styleCode: code }
 }
 
 function closeMaterialRecallClearConfirmation() {
+  if (materialRecallClearBusy.value) return
+  materialRecallClearError.value = ''
   pendingMaterialRecallClear.value = null
 }
 
-function confirmMaterialRecallClear() {
+async function confirmMaterialRecallClear(deleteLocalFiles = false) {
   const pending = pendingMaterialRecallClear.value
-  if (!pending) return
-  pendingMaterialRecallClear.value = null
-  if (pending.scope === 'all') clearMaterialRecallHistory()
-  else clearMaterialRecallHistoryForStyle(pending.styleCode)
+  if (!pending || materialRecallClearBusy.value) return
+  const localPaths = materialRecallLocalPathsForPending(pending)
+  materialRecallClearBusy.value = true
+  materialRecallClearError.value = ''
+  try {
+    const deletion = deleteLocalFiles ? await deleteMaterialRecallLocalImages(localPaths) : { deleted: 0 }
+    pendingMaterialRecallClear.value = null
+    const hiddenPaths = deleteLocalFiles ? [] : localPaths
+    const options = { hiddenPaths, deleteLocalFiles, deletedCount: deletion.deleted || 0 }
+    if (pending.scope === 'all') clearMaterialRecallHistory(options)
+    else clearMaterialRecallHistoryForStyle(pending.styleCode, options)
+  } catch (error) {
+    materialRecallClearError.value = error?.message || String(error)
+  } finally {
+    materialRecallClearBusy.value = false
+  }
 }
 
-function clearMaterialRecallHistory() {
+function clearMaterialRecallHistory({ hiddenPaths = [], deleteLocalFiles = false, deletedCount = 0 } = {}) {
   resetMaterialPoll()
   resetAiPoll()
   aiReviewPollToken += 1
   materialPollRunId = ''
   aiPollRunId = ''
   activeAiPlaceholderIds.clear()
-  materialRecallClearedAt.value = new Date().toISOString()
-  replaceMaterialRecallStyleClears({})
+  applyMaterialRecallHiddenPaths([], hiddenPaths, { replaceAll: true })
   materialBatch.value = null
   materialBoardUrl.value = ''
   reviewBatch.value = null
   reviewBoardUrl.value = ''
   reviewStyles.splice(0, reviewStyles.length)
   videoJobs.splice(0, videoJobs.length)
+  videoTasks.splice(0, videoTasks.length)
+  videoResults.splice(0, videoResults.length)
   videoTaskDraft.assetIds = []
+  selectedVideoTaskIds.clear()
   selectedReviewAssetIds.clear()
   replaceSourceModelAssignments({})
   replaceStyleWorkspaces([])
   updateMaterialTask({
     status: 'idle',
-    message: '已清空本机回显记录；旧文件仍保留在工作区，下一次找图只回显新生成的素材。',
+    message: deleteLocalFiles
+      ? `已清空本机回显记录并删除 ${deletedCount} 张本地图片；下一次找图会重新按规则全量回显符合条件的素材。`
+      : '已清空本机回显记录；本地图片仍保留，下一次找图会重新按规则全量回显符合条件的素材。',
     progress: 0,
     searchProgress: 0,
     downloadProgress: 0,
@@ -4151,12 +4230,12 @@ function pruneWorkflowStateForStyle(styleCode = '') {
   if (previewImage.value?.styleCode === code) closePreview()
 }
 
-function clearMaterialRecallHistoryForStyle(styleCode = activeMaterialStyleCode.value) {
+function clearMaterialRecallHistoryForStyle(styleCode = activeMaterialStyleCode.value, { hiddenPaths = [], deleteLocalFiles = false, deletedCount = 0 } = {}) {
   const code = String(styleCode || '').trim()
   if (!code) return
   const removed = styleWorkspaces.filter(style => style.styleCode === code)
   const remaining = styleWorkspaces.filter(style => style.styleCode !== code)
-  materialRecallStyleClearedAt[code] = new Date().toISOString()
+  applyMaterialRecallHiddenPaths([code], hiddenPaths)
   delete materialExpanded[code]
   delete materialRenderLimits[materialRenderKey(code, 'model')]
   delete materialRenderLimits[materialRenderKey(code, 'detail')]
@@ -4165,7 +4244,9 @@ function clearMaterialRecallHistoryForStyle(styleCode = activeMaterialStyleCode.
   releaseWorkspaceImagePreviews(removed.flatMap(workspacePreviewPathsForStyle))
   updateMaterialTask({
     status: 'idle',
-    message: `已清空 ${code} 本机回显记录；旧文件仍保留在工作区，下一次找图只回显本款新生成的素材。`,
+    message: deleteLocalFiles
+      ? `已清空 ${code} 本机回显记录并删除 ${deletedCount} 张本地图片；下一次找图会重新按规则全量回显本款素材。`
+      : `已清空 ${code} 本机回显记录；本地图片仍保留，下一次找图会重新按规则全量回显本款素材。`,
     error: '',
   })
   persistWorkspaceState()
@@ -4185,8 +4266,7 @@ function resetWorkflowWorkspace() {
   activeAction.value = 'face_swap'
   selectedModel.value = null
   replaceSourceModelAssignments({})
-  materialRecallClearedAt.value = ''
-  replaceMaterialRecallStyleClears({})
+  replaceMaterialRecallHiddenPaths([])
   garmentImagePaths.value = []
   outfitReferencePaths.value = []
   variantReferencePaths.value = []
@@ -4427,6 +4507,12 @@ async function startMaterialPrepare() {
     updateMaterialTask({ status: 'failed', error: '请先选择 AI 视频工作区目录', message: '请先选择 AI 视频工作区目录。' })
     return
   }
+  const runStyleCodes = normalizeStyleCodeLines(params.item_codes)
+  if (releaseMaterialRecallHiddenPathsForStyles(runStyleCodes)) {
+    persistWorkspaceState()
+    void flushWorkspaceManifest()
+    void syncWorkspaceFiles()
+  }
   materialWorkspaceRequired.value = false
   const previousStatus = await window.cs.getTaskStatus(
     BALA_AI_VIDEO_ADAPTER_ID,
@@ -4442,9 +4528,9 @@ async function startMaterialPrepare() {
     searchProgress: 0,
     downloadProgress: 0,
     currentStyle: '',
-    totalStyles: normalizeStyleCodeLines(params.item_codes).length,
+    totalStyles: runStyleCodes.length,
     completedStyles: 0,
-    searchTotal: normalizeStyleCodeLines(params.item_codes).length,
+    searchTotal: runStyleCodes.length,
     searchCompleted: 0,
     downloadTotal: 0,
     downloadCompleted: 0,
@@ -8585,8 +8671,7 @@ watch([
   activeMaterialStyleCode,
   activeMaterialSource,
   materialDisplayMode,
-  materialRecallClearedAt,
-  materialRecallStyleClearedAt,
+  materialRecallHiddenPaths,
 ], () => {
   persistWorkspaceState()
 }, { deep: true })
