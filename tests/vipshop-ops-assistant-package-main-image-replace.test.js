@@ -1400,9 +1400,119 @@ test('main phase performs read-only API dry-run and returns replacement rows', a
 
   const rows = result.data
   assert.equal(rows[0].__sheet_name, '执行摘要')
+  assert.equal(rows[0].汇总类型, '总览')
+  assert.match(rows[0]['失败原因/读回结果'], /总款色 2/)
+  assert.ok(rows.some(row =>
+    row.__sheet_name === '执行摘要' &&
+    row.汇总类型 === '预检通过款号' &&
+    row.货号 === '20132610801500311' &&
+    row.最终结果 === '预检通过' &&
+    row.计划替换图片数 > 0
+  ))
+  assert.ok(rows.some(row =>
+    row.__sheet_name === '执行摘要' &&
+    row.汇总类型 === '失败款号' &&
+    row.货号 === '20032610810600488' &&
+    row.最终结果 === '失败' &&
+    row.处理建议.includes('补齐')
+  ))
   assert.ok(rows.some(row => row.货号 === '20132610801500311' && row.图片用途 === '主图-商品图片1200x1200' && row.执行结果 === '计划替换'))
   assert.ok(rows.some(row => row.货号 === '20132610801500311' && row.图片用途 === '包装-商品详情切片' && row.图片索引 === '601'))
-  assert.ok(rows.some(row => row.货号 === '20032610810600488' && row.备注.includes('取消提交审核')))
+  assert.ok(rows.some(row => row.__sheet_name === '包装主图替换计划' && row.货号 === '20032610810600488' && row.备注.includes('取消提交审核')))
+})
+
+test('execution summary lists live successes and merchandise lookup failures by goods code', async () => {
+  const result = await runScript({
+    phase: 'verify_live_job',
+    params: { execute_mode: 'live' },
+    shared: {
+      result_rows: [
+        {
+          __sheet_name: '包装主图替换计划',
+          表格行号: 2,
+          款号: '208426133202',
+          货号: '20842613320200311',
+          商品ID: '6922065779670516997',
+          商品状态: '已提交审核',
+          目标颜色: '白色调00311',
+          图片用途: '商品资料预检',
+          执行结果: '预检通过',
+          备注: '当前状态需先取消提交审核/撤回后才能编辑',
+        },
+        {
+          __sheet_name: '包装主图替换计划',
+          表格行号: 2,
+          款号: '208426133202',
+          货号: '20842613320200311',
+          图片用途: '包装-商品详情切片',
+          执行结果: '已下载',
+        },
+        {
+          __sheet_name: '包装主图替换计划',
+          表格行号: 2,
+          款号: '208426133202',
+          货号: '20842613320200311',
+          图片用途: '包装-商品详情切片',
+          执行结果: '计划替换',
+        },
+        {
+          __sheet_name: '包装主图替换计划',
+          表格行号: 3,
+          款号: '202326108125',
+          货号: '20232610812520510',
+          图片用途: '商品资料预检',
+          执行结果: '未找到商品',
+          备注: '按完整货号查询唯品会商品资料未命中',
+        },
+      ],
+      live_rows: [
+        {
+          __sheet_name: '包装主图替换计划',
+          表格行号: 2,
+          款号: '208426133202',
+          货号: '20842613320200311',
+          商品ID: '6922065779670516997',
+          商品状态: '已提交审核',
+          目标颜色: '白色调00311',
+          图片用途: '包装-商品详情切片',
+          执行结果: '已上传待保存',
+          备注: 'http://a.vpimg2.com/upload/example.jpg',
+        },
+        {
+          __sheet_name: '包装主图替换计划',
+          表格行号: 2,
+          款号: '208426133202',
+          货号: '20842613320200311',
+          商品ID: '6922065779670516997',
+          商品状态: '已提交审核',
+          目标颜色: '白色调00311',
+          图片用途: '线上替换',
+          执行结果: '保存并提交审核成功',
+          备注: '读回状态=审核通过；已读回 1 个新图URL',
+        },
+      ],
+      live_contexts: [],
+      live_index: 0,
+    },
+    fetchImpl: async () => {
+      throw new Error('fetch should not be called')
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.deepEqual(
+    plain(
+    result.data
+      .filter(row => row.__sheet_name === '执行摘要' && row.汇总类型 !== '总览')
+      .map(row => [row.汇总类型, row.货号, row.最终结果, row.已下载素材数, row.计划替换图片数, row.已上传图片数, row.处理建议]),
+    ),
+    [
+      ['成功款号', '20842613320200311', '成功', 1, 1, 1, ''],
+      ['失败款号', '20232610812520510', '失败', 0, 0, 0, '检查唯品后台完整货号是否存在，或确认货号/色号后重跑'],
+    ],
+  )
+  assert.match(result.data[0]['失败原因/读回结果'], /成功 1；失败 1/)
 })
 
 test('live mode follows execute_mode without legacy allow_live gate', async () => {
@@ -1466,4 +1576,69 @@ test('Semir cloud 40106 login timeout waits instead of failing lookup', async ()
   assert.equal(result.meta.shared.semir_login_wait_attempts, 1)
   assert.match(result.meta.shared.semir_login_wait_error, /登录态不可用/)
   assert.match(result.meta.shared.current_store, /5\/500秒/)
+})
+
+test('Semir folder JSON with 40106 in file data is not treated as login timeout', async () => {
+  const root = '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q4/幼童/208426100202'
+  const fetchImpl = async (url, options = {}) => {
+    const parsedUrl = new URL(String(url), 'https://fmp.semirapp.com')
+    if (parsedUrl.pathname === '/fengcloud/1/account/mount') {
+      return jsonResponse([{ name: '巴拉巴拉品牌事业部-市场系统', mount_id: '1863' }])
+    }
+    if (parsedUrl.pathname === '/fengcloud/2/file/search') {
+      const body = new URLSearchParams(String(options.body || ''))
+      const keyword = body.get('keyword')
+      const items = keyword === '208426100202'
+        ? [{ dir: 1, filename: '208426100202', fullpath: root, mount_id: '1863' }]
+        : []
+      return jsonResponse({ total: items.length, list: items })
+    }
+    if (parsedUrl.pathname === '/fengcloud/1/file/ls') {
+      const fullpath = parsedUrl.searchParams.get('fullpath')
+      if (fullpath === root) {
+        return jsonResponse({
+          count: 1,
+          list: [{ dir: 1, filename: '源文件', fullpath: `${root}/源文件`, mount_id: '1863' }],
+        })
+      }
+      if (fullpath === `${root}/源文件`) {
+        return jsonResponse({
+          count: 1,
+          list: [{
+            dir: 0,
+            filename: '细节.psd',
+            fullpath: `${root}/源文件/细节.psd`,
+            filesize: 544010693,
+            filehash: 'de0424b719261939994eaca81070d0fb6c754760',
+            mount_id: '1863',
+          }],
+        })
+      }
+      return jsonResponse({ count: 0, list: [] })
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+
+  const result = await runScript({
+    phase: 'collect_cloud_assets',
+    locationHref: 'https://fmp.semirapp.com/web/index#/home/file',
+    shared: {
+      jobs: [{
+        rowNo: 23,
+        styleCode: '208426100202',
+        goodsCode: '20842610020200331',
+        operationScope: ['package'],
+        cloudPath: '巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/',
+        folderScanDepth: 5,
+      }],
+      job_index: 0,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'navigate_nov_admin')
+  assert.equal(result.meta.shared.semir_login_wait_attempts, undefined)
+  assert.equal(result.meta.shared.result_rows[0].执行结果, '未匹配到图片')
 })

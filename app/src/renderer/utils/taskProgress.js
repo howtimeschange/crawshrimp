@@ -1256,13 +1256,17 @@ function buildVipshopPackageMainImageReplaceProgress(live = {}, liveStatus = '',
   const statusLabel = getStatusLabel(liveStatus || live?.status)
   const phase = String(live?.phase || '').trim()
   const normalizedPhase = normalizeKeyPart(phase)
-  const currentTarget = String(live?.detail_current_target || live?.buyer_id || '').trim()
+  const normalizedStatus = normalizeKeyPart(liveStatus || live?.status)
+  const terminalDone = normalizedStatus === 'done' || normalizedPhase === 'done'
+  const currentTargetRaw = String(live?.detail_current_target || live?.buyer_id || '').trim()
+  const currentTarget = terminalDone ? '' : currentTargetRaw
   const store = String(live?.store || '').trim()
   const rowNo = toInt(live?.row_no)
 
   const sourceTotal = toInt(live?.search_total_codes) || toInt(live?.total)
   const sourceDoneRaw = toInt(live?.search_completed_codes)
-  const sourceDone = sourceTotal > 0 ? Math.min(sourceDoneRaw, sourceTotal) : sourceDoneRaw
+  const sourceDoneBase = terminalDone && sourceTotal > 0 ? sourceTotal : sourceDoneRaw
+  const sourceDone = sourceTotal > 0 ? Math.min(sourceDoneBase, sourceTotal) : sourceDoneBase
   const sourceCurrentRaw = toInt(live?.current)
   const sourceCurrent = sourceTotal > 0
     ? Math.min(Math.max(sourceCurrentRaw || sourceDone + 1, 0), sourceTotal)
@@ -1270,7 +1274,8 @@ function buildVipshopPackageMainImageReplaceProgress(live = {}, liveStatus = '',
 
   const downloadTotal = toInt(live?.download_total)
   const downloadCompletedRaw = toInt(live?.download_completed)
-  const downloadCompleted = downloadTotal > 0 ? Math.min(downloadCompletedRaw, downloadTotal) : downloadCompletedRaw
+  const downloadCompletedBase = terminalDone && downloadTotal > 0 ? downloadTotal : downloadCompletedRaw
+  const downloadCompleted = downloadTotal > 0 ? Math.min(downloadCompletedBase, downloadTotal) : downloadCompletedBase
   const downloadSuccess = toInt(live?.download_success)
   const downloadFailed = toInt(live?.download_failed)
   const downloadConcurrency = toInt(live?.download_concurrency)
@@ -1278,7 +1283,7 @@ function buildVipshopPackageMainImageReplaceProgress(live = {}, liveStatus = '',
   const downloadLastLabel = String(live?.download_last_label || '').trim()
   const downloadCurrentLabel = String(live?.download_current_label || '').trim()
   const downloadStarted = Boolean(live?.download_started) || downloadTotal > 0
-  const downloadActive = Boolean(live?.download_active) || (downloadStarted && downloadTotal > 0 && downloadCompleted < downloadTotal)
+  const downloadActive = !terminalDone && (Boolean(live?.download_active) || (downloadStarted && downloadTotal > 0 && downloadCompleted < downloadTotal))
   const downloadPercent = downloadTotal > 0 ? clampPercent((downloadCompleted / downloadTotal) * 100) : 0
 
   const sourceUnitProgress = sourceTotal > 0
@@ -1295,14 +1300,17 @@ function buildVipshopPackageMainImageReplaceProgress(live = {}, liveStatus = '',
 
   const liveTotal = toInt(live?.detail_total_targets)
   const liveDoneRaw = toInt(live?.detail_completed_targets)
-  const liveDone = liveTotal > 0 ? Math.min(liveDoneRaw, liveTotal) : liveDoneRaw
+  const liveDoneBase = terminalDone && liveTotal > 0 ? liveTotal : liveDoneRaw
+  const liveDone = liveTotal > 0 ? Math.min(liveDoneBase, liveTotal) : liveDoneBase
   const liveIndexRaw = toInt(live?.detail_current_target_index)
   const liveIndex = liveTotal > 0
-    ? Math.min(Math.max(liveIndexRaw || liveDone + 1, 0), liveTotal)
+    ? terminalDone
+      ? liveTotal
+      : Math.min(Math.max(liveIndexRaw || liveDone + 1, 0), liveTotal)
     : liveIndexRaw
   const liveStartedPhases = ['process_live_job', 'detect_vipshop_detail_ocr_anchors', 'after_files_injected', 'verify_live_job']
   const liveStarted = liveTotal > 0 || liveStartedPhases.includes(normalizedPhase)
-  const liveComplete = liveTotal > 0 && liveDone >= liveTotal
+  const liveComplete = liveTotal > 0 && (terminalDone || liveDone >= liveTotal)
   const livePercent = liveTotal > 0 ? clampPercent((Math.max(liveDone, liveIndex) / liveTotal) * 100) : 0
   const liveState = liveComplete
     ? 'complete'

@@ -324,6 +324,103 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress["detail_completed_targets"], 100)
         self.assertEqual(progress["detail_current_target"], "SO-DETAIL-100")
 
+    async def test_done_live_status_preserves_last_runtime_shared_progress(self):
+        class FakeBridge:
+            def get_tabs(self):
+                return []
+
+            def new_tab(self, url):
+                return {
+                    "id": "tab-1",
+                    "type": "page",
+                    "url": url,
+                    "webSocketDebuggerUrl": "ws://example.invalid",
+                }
+
+            def find_tab(self, url):
+                return {
+                    "id": "tab-1",
+                    "type": "page",
+                    "url": url,
+                    "webSocketDebuggerUrl": "ws://example.invalid",
+                }
+
+            def get_tab_ws_url(self, tab):
+                return tab["webSocketDebuggerUrl"]
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+                self.tab_id = "tab-1"
+                self.tab_url = "https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise"
+                self.last_runtime_shared = {}
+                self.last_runtime_phase = ""
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                self.last_runtime_phase = "done"
+                self.last_runtime_shared = {
+                    "total_rows": 21,
+                    "current_exec_no": 21,
+                    "search_total_codes": 31,
+                    "search_completed_codes": 31,
+                    "download_total": 15,
+                    "download_completed": 15,
+                    "download_success": 15,
+                    "detail_total_targets": 21,
+                    "detail_completed_targets": 21,
+                    "detail_current_target_index": 21,
+                    "detail_current_target": "",
+                    "current_store": "全部线上替换任务完成",
+                }
+                return [{"货号": "20842610320200422", "执行结果": "保存并提交审核成功"}]
+
+        class FakeTask:
+            id = "package_main_image_replace"
+            name = "唯品包装主图替换"
+            description = ""
+            entry_url = "https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise"
+            tab_match_prefixes = []
+            output = []
+            script = "vipshop-package-main-image-replace.js"
+            skip_auth = True
+            params = []
+
+        class FakeAdapter:
+            id = "vipshop-ops-assistant"
+            name = "唯品会运营助手"
+            entry_url = "https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "vipshop-package-main-image-replace.js"
+            script_path.write_text("", encoding="utf-8")
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                        with patch("core.js_runner.JSRunner", FakeRunner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=2301):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                                        with patch("core.api_server.data_sink.finish_run"):
+                                            await api_server._execute_task(
+                                                "vipshop-ops-assistant",
+                                                "package_main_image_replace",
+                                                {},
+                                                {},
+                                            )
+
+        live = api_server._run_status[api_server._run_jid("vipshop-ops-assistant", "package_main_image_replace")]
+        self.assertEqual(live["status"], "done")
+        self.assertEqual(live["search_total_codes"], 31)
+        self.assertEqual(live["search_completed_codes"], 31)
+        self.assertEqual(live["detail_total_targets"], 21)
+        self.assertEqual(live["detail_completed_targets"], 21)
+        self.assertEqual(live["detail_current_target_index"], 21)
+        self.assertEqual(live["detail_current_target"], "")
+
     async def test_bridge_call_async_times_out_external_dependency(self):
         class SlowBridge:
             async def get_tabs_async(self):

@@ -6,6 +6,21 @@
 
   const SUMMARY_SHEET = '执行摘要'
   const DETAIL_SHEET = '包装主图替换计划'
+  const TERMINAL_SUCCESS_STATUS = '保存并提交审核成功'
+  const SUMMARY_FAILURE_STATUSES = new Set([
+    '预检失败',
+    '未找到商品',
+    '详情读取失败',
+    '找图失败',
+    '下载失败',
+    '缺少素材',
+    '未执行',
+    '已阻断',
+    'PDC页面加载失败',
+    'PDC不可编辑',
+    '上传/保存触发失败',
+    '保存读回异常',
+  ])
   const SEMIR_ENTRY_URL = 'https://fmp.semirapp.com/web/index#/home/file'
   const VIPSHOP_NOV_ENTRY_URL = 'https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise'
   const VIPSHOP_MERCHANDISE_QUERY_URL = 'https://nov-admin.vip.com/normal/normalMerchandiseQuery'
@@ -1204,28 +1219,150 @@
   function summaryRow(message, status = '完成') {
     return {
       __sheet_name: SUMMARY_SHEET,
-      表格行号: '',
+      汇总类型: '总览',
+      源表行号: '',
       款号: '',
       货号: '',
       商品ID: '',
-      V_SPU: '',
-      P_SPU: '',
       商品状态: '',
-      商品名称: '',
-      后台款号: '',
-      是否拼款: '',
       目标颜色: '',
-      目标色号: '',
-      颜色匹配: '',
-      操作范围: '',
-      图片用途: '执行摘要',
-      图片索引: '',
-      本地文件: '',
-      识别尺寸: '',
-      接口路径: '',
-      执行结果: status,
-      备注: message,
+      最终结果: status,
+      已下载素材数: '',
+      计划替换图片数: '',
+      已上传图片数: '',
+      '失败原因/读回结果': message,
+      处理建议: '',
     }
+  }
+
+  function uniqueValues(values = []) {
+    return Array.from(new Set(values.map(compact).filter(Boolean)))
+  }
+
+  function isSummaryOutputRow(row = {}) {
+    return compact(row.__sheet_name) === SUMMARY_SHEET
+  }
+
+  function isDetailOutputRow(row = {}) {
+    return compact(row.__sheet_name || DETAIL_SHEET) === DETAIL_SHEET
+  }
+
+  function summarizeRowsByGoods(rows = []) {
+    const grouped = new Map()
+    for (const row of rows) {
+      if (!isDetailOutputRow(row)) continue
+      const goodsCode = compact(row.货号)
+      if (!goodsCode) continue
+      if (!grouped.has(goodsCode)) grouped.set(goodsCode, [])
+      grouped.get(goodsCode).push(row)
+    }
+    return grouped
+  }
+
+  function summarizeFinalStatus(itemRows = []) {
+    const statuses = itemRows.map(row => compact(row.执行结果))
+    if (statuses.includes(TERMINAL_SUCCESS_STATUS)) return '成功'
+    if (statuses.some(status => SUMMARY_FAILURE_STATUSES.has(status) || /失败|异常|阻断/.test(status))) return '失败'
+    if (statuses.includes('预检通过')) return '预检通过'
+    if (statuses.includes('跳过重复')) return '跳过'
+    if (statuses.includes('计划替换')) return '待执行'
+    return statuses.find(Boolean) || '未执行'
+  }
+
+  function summarizeFinalNote(itemRows = [], finalStatus = '') {
+    const terminalRows = itemRows.filter(row => {
+      const status = compact(row.执行结果)
+      if (finalStatus === '成功') return status === TERMINAL_SUCCESS_STATUS
+      if (finalStatus === '预检通过') return status === '预检通过'
+      return SUMMARY_FAILURE_STATUSES.has(status) || /失败|异常|阻断/.test(status) || status === '跳过重复' || status === '未执行'
+    })
+    const notes = uniqueValues((terminalRows.length ? terminalRows : itemRows).map(row => row.备注))
+    return notes.join('；')
+  }
+
+  function summarizeSuggestion(finalStatus = '', note = '') {
+    if (finalStatus === '成功') return ''
+    if (finalStatus === '预检通过') return '如需真实替换，选择「找图并且真实上传」后重跑'
+    if (/货号查询|未命中|未找到商品/.test(note)) return '检查唯品后台完整货号是否存在，或确认货号/色号后重跑'
+    if (/缺少|素材|图片/.test(note)) return '补齐对应素材后重跑'
+    if (/读回|保存/.test(note)) return '打开商品资料核对图片读回与审核状态，必要时重跑该货号'
+    if (/阻断/.test(note)) return '确认执行模式和线上替换权限后重跑'
+    return '查看明细 sheet 的执行结果与备注后处理'
+  }
+
+  function buildExecutionSummaryRows(data = [], nextShared = shared) {
+    const detailRows = data.filter(row => !isSummaryOutputRow(row))
+    const prebuiltSummaryRows = data.filter(isSummaryOutputRow)
+    const grouped = summarizeRowsByGoods(detailRows)
+    const itemSummaries = Array.from(grouped.entries()).map(([goodsCode, itemRows]) => {
+      const first = itemRows[0] || {}
+      const finalStatus = summarizeFinalStatus(itemRows)
+      const finalNote = summarizeFinalNote(itemRows, finalStatus)
+      return {
+        sourceRow: Number.parseInt(first.表格行号, 10) || 0,
+        styleCode: compact(first.款号),
+        goodsCode,
+        merchandiseNo: compact(first.商品ID),
+        productStatus: compact(first.商品状态),
+        colorName: compact(first.目标颜色),
+        finalStatus,
+        downloadedCount: itemRows.filter(row => compact(row.执行结果) === '已下载').length,
+        plannedCount: itemRows.filter(row => compact(row.执行结果) === '计划替换').length,
+        uploadedCount: itemRows.filter(row => compact(row.执行结果) === '已上传待保存').length,
+        finalNote,
+      }
+    }).sort((a, b) => (a.sourceRow || 0) - (b.sourceRow || 0) || a.goodsCode.localeCompare(b.goodsCode))
+
+    if (!itemSummaries.length) return prebuiltSummaryRows
+
+    const successCount = itemSummaries.filter(item => item.finalStatus === '成功').length
+    const failedCount = itemSummaries.filter(item => item.finalStatus === '失败').length
+    const precheckCount = itemSummaries.filter(item => item.finalStatus === '预检通过').length
+    const totalDownloaded = itemSummaries.reduce((sum, item) => sum + item.downloadedCount, 0)
+    const totalPlanned = itemSummaries.reduce((sum, item) => sum + item.plannedCount, 0)
+    const totalUploaded = itemSummaries.reduce((sum, item) => sum + item.uploadedCount, 0)
+    const overviewParts = [
+      `总款色 ${itemSummaries.length}`,
+      successCount ? `成功 ${successCount}` : '',
+      failedCount ? `失败 ${failedCount}` : '',
+      precheckCount ? `预检通过 ${precheckCount}` : '',
+      `已下载素材 ${totalDownloaded}`,
+      totalPlanned ? `计划替换图片 ${totalPlanned}` : '',
+      totalUploaded ? `已上传图片 ${totalUploaded}` : '',
+    ].filter(Boolean)
+
+    const rows = [summaryRow(overviewParts.join('；'), failedCount ? '部分失败' : successCount ? '全部成功' : '完成')]
+    for (const item of itemSummaries) {
+      rows.push({
+        __sheet_name: SUMMARY_SHEET,
+        汇总类型: item.finalStatus === '成功'
+          ? '成功款号'
+          : item.finalStatus === '预检通过'
+            ? '预检通过款号'
+            : item.finalStatus === '跳过'
+              ? '跳过款号'
+              : '失败款号',
+        源表行号: item.sourceRow || '',
+        款号: item.styleCode,
+        货号: item.goodsCode,
+        商品ID: item.merchandiseNo,
+        商品状态: item.productStatus,
+        目标颜色: item.colorName,
+        最终结果: item.finalStatus,
+        已下载素材数: item.downloadedCount,
+        计划替换图片数: item.plannedCount,
+        已上传图片数: item.uploadedCount,
+        '失败原因/读回结果': item.finalNote,
+        处理建议: summarizeSuggestion(item.finalStatus, item.finalNote),
+      })
+    }
+    return rows
+  }
+
+  function withExecutionSummary(data = [], nextShared = shared) {
+    const detailRows = data.filter(row => !isSummaryOutputRow(row))
+    const summaryRows = buildExecutionSummaryRows(data, nextShared)
+    return [...summaryRows, ...detailRows]
   }
 
   function isSupportedExecutionOrigin() {
@@ -1382,7 +1519,7 @@
       if (isSemirLoginTimeoutText(text)) throw createSemirLoginTimeoutError(url, response, payload, text)
       throw new Error(`森马云盘接口未返回 JSON：${url}；${text.slice(0, 160)}`)
     }
-    const loginBlocked = response.status === 401 || response.status === 403 || isSemirLoginTimeoutPayload(payload) || isSemirLoginTimeoutText(text)
+    const loginBlocked = response.status === 401 || response.status === 403 || isSemirLoginTimeoutPayload(payload)
     if (!response.ok || loginBlocked) {
       const message = compact(payload?.msg || payload?.message || text.slice(0, 160) || response.statusText)
       if (loginBlocked) throw createSemirLoginTimeoutError(url, response, payload, message)
@@ -3904,9 +4041,10 @@
   }
 
   function complete(data = [], nextShared = shared) {
+    const outputData = withExecutionSummary(data, nextShared)
     return {
       success: true,
-      data,
+      data: outputData,
       meta: {
         action: 'complete',
         has_more: false,

@@ -870,6 +870,82 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
     }
 
 
+LIVE_PROGRESS_STATUS_KEYS = (
+    "current",
+    "total",
+    "row_no",
+    "batch_no",
+    "total_batches",
+    "search_total_codes",
+    "search_completed_codes",
+    "generation_total_jobs",
+    "generation_submitted_jobs",
+    "generation_completed_jobs",
+    "buyer_id",
+    "store",
+    "current_source_filename",
+    "phase",
+    "completed",
+    "shared_results_count",
+    "percent",
+    "progress_text",
+    "download_total",
+    "download_completed",
+    "download_success",
+    "download_failed",
+    "download_concurrency",
+    "download_retry_attempts",
+    "download_started",
+    "download_active",
+    "download_last_label",
+    "download_current_label",
+    "download_active_labels",
+    "download_active_count",
+    "download_speed_bps",
+    "download_bytes_completed",
+    "download_total_bytes",
+    "organize_total",
+    "organize_completed",
+    "organize_active",
+    "organize_current_style",
+    "organize_current_color",
+    "organize_stage",
+    "list_total_rows",
+    "list_completed_rows",
+    "list_total_batches",
+    "list_completed_batches",
+    "detail_total_targets",
+    "detail_completed_targets",
+    "detail_current_target_index",
+    "detail_current_target",
+    "detail_dimension_total",
+    "detail_dimension_index",
+    "detail_dimension_label",
+    "detail_current_page",
+    "detail_total_pages",
+    "detail_total_rows",
+    "detail_request_count",
+    "detail_records_collected",
+    "doudian_stage",
+    "doudian_activity_total",
+    "doudian_activity_completed",
+    "doudian_current_activity",
+    "doudian_current_product_total",
+    "doudian_current_product_completed",
+    "doudian_detail_rows",
+    "doudian_signup_total",
+    "doudian_signup_completed",
+    "doudian_order_window_total",
+    "doudian_order_window_completed",
+    "doudian_mixed_rows",
+)
+
+
+def _live_progress_status_fields(progress: Optional[dict]) -> dict:
+    progress = dict(progress or {})
+    return {key: progress.get(key) for key in LIVE_PROGRESS_STATUS_KEYS}
+
+
 def _extract_candidate_urls_from_text(value: object) -> list[str]:
     text = str(value or "").strip()
     if not text:
@@ -6858,7 +6934,22 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         data_sink.finish_run(run_id, len(data), output_files)
         if instance_uid:
             _sync_task_instance_artifacts(instance_uid, output_files, run_id)
+        terminal_shared = {}
+        if run_control and isinstance(run_control.get('shared_progress'), dict):
+            terminal_shared.update(run_control.get('shared_progress') or {})
+        runner_shared = getattr(runner, 'last_runtime_shared', None)
+        if isinstance(runner_shared, dict):
+            terminal_shared.update(runner_shared)
+        terminal_progress_payload = {
+            'records': len(data),
+            'phase': 'done',
+        }
+        if terminal_shared:
+            terminal_progress_payload['shared'] = terminal_shared
+        terminal_progress = build_progress(terminal_progress_payload)
+        terminal_current_row = int(terminal_progress.get('row_no') or terminal_progress.get('current') or len(data))
         done_status = {
+            **_live_progress_status_fields(terminal_progress),
             'status': 'done',
             'run_id': run_id,
             'adapter_id': adapter_id,
@@ -6866,7 +6957,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'instance_uid': instance_uid,
             'records': len(data),
             'last_seen_at': datetime.now().isoformat(),
-            'current_row': len(data),
+            'current_row': terminal_current_row,
             'phase': 'done',
             'queued_request_id': queued_request_id,
             'queued_enqueued_at': queued_enqueued_at,

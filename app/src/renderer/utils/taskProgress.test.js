@@ -151,6 +151,38 @@ test('vipshop package main-image replace shows cloud and upload progress tracks'
   assert.match(uploadSummary.sub, /20942610820140627/)
 })
 
+test('vipshop package main-image replace treats terminal done as complete even with stale upload counters', () => {
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'vipshop-ops-assistant',
+    taskId: 'package_main_image_replace',
+    liveStatus: 'done',
+    isRunning: true,
+    live: {
+      status: 'done',
+      phase: 'done',
+      search_total_codes: 31,
+      search_completed_codes: 31,
+      download_total: 15,
+      download_completed: 15,
+      download_success: 15,
+      download_started: true,
+      download_active: false,
+      detail_total_targets: 21,
+      detail_completed_targets: 11,
+      detail_current_target_index: 12,
+      detail_current_target: '20842610320200422',
+      store: '全部线上替换任务完成',
+    },
+  })
+
+  assert.equal(summary.main, '上传替换完成')
+  assert.equal(summary.tracks[0].state, 'complete')
+  assert.equal(summary.tracks[1].main, '21 / 21 个款色')
+  assert.equal(summary.tracks[1].percentLabel, '100%')
+  assert.equal(summary.tracks[1].status, '已完成')
+  assert.equal(summary.completed, 21)
+})
+
 test('shoe upload package shows independent download and organize progress tracks', () => {
   const config = resolveTaskProgressConfig('shenhui-new-arrival', 'prepare_shoe_upload_package')
   assert.equal(config.mode, 'enhanced')
