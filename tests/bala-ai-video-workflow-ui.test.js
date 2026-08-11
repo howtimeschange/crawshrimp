@@ -1537,6 +1537,8 @@ test('deleting an AI result requires confirmation and removes the authorized loc
   assert.match(preload, /deleteBalaWorkspaceImage/)
   assert.match(preload, /deleteBalaReviewAsset/)
   assert.match(main, /delete-bala-workspace-image/)
+  assert.match(main, /getBalaImageCacheDeleteRoots/)
+  assert.match(main, /extraDeleteRoots:\s*getBalaImageCacheDeleteRoots\(\)/)
   assert.match(main, /rememberAuthorizedBalaWorkspaceRoot/)
   assert.match(main, /loadAuthorizedBalaWorkspaceRoots/)
   assert.match(main, /authorized-bala-workspaces\.json/)
@@ -1548,6 +1550,24 @@ test('deleting an AI result requires confirmation and removes the authorized loc
   assert.match(source, /function reviewAssetsForGeneratedVersion/)
   assert.match(source, /const archiveAsset = reviewAsset \|\|/)
   assert.match(source, /await archiveReviewAssetToWorkspace\(archiveAsset, styleCode\)/)
+  assert.match(source, /抓虾图片缓存/)
+})
+
+test('stuck generating AI result cards can be cleared without deleting local files', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+  const clearStart = source.indexOf('function clearStuckGeneratedVersion')
+  const clearEnd = source.indexOf('\nfunction sameDeletedVersion', clearStart)
+  const clearSource = source.slice(clearStart, clearEnd)
+
+  assert.match(templateSource, /清除卡片/)
+  assert.match(templateSource, /v-if="isAiVersionGenerating\(version\)"/)
+  assert.match(templateSource, /@click\.stop="clearStuckGeneratedVersion\(style, source, version\)"/)
+  assert.match(clearSource, /if \(!isAiVersionGenerating\(version\)\) return/)
+  assert.match(clearSource, /activeAiPlaceholderIds\.delete\(versionId\)/)
+  assert.match(clearSource, /purgeDeletedGeneratedVersion\(\{ style, source, version \}\)/)
+  assert.doesNotMatch(clearSource, /deleteBalaWorkspaceImage/)
+  assert.match(source, /\.aiv-version-actions\.generating\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/)
 })
 
 test('precise image edits archive the generated result inside the selected workspace before adding history', () => {
@@ -1749,6 +1769,29 @@ test('workspace versions replace pathless running placeholders with finished AI 
   assert.equal(merged[0].remoteAssetId, 'remote-face')
   assert.equal(merged[0].previewPath, '/tmp/finished-face.png')
   assert.equal(merged[0].status, 'pending')
+})
+
+test('workspace versions replace AI cache paths with archived workspace paths for the same job', () => {
+  assert.equal(typeof balaWorkflow.mergeBalaWorkspaceVersions, 'function')
+  const existing = [{
+    id: 'remote-face-job-cache',
+    remoteAssetId: 'remote-face',
+    operationType: 'face_swap',
+    status: 'pending',
+    jobUid: 'face-job',
+    previewPath: '/Users/me/Library/Application Support/crawshrimp/ai-image-cache/result-face.png',
+  }]
+  const merged = balaWorkflow.mergeBalaWorkspaceVersions(existing, [{
+    id: 'remote-face',
+    operationType: 'face_swap',
+    status: 'pending',
+    jobUid: 'face-job',
+    path: '/Users/me/Downloads/AI视频/208326102205/03_AI图/result-01.png',
+  }])
+
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].previewPath, '/Users/me/Downloads/AI视频/208326102205/03_AI图/result-01.png')
+  assert.equal(merged[0].jobUid, 'face-job')
 })
 
 test('review workspace keeps same-id AI assets from different persisted batches', () => {

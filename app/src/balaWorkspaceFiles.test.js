@@ -76,6 +76,36 @@ test('workspace deletion rejects an unapproved root and a path outside the appro
   })
 })
 
+test('workspace deletion permits app-owned AI image cache files without a workspace grant', () => {
+  withTempTree(({ parent, workspace, outside }) => {
+    const cache = path.join(parent, 'ai-image-cache')
+    const imagePath = path.join(cache, 'result-job-hash.png')
+    const outsideImage = path.join(outside, 'outside.png')
+    fs.mkdirSync(cache)
+    fs.writeFileSync(imagePath, 'image')
+    fs.writeFileSync(outsideImage, 'outside')
+    const roots = new Set()
+
+    const result = deleteAuthorizedWorkspaceImage({
+      workspaceRoot: workspace,
+      filePath: imagePath,
+      roots,
+      extraDeleteRoots: [cache],
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.path, fs.realpathSync.native(cache) + path.sep + 'result-job-hash.png')
+    assert.equal(fs.existsSync(imagePath), false)
+    assert.throws(() => deleteAuthorizedWorkspaceImage({
+      workspaceRoot: workspace,
+      filePath: outsideImage,
+      roots,
+      extraDeleteRoots: [cache],
+    }), /工作区或抓虾图片缓存/)
+    assert.equal(fs.existsSync(outsideImage), true)
+  })
+})
+
 test('workspace deletion rejects the root, directories, non-images, and symlinks', () => {
   withTempTree(({ workspace, outside }) => {
     const textFile = path.join(workspace, 'notes.txt')

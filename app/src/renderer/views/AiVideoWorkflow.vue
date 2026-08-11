@@ -684,9 +684,19 @@
                             <span>生成中 <strong>{{ version.progress || 0 }}%</strong></span>
                             <i class="aiv-mini-progress" :style="{ '--progress': `${version.progress || 0}%` }" aria-hidden="true"></i>
                           </div>
-                          <div class="aiv-version-actions">
-                            <button type="button" class="aiv-version-edit" @click="openImageEditor(version, style.styleCode, source)">大图修改</button>
-                            <button type="button" class="aiv-version-delete" @click="requestDeleteGeneratedVersion(style, source, version)">删除</button>
+                          <div :class="['aiv-version-actions', { generating: isAiVersionGenerating(version) }]">
+                            <button
+                              v-if="isAiVersionGenerating(version)"
+                              type="button"
+                              class="aiv-version-delete"
+                              @click.stop="clearStuckGeneratedVersion(style, source, version)"
+                            >
+                              清除卡片
+                            </button>
+                            <template v-else>
+                              <button type="button" class="aiv-version-edit" @click="openImageEditor(version, style.styleCode, source)">大图修改</button>
+                              <button type="button" class="aiv-version-delete" @click="requestDeleteGeneratedVersion(style, source, version)">删除</button>
+                            </template>
                           </div>
                         </div>
                       </article>
@@ -1283,7 +1293,7 @@
         <header class="aiv-modal-head">
           <div>
             <strong id="aiv-delete-title">确认删除本地图片</strong>
-            <span>这会真实删除工作区里的 AI 生成文件</span>
+            <span>这会真实删除工作区或抓虾图片缓存里的 AI 生成文件</span>
           </div>
         </header>
         <div class="aiv-confirm-copy">
@@ -1293,7 +1303,7 @@
           <div v-if="deleteVersionError" class="aiv-inline-error">{{ deleteVersionError }}</div>
         </div>
         <footer class="aiv-modal-foot">
-          <span>仅允许删除已授权工作区内的图片文件</span>
+          <span>仅允许删除已授权工作区或抓虾图片缓存内的图片文件</span>
           <button type="button" class="aiv-ghost" :disabled="deleteVersionBusy" @click="closeDeleteConfirmation">取消</button>
           <button type="button" class="aiv-danger" :disabled="deleteVersionBusy" @click="confirmDeleteGeneratedVersion">
             {{ deleteVersionBusy ? '正在删除...' : '确认删除' }}
@@ -4899,6 +4909,21 @@ function closeDeleteConfirmation() {
   if (deleteVersionBusy.value) return
   pendingVersionDeletion.value = null
   deleteVersionError.value = ''
+}
+
+function clearStuckGeneratedVersion(style, source, version) {
+  if (!isAiVersionGenerating(version)) return
+  const label = version?.label || '生成中图片'
+  const versionId = String(version?.id || '').trim()
+  if (versionId) activeAiPlaceholderIds.delete(versionId)
+  releaseWorkspaceImagePreviews([version?.path, version?.previewPath])
+  purgeDeletedGeneratedVersion({ style, source, version })
+  persistAiImageWorkspaceState()
+  updateAiTaskState({
+    status: ['running', 'queued'].includes(aiTaskState.status) ? aiTaskState.status : 'partial',
+    error: '',
+    message: `已清除卡住的生成中图片卡片：${label}`,
+  })
 }
 
 function sameDeletedVersion(asset, target) {
@@ -10951,7 +10976,7 @@ function localFileUrl(path) {
   pointer-events: auto;
 }
 
-.aiv-version-card.loading .aiv-version-actions {
+.aiv-version-card.loading .aiv-version-actions:not(.generating) {
   display: none;
 }
 
@@ -11153,6 +11178,10 @@ function localFileUrl(path) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
+}
+
+.aiv-version-actions.generating {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .aiv-version-generation-status {

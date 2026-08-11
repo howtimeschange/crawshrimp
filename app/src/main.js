@@ -652,6 +652,14 @@ function getBalaWorkspaceAuthorizationStorePath() {
   return path.join(getCrawshrimpDataDir(), 'authorized-bala-workspaces.json')
 }
 
+function getBalaImageCacheDeleteRoots() {
+  const dataDir = getCrawshrimpDataDir()
+  return [
+    path.join(dataDir, 'ai-image-cache'),
+    path.join(dataDir, 'airimage-cache'),
+  ]
+}
+
 function getAiVideoInputDirectoryStorePath() {
   return path.join(getCrawshrimpDataDir(), 'ai-video-input-directory.json')
 }
@@ -3300,6 +3308,7 @@ secureHandle('delete-bala-workspace-image', async (_, workspaceRoot, filePath) =
     workspaceRoot,
     filePath,
     roots: authorizedBalaWorkspaceRoots,
+    extraDeleteRoots: getBalaImageCacheDeleteRoots(),
   })
 })
 
