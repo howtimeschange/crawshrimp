@@ -10,6 +10,7 @@ function compareText(left, right) {
 export function buildScriptGroups(tasks = []) {
   const map = {}
   for (const task of tasks) {
+    if (task?.hidden) continue
     if (!map[task.adapter_id]) {
       map[task.adapter_id] = {
         adapter_id: task.adapter_id,

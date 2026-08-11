@@ -39,12 +39,16 @@ const LATEST_CARE_TEXT = [
   'Do not dry clean',
 ].join('\n')
 
+const ROW_MANUFACTURER_NAME = 'Custom Template Garment Co.,Ltd.'
+const ROW_MANUFACTURER_ADDRESS = 'No.1 Template Road, Wenzhou/Zhejiang, China'
+
 class FakeElement {
   constructor(options = {}) {
     this.tagName = String(options.tagName || 'DIV').toUpperCase()
     this._text = String(options.text || '')
     this._rect = options.rect || { left: 0, top: 0, width: 160, height: 32 }
     this._style = { display: 'block', visibility: 'visible', ...options.style }
+    this._attrs = { ...options.attrs }
   }
 
   get innerText() { return this._text }
@@ -57,6 +61,7 @@ class FakeElement {
   getBoundingClientRect() { return this._rect }
   querySelectorAll() { return [] }
   querySelector() { return null }
+  getAttribute(name) { return this._attrs?.[name] ?? null }
   click() {}
   scrollIntoView() {}
 }
@@ -261,30 +266,48 @@ test('Crawshrimp main phase always enters Excel preparation for create workflow'
   assert.equal(result.meta.next_phase, 'excel_prepare')
 })
 
-test('Excel preparation selects SKC representative and carries composition context', async () => {
+test('Excel preparation creates style targets and carries wash-label config', async () => {
   const result = await runAdapter({
     phase: 'excel_prepare',
     params: {
       input_file: {
         rows: [{
           款号: '209225117208',
-          颜色: '酒红60904',
-          尺码: '110',
-          SKC: '20922511720860904',
-          SKU编码: '20922511720860904110',
-          SKU货号: '9950019805299',
-          洗唛成分: '棉95% 氨纶5%',
-          产品线: '童装',
+          制造商名称: ROW_MANUFACTURER_NAME,
+          制造商地址: ROW_MANUFACTURER_ADDRESS,
+          生产日期: '2024-10-18',
+          批次号: 'PC241018',
+          洗水唛宽度mm: '35mm',
+          洗水唛长度mm: '230',
+          上下预留mm: '10',
         }],
       },
     },
   })
 
   assert.equal(result.meta.next_phase, 'api_lookup_excel_target')
-  assert.equal(result.meta.shared.workflowMode, 'excel_representative_skc_create_and_download')
+  assert.equal(result.meta.shared.workflowMode, 'excel_style_code_create_and_download')
   assert.equal(result.meta.shared.total_rows, 1)
-  assert.equal(result.meta.shared.excelTargets[0].composition, '棉95% 氨纶5%')
-  assert.equal(result.meta.shared.excelTargets[0].outputFilename, '20922511720860904110-9950019805299.pdf')
+  assert.equal(result.meta.shared.progress_kind, 'temu_ai_wash_label')
+  assert.equal(result.meta.shared.wash_label_stage, 'expand_style')
+  assert.equal(result.meta.shared.style_total, 1)
+  assert.equal(result.meta.shared.style_completed, 0)
+  assert.equal(result.meta.shared.style_current, '209225117208')
+  assert.equal(result.meta.shared.sku_total, 0)
+  assert.equal(result.meta.shared.sku_completed, 0)
+  assert.match(result.meta.shared.current_store, /AI洗唛制作 \/ 展开款号 1\/1/)
+  assert.equal(result.meta.shared.excelTargets[0].inputMode, 'style_code')
+  assert.equal(result.meta.shared.excelTargets[0].style, '209225117208')
+  assert.equal(result.meta.shared.excelTargets[0].skuNo, '')
+  assert.equal(result.meta.shared.excelTargets[0].compositionSource, 'scm_or_manual')
+  assert.equal(result.meta.shared.excelTargets[0].manufacturerName, ROW_MANUFACTURER_NAME)
+  assert.equal(result.meta.shared.excelTargets[0].manufacturerAddress, ROW_MANUFACTURER_ADDRESS)
+  assert.equal(result.meta.shared.excelTargets[0].productionDate, '2024-10-18')
+  assert.equal(result.meta.shared.excelTargets[0].batchNumber, 'PC241018')
+  assert.equal(result.meta.shared.excelTargets[0].labelWidthMm, 35)
+  assert.equal(result.meta.shared.excelTargets[0].labelLengthMm, 230)
+  assert.equal(result.meta.shared.excelTargets[0].labelPaddingMm, 10)
+  assert.equal(result.meta.shared.excelTargets[0].outputFilename, '')
 })
 
 test('enterprise-code preparation does not require Excel and deduplicates codes', async () => {
@@ -306,12 +329,36 @@ test('enterprise-code preparation does not require Excel and deduplicates codes'
   )
 })
 
+test('style-code preparation creates a style-first workflow without Excel', async () => {
+  const result = await runAdapter({
+    phase: 'excel_prepare',
+    params: {
+      style_codes: '208326104207\n208326104207\n208226117107',
+      max_skc: 0,
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_lookup_excel_target')
+  assert.equal(result.meta.shared.workflowMode, 'style_code_create_and_download')
+  assert.equal(result.meta.shared.total_rows, 2)
+  assert.equal(result.meta.shared.workflowSummary.exactDuplicateStylesRemoved, 1)
+  assert.deepEqual(
+    Array.from(result.meta.shared.excelTargets.map(item => item.style)),
+    ['208326104207', '208226117107'],
+  )
+})
+
 test('pending TEMU wash label requests SCM lookup before care query', async () => {
+  const excelTarget = {
+    ...EXCEL_TARGET,
+    manufacturerName: ROW_MANUFACTURER_NAME,
+    manufacturerAddress: ROW_MANUFACTURER_ADDRESS,
+  }
   const result = await runAdapter({
     phase: 'api_lookup_excel_target',
     shared: {
-      excelTargets: [EXCEL_TARGET],
-      excelTarget: EXCEL_TARGET,
+      excelTargets: [excelTarget],
+      excelTarget,
       currentExcelTargetIndex: 0,
     },
     postImpl: async ({ requestPath, payload }) => {
@@ -328,7 +375,87 @@ test('pending TEMU wash label requests SCM lookup before care query', async () =
   assert.equal(result.meta.next_phase, 'scm_lookup_target')
   assert.equal(result.meta.shared.apiTarget.productSkuId, PENDING_TARGET.productSkuId)
   assert.equal(result.meta.shared.apiTarget.excelSkuCode, '20922511720860904110')
+  assert.equal(result.meta.shared.apiTarget.excelManufacturerName, ROW_MANUFACTURER_NAME)
+  assert.equal(result.meta.shared.apiTarget.excelManufacturerAddress, ROW_MANUFACTURER_ADDRESS)
   assert.equal(result.meta.shared.temuRowStatus, 'TEMU待制作')
+})
+
+test('style-code lookup expands a款号 into SKU targets and records print-only rows', async () => {
+  const styleTarget = {
+    inputMode: 'style_code',
+    style: '208326104207',
+    skc: '208326104207',
+    skuNo: '',
+    manufacturerName: ROW_MANUFACTURER_NAME,
+    manufacturerAddress: ROW_MANUFACTURER_ADDRESS,
+    productionDate: '2024-10-18',
+    batchNumber: 'PC241018',
+    labelWidthMm: 45,
+    labelLengthMm: 230,
+    labelPaddingMm: 10,
+    status: 'ready',
+  }
+  const printOnlyTarget = {
+    ...PENDING_TARGET,
+    productSkuId: 70000000001,
+    productSkcId: 70000000002,
+    labelCode: 70000000003,
+    skcExtCode: '208326104207',
+    skuExtCode: '6900137783170',
+    labelType: 0,
+    cosmeticLabelStatus: 0,
+    needCosmeticLabel: false,
+  }
+  const result = await runAdapter({
+    phase: 'api_lookup_excel_target',
+    shared: {
+      excelTargets: [styleTarget],
+      excelTarget: styleTarget,
+      currentExcelTargetIndex: 0,
+    },
+    postImpl: async ({ requestPath, payload }) => {
+      assert.equal(requestPath, '/visage-agent-seller/labelcode/pageQuery')
+      assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+        page: 1,
+        pageSize: 200,
+        skcExtCodes: ['208326104207'],
+      })
+      return {
+        res: {
+          total: 3,
+          pageItems: [
+            makePageItem({ ...PENDING_TARGET, skcExtCode: '208326104207', skuExtCode: '6900137783171' }),
+            makePageItem({ ...READY_TARGET, skcExtCode: '208326104207', skuExtCode: '6900137783172' }),
+            makePageItem(printOnlyTarget),
+          ],
+        },
+      }
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_lookup_excel_target')
+  assert.equal(result.meta.shared.excelTargets.length, 2)
+  assert.equal(result.meta.shared.excelTarget.inputMode, 'style_sku')
+  assert.equal(result.meta.shared.excelTarget.skuNo, '6900137783171')
+  assert.equal(result.meta.shared.progress_kind, 'temu_ai_wash_label')
+  assert.equal(result.meta.shared.wash_label_stage, 'sku')
+  assert.equal(result.meta.shared.style_total, 1)
+  assert.equal(result.meta.shared.style_completed, 1)
+  assert.equal(result.meta.shared.style_current, '208326104207')
+  assert.equal(result.meta.shared.sku_total, 2)
+  assert.equal(result.meta.shared.sku_completed, 0)
+  assert.equal(result.meta.shared.sku_current, '6900137783171')
+  assert.equal(result.meta.shared.sku_skipped, 1)
+  assert.match(result.meta.shared.current_store, /AI洗唛制作 \/ 制作 SKU 1\/2/)
+  assert.equal(result.meta.shared.excelTarget.excelManufacturerName, ROW_MANUFACTURER_NAME)
+  assert.equal(result.meta.shared.excelTarget.excelProductionDate, '2024-10-18')
+  assert.equal(result.meta.shared.excelTarget.excelBatchNumber, 'PC241018')
+  assert.equal(result.meta.shared.excelTarget.excelLabelWidthMm, 45)
+  assert.equal(result.meta.shared.excelTarget.excelLabelLengthMm, 230)
+  assert.equal(result.meta.shared.excelTarget.excelLabelPaddingMm, 10)
+  assert.equal(result.data.length, 1)
+  assert.equal(result.data[0].结果, 'print_only_skipped')
+  assert.equal(result.data[0].TEMU需要洗水唛, false)
 })
 
 test('enterprise code lookup queries TEMU by enterprise code and then requests SCM lookup', async () => {
@@ -457,6 +584,236 @@ test('SCM evidence without composition still continues for care-symbol mapping',
   assert.equal(result.meta.shared.apiTarget.scmCareInstructionText, LATEST_CARE_TEXT.replace(/\s+/g, ' ').trim())
 })
 
+test('SCM evidence without mappable remark downloads wash attachment for AI recognition', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    ...ENTERPRISE_TARGET,
+    excelStyle: '209225117208',
+    excelSkc: '20922511720860904',
+  }
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    params: {
+      ai_wash_instruction_recognition: true,
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: true,
+          source: 'scm_qc_wash_appr_page_component',
+          rows: SCM_ROWS,
+          recordsTotal: 2,
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'download_urls')
+  assert.equal(result.meta.next_phase, 'verify_scm_attachment_download')
+  assert.equal(result.meta.shared_key, 'scmAttachmentDownload')
+  assert.equal(result.meta.items[0].url, 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/label2.pdf')
+  assert.equal(result.meta.items[0].no_proxy, true)
+  assert.equal(result.meta.items[0].headers.Referer, 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index')
+  assert.match(result.meta.items[0].headers.Accept, /application\/pdf/)
+  assert.equal(result.meta.items[0].expected_magic, '%PDF-')
+  assert.equal(result.meta.items[0].validate_signature, true)
+  assert.match(result.meta.items[0].target_relative_path, /scm-wash-attachments\/209225117208-60904-XM241115000025-wash-attachment\.pdf/)
+  assert.equal(result.meta.shared.apiTarget.scmCareInstructionSource, 'missing_structured_wash_instruction')
+})
+
+test('SCM attachment recognition downloads wash image instead of hangtag file', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    ...ENTERPRISE_TARGET,
+    excelStyle: '209225117208',
+    excelSkc: '20922511720860904',
+  }
+  const rows = SCM_ROWS.map(row => ({
+    ...row,
+    SKC_REMARK: '',
+    SKC_FILE_URL1: row.SKC_CODE === '20922511720860904'
+      ? 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/wash-label.jpg'
+      : row.SKC_FILE_URL1,
+    SKC_FILE_URL2: row.SKC_CODE === '20922511720860904'
+      ? 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/hangtag.pdf'
+      : row.SKC_FILE_URL2,
+  }))
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    params: {
+      ai_wash_instruction_recognition: true,
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: true,
+          source: 'scm_qc_wash_appr_page_component',
+          rows,
+          recordsTotal: 2,
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'download_urls')
+  assert.equal(result.meta.items[0].url, 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/wash-label.jpg')
+  assert.notEqual(result.meta.items[0].url, 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/hangtag.pdf')
+  assert.equal(result.meta.items[0].headers.Referer, 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index')
+  assert.equal(Object.hasOwn(result.meta.items[0], 'expected_magic'), false)
+  assert.match(result.meta.items[0].target_relative_path, /scm-wash-attachments\/209225117208-60904-XM241115000025-wash-attachment\.jpg/)
+})
+
+test('downloaded SCM wash attachment requests backend AI/OCR recognition', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: '209225117208',
+    scmOrderNo: 'XM241115000025',
+    scmWashFile: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/label2.pdf',
+  }
+  const result = await runAdapter({
+    phase: 'verify_scm_attachment_download',
+    params: {
+      ai_wash_instruction_model_id: 'qwen3.8-max-preview',
+      ai_wash_instruction_fallback_models: 'gpt-5.6-terra, gemini-3.5-flash',
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmAttachmentDownload: {
+        ok: true,
+        items: [{
+          success: true,
+          path: '/tmp/scm-label2.pdf',
+          filename: 'label2.pdf',
+          url: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/label2.pdf',
+        }],
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'recognize_wash_care_media')
+  assert.equal(result.meta.next_phase, 'verify_scm_attachment_recognition')
+  assert.equal(result.meta.shared_key, 'scmAttachmentRecognition')
+  assert.equal(result.meta.items[0].path, '/tmp/scm-label2.pdf')
+  assert.equal(result.meta.model_id, 'qwen3.8-max-preview')
+  assert.deepEqual(Array.from(result.meta.fallback_model_ids), ['gpt-5.6-terra', 'gemini-3.5-flash'])
+  assert.equal(result.meta.shared.scmAttachmentRecognitionStatus, 'recognizing')
+})
+
+test('AI-recognized SCM wash instruction is attached before TEMU care query', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: '209225117208',
+    scmCareInstructionSource: 'missing_structured_wash_instruction',
+  }
+  const result = await runAdapter({
+    phase: 'verify_scm_attachment_recognition',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmAttachmentRecognition: {
+        ok: true,
+        source: 'scm_wash_attachment_multimodal',
+        instructionText: '手洗，不可漂白，平坦，熨烫，不可干洗',
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_care_query')
+  assert.equal(result.meta.shared.apiTarget.scmCareInstructionText, '手洗，不可漂白，平坦，熨烫，不可干洗')
+  assert.equal(result.meta.shared.apiTarget.scmCareInstructionSource, 'scm_wash_attachment_multimodal')
+  assert.equal(result.meta.shared.apiTarget.scmAttachmentRecognitionStatus, 'recognized')
+  assert.equal(result.meta.shared.scmWashInstructionByStyle['209225117208'].ok, true)
+  assert.equal(result.meta.shared.scmWashInstructionByStyle['209225117208'].instructionText, '手洗，不可漂白，平坦，熨烫，不可干洗')
+})
+
+test('same style reuses one recognized SCM wash attachment result', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    ...ENTERPRISE_TARGET,
+    excelStyle: '209225117208',
+    excelSkc: '20922511720860904',
+  }
+  const rows = SCM_ROWS.map(row => ({
+    ...row,
+    SKC_REMARK: '',
+    SKC_FILE_URL1: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/wash-label.jpg',
+    SKC_FILE_URL2: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/hangtag.pdf',
+  }))
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    params: {
+      ai_wash_instruction_recognition: true,
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmWashInstructionByStyle: {
+        209225117208: {
+          ok: true,
+          instructionText: '手洗，不可漂白，平坦，熨烫，不可干洗',
+          source: 'scm_wash_attachment_multimodal',
+          status: 'recognized',
+        },
+      },
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: true,
+          source: 'scm_qc_wash_appr_page_component',
+          rows,
+          recordsTotal: 2,
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'api_care_query')
+  assert.equal(result.meta.shared.apiTarget.scmCareInstructionText, '手洗，不可漂白，平坦，熨烫，不可干洗')
+  assert.equal(result.meta.shared.apiTarget.scmCareInstructionSource, 'scm_wash_attachment_multimodal')
+  assert.equal(result.meta.shared.apiTarget.scmAttachmentRecognitionStatus, 'recognized_reused')
+  assert.equal(result.meta.shared.scmLookupStatus, 'SCM查询成功，复用同款洗唛附件识别结果')
+})
+
+test('AI wash attachment recognition failure continues with fixed fallback', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: '209225117208',
+    scmCareInstructionSource: 'missing_structured_wash_instruction',
+  }
+  const result = await runAdapter({
+    phase: 'verify_scm_attachment_recognition',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmAttachmentRecognition: {
+        ok: false,
+        error: '未识别到完整洗护说明',
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_care_query')
+  assert.equal(result.meta.shared.scmLookupStatus, 'SCM洗唛附件识别失败，使用固定洗护符号')
+  assert.equal(result.meta.shared.apiTarget.scmAttachmentRecognitionStatus, 'recognition_failed')
+  assert.equal(result.meta.shared.apiTarget.scmAttachmentRecognitionError, '未识别到完整洗护说明')
+  assert.equal(result.meta.shared.scmWashInstructionByStyle['209225117208'].ok, false)
+  assert.equal(result.meta.shared.scmWashInstructionByStyle['209225117208'].status, 'recognition_failed')
+})
+
 test('care query for pending label falls back to configured TEMU label dimensions', async () => {
   const apiTarget = { ...PENDING_TARGET, ...EXCEL_TARGET, excelStyle: EXCEL_TARGET.style }
   const result = await runAdapter({
@@ -469,8 +826,8 @@ test('care query for pending label falls back to configured TEMU label dimension
   })
 
   assert.equal(result.meta.next_phase, 'prepare_care_payload')
-  assert.equal(result.meta.shared.careLabel.width, 35)
-  assert.equal(result.meta.shared.careLabel.len, 235)
+  assert.equal(result.meta.shared.careLabel.width, 45)
+  assert.equal(result.meta.shared.careLabel.len, 230)
   assert.equal(result.meta.shared.careInitial.manufacturerNameOptions[0], 'Zhejiang Semir Garment Co.,Ltd.')
 })
 
@@ -494,7 +851,7 @@ test('care query infers SKU code from SCM SKC plus TEMU size for enterprise file
   assert.equal(result.meta.shared.apiTarget.outputFilename, '20922511720810101110-9950019805206.pdf')
 })
 
-test('dry-run prepares fixed payload with latest TEMU symbol enums and never saves', async () => {
+test('dry-run prepares AI defaults without manufacturer fields and never saves', async () => {
   const apiTarget = { ...PENDING_TARGET, excelStyle: EXCEL_TARGET.style, outputFilename: EXCEL_TARGET.outputFilename }
   const result = await runAdapter({
     phase: 'prepare_care_payload',
@@ -511,14 +868,217 @@ test('dry-run prepares fixed payload with latest TEMU symbol enums and never sav
   assert.equal(result.data[0].结果, 'create_payload_ready')
   assert.match(result.data[0].原因, /dry_run/)
   assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
-    washing: 10,
+    washing: 13,
     bleaching: 3,
-    drying: 5,
+    drying: 4,
     ironing: 3,
     dryCleaning: 5,
   })
   assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'missing_scm_care_instruction_text')
-  assert.equal(result.meta.shared.carePayload.manufacturerAddressPg, 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China')
+  assert.equal(result.meta.shared.carePayload.manufacturerName, undefined)
+  assert.equal(result.meta.shared.carePayloadSummary.manufacturerNameSource, 'blank_blank_not_filled')
+  assert.equal(result.meta.shared.carePayload.manufacturerAddressPg, undefined)
+  assert.equal(result.meta.shared.carePayloadSummary.manufacturerAddressSource, 'blank_blank_not_filled')
+  assert.equal(result.meta.shared.carePayload.productionDate, '2024-10-01')
+  assert.equal(result.meta.shared.carePayload.batchNumber, 'PC241016')
+})
+
+test('dry-run uses manufacturer name and address from Excel target when provided', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    excelManufacturerName: ROW_MANUFACTURER_NAME,
+    excelManufacturerAddress: ROW_MANUFACTURER_ADDRESS,
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse({
+        manufacturerNameOptions: [ROW_MANUFACTURER_NAME],
+        manufacturerAddressOptions: [ROW_MANUFACTURER_ADDRESS],
+      }).res,
+      careLabel: { width: 35, len: 235, padding: 10, size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.shared.carePayload.manufacturerName, ROW_MANUFACTURER_NAME)
+  assert.equal(result.meta.shared.carePayload.manufacturerAddressPg, ROW_MANUFACTURER_ADDRESS)
+  assert.equal(result.meta.shared.carePayloadSummary.manufacturerNameSource, 'excel_exact_temu_option')
+  assert.equal(result.meta.shared.carePayloadSummary.manufacturerAddressSource, 'excel_exact_temu_option')
+  assert.equal(result.data[0].制造商名称, ROW_MANUFACTURER_NAME)
+  assert.equal(result.data[0].制造商地址, ROW_MANUFACTURER_ADDRESS)
+})
+
+test('dry-run uses wash-label dimensions from Excel target when provided', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    excelLabelWidthMm: 35,
+    excelLabelLengthMm: 230,
+    excelLabelPaddingMm: 12,
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    params: {
+      label_width_mm: 45,
+      label_length_mm: 260,
+      label_padding_mm: 8,
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse({
+        width: 45,
+        len: 260,
+        padding: 8,
+      }).res,
+      careLabel: { width: 45, len: 260, padding: 8, size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.shared.carePayload.width, 35)
+  assert.equal(result.meta.shared.carePayload.len, 230)
+  assert.equal(result.meta.shared.carePayload.padding, 12)
+  assert.equal(result.meta.shared.carePayloadSummary.widthSource, 'excel')
+  assert.equal(result.meta.shared.carePayloadSummary.lengthSource, 'excel')
+  assert.equal(result.meta.shared.carePayloadSummary.paddingSource, 'excel')
+  assert.equal(result.data[0].洗水唛宽度mm, 35)
+  assert.equal(result.data[0].洗水唛长度mm, 230)
+  assert.equal(result.data[0].上下预留mm, 12)
+})
+
+test('production date is normalized to the first day of the selected month', async () => {
+  const apiTarget = { ...PENDING_TARGET, excelStyle: EXCEL_TARGET.style, outputFilename: EXCEL_TARGET.outputFilename }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    params: {
+      production_date: '2026-06-18',
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+      careLabel: { width: 35, len: 235, padding: 10, size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.shared.carePayload.productionDate, '2026-06-01')
+  assert.equal(result.meta.shared.carePayloadSummary.productionDate, '2026-06-01')
+  assert.equal(result.meta.shared.carePayloadSummary.productionDateSource, 'param')
+})
+
+test('production date from Excel target keeps the exact template date', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    excelProductionDate: '2024-10-18',
+    excelBatchNumber: 'PC241018',
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    params: {
+      production_date: '2026-06-18',
+      batch_number: 'PC260618',
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+      careLabel: { width: 45, len: 230, padding: 10, size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.shared.carePayload.productionDate, '2024-10-18')
+  assert.equal(result.meta.shared.carePayload.batchNumber, 'PC241018')
+  assert.equal(result.meta.shared.carePayloadSummary.productionDateSource, 'excel')
+  assert.equal(result.meta.shared.carePayloadSummary.batchNumberSource, 'excel')
+})
+
+test('dry-run prepares DingTalk SOP fixed payload when the SOP profile is selected', async () => {
+  const apiTarget = { ...PENDING_TARGET, excelStyle: EXCEL_TARGET.style, outputFilename: EXCEL_TARGET.outputFilename }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    params: {
+      fixed_care_symbols_profile: 'dingtalk_sop',
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+      careLabel: { width: 45, len: 230, padding: 10, size: '110' },
+    },
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 4,
+    ironing: 3,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.washing, 'Wash by hand')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Line drying')
+})
+
+test('dry-run maps DingTalk SOP wash-care wording to TEMU symbol enums', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: '手洗，不可漂白，悬挂晾晒，可熨烫，不可干洗',
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+      careLabel: { width: 45, len: 230, padding: 10, size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'advance_excel_target')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 4,
+    ironing: 3,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.washing, 'Wash by hand')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Line drying')
+})
+
+test('dry-run maps SOP flat-drying wording from PDF evidence', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: '手洗，不可漂白，平坦，熨烫，不可干洗',
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+    },
+  })
+
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbols.drying, 8)
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Flat drying')
 })
 
 test('dry-run maps SCM wash-care text to TEMU symbol enums', async () => {
@@ -551,7 +1111,7 @@ test('dry-run maps SCM wash-care text to TEMU symbol enums', async () => {
   assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Line drying in the shade')
 })
 
-test('dry-run reports the minimum label length used to keep the QR code visible', async () => {
+test('dry-run reports the configured label length used for TEMU save payload', async () => {
   const apiTarget = { ...PENDING_TARGET, excelStyle: EXCEL_TARGET.style, outputFilename: EXCEL_TARGET.outputFilename }
   const result = await runAdapter({
     phase: 'prepare_care_payload',
@@ -566,7 +1126,7 @@ test('dry-run reports the minimum label length used to keep the QR code visible'
   })
 
   assert.equal(result.meta.shared.carePayload.len, 235)
-  assert.equal(result.meta.shared.carePayloadSummary.lengthStrategy, 'minimum_for_full_qr')
+  assert.equal(result.meta.shared.carePayloadSummary.lengthStrategy, 'param_configured')
   assert.equal(result.data[0].洗水唛长度mm, 235)
   assert.equal(result.data[0].洗水唛尺码, '110')
 })
@@ -696,6 +1256,153 @@ test('post-save lookup waits until TEMU reports downloadable and preserves Excel
   assert.equal(result.meta.next_phase, 'api_care_query')
   assert.equal(result.meta.shared.apiTarget.outputFilename, '20922511720860904110-9950019805299.pdf')
   assert.equal(result.meta.shared.apiTarget.cosmeticLabelStatus, 2)
+})
+
+test('prepare search closes stale export modal before querying the next SKU', async () => {
+  let cancelClicked = false
+  const cancelButton = new FakeElement({ tagName: 'button', text: '取消' })
+  cancelButton.click = () => { cancelClicked = true }
+  const staleModal = new FakeElement({ text: '确认导出吗？ PDF PNG 洗水唛预览 确认无误，导出 取消' })
+  staleModal.querySelectorAll = selector => (selector === 'button' ? [cancelButton] : [])
+  const document = baseDocument().setSelector('[data-testid="beast-core-modal"]', [staleModal])
+
+  const result = await runAdapter({
+    phase: 'prepare_search',
+    document,
+    shared: {
+      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_search')
+  assert.equal(result.meta.shared.exportModalCloseAttempts, 1)
+  assert.equal(cancelClicked, true)
+})
+
+test('prepare search closes stale wash-label edit drawer before querying the next SKU', async () => {
+  let cancelClicked = false
+  const cancelButton = new FakeElement({ tagName: 'button', text: '取消' })
+  cancelButton.click = () => { cancelClicked = true }
+  const drawer = new FakeElement({ text: '修改洗水唛 尺寸 (230mm*45mm) 完成并导出 取消' })
+  drawer.querySelectorAll = selector => (selector === 'button' ? [cancelButton] : [])
+  const document = baseDocument().setSelector('[class*="Drawer_visible"], [class*="Drawer_content"], [class*="drawer-body"], [class*="edit-modal_container"]', [drawer])
+
+  const result = await runAdapter({
+    phase: 'prepare_search',
+    document,
+    shared: {
+      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_search')
+  assert.equal(result.meta.shared.editDrawerCloseAttempts, 1)
+  assert.equal(cancelClicked, true)
+})
+
+test('download flow opens wash-label editor instead of direct list export', async () => {
+  let editClicked = false
+  let directExportClicked = false
+  const editButton = new FakeElement({ tagName: 'a', text: '编辑' })
+  editButton.click = () => { editClicked = true }
+  const exportButton = new FakeElement({ tagName: 'a', text: '导出' })
+  exportButton.click = () => { directExportClicked = true }
+  const row = new FakeElement({
+    tagName: 'tr',
+    text: [
+      READY_TARGET.labelCode,
+      READY_TARGET.productSkcId,
+      READY_TARGET.productSkuId,
+      READY_TARGET.skuExtCode,
+      '已制作',
+      '洗水唛',
+      '导出',
+      '编辑',
+    ].join(' '),
+  })
+  row.querySelectorAll = selector => (
+    selector === 'a,button,[role="button"]' ? [exportButton, editButton] : []
+  )
+  const document = baseDocument().setSelector('tr', [row])
+
+  const result = await runAdapter({
+    phase: 'verify_search',
+    document,
+    shared: {
+      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careLabel: { size: '110' },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_edit_export')
+  assert.equal(result.meta.shared.exportSource, 'wash_label_edit_complete_export')
+  assert.equal(editClicked, true)
+  assert.equal(directExportClicked, false)
+})
+
+test('wash-label editor complete-and-export button opens export preparation phase', async () => {
+  let completeClicked = false
+  const completeButton = new FakeElement({ tagName: 'button', text: '完成并导出' })
+  completeButton.click = () => { completeClicked = true }
+  const drawer = new FakeElement({ text: '修改洗水唛 尺寸 (230mm*45mm) 完成并导出 取消' })
+  drawer.querySelectorAll = selector => (selector === 'button' ? [completeButton] : [])
+  const document = baseDocument().setSelector('[class*="Drawer_visible"], [class*="Drawer_content"], [class*="drawer-body"], [class*="edit-modal_container"]', [drawer])
+
+  const result = await runAdapter({
+    phase: 'prepare_edit_export',
+    document,
+    shared: {
+      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_export')
+  assert.equal(result.meta.shared.exportSource, 'wash_label_edit_complete_export')
+  assert.equal(result.meta.shared.temuRowStatus, '已从编辑窗口触发完成并导出')
+  assert.equal(completeClicked, true)
+})
+
+test('official PDF export action writes to configured output directory', async () => {
+  let exportClicked = false
+  const pdfLabel = new FakeElement({ tagName: 'label', text: 'PDF', attrs: { 'data-checked': 'true' } })
+  const pngLabel = new FakeElement({ tagName: 'label', text: 'PNG', attrs: { 'data-checked': 'false' } })
+  const exportButton = new FakeElement({ tagName: 'button', text: '确认无误，导出' })
+  exportButton.click = () => { exportClicked = true }
+  const modal = new FakeElement({ text: '确认导出吗？ PDF PNG 确认无误，导出' })
+  modal.querySelectorAll = selector => {
+    if (selector === 'label[data-testid="beast-core-checkbox"]') return [pdfLabel, pngLabel]
+    if (selector === 'button') return [exportButton]
+    return []
+  }
+  const document = baseDocument().setSelector('[data-testid="beast-core-modal"]', [modal])
+
+  const result = await runAdapter({
+    phase: 'verify_export_options',
+    params: {
+      output_dir: '/tmp/temu-ai-wash-pdfs',
+    },
+    document,
+    shared: {
+      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+    },
+  })
+
+  assert.equal(result.meta.action, 'download_clicks')
+  assert.equal(result.meta.items[0].filename, '20922511720810101110-9950019805206.pdf')
+  assert.equal(result.meta.items[0].target_dir, '/tmp/temu-ai-wash-pdfs')
+  assert.equal(result.meta.items[0].source, 'temu_official_download')
+  assert.equal(result.meta.next_phase, 'verify_download')
+  assert.equal(exportClicked, false)
 })
 
 test('download verification prefers the successful signed fallback item', async () => {

@@ -920,6 +920,46 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tasks[0]["adapter_id"], "shopee-plus-v2")
         self.assertEqual(tasks[0]["adapter_version"], "2.3.4")
 
+    async def test_list_tasks_hides_hidden_manifest_tasks(self):
+        class VisibleTask:
+            id = "ai_wash_label_create"
+            name = "AI洗唛制作"
+            description = "desc"
+            hidden = False
+            param_probe_script = None
+            execution_ui_mode = None
+            validation_only_label = None
+            auto_precheck_note = None
+            params = []
+            trigger = type("Trigger", (), {"model_dump": lambda self: {"type": "manual"}})()
+
+        class HiddenTask:
+            id = "wash_label_create_and_download"
+            name = "后台-洗水唛制作并下载官方 PDF"
+            description = "desc"
+            hidden = True
+            param_probe_script = None
+            execution_ui_mode = None
+            validation_only_label = None
+            auto_precheck_note = None
+            params = []
+            trigger = type("Trigger", (), {"model_dump": lambda self: {"type": "manual"}})()
+
+        class FakeAdapter:
+            id = "temu"
+            name = "Temu 运营助手"
+            version = "1.5.12"
+            tasks = [HiddenTask(), VisibleTask()]
+
+        with patch("core.api_server.adapter_loader.scan_all"):
+            with patch("core.api_server.adapter_loader.list_all", return_value=[{"id": "temu", "enabled": True}]):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.sched_module.list_jobs", return_value=[]):
+                        with patch("core.api_server.data_sink.get_latest_run", return_value=None):
+                            tasks = api_server.list_tasks()
+
+        self.assertEqual([item["task_id"] for item in tasks], ["ai_wash_label_create"])
+
     async def test_run_task_background_marks_early_crash_as_error_and_clears_control(self):
         jid = "temu::tax_free_return_confirm"
         original_status = dict(api_server._run_status)

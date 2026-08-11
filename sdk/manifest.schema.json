@@ -155,6 +155,7 @@
         "name": { "type": "string" },
         "description": { "type": "string" },
         "script": { "type": "string" },
+        "hidden": { "type": "boolean" },
         "param_probe_script": { "type": "string" },
         "execution_ui_mode": { "type": "string" },
         "validation_only_label": { "type": "string" },

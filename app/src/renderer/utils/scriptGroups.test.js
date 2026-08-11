@@ -87,6 +87,14 @@ test('buildScriptGroups keeps task display formatting inside each group', () => 
       adapter_id: 'temu',
       adapter_name: 'Temu 运营助手',
       adapter_version: '1.4.0',
+      task_id: 'ai_wash_label_create',
+      task_name: 'AI洗唛制作',
+      enabled: true,
+    },
+    {
+      adapter_id: 'temu',
+      adapter_name: 'Temu 运营助手',
+      adapter_version: '1.4.0',
       task_id: 'reviews',
       task_name: '原始店铺评价',
       enabled: true,
@@ -99,6 +107,31 @@ test('buildScriptGroups keeps task display formatting inside each group', () => 
   assert.equal(groups[0].adapter_version, '1.4.0')
   assert.deepEqual(
     groups[0].tasks.map(task => task.task_name),
-    ['商城-单款商品评价', '商城-店铺评价', '后台-商品数据'],
+    ['AI洗唛制作', '商城-单款商品评价', '商城-店铺评价', '后台-商品数据'],
   )
+})
+
+test('buildScriptGroups filters hidden task entries from display groups', () => {
+  const groups = buildScriptGroups([
+    {
+      adapter_id: 'temu',
+      adapter_name: 'Temu 运营助手',
+      adapter_version: '1.5.12',
+      task_id: 'wash_label_create_and_download',
+      task_name: '后台-洗水唛制作并下载官方 PDF',
+      hidden: true,
+      enabled: true,
+    },
+    {
+      adapter_id: 'temu',
+      adapter_name: 'Temu 运营助手',
+      adapter_version: '1.5.12',
+      task_id: 'ai_wash_label_create',
+      task_name: 'AI洗唛制作',
+      enabled: true,
+    },
+  ])
+
+  assert.equal(groups.length, 1)
+  assert.deepEqual(groups[0].tasks.map(task => task.task_id), ['ai_wash_label_create'])
 })

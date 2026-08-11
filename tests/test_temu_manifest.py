@@ -53,7 +53,8 @@ class TemuManifestTests(unittest.TestCase):
         task = next(item for item in manifest["tasks"] if item["id"] == "wash_label_official_pdf_download")
         params = {item["id"]: item for item in task["params"]}
 
-        self.assertEqual(manifest["version"], "1.5.8")
+        self.assertEqual(manifest["version"], "1.5.13")
+        self.assertTrue(task["hidden"])
         self.assertEqual(task["script"], "wash-label-official-pdf-download.js")
         self.assertEqual(task["entry_url"], "https://agentseller.temu.com/goods/label")
         self.assertIn("已制作", task["description"])
@@ -87,6 +88,7 @@ class TemuManifestTests(unittest.TestCase):
         params = {item["id"]: item for item in task["params"]}
 
         self.assertEqual(task["script"], "wash-label-create-and-download.js")
+        self.assertTrue(task["hidden"])
         self.assertEqual(task["entry_url"], "https://agentseller.temu.com/goods/label")
         self.assertIn("默认 dry-run 不保存", task["description"])
         self.assertIn("企业码", task["description"])
@@ -95,6 +97,24 @@ class TemuManifestTests(unittest.TestCase):
         self.assertIn("成分只记录证据", task["description"])
         self.assertEqual(params["input_file"]["type"], "file_excel")
         self.assertFalse(params["input_file"]["required"])
+        self.assertEqual(
+            params["input_file"]["templates"][0]["file"],
+            "templates/temu-wash-label-demand-template.csv",
+        )
+        self.assertEqual(params["input_file"]["templates"][0]["label"], "洗唛需求导入模板")
+        template_path = Path("adapters/temu") / params["input_file"]["templates"][0]["file"]
+        self.assertTrue(template_path.exists())
+        template_header = template_path.read_text(encoding="utf-8").splitlines()[0]
+        template_example = template_path.read_text(encoding="utf-8").splitlines()[1]
+        self.assertEqual(
+            template_header.split(","),
+            ["款号", "制造商名称", "制造商地址", "生产日期", "批次号", "洗水唛宽度mm", "洗水唛长度mm", "上下预留mm"],
+        )
+        for deprecated_column in ("颜色", "尺码", "SKC", "SKU编码", "SKU货号", "洗唛成分", "产品线"):
+            self.assertNotIn(deprecated_column, template_header)
+        self.assertTrue(template_example.endswith(",,2024-10-01,PC241016,45,230,10"))
+        self.assertIn("制造商名称", params["input_file"]["hint"])
+        self.assertIn("制造商地址", params["input_file"]["hint"])
         self.assertEqual(params["enterprise_codes"]["type"], "textarea")
         self.assertIn("企业码", params["enterprise_codes"]["label"])
         self.assertEqual(params["max_skc"]["default"], 1)
@@ -121,10 +141,82 @@ class TemuManifestTests(unittest.TestCase):
         self.assertEqual(params["manufacturer_name"]["default"], "Zhejiang Semir Garment Co.,Ltd.")
         self.assertEqual(params["production_date"]["default"], "2026-06-01")
         self.assertEqual(params["batch_number"]["default"], "PC260601")
-        self.assertEqual(params["label_width_mm"]["default"], 35)
+        self.assertEqual(params["label_width_mm"]["default"], 45)
         self.assertEqual(params["label_length_mm"]["default"], 235)
         self.assertEqual(params["label_padding_mm"]["default"], 10)
         self.assertEqual(task["output"][0]["filename"], "wash-label-create-and-download-diagnostic_{timestamp}.json")
+
+    def test_ai_wash_label_create_is_style_first_ai_entry(self):
+        manifest = yaml.safe_load(Path("adapters/temu/manifest.yaml").read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["id"] == "ai_wash_label_create")
+        params = {item["id"]: item for item in task["params"]}
+
+        self.assertEqual(task["name"], "AI洗唛制作")
+        self.assertEqual(task["script"], "wash-label-create-and-download.js")
+        self.assertEqual(
+            task["description"],
+            "上传洗唛需求表后，自动读取 SCM 洗唛资料，批量制作 TEMU 洗水唛，并导出带尺码的官方 PDF。",
+        )
+        self.assertEqual(params["input_file"]["type"], "file_excel")
+        self.assertTrue(params["input_file"]["required"])
+        self.assertEqual(
+            params["input_file"]["templates"][0]["file"],
+            "templates/temu-wash-label-demand-template.csv",
+        )
+        self.assertIn("洗水唛宽度mm", params["input_file"]["hint"])
+        self.assertIn("洗水唛长度mm", params["input_file"]["hint"])
+        self.assertIn("上下预留mm", params["input_file"]["hint"])
+        self.assertIn("生产日期", params["input_file"]["hint"])
+        self.assertIn("具体日期", params["input_file"]["hint"])
+        self.assertEqual(task["params"][0]["id"], "mode")
+        self.assertEqual(task["params"][1]["id"], "execute_mode")
+        self.assertEqual(task["params"][2]["id"], "store_name")
+        self.assertEqual(task["params"][3]["id"], "input_file")
+        self.assertEqual(task["params"][4]["id"], "output_dir")
+        self.assertEqual(params["mode"]["default"], "new")
+        self.assertEqual(params["output_dir"]["type"], "directory")
+        self.assertIn("PDF 导出目录", params["output_dir"]["label"])
+        self.assertIn("官方洗水唛 PDF", params["output_dir"]["hint"])
+        self.assertEqual(params["style_codes"]["type"], "textarea")
+        self.assertTrue(params["style_codes"]["hidden"])
+        self.assertIn("208326104207", params["style_codes"]["hint"])
+        self.assertEqual(params["enterprise_codes"]["type"], "textarea")
+        self.assertTrue(params["enterprise_codes"]["hidden"])
+        self.assertNotIn("max_skc", params)
+        self.assertEqual(params["execute_mode"]["default"], "create_and_download")
+        self.assertTrue(params["allow_save"]["default"])
+        self.assertTrue(params["allow_save"]["hidden"])
+        self.assertTrue(params["download_after_save"]["hidden"])
+        self.assertTrue(params["skip_already_made"]["hidden"])
+        self.assertTrue(params["scm_lookup"]["hidden"])
+        self.assertTrue(params["scm_brand"]["hidden"])
+        self.assertTrue(params["scm_only_completed"]["hidden"])
+        self.assertTrue(params["care_symbols_mode"]["hidden"])
+        self.assertEqual(params["ai_wash_instruction_recognition"]["default"], True)
+        self.assertTrue(params["ai_wash_instruction_recognition"]["hidden"])
+        self.assertEqual(params["ai_wash_instruction_model_id"]["default"], "")
+        self.assertTrue(params["ai_wash_instruction_model_id"]["hidden"])
+        self.assertEqual(params["care_symbols_json"]["default"], '{"washing":13,"bleaching":3,"drying":4,"ironing":3,"dryCleaning":5}')
+        self.assertTrue(params["care_symbols_json"]["hidden"])
+        self.assertEqual(params["fixed_care_symbols_profile"]["default"], "dingtalk_sop")
+        self.assertTrue(params["fixed_care_symbols_profile"]["hidden"])
+        self.assertEqual(params["manufacturer_name"]["default"], "")
+        self.assertEqual(params["manufacturer_address"]["default"], "")
+        self.assertTrue(params["manufacturer_name"]["hidden"])
+        self.assertTrue(params["manufacturer_address"]["hidden"])
+        self.assertEqual(params["production_date"]["default"], "2024-10-01")
+        self.assertTrue(params["production_date"]["hidden"])
+        self.assertEqual(params["batch_number"]["default"], "PC241016")
+        self.assertTrue(params["batch_number"]["hidden"])
+        self.assertEqual(params["label_width_mm"]["default"], 45)
+        self.assertTrue(params["label_width_mm"]["hidden"])
+        self.assertEqual(params["label_length_mm"]["default"], 230)
+        self.assertTrue(params["label_length_mm"]["hidden"])
+        self.assertIn("20mm", params["label_length_mm"]["hint"])
+        self.assertTrue(params["label_padding_mm"]["hidden"])
+        self.assertEqual(params["timeout_seconds"]["default"], 60)
+        self.assertTrue(params["timeout_seconds"]["hidden"])
+        self.assertEqual(task["output"][0]["filename"], "ai-wash-label-create-diagnostic_{timestamp}.json")
 
 
 if __name__ == "__main__":

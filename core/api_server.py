@@ -867,6 +867,18 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
         "doudian_order_window_total": _int_from_mapping(shared_state, 'doudian_order_window_total'),
         "doudian_order_window_completed": _int_from_mapping(shared_state, 'doudian_order_window_completed'),
         "doudian_mixed_rows": _int_from_mapping(shared_state, 'doudian_mixed_rows'),
+        "progress_kind": _str_from_mapping(shared_state, 'progress_kind'),
+        "wash_label_stage": _str_from_mapping(shared_state, 'wash_label_stage'),
+        "style_total": _int_from_mapping(shared_state, 'style_total'),
+        "style_completed": _int_from_mapping(shared_state, 'style_completed'),
+        "style_current": _str_from_mapping(shared_state, 'style_current'),
+        "sku_total": _int_from_mapping(shared_state, 'sku_total'),
+        "sku_completed": _int_from_mapping(shared_state, 'sku_completed'),
+        "sku_current": _str_from_mapping(shared_state, 'sku_current'),
+        "sku_skipped": _int_from_mapping(shared_state, 'sku_skipped'),
+        "sku_success": _int_from_mapping(shared_state, 'sku_success'),
+        "sku_failed": _int_from_mapping(shared_state, 'sku_failed'),
+        "wash_label_store": _str_from_mapping(shared_state, 'wash_label_store'),
     }
 
 
@@ -938,6 +950,18 @@ LIVE_PROGRESS_STATUS_KEYS = (
     "doudian_order_window_total",
     "doudian_order_window_completed",
     "doudian_mixed_rows",
+    "progress_kind",
+    "wash_label_stage",
+    "style_total",
+    "style_completed",
+    "style_current",
+    "sku_total",
+    "sku_completed",
+    "sku_current",
+    "sku_skipped",
+    "sku_success",
+    "sku_failed",
+    "wash_label_store",
 )
 
 
@@ -10110,6 +10134,8 @@ def list_tasks():
         if not m:
             continue
         for task in m.tasks:
+            if getattr(task, "hidden", False):
+                continue
             jid = f"{m.id}::{task.id}"
             last_run = data_sink.get_latest_run(m.id, task.id)
             result.append({

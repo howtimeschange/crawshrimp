@@ -224,7 +224,18 @@
 
             <!-- 复选框组 -->
             <template v-else-if="param.type === 'checkbox'">
-              <div v-if="isCheckboxDropdown(param)" class="multi-select" data-multi-select-root>
+              <div v-if="isBooleanCheckboxParam(param)" class="boolean-checkbox">
+                <label class="boolean-switch">
+                  <input
+                    type="checkbox"
+                    v-model="values[param.id]"
+                    :aria-label="param.label"
+                  />
+                  <span class="boolean-switch-track" aria-hidden="true"></span>
+                  <span class="boolean-switch-text">{{ values[param.id] ? (param.toggle_on_label || '开启') : (param.toggle_off_label || '关闭') }}</span>
+                </label>
+              </div>
+              <div v-else-if="isCheckboxDropdown(param)" class="multi-select" data-multi-select-root>
                 <button
                   type="button"
                   :class="['multi-select-trigger', { open: isMultiSelectOpen(param.id), empty: !(values[param.id] || []).length }]"
@@ -1201,7 +1212,8 @@ function handleOperatorAlertOpen(payload = {}) {
 function buildDefaultValues(params = []) {
   const next = {}
   for (const p of (params || [])) {
-    if (p.type === 'checkbox') next[p.id] = Array.isArray(p.default) ? [...p.default] : []
+    if (isBooleanCheckboxParam(p)) next[p.id] = Boolean(p.default)
+    else if (p.type === 'checkbox') next[p.id] = Array.isArray(p.default) ? [...p.default] : []
     else if (isLineListParam(p)) next[p.id] = normalizeLineListRows(p.default, true)
     else if (isSingleTemporalParamType(p.type)) next[p.id] = p.default ?? ''
     else if (isRangeParamType(p.type)) { next[p.id + '_start'] = ''; next[p.id + '_end'] = '' }
@@ -1365,6 +1377,15 @@ function reconcileValuesWithParams(params = []) {
   let changed = false
 
   for (const p of (params || [])) {
+    if (isBooleanCheckboxParam(p)) {
+      const current = next[p.id]
+      if (typeof current !== 'boolean') {
+        next[p.id] = Boolean(current)
+        changed = true
+      }
+      continue
+    }
+
     if (p.type === 'checkbox') {
       const current = Array.isArray(next[p.id]) ? next[p.id].map(v => String(v)) : []
       const valid = new Set((p.options || []).map(opt => String(opt?.value ?? '')))
@@ -2078,6 +2099,7 @@ const missingRequired = computed(() => {
   if (!props.task) return false
   return visibleParams.value.some(p => {
     if (!p.required) return false
+    if (isBooleanCheckboxParam(p)) return values.value[p.id] !== true
     if (p.type === 'checkbox') return !(values.value[p.id] || []).length
     if (isLineListParam(p)) return !lineListParamValue(p.id)
     if (p.type === 'file_excel') return !values.value[p.id + '_path']
@@ -2214,6 +2236,10 @@ function normalizeParamUiSpan(uiSpan) {
 
 function isCheckboxDropdown(param) {
   return param?.type === 'checkbox' && String(param?.ui_variant || '').trim().toLowerCase() === 'dropdown_multi'
+}
+
+function isBooleanCheckboxParam(param) {
+  return param?.type === 'checkbox' && !(Array.isArray(param?.options) && param.options.length)
 }
 
 function getCheckboxSelectedLabels(param) {
@@ -2519,6 +2545,11 @@ function buildRunParams(overrides = {}) {
   const params = {}
   for (const p of taskParams.value) {
     if (!isParamVisibleInForm(p) && !shouldIncludeHiddenDefaultParam(p)) continue
+
+    if (isBooleanCheckboxParam(p)) {
+      params[p.id] = Boolean(values.value[p.id])
+      continue
+    }
 
     if (isSingleTemporalParamType(p.type)) {
       params[p.id] = values.value[p.id] || ''
@@ -4947,6 +4978,55 @@ onUnmounted(() => {
 .checkbox-item { display: flex; align-items: center; gap: 7px; cursor: pointer; }
 .checkbox-item input[type=checkbox] { accent-color: var(--orange); width: 14px; height: 14px; cursor: pointer; }
 .checkbox-label { font-size: 13px; color: var(--text); }
+.boolean-checkbox { display: flex; align-items: center; min-height: 34px; }
+.boolean-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  min-height: 30px;
+  cursor: pointer;
+  user-select: none;
+}
+.boolean-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+.boolean-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, .08);
+  transition: background .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.boolean-switch-track::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--text3);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .28);
+  transition: transform .16s ease, background .16s ease;
+}
+.boolean-switch input:checked + .boolean-switch-track {
+  border-color: rgba(255, 106, 41, .72);
+  background: rgba(255, 106, 41, .28);
+  box-shadow: 0 0 0 3px rgba(255, 106, 41, .08);
+}
+.boolean-switch input:checked + .boolean-switch-track::before {
+  transform: translateX(18px);
+  background: var(--orange);
+}
+.boolean-switch-text { color: var(--text2); font-size: 12px; font-weight: 700; }
 
 .date-range-panel {
   padding: 12px 14px;

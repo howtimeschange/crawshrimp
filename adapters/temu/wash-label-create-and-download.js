@@ -11,46 +11,90 @@
   const skipAlreadyMade = params.skip_already_made !== false && String(params.skip_already_made || '').toLowerCase() !== 'false'
   const maxDownloads = Math.max(0, Math.min(10000, Math.floor(Number(params.max_downloads || 0))))
   const timeoutSeconds = Math.max(5, Math.min(120, Number(params.timeout_seconds || 60)))
+  const outputDir = textOf(params.output_dir || params.export_dir || params.download_dir || '')
   const pilotStyle = compact(params.pilot_style || '')
   const maxSkc = Math.max(0, Math.min(10000, Math.floor(Number(params.max_skc || 0))))
+  const styleCodesText = textOf(params.style_codes || params.style_code || params.skc_codes || '')
   const enterpriseCodesText = textOf(params.enterprise_codes || params.enterprise_code || params.sku_nos || '')
   const scmLookupEnabled = params.scm_lookup !== false && String(params.scm_lookup || '').toLowerCase() !== 'false'
+  const scmAttachmentRecognitionEnabled = params.ai_wash_instruction_recognition === true
+    || String(params.ai_wash_instruction_recognition || '').toLowerCase() === 'true'
   const scmUrlContains = textOf(params.scm_url_contains || 'scm.semir.com')
   const scmOnlyCompleted = params.scm_only_completed !== false && String(params.scm_only_completed || '').toLowerCase() !== 'false'
   const scmBrandMode = compact(params.scm_brand || 'auto')
   const scmCompositionMode = compact(params.scm_composition_mode || 'evidence_only')
-  const manufacturerNameParam = textOf(params.manufacturer_name || 'Zhejiang Semir Garment Co.,Ltd.')
-  const manufacturerAddressParam = textOf(params.manufacturer_address || 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China')
-  const productionDateParam = textOf(params.production_date || '2026-06-01')
-  const batchNumberParam = textOf(params.batch_number || 'PC260601')
+  const aiWashInstructionModelId = textOf(params.ai_wash_instruction_model_id || '')
+  const aiWashInstructionFallbackModels = textOf(params.ai_wash_instruction_fallback_models || '')
+  const manufacturerNameParam = textOf(paramValue('manufacturer_name', ''))
+  const manufacturerAddressParam = textOf(paramValue('manufacturer_address', ''))
+  const productionDateParam = textOf(paramValue('production_date', '2024-10-01'))
+  const batchNumberParam = textOf(paramValue('batch_number', 'PC241016'))
   const careSymbolsMode = compact(params.care_symbols_mode || 'scm_or_fixed')
-  const labelWidthMm = Math.max(10, Math.min(100, Number(params.label_width_mm || 35)))
-  const labelLengthMm = Math.max(50, Math.min(500, Number(params.label_length_mm || 235)))
-  const labelPaddingMm = Math.max(0, Math.min(100, Number(params.label_padding_mm || 10)))
+  const fixedCareSymbolsProfileParam = compact(paramValue('fixed_care_symbols_profile', 'dingtalk_sop')).toLowerCase()
+  const labelWidthMm = Math.max(10, Math.min(100, paramNumber('label_width_mm', 45)))
+  const labelLengthMm = Math.max(50, Math.min(500, paramNumber('label_length_mm', 230)))
+  const labelPaddingMm = Math.max(0, Math.min(100, paramNumber('label_padding_mm', 10)))
   const API_PAGE_SIZE = 200
   const API_QUERY_PAGE_SIZE = 50
   const SCAN_PAGES_PER_PHASE = 8
   const SCAN_CONCURRENCY = 4
-  const REQUIRED_COLUMNS = ['款号', '颜色', '尺码', 'SKC', 'SKU编码', 'SKU货号', '洗唛成分', '产品线']
-  const IDENTIFIER_COLUMNS = new Set(['款号', '尺码', 'SKC', 'SKU编码', 'SKU货号'])
+  const AI_WASH_PROGRESS_KIND = 'temu_ai_wash_label'
+  const REQUIRED_COLUMNS = ['款号']
+  const OPTIONAL_COLUMNS = ['制造商名称', '制造商地址', '生产日期', '批次号', '洗水唛宽度mm', '洗水唛长度mm', '上下预留mm']
+  const WORKBOOK_COLUMN_ALIASES = {
+    生产日期: ['生产日期', '生产年月', '生产月份'],
+    批次号: ['批次号', '批号', '生产批次号', '生产批号'],
+    洗水唛宽度mm: ['洗水唛宽度mm', '水洗唛宽度mm', '洗水唛宽度', '水洗唛宽度', '宽度mm', '宽mm', '宽'],
+    洗水唛长度mm: ['洗水唛长度mm', '水洗唛长度mm', '洗水唛长度', '水洗唛长度', '长度mm', '长mm', '长'],
+    上下预留mm: ['上下预留mm', '上下预留尺寸mm', '上下预留尺寸', '预留mm', '预留'],
+  }
+  const LABEL_DIMENSION_SPECS = {
+    width: { column: '洗水唛宽度mm', label: '洗水唛宽度mm', min: 10, max: 100, paramDefault: () => labelWidthMm },
+    length: { column: '洗水唛长度mm', label: '洗水唛长度mm', min: 50, max: 500, paramDefault: () => labelLengthMm },
+    padding: { column: '上下预留mm', label: '上下预留mm', min: 0, max: 100, paramDefault: () => labelPaddingMm },
+  }
+  const IDENTIFIER_COLUMNS = new Set(['款号'])
   const MISSING_COMPOSITION = new Set(['', 'N/A', 'NA'])
   const SAVE_MODE = 'create_and_download'
   const PILOT_STYLE = '209225117208'
-  const FIXED_CARE_SYMBOLS = {
-    washing: 10,
-    bleaching: 3,
-    drying: 5,
-    ironing: 3,
-    dryCleaning: 5,
-  }
-  const FIXED_CARE_SYMBOL_LABELS = {
-    washing: 'Maximum washing temperature 30℃',
-    bleaching: 'Do not bleach',
-    drying: 'Line drying in the shade',
-    ironing: 'Iron at maximum sole-plate temperature of 110℃ without steam',
-    dryCleaning: 'Do not dry clean',
+  const FIXED_CARE_SYMBOL_PROFILES = {
+    legacy_20260731: {
+      id: 'legacy_20260731',
+      symbols: {
+        washing: 10,
+        bleaching: 3,
+        drying: 5,
+        ironing: 3,
+        dryCleaning: 5,
+      },
+      labels: {
+        washing: 'Maximum washing temperature 30℃',
+        bleaching: 'Do not bleach',
+        drying: 'Line drying in the shade',
+        ironing: 'Iron at maximum sole-plate temperature of 110℃ without steam',
+        dryCleaning: 'Do not dry clean',
+      },
+    },
+    dingtalk_sop: {
+      id: 'dingtalk_sop',
+      symbols: {
+        washing: 13,
+        bleaching: 3,
+        drying: 4,
+        ironing: 3,
+        dryCleaning: 5,
+      },
+      labels: {
+        washing: 'Wash by hand',
+        bleaching: 'Do not bleach',
+        drying: 'Line drying',
+        ironing: 'Iron at maximum sole-plate temperature of 110℃ without steam',
+        dryCleaning: 'Do not dry clean',
+      },
+    },
   }
   const DEFAULT_ING_LANGS = ['en', 'de', 'fr', 'it', 'es', 'da', 'cs', 'sv']
+  const SCM_WASH_APPROVAL_REFERER = 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index'
   const SCM_BRAND_BY_STORE = {
     'SEMIR Official Shop': { code: '10', label: '森马' },
     'balabala Official Shop': { code: '20', label: '巴拉巴拉' },
@@ -69,6 +113,16 @@
     return String(value?.innerText || value?.textContent || '').replace(/\s+/g, ' ').trim()
   }
 
+  function paramValue(name, fallback) {
+    return Object.prototype.hasOwnProperty.call(params, name) ? params[name] : fallback
+  }
+
+  function paramNumber(name, fallback) {
+    const value = paramValue(name, fallback)
+    if (value === '' || value === null || value === undefined) return Number(fallback)
+    return Number(value)
+  }
+
   function isMissingComposition(value) {
     return MISSING_COMPOSITION.has(textOf(value).toUpperCase())
   }
@@ -82,17 +136,27 @@
     return Array.isArray(file.rows) ? file.rows : []
   }
 
+  function workbookCell(row, key) {
+    if (!row || typeof row !== 'object') return ''
+    if (Object.prototype.hasOwnProperty.call(row, key)) return row[key]
+    const aliases = WORKBOOK_COLUMN_ALIASES[key] || []
+    for (const alias of aliases) {
+      if (Object.prototype.hasOwnProperty.call(row, alias)) return row[alias]
+    }
+    return ''
+  }
+
   function normalizeWorkbookRow(row) {
     const item = {}
-    for (const key of REQUIRED_COLUMNS) {
-      const value = row?.[key]
+    for (const key of [...REQUIRED_COLUMNS, ...OPTIONAL_COLUMNS]) {
+      const value = workbookCell(row, key)
       item[key] = IDENTIFIER_COLUMNS.has(key) ? compact(value) : textOf(value)
     }
     return item
   }
 
   function rowExactKey(row) {
-    return REQUIRED_COLUMNS.map(key => row[key] || '').join('\u001f')
+    return [...REQUIRED_COLUMNS, ...OPTIONAL_COLUMNS].map(key => row[key] || '').join('\u001f')
   }
 
   function sizeSortKey(value) {
@@ -102,6 +166,58 @@
     return text
   }
 
+  function parseWorkbookMm(value, spec) {
+    const raw = textOf(value)
+    if (!raw) return { value: null }
+    const match = raw.match(/-?\d+(?:\.\d+)?/)
+    const number = match ? Number(match[0]) : Number.NaN
+    if (!Number.isFinite(number)) {
+      return { value: null, error: `${spec.label} 不是有效数字：${raw}` }
+    }
+    if (number < spec.min || number > spec.max) {
+      return { value: null, error: `${spec.label} 超出范围 ${spec.min}-${spec.max}：${raw}` }
+    }
+    return { value: number }
+  }
+
+  function uniqueWorkbookMmValues(items, spec) {
+    const values = []
+    const errors = []
+    for (const item of items) {
+      const parsed = parseWorkbookMm(item?.[spec.column], spec)
+      if (parsed.error) errors.push(parsed.error)
+      if (parsed.value === null || parsed.value === undefined) continue
+      values.push(parsed.value)
+    }
+    return {
+      values: [...new Set(values)].sort((left, right) => left - right),
+      errors: [...new Set(errors)],
+    }
+  }
+
+  function uniqueWorkbookTextValues(items, column) {
+    return [...new Set(items.map(item => textOf(item?.[column])).filter(Boolean))].sort()
+  }
+
+  function uniqueWorkbookProductionDates(items) {
+    const values = []
+    const errors = []
+    for (const item of items) {
+      const raw = textOf(item?.['生产日期'])
+      if (!raw) continue
+      const normalized = normalizeDate(raw)
+      if (!normalized) {
+        errors.push(`生产日期格式无效：${raw}`)
+        continue
+      }
+      values.push(normalized)
+    }
+    return {
+      values: [...new Set(values)].sort(),
+      errors: [...new Set(errors)],
+    }
+  }
+
   function normalizeEnterpriseCode(value) {
     const raw = compact(value).replace(/\.pdf$/i, '')
     if (!raw) return ''
@@ -109,10 +225,36 @@
     return parts.length > 1 ? parts[parts.length - 1] : raw
   }
 
+  function splitListText(value) {
+    return textOf(value)
+      .split(/[\s,，;；、]+/)
+      .map(textOf)
+      .filter(Boolean)
+  }
+
   function parseEnterpriseCodes() {
     const rawValues = enterpriseCodesText
       .split(/[\s,，;；、]+/)
       .map(normalizeEnterpriseCode)
+      .filter(Boolean)
+    const seen = new Set()
+    const unique = []
+    for (const value of rawValues) {
+      if (seen.has(value)) continue
+      seen.add(value)
+      unique.push(value)
+    }
+    return { rawValues, unique }
+  }
+
+  function normalizeStyleCode(value) {
+    return compact(value).replace(/\.pdf$/i, '').split(/[-_]/).map(compact).filter(Boolean)[0] || ''
+  }
+
+  function parseStyleCodes() {
+    const rawValues = styleCodesText
+      .split(/[\s,，;；、]+/)
+      .map(normalizeStyleCode)
       .filter(Boolean)
     const seen = new Set()
     const unique = []
@@ -206,19 +348,73 @@
     }
   }
 
+  function buildDirectInputWorkflow() {
+    const parsedStyles = parseStyleCodes()
+    const parsedCodes = parseEnterpriseCodes()
+    const styleTargets = parsedStyles.unique.map((style, index) => ({
+      inputMode: 'style_code',
+      style,
+      color: '',
+      skc: style,
+      representativeSize: '',
+      skuCode: '',
+      skuNo: '',
+      enterpriseCode: '',
+      composition: '',
+      compositionSource: 'scm_or_manual',
+      productLine: '',
+      sizeCount: 0,
+      status: 'ready',
+      reason: '',
+      outputFilename: '',
+      sourceIndex: index + 1,
+    }))
+    const enterpriseTargets = parsedCodes.unique.map((code, index) => ({
+      inputMode: 'enterprise_code',
+      style: '',
+      color: '',
+      skc: '',
+      representativeSize: '',
+      skuCode: '',
+      skuNo: code,
+      enterpriseCode: code,
+      composition: '',
+      compositionSource: 'scm_or_manual',
+      productLine: '',
+      sizeCount: 1,
+      status: 'ready',
+      reason: '',
+      outputFilename: '',
+      sourceIndex: index + 1,
+    }))
+    let targets = [...styleTargets, ...enterpriseTargets]
+    if (!targets.length) return null
+    if (maxSkc > 0) targets = targets.slice(0, maxSkc)
+    const mode = styleTargets.length && enterpriseTargets.length
+      ? 'style_and_enterprise_create_and_download'
+      : styleTargets.length
+        ? 'style_code_create_and_download'
+        : 'enterprise_code_create_and_download'
+    return {
+      mode,
+      summary: {
+        sourceStyles: parsedStyles.unique.length,
+        selectedStyles: targets.filter(item => item.inputMode === 'style_code').length,
+        exactDuplicateStylesRemoved: parsedStyles.rawValues.length - parsedStyles.unique.length,
+        sourceEnterpriseCodes: parsedCodes.unique.length,
+        selectedEnterpriseCodes: targets.filter(item => item.inputMode === 'enterprise_code').length,
+        exactDuplicateCodesRemoved: parsedCodes.rawValues.length - parsedCodes.unique.length,
+        selectedTargets: targets.length,
+        maxSkc,
+      },
+      excelTargets: targets,
+    }
+  }
+
   function buildWorkbookWorkflow() {
     const sourceRows = sourceRowsFromParam().map(normalizeWorkbookRow)
-      .filter(row => REQUIRED_COLUMNS.some(key => textOf(row[key])))
+      .filter(row => compact(row['款号']))
     if (!sourceRows.length) return null
-
-    const missingColumns = REQUIRED_COLUMNS.filter(key => (
-      !sourceRows.some(row => Object.prototype.hasOwnProperty.call(row, key))
-    ))
-    if (missingColumns.length) {
-      return {
-        error: `Excel 缺少必填字段：${missingColumns.join('、')}`,
-      }
-    }
 
     const seen = new Set()
     const rows = []
@@ -233,103 +429,76 @@
       rows.push({ ...row })
     }
 
-    const styleValues = {}
-    for (const row of rows) {
-      const composition = textOf(row['洗唛成分'])
-      if (isMissingComposition(composition)) continue
-      const style = compact(row['款号'])
-      if (!styleValues[style]) styleValues[style] = new Set()
-      styleValues[style].add(composition)
-    }
-
-    const resolved = rows.map(row => {
-      let composition = textOf(row['洗唛成分'])
-      let compositionSource = 'current_row'
-      let status = 'ready'
-      let reason = ''
-      if (isMissingComposition(composition)) {
-        const candidates = [...(styleValues[compact(row['款号'])] || [])].sort()
-        if (candidates.length === 1) {
-          composition = candidates[0]
-          compositionSource = 'same_style_unique'
-        } else if (candidates.length === 0) {
-          compositionSource = 'scm_required'
-          status = 'needs_scm'
-          reason = 'No nonblank composition under the same 款号'
-        } else {
-          compositionSource = 'conflict'
-          status = 'exception'
-          reason = 'Multiple compositions under the same 款号'
-        }
-      }
-      return {
-        ...row,
-        洗唛成分_解析: composition,
-        成分来源: compositionSource,
-        状态: status,
-        异常原因: reason,
-        目标文件名: `${compact(row['SKU编码'])}-${compact(row['SKU货号'])}.pdf`,
-      }
-    })
-
-    const byIdentifier = {}
-    for (const item of resolved) {
-      const key = `${compact(item['SKU编码'])}\u001f${compact(item['SKU货号'])}`
-      if (!byIdentifier[key]) byIdentifier[key] = []
-      byIdentifier[key].push(item)
-    }
-    for (const items of Object.values(byIdentifier)) {
-      const variants = new Set(items.map(rowExactKey))
-      if (variants.size <= 1) continue
-      for (const item of items) {
-        item.状态 = 'exception'
-        item.异常原因 = `Non-identical rows share SKU identifiers ${compact(item['SKU编码'])}/${compact(item['SKU货号'])}`
-      }
-    }
-
-    const selectedRows = resolved.filter(item => !pilotStyle || compact(item['款号']) === pilotStyle)
-    const skcGroups = {}
+    const selectedRows = rows.filter(item => !pilotStyle || compact(item['款号']) === pilotStyle)
+    const styleGroups = {}
     for (const item of selectedRows) {
-      const skc = compact(item['SKC'])
-      if (!skcGroups[skc]) skcGroups[skc] = []
-      skcGroups[skc].push(item)
+      const style = compact(item['款号'])
+      if (!styleGroups[style]) styleGroups[style] = []
+      styleGroups[style].push(item)
     }
 
-    let excelTargets = Object.keys(skcGroups).sort().map(skc => {
-      const items = [...skcGroups[skc]].sort((left, right) => (
-        sizeSortKey(left['尺码']).localeCompare(sizeSortKey(right['尺码']))
-        || compact(left['SKU货号']).localeCompare(compact(right['SKU货号']))
-      ))
-      const representative = items.find(item => item.状态 === 'ready') || items[0]
+    let excelTargets = Object.keys(styleGroups).sort().map(style => {
+      const items = [...styleGroups[style]]
+      const representative = items[0]
+      const manufacturerNames = [...new Set(items.map(item => textOf(item['制造商名称'])).filter(Boolean))].sort()
+      const manufacturerAddresses = [...new Set(items.map(item => textOf(item['制造商地址'])).filter(Boolean))].sort()
+      const productionDates = uniqueWorkbookProductionDates(items)
+      const batchNumbers = uniqueWorkbookTextValues(items, '批次号')
+      const widthValues = uniqueWorkbookMmValues(items, LABEL_DIMENSION_SPECS.width)
+      const lengthValues = uniqueWorkbookMmValues(items, LABEL_DIMENSION_SPECS.length)
+      const paddingValues = uniqueWorkbookMmValues(items, LABEL_DIMENSION_SPECS.padding)
+      const manufacturerConflicts = [
+        manufacturerNames.length > 1 ? '同一款号存在多个制造商名称' : '',
+        manufacturerAddresses.length > 1 ? '同一款号存在多个制造商地址' : '',
+        productionDates.values.length > 1 ? '同一款号存在多个生产日期' : '',
+        batchNumbers.length > 1 ? '同一款号存在多个批次号' : '',
+        ...productionDates.errors,
+        widthValues.values.length > 1 ? '同一款号存在多个洗水唛宽度' : '',
+        lengthValues.values.length > 1 ? '同一款号存在多个洗水唛长度' : '',
+        paddingValues.values.length > 1 ? '同一款号存在多个上下预留' : '',
+        ...widthValues.errors,
+        ...lengthValues.errors,
+        ...paddingValues.errors,
+      ].filter(Boolean)
+      const status = manufacturerConflicts.length ? 'exception' : 'ready'
+      const reason = manufacturerConflicts.join('；')
       return {
-        style: compact(representative['款号']),
-        color: textOf(representative['颜色']),
-        skc,
-        representativeSize: compact(representative['尺码']),
-        skuCode: compact(representative['SKU编码']),
-        skuNo: compact(representative['SKU货号']),
-        composition: textOf(representative['洗唛成分_解析']),
-        compositionSource: textOf(representative['成分来源']),
-        productLine: textOf(representative['产品线']),
-        sizeCount: items.length,
-        status: representative.状态,
-        reason: representative.异常原因 || '',
-        outputFilename: `${compact(representative['SKU编码'])}-${compact(representative['SKU货号'])}.pdf`,
+        inputMode: 'style_code',
+        style,
+        color: '',
+        skc: style,
+        representativeSize: '',
+        skuCode: '',
+        skuNo: '',
+        enterpriseCode: '',
+        composition: '',
+        compositionSource: 'scm_or_manual',
+        productLine: '',
+        manufacturerName: manufacturerNames[0] || textOf(representative['制造商名称']),
+        manufacturerAddress: manufacturerAddresses[0] || textOf(representative['制造商地址']),
+        productionDate: productionDates.values[0] || '',
+        batchNumber: batchNumbers[0] || '',
+        labelWidthMm: widthValues.values[0] ?? null,
+        labelLengthMm: lengthValues.values[0] ?? null,
+        labelPaddingMm: paddingValues.values[0] ?? null,
+        sizeCount: 0,
+        status,
+        reason,
+        outputFilename: '',
       }
     })
     if (maxSkc > 0) excelTargets = excelTargets.slice(0, maxSkc)
 
     return {
-      mode: 'excel_representative_skc_create_and_download',
+      mode: 'excel_style_code_create_and_download',
       summary: {
         sourceRows: sourceRows.length,
         exactDuplicateRowsRemoved,
         uniqueRows: rows.length,
         selectedRows: selectedRows.length,
-        selectedSkc: Object.keys(skcGroups).length,
-        readyRows: selectedRows.filter(item => item.状态 === 'ready').length,
-        needsScmRows: selectedRows.filter(item => item.状态 === 'needs_scm').length,
-        exceptionRows: selectedRows.filter(item => item.状态 === 'exception').length,
+        selectedStyles: Object.keys(styleGroups).length,
+        readyTargets: excelTargets.filter(item => item.status === 'ready').length,
+        exceptionTargets: excelTargets.filter(item => item.status === 'exception').length,
         pilotStyle: pilotStyle || '',
         maxSkc,
       },
@@ -431,6 +600,12 @@
     ].join('-')
   }
 
+  function normalizeProductionDate(value) {
+    const normalized = normalizeDate(value)
+    if (!normalized) return ''
+    return `${normalized.slice(0, 8)}01`
+  }
+
   function parseCareSymbolsJson(label) {
     let parsed = null
     try {
@@ -450,11 +625,19 @@
     return symbols
   }
 
+  function fixedCareSymbolsProfile() {
+    if (fixedCareSymbolsProfileParam === 'dingtalk_sop' || fixedCareSymbolsProfileParam === 'sop') {
+      return FIXED_CARE_SYMBOL_PROFILES.dingtalk_sop
+    }
+    return FIXED_CARE_SYMBOL_PROFILES.legacy_20260731
+  }
+
   function fixedCareSymbols(reason = '') {
+    const profile = fixedCareSymbolsProfile()
     return {
-      ...FIXED_CARE_SYMBOLS,
-      __source: reason || 'fixed_defaults',
-      __labels: { ...FIXED_CARE_SYMBOL_LABELS },
+      ...profile.symbols,
+      __source: reason || `fixed_defaults:${profile.id}`,
+      __labels: { ...profile.labels },
     }
   }
 
@@ -480,13 +663,13 @@
       washing: [
         { value: 14, label: 'Do not wash', patterns: [/do not wash/i, /不可水洗/] },
         { value: 13, label: 'Wash by hand', patterns: [/wash by hand(?!\s*ambient)/i, /手洗/] },
-        { value: 10, label: FIXED_CARE_SYMBOL_LABELS.washing, patterns: [/maximum washing temperature\s*30℃(?!\s*(mild|very mild))/i, /30℃\s*(水洗|洗涤|机洗)/i] },
+        { value: 10, label: 'Maximum washing temperature 30℃', patterns: [/maximum washing temperature\s*30℃(?!\s*(mild|very mild))/i, /30℃\s*(水洗|洗涤|机洗)/i] },
         { value: 11, label: 'Maximum washing temperature 30℃ mild process', patterns: [/maximum washing temperature\s*30℃\s*mild process/i] },
         { value: 12, label: 'Maximum washing temperature 30℃ very mild process', patterns: [/maximum washing temperature\s*30℃\s*very mild process/i] },
         { value: 7, label: 'Maximum washing temperature 40℃', patterns: [/maximum washing temperature\s*40℃(?!\s*(mild|very mild))/i] },
       ],
       bleaching: [
-        { value: 3, label: FIXED_CARE_SYMBOL_LABELS.bleaching, patterns: [/do not bleach/i, /不可漂白/] },
+        { value: 3, label: 'Do not bleach', patterns: [/do not bleach/i, /不可漂白/] },
         { value: 2, label: 'Only oxygen/non-chlorine bleach allowed', patterns: [/oxygen\/non-chlorine bleach/i, /非氯漂/] },
         { value: 1, label: 'Any bleaching agent allowed', patterns: [/any bleaching agent allowed/i] },
       ],
@@ -494,22 +677,22 @@
         { value: 11, label: 'Drip Flat drying in the shade', patterns: [/drip flat drying in the shade/i] },
         { value: 10, label: 'Drip Flat drying', patterns: [/drip flat drying/i] },
         { value: 9, label: 'Flat drying in the shade', patterns: [/flat drying in the shade/i, /阴凉处平摊晾干/] },
-        { value: 8, label: 'Flat drying', patterns: [/flat drying/i, /平摊晾干/] },
+        { value: 8, label: 'Flat drying', patterns: [/flat drying/i, /平摊晾干|平摊|平坦|平放/] },
         { value: 7, label: 'Drip line drying in the shade', patterns: [/drip line drying in the shade/i] },
         { value: 6, label: 'Drip line drying', patterns: [/drip line drying/i] },
-        { value: 5, label: FIXED_CARE_SYMBOL_LABELS.drying, patterns: [/line drying in the shade/i, /阴凉处悬挂晾干|阴凉处晾干|阴干/] },
-        { value: 4, label: 'Line drying', patterns: [/line drying/i, /悬挂晾干/] },
+        { value: 5, label: 'Line drying in the shade', patterns: [/line drying in the shade/i, /阴凉处悬挂晾干|阴凉处晾干|阴干/] },
+        { value: 4, label: 'Line drying', patterns: [/line drying/i, /悬挂晾干|悬挂晾晒|挂晾/] },
         { value: 3, label: 'Do not tumble dry', patterns: [/do not tumble dry/i, /不可翻转干燥/] },
       ],
       ironing: [
         { value: 4, label: 'Do not iron', patterns: [/do not iron/i, /不可熨烫/] },
-        { value: 3, label: FIXED_CARE_SYMBOL_LABELS.ironing, patterns: [/110℃\s*without steam/i, /maximum sole-plate temperature of 110℃/i, /110℃.*无蒸汽/] },
+        { value: 3, label: 'Iron at maximum sole-plate temperature of 110℃ without steam', patterns: [/110℃\s*without steam/i, /maximum sole-plate temperature of 110℃/i, /110℃.*无蒸汽/, /(?:^|[，,；;\s])可?熨烫/] },
         { value: 5, label: 'Iron at maximum sole-plate temperature of 120℃ without steam', patterns: [/120℃\s*without steam/i] },
         { value: 2, label: 'Iron at maximum sole-plate temperature of 150℃', patterns: [/maximum sole-plate temperature of 150℃/i] },
         { value: 1, label: 'Iron at maximum sole-plate temperature of 200℃', patterns: [/maximum sole-plate temperature of 200℃/i] },
       ],
       dryCleaning: [
-        { value: 5, label: FIXED_CARE_SYMBOL_LABELS.dryCleaning, patterns: [/do not dry clean/i, /不可干洗/] },
+        { value: 5, label: 'Do not dry clean', patterns: [/do not dry clean/i, /不可干洗/] },
         { value: 6, label: 'Professional wet cleaning', patterns: [/professional wet cleaning(?!\s*(mild|very mild))/i] },
       ],
     }
@@ -569,16 +752,23 @@
     return Array.isArray(value) ? value.map(textOf).filter(Boolean) : []
   }
 
-  function chooseTemuOption(options, requested, fieldName) {
+  function chooseTemuOption(options, requested, fieldName, sourceLabel = 'param') {
     const values = optionArray(options)
     const wanted = textOf(requested)
-    if (values.length === 0) return { value: wanted, source: 'param_no_temu_options' }
-    if (wanted && values.includes(wanted)) return { value: wanted, source: 'param_exact_temu_option' }
+    if (wanted && values.length === 0) return { value: wanted, source: `${sourceLabel}_no_temu_options` }
+    if (wanted && values.includes(wanted)) return { value: wanted, source: `${sourceLabel}_exact_temu_option` }
+    if (wanted) return { value: wanted, source: `${sourceLabel}_not_in_temu_options` }
     if (values.length === 1) return { value: values[0], source: 'single_temu_option' }
     return {
-      error: `${fieldName} 未命中 TEMU 回读选项，请在参数中填写完全一致的值`,
+      error: `${fieldName} 未命中 TEMU 回读选项，请在导入模板或参数中填写完全一致的值`,
       options: values,
     }
+  }
+
+  function chooseOptionalTemuOption(options, requested, fieldName, sourceLabel = 'param') {
+    const wanted = textOf(requested)
+    if (!wanted) return { value: '', source: `${sourceLabel}_blank_not_filled` }
+    return chooseTemuOption(options, wanted, fieldName, sourceLabel)
   }
 
   function parseSimpleComposition(value, language = 'zh') {
@@ -630,10 +820,36 @@
     }
   }
 
-  function resolvedLabelLength(care) {
-    const temuLength = Number(care?.len || 0)
-    if (!Number.isFinite(temuLength) || temuLength <= 0) return labelLengthMm
-    return Math.max(temuLength, labelLengthMm)
+  function configuredTargetMm(target, keys, spec) {
+    for (const key of keys) {
+      const value = target?.[key]
+      if (value === null || value === undefined || value === '') continue
+      const number = Number(value)
+      if (!Number.isFinite(number) || number < spec.min || number > spec.max) continue
+      return { value: number, source: 'excel' }
+    }
+    return { value: spec.paramDefault(), source: 'param' }
+  }
+
+  function configuredLabelDimensions(target) {
+    return {
+      width: configuredTargetMm(target, ['excelLabelWidthMm', 'labelWidthMm'], LABEL_DIMENSION_SPECS.width),
+      length: configuredTargetMm(target, ['excelLabelLengthMm', 'labelLengthMm'], LABEL_DIMENSION_SPECS.length),
+      padding: configuredTargetMm(target, ['excelLabelPaddingMm', 'labelPaddingMm'], LABEL_DIMENSION_SPECS.padding),
+    }
+  }
+
+  function resolvedLabelDimensions(target) {
+    const dimensions = configuredLabelDimensions(target)
+    return {
+      width: dimensions.width.value,
+      len: dimensions.length.value,
+      padding: dimensions.padding.value,
+      widthSource: dimensions.width.source,
+      lengthSource: dimensions.length.source,
+      paddingSource: dimensions.padding.source,
+      lengthStrategy: dimensions.length.source === 'excel' ? 'excel_configured' : 'param_configured',
+    }
   }
 
   function sanitizeCareInitial(care) {
@@ -675,24 +891,35 @@
     const symbols = parseCareSymbols(target)
     if (symbols.error) return symbols
 
-    const manufacturerName = chooseTemuOption(care?.manufacturerNameOptions, manufacturerNameParam, '制造商名称')
+    const targetManufacturerName = textOf(target?.excelManufacturerName || target?.manufacturerName)
+    const targetManufacturerAddress = textOf(target?.excelManufacturerAddress || target?.manufacturerAddress)
+    const manufacturerNameInput = targetManufacturerName || manufacturerNameParam
+    const manufacturerAddressInput = targetManufacturerAddress || manufacturerAddressParam
+    const manufacturerNameSource = targetManufacturerName ? 'excel' : (manufacturerNameParam ? 'param' : 'blank')
+    const manufacturerAddressSource = targetManufacturerAddress ? 'excel' : (manufacturerAddressParam ? 'param' : 'blank')
+    const manufacturerName = chooseOptionalTemuOption(care?.manufacturerNameOptions, manufacturerNameInput, '制造商名称', manufacturerNameSource)
     if (manufacturerName.error) return manufacturerName
-    const manufacturerAddress = chooseTemuOption(care?.manufacturerAddressOptions, manufacturerAddressParam, '制造商地址')
+    const manufacturerAddress = chooseOptionalTemuOption(care?.manufacturerAddressOptions, manufacturerAddressInput, '制造商地址', manufacturerAddressSource)
     if (manufacturerAddress.error) return manufacturerAddress
-    const productionDate = normalizeDate(productionDateParam)
-    if (!productionDate) return { error: `生产日期格式无效：${productionDateParam}` }
+    const targetProductionDateInput = textOf(target?.excelProductionDate || target?.productionDate)
+    const productionDate = targetProductionDateInput ? normalizeDate(targetProductionDateInput) : normalizeProductionDate(productionDateParam)
+    const productionDateSource = targetProductionDateInput ? 'excel' : 'param'
+    if (!productionDate) return { error: `生产日期格式无效：${targetProductionDateInput || productionDateParam}` }
+    const batchNumberInput = textOf(target?.excelBatchNumber || target?.batchNumber) || batchNumberParam
+    const batchNumberSource = textOf(target?.excelBatchNumber || target?.batchNumber) ? 'excel' : 'param'
 
     const showTrackingLabel = care?.showTrackingLabel !== false
     const ukfr = care?.ukfrInfo || {}
     const materialOverride = buildMaterialOverride(care, target)
+    const labelDimensions = resolvedLabelDimensions(target)
     return {
       payload: {
         productSkuId: Number(target.productSkuId || 0),
         productSkcId: Number(target.productSkcId || 0),
         productId: Number(target.productId || 0),
-        manufacturerName: showTrackingLabel ? manufacturerName.value : void 0,
-        manufacturerAddressPg: manufacturerAddress.value,
-        batchNumber: showTrackingLabel ? batchNumberParam : void 0,
+        manufacturerName: showTrackingLabel && manufacturerName.value ? manufacturerName.value : void 0,
+        manufacturerAddressPg: manufacturerAddress.value || void 0,
+        batchNumber: showTrackingLabel ? batchNumberInput : void 0,
         productionDate: showTrackingLabel ? productionDate : void 0,
         isSkipRisk: false,
         washing: symbols.washing,
@@ -700,10 +927,10 @@
         drying: symbols.drying,
         ironing: symbols.ironing,
         dryCleaning: symbols.dryCleaning,
-        len: resolvedLabelLength(care),
-        width: Number(care?.width || 0) || labelWidthMm,
+        len: labelDimensions.len,
+        width: labelDimensions.width,
         showSize: care?.showSize == null ? void 0 : care.showSize === true,
-        padding: Number(care?.padding || 0) || labelPaddingMm,
+        padding: labelDimensions.padding,
         showLocalSize: care?.showLocalSize == null ? void 0 : care.showLocalSize === true,
         showNonTxtDes: care?.showNonTxtDes === true,
         showToyFireAlarm: care?.showToyFireAlarm === true,
@@ -731,12 +958,17 @@
         manufacturerAddressPg: manufacturerAddress.value,
         manufacturerAddressSource: manufacturerAddress.source,
         productionDate,
-        batchNumber: batchNumberParam,
+        productionDateSource,
+        batchNumber: batchNumberInput,
+        batchNumberSource,
         careSymbols: careSymbolValues(symbols),
-        width: Number(care?.width || 0) || labelWidthMm,
-        len: resolvedLabelLength(care),
-        padding: Number(care?.padding || 0) || labelPaddingMm,
-        lengthStrategy: 'minimum_for_full_qr',
+        width: labelDimensions.width,
+        len: labelDimensions.len,
+        padding: labelDimensions.padding,
+        widthSource: labelDimensions.widthSource,
+        lengthSource: labelDimensions.lengthSource,
+        paddingSource: labelDimensions.paddingSource,
+        lengthStrategy: labelDimensions.lengthStrategy,
         requestedMinimumLen: labelLengthMm,
         careSymbolsMode,
         careSymbolsSource: textOf(symbols.__source),
@@ -917,6 +1149,15 @@
       excelEnglishComposition: textOf(target.excelEnglishComposition),
       excelCompositionSource: textOf(target.excelCompositionSource || target.compositionSource),
       excelProductLine: textOf(target.excelProductLine || target.productLine),
+      excelManufacturerName: textOf(target.excelManufacturerName || target.manufacturerName),
+      excelManufacturerAddress: textOf(target.excelManufacturerAddress || target.manufacturerAddress),
+      excelProductionDate: textOf(target.excelProductionDate || target.productionDate),
+      excelBatchNumber: textOf(target.excelBatchNumber || target.batchNumber),
+      excelLabelWidthMm: Number(target.excelLabelWidthMm || target.labelWidthMm || 0) || null,
+      excelLabelLengthMm: Number(target.excelLabelLengthMm || target.labelLengthMm || 0) || null,
+      excelLabelPaddingMm: Number.isFinite(Number(target.excelLabelPaddingMm ?? target.labelPaddingMm))
+        ? Number(target.excelLabelPaddingMm ?? target.labelPaddingMm)
+        : null,
       scmOrderNo: textOf(target.scmOrderNo),
       scmStatus: textOf(target.scmStatus),
       scmColorCode: compact(target.scmColorCode),
@@ -927,6 +1168,8 @@
       scmHangTagFile: textOf(target.scmHangTagFile),
       scmCareInstructionText: textOf(target.scmCareInstructionText),
       scmCareInstructionSource: textOf(target.scmCareInstructionSource),
+      scmAttachmentRecognitionStatus: textOf(target.scmAttachmentRecognitionStatus),
+      scmAttachmentRecognitionError: textOf(target.scmAttachmentRecognitionError),
     }
   }
 
@@ -938,6 +1181,142 @@
     const targets = excelTargets()
     const index = Math.max(0, Number(shared.currentExcelTargetIndex || 0))
     return shared.excelTarget || targets[index] || {}
+  }
+
+  function targetInputMode(target) {
+    return textOf(target?.inputMode)
+  }
+
+  function isStyleCodeProgressTarget(target) {
+    return targetInputMode(target) === 'style_code'
+  }
+
+  function isSkuProgressTarget(target) {
+    if (!target || isStyleCodeProgressTarget(target)) return false
+    return !!(target.skuNo || target.skuExtCode || target.enterpriseCode)
+  }
+
+  function targetStyleForProgress(target) {
+    return compact(target?.style || target?.excelStyle || target?.skc || target?.skcExtCode)
+  }
+
+  function targetSkuForProgress(target) {
+    return compact(target?.skuNo || target?.skuExtCode || target?.enterpriseCode)
+  }
+
+  function countSkuProgressTargets(targets) {
+    return (Array.isArray(targets) ? targets : []).filter(isSkuProgressTarget).length
+  }
+
+  function progressCount(value, total = 0) {
+    const number = Math.max(0, Math.floor(Number(value || 0)))
+    return total > 0 ? Math.min(number, total) : number
+  }
+
+  function inferStyleProgressTotal(nextShared, targets) {
+    const summary = nextShared?.workflowSummary || {}
+    const fromSummary = Number(summary.selectedStyles || 0)
+    if (Number.isFinite(fromSummary) && fromSummary > 0) return fromSummary
+    return (Array.isArray(targets) ? targets : []).filter(isStyleCodeProgressTarget).length
+  }
+
+  function inferProgressStage(currentTarget, skuTotal) {
+    if (isStyleCodeProgressTarget(currentTarget)) return 'expand_style'
+    if (skuTotal > 0) return 'sku'
+    return 'prepare'
+  }
+
+  function progressStoreText(stage, styleCompleted, styleTotal, skuCompleted, skuTotal) {
+    if (stage === 'finalize') return 'AI洗唛制作 / 汇总完成'
+    if (stage === 'prepare') return 'AI洗唛制作 / 准备表格'
+    if (stage === 'expand_style') {
+      const current = styleTotal > 0 ? Math.min(styleCompleted + 1, styleTotal) : styleCompleted + 1
+      return styleTotal > 0
+        ? `AI洗唛制作 / 展开款号 ${current}/${styleTotal}`
+        : 'AI洗唛制作 / 展开款号'
+    }
+    if (skuTotal > 0) {
+      const current = Math.min(skuCompleted + 1, skuTotal)
+      return `AI洗唛制作 / 制作 SKU ${current}/${skuTotal}`
+    }
+    return 'AI洗唛制作 / 制作 SKU'
+  }
+
+  function withAiWashProgress(nextShared = shared, overrides = {}) {
+    const targets = Array.isArray(nextShared.excelTargets) ? nextShared.excelTargets : []
+    const index = Math.max(0, Number(nextShared.currentExcelTargetIndex || 0))
+    const currentTarget = nextShared.excelTarget || targets[index] || {}
+    const inferredSkuTotal = countSkuProgressTargets(targets)
+    const styleTotal = Math.max(0, Math.floor(Number(
+      overrides.style_total ?? nextShared.style_total ?? inferStyleProgressTotal(nextShared, targets) ?? 0,
+    )))
+    const skuTotal = Math.max(0, Math.floor(Number(
+      overrides.sku_total ?? nextShared.sku_total ?? inferredSkuTotal,
+    )))
+    const styleCompleted = progressCount(
+      overrides.style_completed ?? nextShared.style_completed,
+      styleTotal,
+    )
+    const skuCompleted = progressCount(
+      overrides.sku_completed ?? nextShared.sku_completed,
+      skuTotal,
+    )
+    const stage = textOf(overrides.wash_label_stage) || inferProgressStage(currentTarget, skuTotal)
+    const styleCurrent = compact(overrides.style_current || targetStyleForProgress(currentTarget))
+    const skuCurrent = compact(overrides.sku_current || targetSkuForProgress(currentTarget))
+    const activeTotal = skuTotal > 0 ? skuTotal : styleTotal
+    const activeCurrent = stage === 'finalize'
+      ? activeTotal
+      : skuTotal > 0
+        ? Math.min(skuCompleted + (skuCurrent ? 1 : 0), skuTotal)
+        : styleTotal > 0
+          ? Math.min(styleCompleted + (styleCurrent ? 1 : 0), styleTotal)
+          : 0
+
+    return {
+      ...nextShared,
+      progress_kind: AI_WASH_PROGRESS_KIND,
+      wash_label_stage: stage,
+      style_total: styleTotal,
+      style_completed: styleCompleted,
+      style_current: styleCurrent,
+      sku_total: skuTotal,
+      sku_completed: skuCompleted,
+      sku_current: skuCurrent,
+      sku_skipped: progressCount(overrides.sku_skipped ?? nextShared.sku_skipped),
+      sku_success: progressCount(overrides.sku_success ?? nextShared.sku_success),
+      sku_failed: progressCount(overrides.sku_failed ?? nextShared.sku_failed),
+      wash_label_store: targetStore,
+      total_rows: activeTotal || Number(nextShared.total_rows || 0),
+      current_exec_no: activeCurrent || Number(nextShared.current_exec_no || 0),
+      current_buyer_id: skuCurrent || styleCurrent || nextShared.current_buyer_id || '',
+      current_store: progressStoreText(stage, styleCompleted, styleTotal, skuCompleted, skuTotal),
+    }
+  }
+
+  function styleQueryTarget() {
+    return isStyleCodeProgressTarget(excelTarget())
+  }
+
+  function replaceCurrentExcelTarget(replacements, nextShared = shared) {
+    const targets = excelTargets()
+    const index = Math.max(0, Number(nextShared.currentExcelTargetIndex || 0))
+    const nextTargets = [
+      ...targets.slice(0, index),
+      ...(Array.isArray(replacements) ? replacements : []),
+      ...targets.slice(index + 1),
+    ]
+    const nextIndex = Math.min(index, Math.max(0, nextTargets.length - 1))
+    return {
+      ...nextShared,
+      excelTargets: nextTargets,
+      currentExcelTargetIndex: nextIndex,
+      excelTarget: nextTargets[nextIndex] || null,
+      total_rows: nextTargets.length,
+      current_exec_no: nextTargets.length ? nextIndex + 1 : 0,
+      current_buyer_id: nextTargets[nextIndex]?.skuNo || nextTargets[nextIndex]?.style || '',
+      current_store: targetStore,
+    }
   }
 
   function excelMode() {
@@ -1000,6 +1379,8 @@
       SCM判定结果: String(extra.SCM判定结果 || target?.scmResult || ''),
       SCM判定备注: String(extra.SCM判定备注 || target?.scmRemark || ''),
       SCM洗唛文件: String(extra.SCM洗唛文件 || target?.scmWashFile || ''),
+      SCM洗护说明来源: String(extra.SCM洗护说明来源 || target?.scmCareInstructionSource || ''),
+      SCM附件识别状态: String(extra.SCM附件识别状态 || target?.scmAttachmentRecognitionStatus || rowShared.scmAttachmentRecognitionStatus || ''),
       洗水唛宽度mm: Number(rowShared.carePayloadSummary?.width || rowShared.careLabel?.width || 0),
       洗水唛长度mm: Number(rowShared.carePayloadSummary?.len || rowShared.careLabel?.len || 0),
       上下预留mm: Number(rowShared.carePayloadSummary?.padding || rowShared.careLabel?.padding || 0),
@@ -1049,6 +1430,10 @@
       matchedRowText: '',
       exportModalAttempts: 0,
       exportConfirmAttempts: 0,
+      exportModalCloseAttempts: 0,
+      editDrawerAttempts: 0,
+      editDrawerCloseAttempts: 0,
+      editCompleteExportAttempts: 0,
       officialDownloadPath: '',
       officialDownloadReceived: false,
       officialDownloadError: '',
@@ -1071,6 +1456,15 @@
       excelComposition: textOf(target?.composition || target?.excelComposition),
       excelCompositionSource: textOf(target?.compositionSource || target?.excelCompositionSource),
       excelProductLine: textOf(target?.productLine || target?.excelProductLine),
+      excelManufacturerName: textOf(target?.manufacturerName || target?.excelManufacturerName),
+      excelManufacturerAddress: textOf(target?.manufacturerAddress || target?.excelManufacturerAddress),
+      excelProductionDate: textOf(target?.productionDate || target?.excelProductionDate),
+      excelBatchNumber: textOf(target?.batchNumber || target?.excelBatchNumber),
+      excelLabelWidthMm: Number(target?.labelWidthMm || target?.excelLabelWidthMm || 0) || null,
+      excelLabelLengthMm: Number(target?.labelLengthMm || target?.excelLabelLengthMm || 0) || null,
+      excelLabelPaddingMm: Number.isFinite(Number(target?.labelPaddingMm ?? target?.excelLabelPaddingMm))
+        ? Number(target?.labelPaddingMm ?? target?.excelLabelPaddingMm)
+        : null,
     }
     attached.outputFilename = textOf(target?.outputFilename) || buildOutputFilenameForTarget(attached)
     return attached
@@ -1112,6 +1506,200 @@
     }
     nextTarget.outputFilename = buildOutputFilenameForTarget(nextTarget)
     return nextTarget
+  }
+
+  function scmAttachmentExtension(url) {
+    const clean = textOf(url).split('?')[0]
+    const match = clean.match(/\.([A-Za-z0-9]{1,8})$/)
+    return match ? `.${match[1].toLowerCase()}` : '.pdf'
+  }
+
+  function scmAttachmentFilename(target, evidence) {
+    const row = evidence?.selected || {}
+    const style = inferStyleFromTarget(target) || row.style || 'style'
+    const order = textOf(row.orderNo || 'scm')
+    const color = compact(row.colorCode || '')
+    const ext = scmAttachmentExtension(row.washFileUrl || target?.scmWashFile)
+    return safeFilename(`${style}${color ? `-${color}` : ''}-${order}-wash-attachment${ext}`, `scm-wash-attachment${ext}`)
+  }
+
+  function scmAttachmentHeaders() {
+    return {
+      Referer: SCM_WASH_APPROVAL_REFERER,
+      Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,application/pdf,application/octet-stream,*/*;q=0.8',
+    }
+  }
+
+  function scmAttachmentValidation(url) {
+    const ext = scmAttachmentExtension(url)
+    if (ext === '.pdf') {
+      return {
+        expected_magic: '%PDF-',
+        min_bytes: 1,
+        validate_signature: true,
+      }
+    }
+    return {
+      min_bytes: 1,
+    }
+  }
+
+  function shouldRecognizeScmAttachment(apiRecord, evidence) {
+    if (!scmAttachmentRecognitionEnabled) return false
+    if (careSymbolsMode !== 'scm_or_fixed' && careSymbolsMode !== 'auto') return false
+    const url = textOf(evidence?.selected?.washFileUrl || apiRecord?.scmWashFile)
+    if (!url) return false
+    const mapped = mapCareSymbolsFromScmText(apiRecord)
+    return !!mapped.error
+  }
+
+  function scmWashInstructionCache(nextShared = shared) {
+    const cache = nextShared?.scmWashInstructionByStyle
+    return cache && typeof cache === 'object' && !Array.isArray(cache) ? cache : {}
+  }
+
+  function scmWashInstructionCacheKey(target) {
+    return inferStyleFromTarget(target)
+  }
+
+  function withScmWashInstructionCache(nextShared, target, entry) {
+    const style = scmWashInstructionCacheKey(target)
+    if (!style) return nextShared
+    return {
+      ...nextShared,
+      scmWashInstructionByStyle: {
+        ...scmWashInstructionCache(nextShared),
+        [style]: {
+          style,
+          ok: entry?.ok === true,
+          instructionText: normalizedCareInstructionText(entry?.instructionText || ''),
+          source: textOf(entry?.source || ''),
+          status: textOf(entry?.status || ''),
+          error: textOf(entry?.error || ''),
+          washFile: textOf(entry?.washFile || target?.scmWashFile),
+          attachmentPath: textOf(entry?.attachmentPath || ''),
+        },
+      },
+    }
+  }
+
+  function cachedScmWashInstructionForTarget(target) {
+    const style = scmWashInstructionCacheKey(target)
+    if (!style) return null
+    return scmWashInstructionCache()[style] || null
+  }
+
+  function reuseCachedScmWashInstructionAction(target, evidence) {
+    const cached = cachedScmWashInstructionForTarget(target)
+    if (!cached) return null
+    const instructionText = normalizedCareInstructionText(cached.instructionText || '')
+    if (cached.ok && instructionText) {
+      return nextPhase('api_care_query', 100, {
+        ...shared,
+        apiTarget: {
+          ...target,
+          scmCareInstructionText: instructionText,
+          scmCareInstructionSource: textOf(cached.source || 'scm_wash_attachment_ai_ocr'),
+          scmAttachmentRecognitionStatus: 'recognized_reused',
+          scmAttachmentRecognitionError: '',
+        },
+        scmLookupAttempts: 0,
+        scmLookupStatus: 'SCM查询成功，复用同款洗唛附件识别结果',
+        scmAttachmentRecognitionStatus: 'recognized_reused',
+        scmAttachmentRecognitionError: '',
+        scmRows: evidence?.rows || [],
+        scmSelectedRow: evidence?.selected || null,
+      })
+    }
+    const reason = textOf(cached.error || '同款洗唛附件未识别到完整洗护说明')
+    return nextPhase('api_care_query', 100, {
+      ...shared,
+      apiTarget: {
+        ...target,
+        scmAttachmentRecognitionStatus: 'recognition_skipped_same_style_failed',
+        scmAttachmentRecognitionError: reason,
+      },
+      scmLookupAttempts: 0,
+      scmLookupStatus: 'SCM同款洗唛附件已尝试识别失败，使用固定洗护符号',
+      scmAttachmentRecognitionStatus: 'recognition_skipped_same_style_failed',
+      scmAttachmentRecognitionError: reason,
+      scmRows: evidence?.rows || [],
+      scmSelectedRow: evidence?.selected || null,
+    })
+  }
+
+  function scmAttachmentDownloadAction(apiRecord, evidence) {
+    const row = evidence.selected || {}
+    const url = textOf(row.washFileUrl || apiRecord.scmWashFile)
+    const filename = scmAttachmentFilename(apiRecord, evidence)
+    const validation = scmAttachmentValidation(url)
+    return {
+      success: true,
+      data: [],
+      meta: {
+        action: 'download_urls',
+        items: [{
+          url,
+          filename,
+          label: `SCM洗唛附件 ${inferStyleFromTarget(apiRecord) || ''}`,
+          headers: scmAttachmentHeaders(),
+          no_proxy: true,
+          ...validation,
+          target_relative_path: `scm-wash-attachments/${filename}`,
+          retry_attempts: 2,
+          retry_delay_ms: 500,
+          timeout_seconds: timeoutSeconds,
+        }],
+        strict: false,
+        shared_key: 'scmAttachmentDownload',
+        next_phase: 'verify_scm_attachment_download',
+        sleep_ms: 100,
+        shared: {
+          ...shared,
+          apiTarget: apiRecord,
+          scmSelectedRow: evidence.selected,
+          scmRows: evidence.rows,
+          scmLookupAttempts: 0,
+          scmLookupStatus: 'SCM查询成功，准备下载洗唛附件识别洗护说明',
+          scmAttachmentRecognitionStatus: 'download_pending',
+        },
+      },
+    }
+  }
+
+  function bestDownloadPath(downloadResult) {
+    const items = Array.isArray(downloadResult?.items) ? downloadResult.items : []
+    return items.find(item => item?.success && item?.path) || null
+  }
+
+  function recognizeScmAttachmentAction(target, item) {
+    return {
+      success: true,
+      data: [],
+      meta: {
+        action: 'recognize_wash_care_media',
+        items: [{
+          path: textOf(item.path),
+          filename: textOf(item.filename),
+          label: textOf(item.label || 'SCM洗唛附件'),
+          source_url: textOf(item.url),
+          style: inferStyleFromTarget(target),
+          order_no: textOf(target.scmOrderNo),
+        }],
+        model_id: aiWashInstructionModelId,
+        fallback_model_ids: splitListText(aiWashInstructionFallbackModels),
+        shared_key: 'scmAttachmentRecognition',
+        next_phase: 'verify_scm_attachment_recognition',
+        sleep_ms: 100,
+        shared: {
+          ...shared,
+          apiTarget: target,
+          scmAttachmentPath: textOf(item.path),
+          scmAttachmentRecognitionStatus: 'recognizing',
+          scmLookupStatus: 'SCM洗唛附件已下载，正在识别洗护说明',
+        },
+      },
+    }
   }
 
   function nextPhaseAfterTemuLookup(apiRecord, nextShared) {
@@ -1170,6 +1758,28 @@
       total: Number(payload.total || 0),
       records: pageItems.map(normalizeApiRecord),
     }
+  }
+
+  async function queryApiRecordsByStyle(style) {
+    const styleCode = compact(style)
+    const records = []
+    let total = 0
+    let page = 1
+    let totalPages = 1
+    while (page <= totalPages && page <= 100) {
+      const response = await pagePost('/visage-agent-seller/labelcode/pageQuery', {
+        page,
+        pageSize: API_PAGE_SIZE,
+        skcExtCodes: [styleCode],
+      })
+      const payload = responseData(response)
+      const pageItems = Array.isArray(payload.pageItems) ? payload.pageItems : []
+      total = Math.max(total, Number(payload.total || 0))
+      totalPages = Math.max(1, Math.ceil(total / API_PAGE_SIZE))
+      records.push(...pageItems.map(normalizeApiRecord).filter(record => record.skcExtCode === styleCode))
+      page += 1
+    }
+    return { total, records }
   }
 
   function targetStoreSection(modal) {
@@ -1257,20 +1867,100 @@
       const rowText = textOf(row)
       if (!rowText.includes('已制作') || !rowText.includes('洗水唛')) return false
       return [...row.querySelectorAll('a,button,[role="button"]')]
-        .some(action => textOf(action) === '导出')
+        .some(action => textOf(action) === '编辑')
     })
     return rows.length === 1 ? rows[0] : null
   }
 
-  function exportAction(row) {
-    return [...row.querySelectorAll('a,button,[role="button"]')]
-      .find(action => visible(action) && textOf(action) === '导出') || null
+  function washLabelAction(row, actionText) {
+    const actions = [...row.querySelectorAll('a,button,[role="button"]')]
+      .filter(action => visible(action) && textOf(action) === actionText)
+    if (!actions.length) return null
+    const scoped = actions.find(action => {
+      let parent = action.parentElement
+      for (let depth = 0; parent && depth < 5; depth += 1, parent = parent.parentElement) {
+        const parentText = textOf(parent)
+        if (parentText.includes('商品合规标签')) return false
+        if (parentText.includes('洗水唛')) return true
+      }
+      return false
+    })
+    return scoped || actions[0]
+  }
+
+  function editWashLabelAction(row) {
+    return washLabelAction(row, '编辑')
+  }
+
+  function washLabelEditDrawer() {
+    const drawers = [...document.querySelectorAll('[class*="Drawer_visible"], [class*="Drawer_content"], [class*="drawer-body"], [class*="edit-modal_container"]')]
+      .filter(visible)
+      .filter(drawer => {
+        const drawerText = textOf(drawer)
+        return drawerText.includes('修改洗水唛') && drawerText.includes('完成并导出')
+      })
+    return drawers.length ? drawers[drawers.length - 1] : null
+  }
+
+  function closeWashLabelEditDrawerIfPresent(nextPhaseName, nextShared = shared, data = [], sleepMs = 300) {
+    const drawer = washLabelEditDrawer()
+    if (!drawer) return null
+    const attempts = Number(nextShared.editDrawerCloseAttempts || 0)
+    if (attempts >= 3) return fail('洗水唛编辑窗口关闭失败，已停止以避免复用旧预览')
+    const cancel = [...drawer.querySelectorAll('button')]
+      .find(candidate => visible(candidate) && textOf(candidate) === '取消')
+    const close = [...drawer.querySelectorAll('button,[role="button"],span')]
+      .find(candidate => visible(candidate) && ['关闭', 'Close', '×'].includes(textOf(candidate)))
+    const action = cancel || close
+    if (action?.click) action.click()
+    return nextPhase(nextPhaseName, sleepMs, {
+      ...nextShared,
+      editDrawerCloseAttempts: attempts + 1,
+    }, data)
+  }
+
+  function completeAndExportButton() {
+    const drawer = washLabelEditDrawer()
+    if (!drawer) return null
+    return [...drawer.querySelectorAll('button')]
+      .find(candidate => visible(candidate) && textOf(candidate) === '完成并导出') || null
   }
 
   function exportModal() {
-    return [...document.querySelectorAll('[data-testid="beast-core-modal"]')]
+    const modals = [...document.querySelectorAll('[data-testid="beast-core-modal"]')]
       .filter(visible)
-      .find(modal => textOf(modal).includes('确认导出吗？')) || null
+      .filter(modal => textOf(modal).includes('确认导出吗？'))
+    return modals.length ? modals[modals.length - 1] : null
+  }
+
+  function closeExportModalIfPresent(nextPhaseName, nextShared = shared, data = [], sleepMs = 300) {
+    const modals = [...document.querySelectorAll('[data-testid="beast-core-modal"]')]
+      .filter(visible)
+      .filter(modal => textOf(modal).includes('确认导出吗？'))
+    if (!modals.length) return null
+    const attempts = Number(nextShared.exportModalCloseAttempts || 0)
+    if (attempts >= 3) return fail('导出弹窗关闭失败，已停止以避免复用旧预览')
+    let clicked = 0
+    for (const modal of modals.reverse()) {
+      const cancel = [...modal.querySelectorAll('button')]
+        .find(candidate => visible(candidate) && textOf(candidate) === '取消')
+      if (!cancel) continue
+      cancel.click?.()
+      clicked += 1
+    }
+    if (clicked) {
+      return nextPhase(nextPhaseName, sleepMs, {
+        ...nextShared,
+        exportModalCloseAttempts: attempts + 1,
+      }, data)
+    }
+    if (attempts < 3) {
+      return nextPhase(nextPhaseName, sleepMs, {
+        ...nextShared,
+        exportModalCloseAttempts: attempts + 1,
+      }, data)
+    }
+    return null
   }
 
   function exportFormatLabel(modal, labelText) {
@@ -1759,15 +2449,15 @@
   }
 
   if (phase === 'excel_prepare') {
-    const workflow = buildEnterpriseCodeWorkflow() || buildWorkbookWorkflow()
+    const workflow = buildWorkbookWorkflow() || buildDirectInputWorkflow()
     if (!workflow) {
       return complete([
-        resultRow('input_required', '制作链路必须填写企业码，或上传「洗唛需求」Excel 后按 SKC 选择代表 SKU', {
+        resultRow('input_required', '制作链路必须填写款号/SKC、企业码，或上传「洗唛需求」Excel 后按 SKC 选择代表 SKU', {
           temuRowStatus: '缺少输入',
         }, {}),
       ], {
         ...shared,
-        workbookError: 'enterprise_codes or input_file required',
+        workbookError: 'style_codes, enterprise_codes or input_file required',
       })
     }
     if (workflow.error) {
@@ -1782,7 +2472,7 @@
     }
     let targets = workflow.excelTargets || []
     if (maxDownloads > 0) targets = targets.slice(0, maxDownloads)
-    const nextShared = {
+    const nextShared = withAiWashProgress({
       ...shared,
       workflowMode: workflow.mode || 'excel_representative_skc_create_and_download',
       workflowSummary: workflow.summary,
@@ -1791,13 +2481,19 @@
       excelTarget: targets[0] || null,
       apiMadeWashLabelCount: 0,
       apiPendingWashLabelCount: 0,
-      scanTotalRecords: workflow.summary?.selectedRows || workflow.summary?.selectedEnterpriseCodes || 0,
+      scanTotalRecords: workflow.summary?.selectedRows || workflow.summary?.selectedTargets || workflow.summary?.selectedEnterpriseCodes || 0,
       total_rows: targets.length,
       current_exec_no: targets.length ? 1 : 0,
       current_row_no: 0,
       current_buyer_id: targets[0]?.skuNo || '',
       current_store: targetStore,
-    }
+    }, {
+      style_total: workflow.summary?.selectedStyles || targets.filter(isStyleCodeProgressTarget).length,
+      style_completed: 0,
+      sku_total: countSkuProgressTargets(targets),
+      sku_completed: 0,
+      wash_label_stage: targets[0]?.inputMode === 'style_code' ? 'expand_style' : 'sku',
+    })
     if (!targets.length) {
       return complete([
         resultRow('input_no_targets', '未得到可处理目标，请检查企业码、款号筛选或表格内容', {
@@ -1811,6 +2507,99 @@
 
   if (phase === 'api_lookup_excel_target') {
     const target = excelTarget()
+    if (target.status && target.status !== 'ready') {
+      return nextPhase('advance_excel_target', 100, {
+        ...shared,
+        temuRowStatus: target.status === 'needs_scm' ? '待SCM补充' : 'Excel异常',
+      }, [
+        resultRow(target.status === 'needs_scm' ? 'needs_scm' : 'excel_exception', target.reason || 'Excel 目标未达到可制作条件', {
+          temuRowStatus: target.status === 'needs_scm' ? '待SCM补充' : 'Excel异常',
+        }, target),
+      ])
+    }
+    if (styleQueryTarget()) {
+      const style = compact(target.style || target.skc)
+      try {
+        const { total, records } = await queryApiRecordsByStyle(style)
+        const derivedTargets = []
+        const skippedRows = []
+        for (const record of records) {
+          const attached = attachExcelTarget(record, {
+            ...target,
+            inputMode: 'style_sku',
+            style,
+            skc: record.skcExtCode,
+            skuCode: record.skcExtCode,
+            skuNo: record.skuExtCode,
+            enterpriseCode: record.skuExtCode,
+            sizeCount: records.length,
+            status: 'ready',
+          })
+          if (isCareLabelRequired(record)) {
+            derivedTargets.push(attached)
+          } else {
+            skippedRows.push(resultRow('print_only_skipped', 'TEMU 该 SKU 仅显示打印/合规标签，未出现洗水唛制作入口；按 SOP 跳过并记录。', {
+              temuRowStatus: '仅打印无制作',
+              source: 'temu_pagequery_skc',
+              TEMU匹配记录数: records.length,
+              TEMU标签类型: record.labelType,
+              TEMU洗水唛状态: record.cosmeticLabelStatus,
+              TEMU需要洗水唛: record.needCosmeticLabel,
+            }, attached, { ...shared, apiTarget: attached, apiValidated: true }))
+          }
+        }
+        const replacedShared = withAiWashProgress(replaceCurrentExcelTarget(derivedTargets, {
+          ...shared,
+          apiValidated: true,
+          styleQueryTotal: total,
+          styleQueryMatchedRecords: records.length,
+          styleQueryDerivedTargets: derivedTargets.length,
+          styleQuerySkippedRows: skippedRows.length,
+          temuRowStatus: derivedTargets.length ? '款号已展开到SKU' : '款号无可制作SKU',
+        }), {
+          style_total: Number(shared.style_total || 0)
+            || Number(shared.workflowSummary?.selectedStyles || 0)
+            || Number(shared.style_completed || 0) + 1,
+          style_completed: Number(shared.style_completed || 0) + 1,
+          sku_total: Number(shared.sku_total || 0) + derivedTargets.length,
+          sku_skipped: Number(shared.sku_skipped || 0) + skippedRows.length,
+          wash_label_stage: derivedTargets.length ? 'sku' : 'expand_style',
+        })
+        if (!records.length) {
+          const row = resultRow('style_not_found', `TEMU 未查询到款号/SKC：${style}`, {
+            temuRowStatus: 'TEMU未找到款号',
+            source: 'temu_pagequery_skc',
+          }, target, { ...shared, apiTarget: target, apiValidated: true })
+          if (!replacedShared.excelTargets.length) return complete([row], replacedShared)
+          return nextPhase('api_lookup_excel_target', 100, resetTargetState(replacedShared), [row])
+        }
+        if (!derivedTargets.length) {
+          if (!replacedShared.excelTargets.length) return complete(skippedRows, replacedShared)
+          return nextPhase('api_lookup_excel_target', 100, resetTargetState(replacedShared), skippedRows)
+        }
+        return nextPhase('api_lookup_excel_target', 100, resetTargetState(replacedShared), skippedRows)
+      } catch (error) {
+        const attempts = Number(shared.styleLookupAttempts || 0)
+        if (attempts < 2) {
+          return nextPhase('api_lookup_excel_target', 600, {
+            ...shared,
+            styleLookupAttempts: attempts + 1,
+            styleLookupLastError: safeApiError(error),
+          })
+        }
+        return nextPhase('advance_excel_target', 100, {
+          ...shared,
+          styleLookupAttempts: 0,
+          styleLookupLastError: safeApiError(error),
+          temuRowStatus: 'TEMU款号查询失败',
+        }, [
+          resultRow('style_lookup_failed', 'TEMU 页面 API 查询款号/SKC 失败', {
+            temuRowStatus: 'TEMU款号查询失败',
+            API错误: safeApiError(error),
+          }, target),
+        ])
+      }
+    }
     if (!target || !target.skuNo) {
       return nextPhase('advance_excel_target', 100, {
         ...shared,
@@ -2016,6 +2805,11 @@
       })
     }
     const apiRecord = attachScmEvidence(target, evidence)
+    if (shouldRecognizeScmAttachment(apiRecord, evidence)) {
+      const cachedAction = reuseCachedScmWashInstructionAction(apiRecord, evidence)
+      if (cachedAction) return cachedAction
+      return scmAttachmentDownloadAction(apiRecord, evidence)
+    }
     return nextPhase('api_care_query', 150, {
       ...shared,
       apiTarget: apiRecord,
@@ -2024,6 +2818,87 @@
       scmRows: evidence.rows,
       scmSelectedRow: evidence.selected,
     })
+  }
+
+  if (phase === 'verify_scm_attachment_download') {
+    const target = apiTarget()
+    const item = bestDownloadPath(shared.scmAttachmentDownload || {})
+    if (!item) {
+      const items = Array.isArray(shared.scmAttachmentDownload?.items) ? shared.scmAttachmentDownload.items : []
+      const reason = textOf(items.find(candidate => candidate?.error)?.error || shared.scmAttachmentDownload?.error || 'SCM洗唛附件下载失败')
+      const nextShared = withScmWashInstructionCache({
+        ...shared,
+        apiTarget: {
+          ...target,
+          scmAttachmentRecognitionStatus: 'download_failed',
+          scmAttachmentRecognitionError: reason,
+        },
+        scmAttachmentRecognitionStatus: 'download_failed',
+        scmAttachmentRecognitionError: reason,
+        scmLookupStatus: 'SCM洗唛附件下载失败，使用固定洗护符号',
+      }, target, {
+        ok: false,
+        status: 'download_failed',
+        error: reason,
+        source: 'scm_wash_attachment_download',
+        washFile: target.scmWashFile,
+      })
+      return nextPhase('api_care_query', 100, nextShared)
+    }
+    return recognizeScmAttachmentAction(target, item)
+  }
+
+  if (phase === 'verify_scm_attachment_recognition') {
+    const target = apiTarget()
+    const recognition = shared.scmAttachmentRecognition || {}
+    const instructionText = normalizedCareInstructionText(
+      recognition.instructionText
+      || recognition.careInstructionText
+      || recognition.washCareInstruction
+      || '',
+    )
+    if (recognition?.ok && instructionText) {
+      const source = textOf(recognition.source || 'scm_wash_attachment_ai_ocr')
+      const nextShared = withScmWashInstructionCache({
+        ...shared,
+        apiTarget: {
+          ...target,
+          scmCareInstructionText: instructionText,
+          scmCareInstructionSource: source,
+          scmAttachmentRecognitionStatus: 'recognized',
+        },
+        scmAttachmentRecognitionStatus: 'recognized',
+        scmLookupStatus: 'SCM查询成功，洗唛附件识别成功',
+      }, target, {
+        ok: true,
+        instructionText,
+        source,
+        status: 'recognized',
+        washFile: target.scmWashFile,
+        attachmentPath: shared.scmAttachmentPath,
+      })
+      return nextPhase('api_care_query', 150, nextShared)
+    }
+    const reason = textOf(recognition.error || 'SCM洗唛附件未识别到完整洗护说明')
+    const nextShared = withScmWashInstructionCache({
+      ...shared,
+      apiTarget: {
+        ...target,
+        scmAttachmentRecognitionStatus: 'recognition_failed',
+        scmAttachmentRecognitionError: reason,
+      },
+      scmAttachmentRecognitionStatus: 'recognition_failed',
+      scmAttachmentRecognitionError: reason,
+      scmLookupStatus: 'SCM洗唛附件识别失败，使用固定洗护符号',
+    }, target, {
+      ok: false,
+      status: 'recognition_failed',
+      error: reason,
+      source: textOf(recognition.source || 'scm_wash_attachment_ai_ocr'),
+      washFile: target.scmWashFile,
+      attachmentPath: shared.scmAttachmentPath,
+    })
+    return nextPhase('api_care_query', 100, nextShared)
   }
 
   if (phase === 'api_care_query') {
@@ -2307,6 +3182,11 @@
   }
 
   if (phase === 'prepare_search') {
+    const closeModal = closeExportModalIfPresent('prepare_search')
+    if (closeModal) return closeModal
+    const closeDrawer = closeWashLabelEditDrawerIfPresent('prepare_search')
+    if (closeDrawer) return closeDrawer
+
     const target = apiTarget()
     const input = findSkuSearchInput()
     const queryButton = findQueryButton()
@@ -2346,17 +3226,18 @@
     }
     const targetRow = madeWashLabelRow()
     if (targetRow) {
-      const action = exportAction(targetRow)
+      const action = editWashLabelAction(targetRow)
       if (!action) {
-        return continueAfterFailure('已制作洗水唛行缺少导出按钮', {
-          temuRowStatus: '导出按钮缺失',
+        return continueAfterFailure('已制作洗水唛行缺少编辑按钮', {
+          temuRowStatus: '编辑按钮缺失',
         })
       }
       action.click?.()
-      return nextPhase('prepare_export', 600, {
+      return nextPhase('prepare_edit_export', 700, {
         ...shared,
         temuRowStatus: '已制作',
         matchedRowText: textOf(targetRow),
+        exportSource: 'wash_label_edit_complete_export',
       })
     }
 
@@ -2386,6 +3267,42 @@
     return nextPhase('verify_search', 700, {
       ...shared,
       searchAttempts: attempts + 1,
+    })
+  }
+
+  if (phase === 'prepare_edit_export') {
+    const button = completeAndExportButton()
+    if (!button) {
+      const attempts = Number(shared.editDrawerAttempts || 0)
+      if (attempts >= 12) {
+        return continueAfterFailure('点击编辑后未出现“修改洗水唛”窗口或“完成并导出”按钮', {
+          temuRowStatus: '编辑窗口缺失',
+        })
+      }
+      return nextPhase('prepare_edit_export', 500, {
+        ...shared,
+        editDrawerAttempts: attempts + 1,
+      })
+    }
+    if (button.disabled) {
+      const attempts = Number(shared.editCompleteExportAttempts || 0)
+      if (attempts >= 40) {
+        return continueAfterFailure('洗水唛编辑窗口“完成并导出”按钮持续未启用，未执行导出', {
+          temuRowStatus: '完成并导出未启用',
+        })
+      }
+      return nextPhase('prepare_edit_export', 500, {
+        ...shared,
+        editCompleteExportAttempts: attempts + 1,
+      })
+    }
+    button.click?.()
+    return nextPhase('prepare_export', 800, {
+      ...shared,
+      editDrawerAttempts: 0,
+      editCompleteExportAttempts: 0,
+      exportSource: 'wash_label_edit_complete_export',
+      temuRowStatus: '已从编辑窗口触发完成并导出',
     })
   }
 
@@ -2438,6 +3355,7 @@
               items: [{
                 label: `TEMU 官方洗水唛 PDF ${target.excelSkuCode || target.skcExtCode}-${target.excelSkuNo || target.skuExtCode}`,
                 filename: target.outputFilename,
+                target_dir: outputDir,
                 clicks: [],
                 page_blob_expression: temuPdfUrlBlobExpression(),
                 expected_name_regex: '.+\\.pdf$',
@@ -2477,6 +3395,7 @@
         items: [{
           label: `TEMU 官方洗水唛 PDF ${target.skcExtCode}-${target.skuExtCode}`,
           filename: target.outputFilename,
+          target_dir: outputDir,
           clicks: [click],
           expected_name_regex: '.+\\.pdf$',
           expected_magic: '%PDF-',
@@ -2495,6 +3414,11 @@
   }
 
   if (phase === 'verify_download') {
+    const closeModal = closeExportModalIfPresent('verify_download')
+    if (closeModal) return closeModal
+    const closeDrawer = closeWashLabelEditDrawerIfPresent('verify_download')
+    if (closeDrawer) return closeDrawer
+
     const downloadResult = shared.downloadResult || {}
     const item = bestDownloadItem(downloadResult)
     if (item?.success && item.path) {
@@ -2509,6 +3433,7 @@
           signatureValidated: item.signatureValidated !== false,
           匹配方式: String(item.matchedBy || ''),
           浏览器下载控制: String(item.browserDownloadControl?.method || ''),
+          导出触发来源: String(shared.exportSource || ''),
         }),
       ])
     }
@@ -2528,15 +3453,23 @@
 
   if (phase === 'advance_excel_target') {
     const targets = excelTargets()
+    const currentIndex = Math.max(0, Number(shared.currentExcelTargetIndex || 0))
+    const currentTarget = targets[currentIndex] || shared.excelTarget || {}
     const nextIndex = Number(shared.currentExcelTargetIndex || 0) + 1
+    const nextStyleCompleted = Number(shared.style_completed || 0) + (isStyleCodeProgressTarget(currentTarget) ? 1 : 0)
+    const nextSkuCompleted = Number(shared.sku_completed || 0) + (isSkuProgressTarget(currentTarget) ? 1 : 0)
     if (nextIndex >= targets.length) {
-      return complete([], {
+      return complete([], withAiWashProgress({
         ...shared,
         batchCompleted: true,
         completedTargetCount: targets.length,
-      })
+      }, {
+        style_completed: nextStyleCompleted,
+        sku_completed: nextSkuCompleted,
+        wash_label_stage: 'finalize',
+      }))
     }
-    return nextPhase('api_lookup_excel_target', 150, resetTargetState({
+    return nextPhase('api_lookup_excel_target', 150, withAiWashProgress(resetTargetState({
       ...shared,
       currentExcelTargetIndex: nextIndex,
       excelTarget: targets[nextIndex],
@@ -2546,6 +3479,9 @@
       apiTarget: null,
       excelLookupAttempts: 0,
       excelLookupLastError: '',
+    }), {
+      style_completed: nextStyleCompleted,
+      sku_completed: nextSkuCompleted,
     }))
   }
 

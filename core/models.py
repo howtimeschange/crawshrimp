@@ -121,6 +121,7 @@ class TaskDefinition(BaseModel):
     name: str
     description: Optional[str] = None
     script: str
+    hidden: bool = False            # GUI 可选：隐藏入口；后端仍可按 task id 运行兼容任务
     param_probe_script: Optional[str] = None  # 可选：运行前动态探测参数选项/默认值
     execution_ui_mode: Optional[str] = None  # 可选：precheck_before_live 等前端执行交互模式
     validation_only_label: Optional[str] = None  # 可选：仅校验按钮文案

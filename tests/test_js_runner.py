@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.js_runner import JSRunner, RunAbortedError
+from core.js_runner import JSRunner, RunAbortedError, _encode_request_url
 from core.models import JSResult
 
 
@@ -745,6 +745,76 @@ class RuntimeScreenshotRunner(JSRunner):
         }
 
 
+class RuntimeWashCareRecognitionRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+        self.recognition_payloads = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
+
+        self.calls.append({
+            "phase": phase,
+            "shared": shared,
+        })
+
+        if phase == "main":
+            return JSResult(
+                success=True,
+                data=[],
+                meta={
+                    "action": "recognize_wash_care_media",
+                    "items": [{
+                        "path": "/tmp/scm-label.png",
+                        "label": "SCM洗唛附件",
+                    }],
+                    "model_id": "qwen3.8-max-preview",
+                    "fallback_model_ids": ["gpt-5.6-terra"],
+                    "shared_key": "wash_recognition",
+                    "next_phase": "after_recognition",
+                    "shared": shared or {},
+                },
+            )
+
+        return JSResult(
+            success=True,
+            data=[shared or {}],
+            meta={
+                "action": "complete",
+                "has_more": False,
+                "shared": shared or {},
+            },
+        )
+
+    async def recognize_wash_care_media(self, items, *, model_id: str = "", fallback_model_ids=None):
+        self.recognition_payloads.append({
+            "items": items,
+            "model_id": model_id,
+            "fallback_model_ids": fallback_model_ids or [],
+        })
+        return {
+            "ok": True,
+            "source": "scm_wash_attachment_multimodal",
+            "instructionText": "手洗，不可漂白，悬挂晾晒，可熨烫，不可干洗",
+        }
+
+
 class RuntimeFileChooserRunner(JSRunner):
     def __init__(self):
         super().__init__("ws://example.invalid")
@@ -874,6 +944,14 @@ class FakeCDPWebSocket:
 
 
 class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_encode_request_url_percent_encodes_non_ascii_path(self):
+        encoded = _encode_request_url("https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/洗唛1776744450203_175.jpg")
+
+        self.assertEqual(
+            encoded,
+            "https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/%E6%B4%97%E5%94%9B1776744450203_175.jpg",
+        )
+
     async def test_run_script_file_carries_shared_across_pages(self):
         runner = SharedCarryRunner()
 
@@ -1307,6 +1385,35 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertEqual(bridge.closed, ["temp-1"])
 
+    async def test_download_url_item_rejects_invalid_expected_magic(self):
+        runner = JSRunner("ws://example.invalid")
+
+        def fake_download(url, target_path, headers=None, timeout=60, no_proxy=False, progress_callback=None, deadline=None):
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(b"<!doctype html>")
+            return {
+                "success": True,
+                "path": str(target_path),
+                "finalUrl": url,
+                "contentType": "text/html",
+                "bytes": target_path.stat().st_size,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner.artifact_dir = Path(tmpdir)
+            runner._download_url_sync = fake_download
+            result = await runner._download_url_item({
+                "url": "https://example.test/label.pdf",
+                "filename": "label.pdf",
+                "expected_magic": "%PDF-",
+                "min_bytes": 1,
+            })
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "下载文件签名不匹配")
+        self.assertEqual(result["expectedMagic"], "%PDF-")
+        self.assertNotIn(str(Path(tmpdir) / "label.pdf"), runner.runtime_output_files)
+
     async def test_run_script_file_handles_runtime_url_capture_action(self):
         runner = RuntimeUrlCaptureRunner()
 
@@ -1506,6 +1613,25 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runner.runtime_output_files), 1)
         self.assertEqual(Path(runner.runtime_output_files[0]).name, "demo-member-page.png")
 
+    async def test_run_script_file_handles_runtime_wash_care_recognition_action(self):
+        runner = RuntimeWashCareRecognitionRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(len(data), 1)
+        self.assertEqual(len(runner.recognition_payloads), 1)
+        self.assertEqual(runner.recognition_payloads[0]["items"][0]["path"], "/tmp/scm-label.png")
+        self.assertEqual(runner.recognition_payloads[0]["model_id"], "qwen3.8-max-preview")
+        self.assertEqual(runner.recognition_payloads[0]["fallback_model_ids"], ["gpt-5.6-terra"])
+        self.assertIn("wash_recognition", runner.calls[1]["shared"])
+        self.assertEqual(
+            runner.calls[1]["shared"]["wash_recognition"]["instructionText"],
+            "手洗，不可漂白，悬挂晾晒，可熨烫，不可干洗",
+        )
+
     async def test_run_script_file_handles_runtime_file_chooser_upload_action(self):
         runner = RuntimeFileChooserRunner()
 
@@ -1615,11 +1741,13 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = ControlledPdfRunner(tmpdir)
+            output_dir = Path(tmpdir) / "selected-output"
             result = await runner.download_clicks([{
                 "clicks": [{"x": 12, "y": 34}],
                 "filename": "20922511720810101110-9950019805206.pdf",
                 "label": "TEMU official PDF",
                 "source": "temu_official_download",
+                "target_dir": str(output_dir),
                 "timeout_ms": 1500,
             }])
 
@@ -1630,6 +1758,8 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(item["source"], "temu_official_download")
             self.assertTrue(item["browserDownloadControl"]["configured"])
             self.assertEqual(Path(item["path"]).read_bytes()[:5], b"%PDF-")
+            self.assertEqual(Path(item["path"]).parent, output_dir)
+            self.assertEqual(item["targetDir"], str(output_dir))
             self.assertTrue(runner.restored)
 
     async def test_download_clicks_can_save_pdf_from_captured_blob_anchor(self):
@@ -1740,12 +1870,14 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = PageBlobRunner(tmpdir)
+            output_dir = Path(tmpdir) / "page-blob-output"
             result = await runner.download_clicks([{
                 "clicks": [],
                 "filename": "from-page-blob.pdf",
                 "label": "TEMU modal pdfUrl",
                 "source": "temu_official_download",
                 "expected_magic": "%PDF-",
+                "target_dir": str(output_dir),
                 "page_blob_expression": "(() => ({success: true, data: [{}]}))()",
             }])
 
@@ -1755,6 +1887,8 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(item["pageBlob"]["type"], "application/pdf")
             self.assertTrue(item["signatureValidated"])
             self.assertEqual(Path(item["path"]).name, "from-page-blob.pdf")
+            self.assertEqual(Path(item["path"]).parent, output_dir)
+            self.assertEqual(item["targetDir"], str(output_dir))
             self.assertEqual(Path(item["path"]).read_bytes()[:5], b"%PDF-")
 
     async def test_download_clicks_rejects_html_saved_with_pdf_extension(self):

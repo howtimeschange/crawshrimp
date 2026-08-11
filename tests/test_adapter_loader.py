@@ -99,6 +99,26 @@ class AdapterLoaderTests(unittest.TestCase):
             self.assertTrue(param.hidden)
             self.assertTrue(param.model_dump()["hidden"])
 
+    def test_manifest_task_hidden_flag_is_preserved(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            src_root = Path(self.tmpdir.name) / "src"
+            src_root.mkdir(parents=True, exist_ok=True)
+            adapter_dir = _write_adapter(src_root, adapter_id="hidden-task-adapter")
+            manifest_path = adapter_dir / "manifest.yaml"
+            manifest_path.write_text(
+                manifest_path.read_text(encoding="utf-8").replace(
+                    "    script: demo.js",
+                    "    script: demo.js\n    hidden: true",
+                ),
+                encoding="utf-8",
+            )
+
+            manifest = adapter_loader.install_from_dir(str(adapter_dir), install_mode="copy")
+            task = manifest.tasks[0]
+
+            self.assertTrue(task.hidden)
+            self.assertTrue(task.model_dump()["hidden"])
+
     def test_install_from_dir_link_keeps_source_and_lists_mode(self):
         with unittest.mock.patch.dict(os.environ, self.env, clear=False):
             src_root = Path(self.tmpdir.name) / "src"

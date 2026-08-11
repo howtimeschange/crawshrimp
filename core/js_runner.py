@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, List, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, build_opener, urlopen, ProxyHandler
 
 import websockets
@@ -36,6 +36,221 @@ NAVIGATION_ERROR_MARKERS = (
     "Promise was collected",
     "Execution context was destroyed",
 )
+WASH_CARE_FIELDS = ("washing", "bleaching", "drying", "ironing", "dryCleaning")
+WASH_CARE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+
+
+def _encode_request_url(url: str) -> str:
+    raw_url = str(url or "")
+    try:
+        parts = urlsplit(raw_url)
+    except Exception:
+        return raw_url
+    if not parts.scheme or not parts.netloc:
+        return raw_url
+    try:
+        netloc = parts.netloc.encode("idna").decode("ascii")
+    except Exception:
+        netloc = parts.netloc
+    return urlunsplit((
+        parts.scheme,
+        netloc,
+        quote(parts.path, safe="/%"),
+        quote(parts.query, safe="=&%/:;+?,"),
+        quote(parts.fragment, safe="%/:;+?,"),
+    ))
+
+
+def _clean_runtime_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _wash_care_media_paths(items: list[dict]) -> list[Path]:
+    paths: list[Path] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        raw_path = (
+            item.get("path")
+            or item.get("file")
+            or item.get("filename")
+            or item.get("target")
+            or ""
+        )
+        path = Path(str(raw_path or "")).expanduser()
+        if path.is_file() and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _instruction_from_wash_payload(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    direct = _clean_runtime_text(
+        payload.get("instructionText")
+        or payload.get("careInstructionText")
+        or payload.get("washCareInstruction")
+        or payload.get("洗涤说明")
+        or ""
+    )
+    if direct:
+        return direct
+    parts = [
+        _clean_runtime_text(payload.get(field) or payload.get(field.lower()) or "")
+        for field in WASH_CARE_FIELDS
+    ]
+    parts = [part for part in parts if part and part.lower() not in {"unknown", "unclear", "n/a", "na"}]
+    return "，".join(parts)
+
+
+def _instruction_from_plain_text(text: str) -> str:
+    normalized = (
+        _clean_runtime_text(text)
+        .replace("° C", "℃")
+        .replace("°C", "℃")
+        .replace("ºC", "℃")
+    )
+    if not normalized:
+        return ""
+    lower = normalized.lower()
+
+    parts: list[str] = []
+    if "do not wash" in lower or "不可水洗" in normalized:
+        parts.append("不可水洗")
+    elif "hand wash" in lower or "手洗" in normalized:
+        parts.append("手洗")
+    elif "30℃" in normalized or "30 ℃" in normalized:
+        parts.append("30℃水洗")
+    elif "40℃" in normalized or "40 ℃" in normalized:
+        parts.append("40℃水洗")
+
+    if "do not bleach" in lower or "不可漂白" in normalized:
+        parts.append("不可漂白")
+
+    if "flat drying" in lower or any(token in normalized for token in ("平摊", "平坦", "平放")):
+        parts.append("平坦")
+    elif "line drying in the shade" in lower or any(token in normalized for token in ("阴凉处悬挂", "阴干")):
+        parts.append("阴凉处悬挂晾干")
+    elif "line drying" in lower or any(token in normalized for token in ("悬挂晾干", "悬挂晾晒", "挂晾")):
+        parts.append("悬挂晾晒")
+    elif "do not tumble dry" in lower or "不可翻转干燥" in normalized:
+        parts.append("不可翻转干燥")
+
+    if "do not iron" in lower or "不可熨烫" in normalized:
+        parts.append("不可熨烫")
+    elif "iron" in lower or "熨烫" in normalized:
+        parts.append("可熨烫")
+
+    if "do not dry clean" in lower or "不可干洗" in normalized:
+        parts.append("不可干洗")
+
+    return "，".join(parts) if len(parts) >= 3 else ""
+
+
+def _recognize_wash_care_media_sync(
+    *,
+    items: list[dict],
+    artifact_dir: Path,
+    model_id: str = "",
+    fallback_model_ids: list[str] | None = None,
+) -> dict:
+    paths = _wash_care_media_paths(items)
+    if not paths:
+        return {"ok": False, "error": "未提供可识别的 SCM 洗唛附件本地路径", "items": []}
+
+    images: list[str] = []
+    text_chunks: list[str] = []
+    errors: list[str] = []
+    rendered_dir = artifact_dir / "scm-wash-attachment-rendered"
+
+    for path in paths:
+        suffix = path.suffix.lower()
+        if suffix == ".pdf":
+            try:
+                from core import shenhui_pdf_screenshot
+
+                text = shenhui_pdf_screenshot.extract_pdf_text(path)
+                if text:
+                    text_chunks.append(text)
+                pages, render_error = shenhui_pdf_screenshot.render_pdf_pages_with_pymupdf_result(path, rendered_dir / path.stem)
+                if not pages:
+                    pages, quicklook_error = shenhui_pdf_screenshot.render_pdf_pages_with_quicklook_result(path, rendered_dir / f"{path.stem}-quicklook")
+                    if render_error and quicklook_error:
+                        errors.append(f"{path.name}: {render_error}; {quicklook_error}")
+                images.extend(str(page) for page in pages[:3])
+            except Exception as exc:
+                errors.append(f"{path.name}: PDF处理失败 {exc}")
+            continue
+
+        guessed_type = mimetypes.guess_type(path.name)[0] or ""
+        if suffix in WASH_CARE_IMAGE_SUFFIXES or guessed_type.startswith("image/"):
+            images.append(str(path))
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if text:
+                text_chunks.append(text)
+        except Exception as exc:
+            errors.append(f"{path.name}: 不支持的附件格式 {suffix or 'unknown'} ({exc})")
+
+    plain_text = "\n".join(text_chunks).strip()
+    inferred_text = _instruction_from_plain_text(plain_text)
+    prompt_context = plain_text[:4000]
+
+    if images:
+        try:
+            from core import llm_gateway
+
+            payload, route = llm_gateway.generate_multimodal_json(
+                system_prompt=(
+                    "你是服装洗唛洗护符号识别助手。只依据图片或PDF渲染页中可见的一组洗涤说明符号识别，"
+                    "多个重复排列时只取其中一组。不要猜测看不清的符号。只返回 JSON。"
+                ),
+                user_prompt=(
+                    "识别洗唛附件中的洗涤说明，返回 JSON："
+                    '{"instructionText":"手洗，不可漂白，悬挂晾晒，可熨烫，不可干洗",'
+                    '"washing":"...","bleaching":"...","drying":"...","ironing":"...","dryCleaning":"...",'
+                    '"confidence":0.0}。'
+                    "中文或英文均可，但 instructionText 需要便于后续规则映射。"
+                    f"\nPDF可提取文字片段：{prompt_context}"
+                ),
+                image_inputs=images[:5],
+                model_id=str(model_id or ""),
+                fallback_model_ids=fallback_model_ids or [],
+            )
+            instruction = _instruction_from_wash_payload(payload) or inferred_text
+            if instruction:
+                return {
+                    "ok": True,
+                    "source": "scm_wash_attachment_multimodal",
+                    "instructionText": instruction,
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "model": route.model_id,
+                    "images": images[:5],
+                    "items": [str(path) for path in paths],
+                    "errors": errors,
+                }
+            errors.append("多模态模型未返回可映射的洗护说明")
+        except Exception as exc:
+            errors.append(f"多模态识别失败: {_clean_runtime_text(exc)}")
+
+    if inferred_text:
+        return {
+            "ok": True,
+            "source": "scm_wash_attachment_text_rules",
+            "instructionText": inferred_text,
+            "items": [str(path) for path in paths],
+            "images": images[:5],
+            "errors": errors,
+        }
+
+    return {
+        "ok": False,
+        "error": "；".join(errors) or "未识别到完整洗护说明",
+        "items": [str(path) for path in paths],
+        "images": images[:5],
+    }
 
 
 class RunAbortedError(RuntimeError):
@@ -466,6 +681,22 @@ class JSRunner:
                 "pageUrl": info.get("url") or "",
             }
             return {"ok": False, "items": [item], "info": info, "error": str(e)}
+
+    async def recognize_wash_care_media(
+        self,
+        items: list[dict],
+        *,
+        model_id: str = "",
+        fallback_model_ids: Optional[list[str]] = None,
+    ) -> dict:
+        """Recognize one SCM wash-care instruction set from downloaded local media."""
+        return await asyncio.to_thread(
+            _recognize_wash_care_media_sync,
+            items=items,
+            artifact_dir=self.artifact_dir,
+            model_id=model_id,
+            fallback_model_ids=fallback_model_ids or [],
+        )
 
     async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
         """用 CDP Input.dispatchMouseEvent 在真实坐标上执行鼠标点击。
@@ -1726,7 +1957,7 @@ class JSRunner:
         progress_callback: Optional[Callable[[dict], None]] = None,
         deadline: Optional[float] = None,
     ) -> dict:
-        request = Request(url, headers=headers or {})
+        request = Request(_encode_request_url(url), headers=headers or {})
         partial_path = target_path.with_name(f"{target_path.name}.part")
         deadline = time.monotonic() + max(timeout, 1) if deadline is None else deadline
 
@@ -1850,6 +2081,23 @@ class JSRunner:
             )
 
         return await asyncio.to_thread(run_download)
+
+    def _url_download_requires_validation(self, item: dict) -> bool:
+        if not isinstance(item, dict):
+            return False
+        return any(
+            key in item
+            for key in (
+                "expected_magic",
+                "expectedMagic",
+                "expected_size",
+                "expectedSize",
+                "min_bytes",
+                "minBytes",
+                "validate_signature",
+                "validateSignature",
+            )
+        )
 
     async def _download_via_browser_session(self, url: str, target_path: Path, timeout_ms: int = 15000) -> dict:
         from core.cdp_bridge import get_bridge
@@ -2154,6 +2402,14 @@ class JSRunner:
             )
             raw_magic = (item or {}).get("expected_magic", (item or {}).get("expectedMagic"))
             expected_magic_text = raw_magic.decode("utf-8", "replace") if isinstance(raw_magic, (bytes, bytearray)) else str(raw_magic or "")
+            target_dir = str((item or {}).get("target_dir") or (item or {}).get("targetDir") or "").strip()
+            target_relative_path = str(
+                (item or {}).get("target_relative_path")
+                or (item or {}).get("targetRelativePath")
+                or (item or {}).get("relative_path")
+                or (item or {}).get("relativePath")
+                or ""
+            ).strip()
 
             if regex_text:
                 try:
@@ -2175,7 +2431,12 @@ class JSRunner:
                     downloaded = Path(str(page_blob_result["path"]))
                     valid, validation_error, validation = self._validate_click_download(downloaded, item, filename)
                     if valid:
-                        target_path = self._build_artifact_target_path(filename, expected_url)
+                        target_path = self._build_artifact_target_path(
+                            filename=filename,
+                            source_url=expected_url,
+                            target_dir=target_dir,
+                            target_relative_path=target_relative_path,
+                        )
                         final_path = self._ensure_unique_artifact_path(target_path)
                         final_path.parent.mkdir(parents=True, exist_ok=True)
                         source_path = str(downloaded)
@@ -2192,6 +2453,8 @@ class JSRunner:
                             "sourcePath": source_path,
                             "source": str((item or {}).get("source") or "page_blob_download"),
                             "matchedBy": "page_blob_expression",
+                            "targetDir": target_dir,
+                            "targetRelativePath": target_relative_path,
                             "pageBlob": page_blob_result.get("pageBlob") or {},
                             **validation,
                         })
@@ -2374,7 +2637,12 @@ class JSRunner:
             if downloaded:
                 valid, validation_error, validation = self._validate_click_download(downloaded, item, filename)
                 if valid:
-                    target_path = self._build_artifact_target_path(filename, expected_url)
+                    target_path = self._build_artifact_target_path(
+                        filename=filename,
+                        source_url=expected_url,
+                        target_dir=target_dir,
+                        target_relative_path=target_relative_path,
+                    )
                     final_path = self._ensure_unique_artifact_path(target_path)
                     final_path.parent.mkdir(parents=True, exist_ok=True)
                     source_path = str(downloaded)
@@ -2391,6 +2659,8 @@ class JSRunner:
                         "sourcePath": source_path,
                         "source": str((item or {}).get("source") or "browser_native_download"),
                         "matchedBy": matched_by,
+                        "targetDir": target_dir,
+                        "targetRelativePath": target_relative_path,
                         "browserDownloadControl": download_control,
                         "blobDownloadCapture": {
                             "control": blob_capture_control,
@@ -2563,6 +2833,26 @@ class JSRunner:
                 result["target_relative_path"] = target_relative_path
 
             if result.get("success"):
+                if self._url_download_requires_validation(item):
+                    downloaded_path = Path(str(result.get("path") or target_path)).expanduser()
+                    valid, validation_error, validation = self._validate_click_download(
+                        downloaded_path,
+                        item,
+                        str(result.get("filename") or filename or downloaded_path.name),
+                    )
+                    result.update(validation)
+                    if not valid:
+                        result["success"] = False
+                        result["error"] = validation_error
+                        last_result = result
+                        try:
+                            if downloaded_path.exists() and downloaded_path.is_file():
+                                downloaded_path.unlink()
+                        except Exception:
+                            logger.debug("Failed to clean invalid download %s", downloaded_path, exc_info=True)
+                        if attempt < retry_attempts and retry_delay_ms > 0:
+                            await asyncio.sleep(retry_delay_ms / 1000.0)
+                        continue
                 saved_path = str(result.get("path") or target_path)
                 if saved_path not in self.runtime_output_files:
                     self.runtime_output_files.append(saved_path)
@@ -3441,6 +3731,49 @@ class JSRunner:
                                 page,
                                 phase,
                                 bool(screenshot_result.get("ok")),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "recognize_wash_care_media":
+                            items = meta.get("items") or []
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            strict = bool(meta.get("strict"))
+                            await cooperate("before_recognize_wash_care_media", page, phase, shared, {
+                                "media_item_total": len(items),
+                            })
+                            fallback_model_ids_raw = meta.get("fallback_model_ids") or meta.get("fallbackModelIds") or []
+                            if isinstance(fallback_model_ids_raw, str):
+                                fallback_model_ids = [
+                                    item.strip()
+                                    for item in re.split(r"[\s,，;；、]+", fallback_model_ids_raw)
+                                    if item.strip()
+                                ]
+                            elif isinstance(fallback_model_ids_raw, list):
+                                fallback_model_ids = [str(item).strip() for item in fallback_model_ids_raw if str(item).strip()]
+                            else:
+                                fallback_model_ids = []
+                            recognition_result = await self.recognize_wash_care_media(
+                                items,
+                                model_id=str(meta.get("model_id") or meta.get("modelId") or "").strip(),
+                                fallback_model_ids=fallback_model_ids,
+                            )
+                            if strict and not recognition_result.get("ok"):
+                                raise RuntimeError(str(recognition_result.get("error") or "洗护说明识别失败"))
+
+                            shared = self._merge_runtime_shared(shared, shared_key, recognition_result)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "recognize_wash_care_media: page=%s phase=%s ok=%s -> %s",
+                                page,
+                                phase,
+                                bool(recognition_result.get("ok")),
                                 next_phase,
                             )
                             phase = str(next_phase)

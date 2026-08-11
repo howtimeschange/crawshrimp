@@ -8,6 +8,7 @@ const TEMU_TASK_NAME_MAP = Object.freeze({
 })
 
 const TEMU_TASK_ORDER = Object.freeze([
+  'ai_wash_label_create',
   'single_product_reviews',
   'reviews',
   'store_items',

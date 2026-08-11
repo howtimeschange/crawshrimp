@@ -58,6 +58,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     config: ENHANCED_PROGRESS_CONFIG,
   }),
   Object.freeze({
+    adapterId: 'temu',
+    taskId: 'ai_wash_label_create',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
+  Object.freeze({
     adapterId: 'shein-helper',
     taskId: 'merchandise_details',
     config: ENHANCED_PROGRESS_CONFIG,
@@ -471,6 +476,107 @@ function isDoudianMixedFundSignupTask(adapterId, taskId) {
 
 function isDoudianMixedFundOrderReplayTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'doudian-ops-assistant' && normalizeKeyPart(taskId) === 'mixed_fund_order_replay'
+}
+
+function isTemuAiWashLabelCreateTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'temu' && normalizeKeyPart(taskId) === 'ai_wash_label_create'
+}
+
+function temuAiWashLabelStageLabel(stage, fallback = '进行中') {
+  const normalized = normalizeKeyPart(stage)
+  if (normalized === 'prepare') return '准备表格'
+  if (normalized === 'expand_style') return '展开款号'
+  if (normalized === 'sku') return '制作并下载 SKU'
+  if (normalized === 'finalize') return '汇总完成'
+  return fallback
+}
+
+function buildTemuAiWashLabelCreateProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const stage = normalizeKeyPart(live?.wash_label_stage || live?.phase)
+  const stageLabel = temuAiWashLabelStageLabel(stage, statusLabel)
+  const styleTotal = toInt(live?.style_total)
+  const styleCompleted = styleTotal > 0
+    ? Math.min(toInt(live?.style_completed), styleTotal)
+    : toInt(live?.style_completed)
+  const skuTotal = toInt(live?.sku_total) || toInt(live?.total)
+  const skuCompleted = skuTotal > 0
+    ? Math.min(toInt(live?.sku_completed), skuTotal)
+    : toInt(live?.sku_completed || live?.completed)
+  const currentStyle = String(live?.style_current || '').trim()
+  const currentSku = String(live?.sku_current || live?.buyer_id || '').trim()
+  const skipped = toInt(live?.sku_skipped)
+  const success = toInt(live?.sku_success)
+  const failed = toInt(live?.sku_failed)
+  const store = String(live?.wash_label_store || '').trim()
+  const stylePercent = styleTotal > 0 ? clampPercent((styleCompleted / styleTotal) * 100) : 0
+  const skuPercent = skuTotal > 0 ? clampPercent((skuCompleted / skuTotal) * 100) : 0
+  const styleActive = stage === 'prepare' || stage === 'expand_style'
+  const skuActive = stage === 'sku'
+  const skuDetailParts = []
+  if (currentStyle) skuDetailParts.push(`当前款号 ${currentStyle}`)
+  if (skipped > 0) skuDetailParts.push(`已跳过 ${skipped}`)
+  if (success > 0) skuDetailParts.push(`成功 ${success}`)
+  if (failed > 0) skuDetailParts.push(`失败 ${failed}`)
+
+  const tracks = [
+    buildTrack({
+      id: 'temu-ai-wash-style',
+      title: '款号展开',
+      main: styleTotal > 0 ? `${styleCompleted} / ${styleTotal} 个款号` : '读取款号中',
+      percentValue: stylePercent,
+      percentLabel: styleTotal > 0 ? `${stylePercent}%` : statusLabel,
+      caption: currentStyle ? `当前款号 ${currentStyle}` : '',
+      detail: store,
+      status: progressState(styleCompleted, styleTotal, styleActive) === 'complete' ? '已完成' : styleActive ? '进行中' : '待开始',
+      tone: 'primary',
+      state: progressState(styleCompleted, styleTotal, styleActive),
+      indeterminate: styleActive && styleTotal <= 0,
+      ariaLabel: 'AI洗唛制作款号展开进度',
+      ariaText: [styleTotal > 0 ? `${styleCompleted}/${styleTotal} 个款号` : '读取款号中', currentStyle ? `当前款号 ${currentStyle}` : ''].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'temu-ai-wash-sku',
+      title: 'SKU 制作/下载',
+      main: skuTotal > 0 ? `${skuCompleted} / ${skuTotal} 个 SKU` : (styleCompleted > 0 ? '等待 SKU 队列' : '等待款号展开'),
+      percentValue: skuPercent,
+      percentLabel: skuTotal > 0 ? `${skuPercent}%` : (skuActive ? statusLabel : '待开始'),
+      caption: currentSku ? `当前 SKU ${currentSku}` : '',
+      detail: skuDetailParts.join(' · '),
+      status: progressState(skuCompleted, skuTotal, skuActive) === 'complete' ? '已完成' : skuActive ? '进行中' : '待开始',
+      tone: 'secondary',
+      state: progressState(skuCompleted, skuTotal, skuActive),
+      indeterminate: skuActive && skuTotal <= 0,
+      ariaLabel: 'AI洗唛制作SKU制作下载进度',
+      ariaText: [skuTotal > 0 ? `${skuCompleted}/${skuTotal} 个 SKU` : '等待 SKU 队列', currentSku ? `当前 SKU ${currentSku}` : ''].filter(Boolean).join('，'),
+    }),
+  ]
+
+  return {
+    title: 'AI洗唛制作',
+    main: stageLabel,
+    percentValue: skuTotal > 0 ? skuPercent : stylePercent,
+    percentLabel: stageLabel,
+    completed: skuCompleted,
+    completedText: skuCompleted > 0 ? `已处理 ${skuCompleted} 个 SKU` : '',
+    targetText: currentSku ? `当前 SKU ${currentSku}` : currentStyle ? `当前款号 ${currentStyle}` : '',
+    storeText: store,
+    phaseText: stageLabel,
+    indeterminate: skuTotal <= 0 && styleTotal <= 0,
+    ariaLabel: 'AI洗唛制作进度',
+    ariaText: [stageLabel, styleTotal > 0 ? `款号 ${styleCompleted}/${styleTotal}` : '', skuTotal > 0 ? `SKU ${skuCompleted}/${skuTotal}` : ''].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      styleTotal > 0 ? `款号 ${styleCompleted}/${styleTotal}` : '',
+      skuTotal > 0 ? `SKU ${skuCompleted}/${skuTotal}` : '',
+      currentSku ? `当前 SKU ${currentSku}` : currentStyle ? `当前款号 ${currentStyle}` : '',
+      skipped > 0 ? `跳过 ${skipped}` : '',
+      store,
+    ]),
+    tracks,
+    sub: [stageLabel, currentSku ? `当前 SKU ${currentSku}` : currentStyle ? `当前款号 ${currentStyle}` : '', skipped > 0 ? `已跳过 ${skipped}` : ''].filter(Boolean).join(' · ') || statusLabel,
+  }
 }
 
 function doudianStageLabel(stage, fallback = '进行中') {
@@ -1917,6 +2023,9 @@ export function buildTaskRunnerProgressSummary({
   }
   if (config.mode === 'enhanced' && isDoudianMixedFundOrderReplayTask(adapterId, taskId)) {
     return buildDoudianMixedFundOrderReplayProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isTemuAiWashLabelCreateTask(adapterId, taskId)) {
+    return buildTemuAiWashLabelCreateProgress(live, liveStatus, isRunning)
   }
   return config.mode === 'enhanced'
     ? buildEnhancedTaskRunnerProgress(live, liveStatus, isRunning)

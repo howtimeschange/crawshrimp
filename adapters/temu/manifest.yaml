@@ -1,6 +1,6 @@
 id: temu
 name: Temu 运营助手
-version: 1.5.8
+version: 1.5.13
 author: howtimeschange
 description: "Temu 卖家后台数据抓取与批量自动化：商品数据、商品流量、售后、评价、站点商品、商品实拍图洗唛合规"
 entry_url: https://agentseller.temu.com
@@ -1273,6 +1273,7 @@ tasks:
 
   - id: wash_label_official_pdf_download
     name: 后台-洗水唛官方 PDF 批量下载
+    hidden: true
     description: 在指定店铺通过页面 API 分页发现全部“已制作且可导出”的洗水唛，并逐条执行 PDF-only 官方导出；不会制作、编辑或保存标签。
     script: wash-label-official-pdf-download.js
     entry_url: https://agentseller.temu.com/goods/label
@@ -1346,6 +1347,7 @@ tasks:
 
   - id: wash_label_create_and_download
     name: 后台-洗水唛制作并下载官方 PDF
+    hidden: true
     description: 可直接按企业码，或基于洗唛需求 Excel 选择代表 SKU；TEMU 先查企业码，再通过已登录 SCM 按款号读取洗护说明并映射 TEMU 五项洗护符号，SCM 登录或查询异常时使用固定洗护符号；成分只记录证据不回填 TEMU。默认 dry-run 不保存，显式授权后调用 TEMU 保存接口，回读“已制作”后只导出官方 PDF。
     script: wash-label-create-and-download.js
     entry_url: https://agentseller.temu.com/goods/label
@@ -1381,7 +1383,10 @@ tasks:
         type: file_excel
         label: 洗唛需求 Excel（可选）
         required: false
-        hint: 未填写企业码时读取「洗唛需求」表，按必填字段去重，并以每个 SKC 的代表 SKU货号作为 TEMU 在线制作单位；表格成分和 SCM 成分仅用于结果证据，不写回 TEMU。
+        templates:
+          - file: templates/temu-wash-label-demand-template.csv
+            label: 洗唛需求导入模板
+        hint: 未填写企业码时读取「洗唛需求」表，按必填字段去重，并以每个 SKC 的代表 SKU货号作为 TEMU 在线制作单位；可选列「制造商名称」「制造商地址」会优先写入 TEMU，空值时使用下方任务参数默认值；表格成分和 SCM 成分仅用于结果证据，不写回 TEMU。
       - id: enterprise_codes
         type: textarea
         label: 企业码
@@ -1410,7 +1415,7 @@ tasks:
             label: 只预检参数，不保存
           - value: create_and_download
             label: 保存制作并下载
-        hint: dry-run 只输出制作 payload 摘要；保存是外部写入动作，需同时勾选“允许调用保存接口”。
+        hint: 只预检参数不会写入；选择“保存制作并下载”时会按模板参数制作洗水唛并通过官方导出 PDF。
       - id: allow_save
         type: checkbox
         label: 允许调用 TEMU 保存接口
@@ -1488,16 +1493,17 @@ tasks:
         type: text
         label: 制造商名称
         default: "Zhejiang Semir Garment Co.,Ltd."
-        hint: 必须与 TEMU care/query 回读的可选项完全匹配；若只有一个 TEMU 可选项会自动使用该项。
+        hint: 作为导入模板「制造商名称」为空时的兜底值；模板列填了值会优先按模板写入。
       - id: manufacturer_address
         type: text
         label: 制造商地址
         default: "No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China"
-        hint: 写入 TEMU 保存字段 manufacturerAddressPg。
+        hint: 作为导入模板「制造商地址」为空时的兜底值；模板列填了值会优先写入 TEMU 保存字段 manufacturerAddressPg。
       - id: production_date
         type: date
         label: 生产日期
         default: "2026-06-01"
+        hint: 脚本会按 SOP 固定取所填日期所在月份的 1 号，相当于日期弹窗左侧当月的 1 号。
       - id: batch_number
         type: text
         label: 批次号
@@ -1505,7 +1511,7 @@ tasks:
       - id: label_width_mm
         type: number
         label: 洗水唛宽度 mm
-        default: 35
+        default: 45
         min: 10
         max: 100
         step: 1
@@ -1537,6 +1543,231 @@ tasks:
     output:
       - type: json
         filename: "wash-label-create-and-download-diagnostic_{timestamp}.json"
+
+  - id: ai_wash_label_create
+    name: AI洗唛制作
+    description: 上传洗唛需求表后，自动读取 SCM 洗唛资料，批量制作 TEMU 洗水唛，并导出带尺码的官方 PDF。
+    script: wash-label-create-and-download.js
+    entry_url: https://agentseller.temu.com/goods/label
+    tab_match_prefixes:
+      - https://agentseller.temu.com/goods/label
+      - https://agentseller.temu.com/auth/authentication
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页（推荐）
+      - id: execute_mode
+        type: radio
+        label: 执行模式
+        default: create_and_download
+        options:
+          - value: dry_run
+            label: 只预检参数，不保存
+          - value: create_and_download
+            label: 保存制作并下载
+        hint: 只预检参数不会写入；选择“保存制作并下载”时会按模板参数制作洗水唛并通过官方导出 PDF。
+      - id: store_name
+        type: select
+        label: TEMU 店铺
+        default: balabala Official Shop
+        required: true
+        options:
+          - value: minibala Kids Shop
+            label: minibala Kids Shop
+          - value: SEMIR Official Shop
+            label: SEMIR Official Shop
+          - value: balabala Official Shop
+            label: balabala Official Shop
+          - value: Balabala Shoes
+            label: Balabala Shoes
+        hint: 脚本会回读当前店铺；不匹配时只切换到当前账号可见且名称完全一致的店铺。
+      - id: input_file
+        type: file_excel
+        label: 洗唛需求 Excel
+        required: true
+        templates:
+          - file: templates/temu-wash-label-demand-template.csv
+            label: 洗唛需求导入模板
+        hint: 上传「洗唛需求」表后，脚本按款号去重，并在 TEMU 商品条码管理展开该款全部 SKU 逐个制作或下载；「生产日期」「批次号」「洗水唛宽度mm」「洗水唛长度mm」「上下预留mm」等制作参数以表格为准，其中生产日期会按填写的具体日期保存；制造商名称和地址为空表示不填写。
+      - id: output_dir
+        type: directory
+        label: PDF 导出目录
+        placeholder: "点击选择 PDF 导出目录"
+        hint: 可选。选择后官方洗水唛 PDF 会直接保存到该目录；留空则使用抓虾任务默认输出目录。
+      - id: style_codes
+        type: textarea
+        label: 款号 / SKC 货号
+        default: ""
+        required: false
+        hidden: true
+        hint: 未上传模板时可每行填一个款号，例如 208326104207；脚本会在 TEMU 商品条码管理按 SKC 查询，展开该款下全部 SKU 后逐个制作或下载。
+      - id: enterprise_codes
+        type: textarea
+        label: 企业码 / SKU 货号
+        default: ""
+        required: false
+        hidden: true
+        hint: 未上传模板时可每行填一个企业码，例如 6900137783170；也可粘贴已下载文件名，脚本会自动取最后一段企业码。
+      - id: allow_save
+        type: checkbox
+        label: 允许调用 TEMU 保存接口
+        default: true
+        hidden: true
+        hint: 仅在执行模式为“保存制作并下载”时生效；未勾选时不会调用 care/create。
+      - id: download_after_save
+        type: checkbox
+        label: 回读已制作后下载官方 PDF
+        default: true
+        hidden: true
+        hint: 开启后通过 TEMU 官方导出弹窗仅选择 PDF，并校验本地文件以 %PDF- 开头。
+      - id: skip_already_made
+        type: checkbox
+        label: 已制作项不重复保存
+        default: true
+        hidden: true
+        hint: 已制作项只按参数决定是否下载官方 PDF，不会自动编辑或重新保存。
+      - id: scm_lookup
+        type: checkbox
+        label: 自动查询 SCM 洗唛批复判定
+        default: true
+        hidden: true
+        hint: 使用 9222 浏览器中已登录的 scm.semir.com 标签页；只读取页面组件数据，不复制请求头、Cookie 或 token。
+      - id: ai_wash_instruction_recognition
+        type: checkbox
+        label: AI识别 SCM 洗唛附件
+        default: true
+        hidden: true
+        hint: SCM 备注没有可映射洗护说明时，下载洗唛附件到本地 artifacts，并调用项目已有多模态识别能力提取一组洗涤说明；失败时继续使用固定兜底。
+      - id: ai_wash_instruction_model_id
+        type: text
+        label: 洗护说明识别模型
+        default: ""
+        hidden: true
+        hint: 留空使用系统 AI 能力默认模型。
+      - id: ai_wash_instruction_fallback_models
+        type: text
+        label: 洗护说明识别兜底模型
+        default: ""
+        hidden: true
+        hint: 多个模型可用逗号或换行分隔。
+      - id: scm_brand
+        type: select
+        label: SCM 品牌过滤
+        default: auto
+        hidden: true
+        options:
+          - value: auto
+            label: 按 TEMU 店铺自动匹配
+          - value: "10"
+            label: 森马
+          - value: "20"
+            label: 巴拉巴拉
+          - value: "23"
+            label: mini bala
+          - value: "28"
+            label: 森马儿童
+          - value: any
+            label: 不限制品牌
+      - id: scm_only_completed
+        type: checkbox
+        label: 只接受 SCM 已完成记录
+        default: true
+        hidden: true
+      - id: care_symbols_mode
+        type: radio
+        label: 洗护符号来源
+        default: scm_or_fixed
+        hidden: true
+        options:
+          - value: scm_or_fixed
+            label: SCM 映射，异常用固定符号
+          - value: fixed_defaults
+            label: 固定洗护符号
+          - value: scm_confirmed_json
+            label: SCM 确认 JSON
+          - value: manual_json
+            label: 人工 JSON
+        hint: 优先使用 SCM 备注或 AI/OCR 识别出的洗护说明；固定兜底为手洗、不可漂白、悬挂晾干、110℃无蒸汽熨烫、不可干洗。
+      - id: care_symbols_json
+        type: textarea
+        label: 人工洗护符号 JSON
+        default: '{"washing":13,"bleaching":3,"drying":4,"ironing":3,"dryCleaning":5}'
+        hidden: true
+        visible_when:
+          field: care_symbols_mode
+          not_equals: scm_or_fixed
+      - id: fixed_care_symbols_profile
+        type: text
+        label: 固定洗护符号配置
+        default: dingtalk_sop
+        hidden: true
+      - id: manufacturer_name
+        type: text
+        label: 制造商名称
+        default: ""
+        hidden: true
+        hint: 可选；留空表示不填写。模板列填了值会优先按模板写入。
+      - id: manufacturer_address
+        type: text
+        label: 制造商地址
+        default: ""
+        hidden: true
+        hint: 可选；留空表示不填写。模板列填了值会优先写入 TEMU 保存字段 manufacturerAddressPg。
+      - id: production_date
+        type: date
+        label: 生产日期
+        default: "2024-10-01"
+        hidden: true
+        hint: 未在表格填写生产日期时使用；任务参数会固定为所填月份的 1 号，表格列填写完整日期时按表格具体日期保存。
+      - id: batch_number
+        type: text
+        label: 批次号
+        default: "PC241016"
+        hidden: true
+      - id: label_width_mm
+        type: number
+        label: 洗水唛宽度 mm
+        default: 45
+        hidden: true
+        min: 10
+        max: 100
+        step: 1
+      - id: label_length_mm
+        type: number
+        label: 洗水唛长度 mm
+        default: 230
+        hidden: true
+        min: 50
+        max: 500
+        step: 5
+        hint: 以 230mm 为初始长度；如预览出现“已超出安全打印区域”，保存前可按 20mm、再按 5mm 递增重跑。
+      - id: label_padding_mm
+        type: number
+        label: 上下预留 mm
+        default: 10
+        hidden: true
+        min: 0
+        max: 100
+        step: 1
+      - id: timeout_seconds
+        type: number
+        label: 下载等待秒数
+        default: 60
+        hidden: true
+        min: 5
+        max: 120
+        step: 5
+    trigger:
+      type: manual
+    output:
+      - type: json
+        filename: "ai-wash-label-create-diagnostic_{timestamp}.json"
 
   - id: store_items
     name: 站点商品

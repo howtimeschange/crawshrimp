@@ -597,3 +597,42 @@ test('doudian mixed fund order replay shows signup, order list, and detail progr
   assert.equal(summary.tracks[2].main, '100 / 208 个订单')
   assert.match(summary.sub, /SO-DETAIL-100/)
 })
+
+test('temu AI wash label create shows style expansion and SKU progress tracks', () => {
+  const config = resolveTaskProgressConfig('temu', 'ai_wash_label_create')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+  assert.equal(config.usage.sidebar, 'dot')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'temu',
+    taskId: 'ai_wash_label_create',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'api_lookup_excel_target',
+      progress_kind: 'temu_ai_wash_label',
+      wash_label_stage: 'sku',
+      style_total: 5,
+      style_completed: 2,
+      style_current: '208326105215',
+      sku_total: 27,
+      sku_completed: 3,
+      sku_current: '6900137783171',
+      sku_skipped: 1,
+      wash_label_store: 'balabala Official Shop',
+    },
+  })
+
+  assert.equal(summary.title, 'AI洗唛制作')
+  assert.equal(summary.main, '制作并下载 SKU')
+  assert.equal(summary.tracks.length, 2)
+  assert.equal(summary.tracks[0].title, '款号展开')
+  assert.equal(summary.tracks[0].main, '2 / 5 个款号')
+  assert.equal(summary.tracks[1].title, 'SKU 制作/下载')
+  assert.equal(summary.tracks[1].main, '3 / 27 个 SKU')
+  assert.equal(summary.tracks[1].caption, '当前 SKU 6900137783171')
+  assert.match(summary.tracks[1].detail, /已跳过 1/)
+  assert.match(summary.sub, /当前 SKU 6900137783171/)
+})
