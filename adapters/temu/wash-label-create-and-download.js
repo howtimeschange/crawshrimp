@@ -49,6 +49,7 @@
   const SAFE_PRINT_LENGTH_COARSE_MAX_STEPS = 5
   const SAFE_PRINT_LENGTH_FINE_STEP_MM = 5
   const SAFE_PRINT_LENGTH_FINE_MAX_STEPS = 16
+  const TEMPLATE_FIELD_CORRECTION_MAX_ATTEMPTS = 3
   const AI_WASH_PROGRESS_KIND = 'temu_ai_wash_label'
   const REQUIRED_COLUMNS = ['款号']
   const OPTIONAL_COLUMNS = ['制造商名称', '制造商地址', '生产日期', '批次号', '洗水唛宽度mm', '洗水唛长度mm', '上下预留mm']
@@ -878,7 +879,9 @@
       padding: Number(care?.padding || 0),
       size: textOf(care?.size),
       manufacturerName: textOf(care?.manufacturerName),
-      manufacturerAddressPg: textOf(care?.manufacturerAddressPg),
+      manufacturerAddressPg: textOf(care?.manufacturerAddressPg ?? care?.manufacturerAddress),
+      productionDate: normalizeDate(care?.productionDate),
+      batchNumber: textOf(care?.batchNumber),
       manufacturerNameOptions: optionArray(care?.manufacturerNameOptions),
       manufacturerAddressOptions: optionArray(care?.manufacturerAddressOptions),
       showTrackingLabel: care?.showTrackingLabel,
@@ -900,6 +903,80 @@
       materialI18nInfoCount: Array.isArray(care?.materialI18nInfoList) ? care.materialI18nInfoList.length : 0,
       qrCodePresent: !!care?.qrCode,
     }
+  }
+
+  function normalizedTemplateNumber(value) {
+    const number = Number(value)
+    return Number.isFinite(number) ? number : 0
+  }
+
+  function templateFieldValueMatches(expected, actual, type = 'text') {
+    if (type === 'number') {
+      return Math.abs(normalizedTemplateNumber(expected) - normalizedTemplateNumber(actual)) < 0.001
+    }
+    if (type === 'date') return normalizeDate(expected) === normalizeDate(actual)
+    return textOf(expected) === textOf(actual)
+  }
+
+  function savedTemplateExpectedFields(summary = shared.carePayloadSummary || {}) {
+    return {
+      manufacturerName: textOf(summary.manufacturerName),
+      manufacturerAddressPg: textOf(summary.manufacturerAddressPg),
+      productionDate: normalizeDate(summary.productionDate),
+      batchNumber: textOf(summary.batchNumber),
+      width: normalizedTemplateNumber(summary.width),
+      len: normalizedTemplateNumber(summary.len),
+      padding: normalizedTemplateNumber(summary.padding),
+    }
+  }
+
+  function savedTemplateActualFields(care = {}) {
+    return {
+      manufacturerName: textOf(care.manufacturerName),
+      manufacturerAddressPg: textOf(care.manufacturerAddressPg ?? care.manufacturerAddress),
+      productionDate: normalizeDate(care.productionDate),
+      batchNumber: textOf(care.batchNumber),
+      width: normalizedTemplateNumber(care.width),
+      len: normalizedTemplateNumber(care.len),
+      padding: normalizedTemplateNumber(care.padding),
+    }
+  }
+
+  function verifySavedTemplateFields(care, summary = shared.carePayloadSummary || {}) {
+    const expected = savedTemplateExpectedFields(summary)
+    const actual = savedTemplateActualFields(care)
+    const specs = [
+      ['制造商名称', 'manufacturerName', 'text'],
+      ['制造商地址', 'manufacturerAddressPg', 'text'],
+      ['生产日期', 'productionDate', 'date'],
+      ['批次号', 'batchNumber', 'text'],
+      ['洗水唛宽度mm', 'width', 'number'],
+      ['洗水唛长度mm', 'len', 'number'],
+      ['上下预留mm', 'padding', 'number'],
+    ]
+    const mismatches = specs
+      .filter(([, key, type]) => !templateFieldValueMatches(expected[key], actual[key], type))
+      .map(([label, key]) => ({
+        field: label,
+        expected: expected[key],
+        actual: actual[key],
+      }))
+    return {
+      ok: mismatches.length === 0,
+      expected,
+      actual,
+      mismatches,
+      summary: mismatches
+        .map(item => `${item.field}: 期望「${item.expected}」/ TEMU回读「${item.actual}」`)
+        .join('；'),
+    }
+  }
+
+  function shouldVerifySavedTemplateFieldsAfterSave() {
+    return executeMode === SAVE_MODE
+      && isSaveExplicitlyEnabled()
+      && shared.saveResult?.success === true
+      && !!shared.carePayloadSummary
   }
 
   function buildCarePayload(care, target) {
@@ -933,8 +1010,8 @@
         productSkcId: Number(target.productSkcId || 0),
         productId: Number(target.productId || 0),
         showTrackingLabel,
-        manufacturerName: showTrackingLabel && manufacturerName.value ? manufacturerName.value : void 0,
-        manufacturerAddressPg: manufacturerAddress.value || void 0,
+        manufacturerName: showTrackingLabel ? manufacturerName.value : void 0,
+        manufacturerAddressPg: showTrackingLabel ? manufacturerAddress.value : void 0,
         batchNumber: showTrackingLabel ? batchNumberInput : void 0,
         productionDate: showTrackingLabel ? productionDate : void 0,
         isSkipRisk: false,
@@ -1393,6 +1470,9 @@
       文件大小: Number(extra.bytes || 0),
       PDF签名已校验: !!extra.signatureValidated,
       页面API已校验: !!rowShared.apiValidated,
+      保存字段已校验: rowShared.savedTemplateFieldsVerified === true,
+      保存字段修正次数: Number(rowShared.templateFieldCorrectionAttempts || 0),
+      保存字段差异: String(extra.保存字段差异 || rowShared.savedTemplateFieldMismatchSummary || ''),
       TEMU产品ID: Number(target?.productId || 0),
       TEMU商品SKU_ID: Number(target?.productSkuId || 0),
       TEMU商品SKC_ID: Number(target?.productSkcId || 0),
@@ -1472,6 +1552,10 @@
       safePrintLengthAdjustedMm: 0,
       safePrintLengthAdjustmentStrategy: '',
       safePrintPendingLengthMm: 0,
+      templateFieldCorrectionAttempts: 0,
+      savedTemplateFieldsVerified: false,
+      savedTemplateFieldMismatchSummary: '',
+      savedTemplateFieldReadback: null,
       officialDownloadPath: '',
       officialDownloadReceived: false,
       officialDownloadError: '',
@@ -1641,6 +1725,7 @@
 
   function existingOfficialPdfCheckAction(apiRecord, nextShared, nextPhaseName) {
     if (!downloadAfterSave || !outputDir || !nextPhaseName || !apiRecord?.outputFilename || nextShared.existingOfficialPdfChecked) return null
+    if (executeMode === SAVE_MODE && isSaveExplicitlyEnabled()) return null
     return {
       success: true,
       data: [],
@@ -3410,6 +3495,38 @@
         careInitial,
         careQueryAttempts: 0,
       }
+      if (shouldVerifySavedTemplateFieldsAfterSave()) {
+        const verification = verifySavedTemplateFields(care, shared.carePayloadSummary)
+        if (!verification.ok) {
+          const attempts = Number(shared.templateFieldCorrectionAttempts || 0)
+          const mismatchShared = {
+            ...nextShared,
+            savedTemplateFieldsVerified: false,
+            savedTemplateFieldMismatchSummary: verification.summary,
+            savedTemplateFieldReadback: verification,
+            temuRowStatus: '保存字段回读不一致',
+          }
+          if (attempts < TEMPLATE_FIELD_CORRECTION_MAX_ATTEMPTS) {
+            return nextPhase('prepare_care_payload', 200, {
+              ...mismatchShared,
+              saveResult: null,
+              resaveExistingWashLabel: isDownloadable(apiRecord),
+              templateFieldCorrectionAttempts: attempts + 1,
+              temuRowStatus: `保存字段回读不一致，重新保存 ${attempts + 1}/${TEMPLATE_FIELD_CORRECTION_MAX_ATTEMPTS}`,
+            })
+          }
+          return finishTargetFailure('saved_template_fields_mismatch', `TEMU 保存后字段回读仍不一致：${verification.summary}`, {
+            temuRowStatus: '保存字段回读不一致',
+            保存字段差异: verification.summary,
+            TEMU回读字段: JSON.stringify(verification.actual),
+            目标字段: JSON.stringify(verification.expected),
+          }, mismatchShared)
+        }
+        nextShared.savedTemplateFieldsVerified = true
+        nextShared.savedTemplateFieldMismatchSummary = ''
+        nextShared.savedTemplateFieldReadback = verification
+        nextShared.temuRowStatus = '保存字段已校验'
+      }
       const nextPhaseAfterExistingPdfCheck = isDownloadable(apiRecord)
         ? (shouldResaveBeforeDownload(apiRecord) && !shared.saveResult?.success ? 'prepare_care_payload' : 'prepare_search')
         : (isPendingCreatable(apiRecord) ? 'prepare_care_payload' : '')
@@ -3513,6 +3630,9 @@
       ...shared,
       carePayload: built.payload,
       carePayloadSummary: built.summary,
+      savedTemplateFieldsVerified: false,
+      savedTemplateFieldMismatchSummary: '',
+      savedTemplateFieldReadback: null,
       temuRowStatus: '制作参数已就绪',
     }
     if (!isSaveExplicitlyEnabled()) {

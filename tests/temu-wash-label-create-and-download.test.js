@@ -880,7 +880,7 @@ test('downloadable wash label is resaved from template before export in create-a
   assert.equal(result.meta.shared.temuRowStatus, '已制作，按模板重新保存后导出')
 })
 
-test('care query checks existing official PDF before reworking a resumable SKU', async () => {
+test('create-and-download mode does not skip existing PDFs before template verification', async () => {
   const apiTarget = {
     ...READY_TARGET,
     excelStyle: EXCEL_TARGET.style,
@@ -901,13 +901,9 @@ test('care query checks existing official PDF before reworking a resumable SKU',
     }),
   })
 
-  assert.equal(result.meta.action, 'check_files')
-  assert.equal(result.meta.next_phase, 'verify_existing_official_pdf')
-  assert.equal(result.meta.shared_key, 'existingOfficialPdfCheck')
-  assert.equal(result.meta.items[0].filename, '50588044853-9950019805206.pdf')
-  assert.equal(result.meta.items[0].target_dir, '/tmp/temu-wash-labels')
-  assert.equal(result.meta.items[0].expected_magic, '%PDF-')
-  assert.equal(result.meta.shared.existingOfficialPdfNextPhase, 'prepare_care_payload')
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'prepare_care_payload')
+  assert.equal(result.meta.shared.resaveExistingWashLabel, true)
 })
 
 test('existing official PDF check skips duplicate create and download on resume', async () => {
@@ -963,9 +959,9 @@ test('dry-run prepares AI defaults without manufacturer fields and never saves',
     dryCleaning: 5,
   })
   assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'missing_scm_care_instruction_text')
-  assert.equal(result.meta.shared.carePayload.manufacturerName, undefined)
+  assert.equal(result.meta.shared.carePayload.manufacturerName, '')
   assert.equal(result.meta.shared.carePayloadSummary.manufacturerNameSource, 'blank_blank_not_filled')
-  assert.equal(result.meta.shared.carePayload.manufacturerAddressPg, undefined)
+  assert.equal(result.meta.shared.carePayload.manufacturerAddressPg, '')
   assert.equal(result.meta.shared.carePayloadSummary.manufacturerAddressSource, 'blank_blank_not_filled')
   assert.equal(result.meta.shared.carePayload.productionDate, '2024-10-01')
   assert.equal(result.meta.shared.carePayload.batchNumber, 'PC241016')
@@ -1417,6 +1413,108 @@ test('post-save lookup waits until TEMU reports downloadable and uses page SKU f
   assert.equal(result.meta.next_phase, 'api_care_query')
   assert.equal(result.meta.shared.apiTarget.outputFilename, '76096921633-9950019805299.pdf')
   assert.equal(result.meta.shared.apiTarget.cosmeticLabelStatus, 2)
+})
+
+test('saved template fields must match TEMU care query before download', async () => {
+  const apiTarget = {
+    ...READY_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    excelLabelWidthMm: 45,
+    excelLabelLengthMm: 270,
+    excelLabelPaddingMm: 10,
+  }
+  const result = await runAdapter({
+    phase: 'api_care_query',
+    params: { execute_mode: 'create_and_download', allow_save: true },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      saveResult: { success: true },
+      carePayloadSummary: {
+        manufacturerName: 'Zhejiang Semir Garment Co.,Ltd.',
+        manufacturerAddressPg: 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China',
+        productionDate: '2026-07-01',
+        batchNumber: 'PC241016',
+        width: 45,
+        len: 290,
+        padding: 10,
+      },
+    },
+    postImpl: async ({ requestPath }) => {
+      assert.equal(requestPath, '/visage-agent-seller/labelcode/care/query')
+      return careQueryResponse({
+        productId: READY_TARGET.productId,
+        productSkuId: READY_TARGET.productSkuId,
+        productSkcId: READY_TARGET.productSkcId,
+        manufacturerName: 'Zhejiang Semir Garment Co.,Ltd.',
+        manufacturerAddressPg: 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China',
+        productionDate: '2026-07-01',
+        batchNumber: 'PC241016',
+        width: 45,
+        len: 290,
+        padding: 10,
+      })
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_search')
+  assert.equal(result.meta.shared.savedTemplateFieldsVerified, true)
+  assert.equal(result.meta.shared.carePayloadSummary.len, 290)
+  assert.equal(result.meta.shared.savedTemplateFieldMismatchSummary, '')
+})
+
+test('saved template field mismatch is corrected by resaving before download', async () => {
+  const apiTarget = {
+    ...READY_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    excelLabelWidthMm: 45,
+    excelLabelLengthMm: 270,
+    excelLabelPaddingMm: 10,
+  }
+  const result = await runAdapter({
+    phase: 'api_care_query',
+    params: { execute_mode: 'create_and_download', allow_save: true },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      saveResult: { success: true },
+      carePayloadSummary: {
+        manufacturerName: 'Zhejiang Semir Garment Co.,Ltd.',
+        manufacturerAddressPg: 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China',
+        productionDate: '2026-07-01',
+        batchNumber: 'PC241016',
+        width: 45,
+        len: 270,
+        padding: 10,
+      },
+    },
+    postImpl: async ({ requestPath }) => {
+      assert.equal(requestPath, '/visage-agent-seller/labelcode/care/query')
+      return careQueryResponse({
+        productId: READY_TARGET.productId,
+        productSkuId: READY_TARGET.productSkuId,
+        productSkcId: READY_TARGET.productSkcId,
+        manufacturerName: 'Zhejiang Semir Garment Co.,Ltd.',
+        manufacturerAddressPg: 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China',
+        productionDate: '2024-10-01',
+        batchNumber: 'PC241016',
+        width: 45,
+        len: 230,
+        padding: 10,
+      })
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_care_payload')
+  assert.equal(result.meta.shared.saveResult, null)
+  assert.equal(result.meta.shared.resaveExistingWashLabel, true)
+  assert.equal(result.meta.shared.templateFieldCorrectionAttempts, 1)
+  assert.equal(result.meta.shared.savedTemplateFieldsVerified, false)
+  assert.match(result.meta.shared.savedTemplateFieldMismatchSummary, /生产日期/)
+  assert.match(result.meta.shared.savedTemplateFieldMismatchSummary, /洗水唛长度mm/)
+  assert.match(result.meta.shared.temuRowStatus, /重新保存 1\/3/)
 })
 
 test('prepare search closes stale export modal before querying the next SKU', async () => {
