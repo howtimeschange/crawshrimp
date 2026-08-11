@@ -1564,6 +1564,65 @@ class JSRunner:
         merged[shared_key] = base
         return merged
 
+    def check_runtime_files(self, items: list[dict]) -> dict:
+        results: list[dict] = []
+        for item in items or []:
+            label = str((item or {}).get("label") or "").strip()
+            filename = str((item or {}).get("filename") or "").strip()
+            target_dir = str((item or {}).get("target_dir") or (item or {}).get("targetDir") or "").strip()
+            target_relative_path = str(
+                (item or {}).get("target_relative_path")
+                or (item or {}).get("targetRelativePath")
+                or (item or {}).get("relative_path")
+                or (item or {}).get("relativePath")
+                or ""
+            ).strip()
+            raw_path = str((item or {}).get("path") or "").strip()
+            path = Path(raw_path).expanduser() if raw_path else self._build_artifact_target_path(
+                filename=filename,
+                reuse_existing=True,
+                target_dir=target_dir,
+                target_relative_path=target_relative_path,
+            )
+
+            result = {
+                "success": False,
+                "exists": path.is_file(),
+                "label": label or filename or path.name,
+                "filename": filename or path.name,
+                "path": str(path),
+            }
+            if target_dir:
+                result["target_dir"] = target_dir
+            if target_relative_path:
+                result["target_relative_path"] = target_relative_path
+
+            if not path.is_file():
+                result["error"] = "文件不存在"
+                results.append(result)
+                continue
+
+            valid, validation_error, validation = self._validate_click_download(
+                path,
+                item or {},
+                filename or path.name,
+            )
+            result.update(validation)
+            if valid:
+                result["success"] = True
+                result["skipped_existing"] = True
+                saved_path = str(path)
+                if saved_path not in self.runtime_output_files:
+                    self.runtime_output_files.append(saved_path)
+            else:
+                result["error"] = validation_error
+            results.append(result)
+
+        return {
+            "ok": all(item.get("success") for item in results) if results else False,
+            "items": results,
+        }
+
     def _request_matches(self, meta: dict, matches: Optional[list[dict]]) -> bool:
         if not matches:
             return True
@@ -3688,6 +3747,36 @@ class JSRunner:
                                 phase,
                                 len([item for item in download_result.get("items", []) if item.get("success")]),
                                 len(download_result.get("items", [])),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "check_files":
+                            items = meta.get("items") or []
+                            strict = bool(meta.get("strict"))
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+                            await cooperate("before_check_files", page, phase, shared, {
+                                "file_item_total": len(items),
+                            })
+                            check_result = self.check_runtime_files(items)
+                            if strict and not check_result.get("ok"):
+                                raise RuntimeError(str(check_result.get("error") or "check_files 未找到有效文件"))
+
+                            shared = self._merge_runtime_shared(shared, shared_key, check_result, append=shared_append)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "check_files: page=%s phase=%s 成功 %s/%s -> %s",
+                                page,
+                                phase,
+                                len([item for item in check_result.get("items", []) if item.get("success")]),
+                                len(check_result.get("items", [])),
                                 next_phase,
                             )
                             phase = str(next_phase)

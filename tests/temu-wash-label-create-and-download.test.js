@@ -880,6 +880,65 @@ test('downloadable wash label is resaved from template before export in create-a
   assert.equal(result.meta.shared.temuRowStatus, '已制作，按模板重新保存后导出')
 })
 
+test('care query checks existing official PDF before reworking a resumable SKU', async () => {
+  const apiTarget = {
+    ...READY_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    excelLabelWidthMm: 45,
+    excelLabelLengthMm: 270,
+    excelLabelPaddingMm: 10,
+  }
+  const result = await runAdapter({
+    phase: 'api_care_query',
+    params: { execute_mode: 'create_and_download', allow_save: true, output_dir: '/tmp/temu-wash-labels' },
+    shared: { apiTarget, excelTargets: [EXCEL_TARGET], excelTarget: EXCEL_TARGET },
+    postImpl: async () => careQueryResponse({
+      productId: READY_TARGET.productId,
+      productSkuId: READY_TARGET.productSkuId,
+      productSkcId: READY_TARGET.productSkcId,
+      len: 270,
+      width: 45,
+    }),
+  })
+
+  assert.equal(result.meta.action, 'check_files')
+  assert.equal(result.meta.next_phase, 'verify_existing_official_pdf')
+  assert.equal(result.meta.shared_key, 'existingOfficialPdfCheck')
+  assert.equal(result.meta.items[0].filename, '50588044853-9950019805206.pdf')
+  assert.equal(result.meta.items[0].target_dir, '/tmp/temu-wash-labels')
+  assert.equal(result.meta.items[0].expected_magic, '%PDF-')
+  assert.equal(result.meta.shared.existingOfficialPdfNextPhase, 'prepare_care_payload')
+})
+
+test('existing official PDF check skips duplicate create and download on resume', async () => {
+  const target = { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' }
+  const result = await runAdapter({
+    phase: 'verify_existing_official_pdf',
+    shared: {
+      apiValidated: true,
+      apiTarget: target,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      existingOfficialPdfCheck: {
+        ok: true,
+        items: [{
+          success: true,
+          path: '/tmp/temu-wash-labels/50588044853-9950019805206.pdf',
+          filename: '50588044853-9950019805206.pdf',
+          bytes: 712785,
+          signatureValidated: true,
+        }],
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'advance_excel_target')
+  assert.equal(result.data[0].结果, 'resume_existing_pdf_skipped')
+  assert.equal(result.data[0].文件路径, '/tmp/temu-wash-labels/50588044853-9950019805206.pdf')
+  assert.equal(result.data[0].来源, 'local_resume_pdf')
+  assert.equal(result.meta.shared.officialDownloadReceived, true)
+})
+
 test('dry-run prepares AI defaults without manufacturer fields and never saves', async () => {
   const apiTarget = { ...PENDING_TARGET, excelStyle: EXCEL_TARGET.style, outputFilename: EXCEL_TARGET.outputFilename }
   const result = await runAdapter({
@@ -1718,4 +1777,74 @@ test('download verification accepts legacy runner success with a path', async ()
   assert.equal(result.data[0].结果, 'official_download_received')
   assert.equal(result.data[0].文件路径, '/tmp/legacy-runner.pdf')
   assert.equal(result.data[0].PDF签名已校验, true)
+})
+
+test('download verification appends failed SKU to retry queue before final failure', async () => {
+  const target = { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' }
+  const result = await runAdapter({
+    phase: 'verify_download',
+    shared: {
+      apiValidated: true,
+      apiTarget: target,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      currentExcelTargetIndex: 0,
+      careLabel: { width: 35, len: 235, padding: 10, size: '110' },
+      downloadResult: {
+        items: [{
+          success: false,
+          path: '/tmp/not-ready.pdf',
+          error: '浏览器未返回官方 PDF 文件',
+        }],
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'advance_excel_target')
+  assert.equal(result.data.length, 0)
+  assert.equal(result.meta.shared.excelTargets.length, 2)
+  assert.equal(result.meta.shared.excelTargets[1].autoRetryAttempt, 1)
+  assert.equal(result.meta.shared.excelTargets[1].autoRetryReason, '浏览器未返回官方 PDF 文件')
+  assert.equal(result.meta.shared.failedSkuRetryAttempts['productSkuId:50588044853'], 1)
+  assert.equal(result.meta.shared.sku_retrying, 1)
+  assert.equal(result.meta.shared.sku_total, 2)
+})
+
+test('download verification records final failure after retry budget is exhausted', async () => {
+  const retryTarget = {
+    ...EXCEL_TARGET,
+    autoRetryAttempt: 2,
+    autoRetryReason: '浏览器未返回官方 PDF 文件',
+  }
+  const target = {
+    ...READY_TARGET,
+    outputFilename: '50588044853-9950019805206.pdf',
+    autoRetryAttempt: 2,
+    autoRetryReason: '浏览器未返回官方 PDF 文件',
+  }
+  const result = await runAdapter({
+    phase: 'verify_download',
+    shared: {
+      apiValidated: true,
+      apiTarget: target,
+      excelTargets: [retryTarget],
+      excelTarget: retryTarget,
+      currentExcelTargetIndex: 0,
+      failedSkuRetryAttempts: { 'productSkuId:50588044853': 2 },
+      careLabel: { width: 35, len: 235, padding: 10, size: '110' },
+      downloadResult: {
+        items: [{
+          success: false,
+          path: '/tmp/not-ready.pdf',
+          error: '浏览器未返回官方 PDF 文件',
+        }],
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'advance_excel_target')
+  assert.equal(result.data[0].结果, 'official_download_failed')
+  assert.equal(result.data[0].自动重试次数, 2)
+  assert.equal(result.data[0].是否重试后成功, false)
+  assert.equal(result.meta.shared.sku_failed, 1)
 })

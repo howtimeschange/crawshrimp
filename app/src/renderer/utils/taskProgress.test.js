@@ -636,3 +636,29 @@ test('temu AI wash label create shows style expansion and SKU progress tracks', 
   assert.match(summary.tracks[1].detail, /已跳过 1/)
   assert.match(summary.sub, /当前 SKU 6900137783171/)
 })
+
+test('temu AI wash label create falls back to generic task progress while SKU counter is pending', () => {
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'temu',
+    taskId: 'ai_wash_label_create',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'verify_search',
+      wash_label_stage: 'sku',
+      sku_total: 12,
+      sku_completed: 0,
+      current: 4,
+      completed: 3,
+      buyer_id: '6942749193145',
+    },
+  })
+
+  assert.equal(summary.tracks.length, 1)
+  assert.equal(summary.tracks[0].title, 'SKU 制作/下载')
+  assert.equal(summary.tracks[0].main, '3 / 12 个 SKU')
+  assert.equal(summary.tracks[0].percentValue, 25)
+  assert.equal(summary.completed, 3)
+  assert.equal(summary.targetText, '当前 SKU 6942749193145')
+})

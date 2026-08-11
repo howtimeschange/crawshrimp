@@ -5015,6 +5015,67 @@ def _finalize_plm_size_chart_downloader_outputs(
     return copied_refs or fallback_refs
 
 
+def _temu_ai_wash_label_output_dir(run_params: dict) -> str:
+    return str(
+        (run_params or {}).get("output_dir")
+        or (run_params or {}).get("export_dir")
+        or (run_params or {}).get("download_dir")
+        or ""
+    ).strip()
+
+
+def _finalize_temu_ai_wash_label_outputs(
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    log,
+) -> list[str]:
+    fallback_refs = [
+        str(path)
+        for path in [*(runtime_files or []), *(exported_files or [])]
+        if str(path or "").strip()
+    ]
+    output_dir = _temu_ai_wash_label_output_dir(run_params)
+    if not output_dir:
+        return fallback_refs
+
+    target_root = _expand_user_configured_local_path(output_dir)
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    final_refs: list[str] = []
+    seen: set[str] = set()
+
+    def add_ref(path: object) -> None:
+        ref = str(path or "").strip()
+        if not ref or ref in seen:
+            return
+        seen.add(ref)
+        final_refs.append(ref)
+
+    for file_path in runtime_files or []:
+        add_ref(file_path)
+
+    copied_tables = 0
+    for file_path in exported_files or []:
+        source_key = str(file_path or "").strip()
+        if not source_key:
+            continue
+        source = Path(source_key).expanduser()
+        if not source.is_file():
+            continue
+        if _is_direct_child_file(source, target_root):
+            copied = source
+        else:
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+        add_ref(copied)
+        if copied.suffix.lower() in {".xlsx", ".xlsm", ".xls", ".csv"}:
+            copied_tables += 1
+
+    if copied_tables and log:
+        log(f"TEMU AI洗唛结果表格已复制到指定目录：{target_root}")
+    return final_refs or fallback_refs
+
+
 def _finalize_scm_ops_assistant_outputs(
     data_rows: list,
     runtime_files: list,
@@ -6572,6 +6633,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     return merge_output_file_refs(packaged_refs)
                 except Exception as package_error:
                     log(f"[warn] 亚马逊标签后处理输出失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
+            if adapter_id == 'temu' and task_id == 'ai_wash_label_create':
+                try:
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_temu_ai_wash_label_outputs,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] TEMU AI洗唛结果复制到指定目录失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
             if adapter_id == 'semir-cloud-drive':

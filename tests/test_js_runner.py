@@ -1414,6 +1414,28 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["expectedMagic"], "%PDF-")
         self.assertNotIn(str(Path(tmpdir) / "label.pdf"), runner.runtime_output_files)
 
+    async def test_check_runtime_files_validates_existing_pdf(self):
+        runner = JSRunner("ws://example.invalid")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_dir = Path(tmpdir) / "exports"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            pdf = target_dir / "76096921633-9950019805299.pdf"
+            pdf.write_bytes(b"%PDF-1.7\n" + b"0" * 2048)
+
+            result = runner.check_runtime_files([{
+                "filename": pdf.name,
+                "target_dir": str(target_dir),
+                "expected_magic": "%PDF-",
+                "min_bytes": 1024,
+            }])
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["items"][0]["success"])
+        self.assertTrue(result["items"][0]["signatureValidated"])
+        self.assertEqual(result["items"][0]["bytes"], 2057)
+        self.assertIn(str(pdf), runner.runtime_output_files)
+
     async def test_run_script_file_handles_runtime_url_capture_action(self):
         runner = RuntimeUrlCaptureRunner()
 

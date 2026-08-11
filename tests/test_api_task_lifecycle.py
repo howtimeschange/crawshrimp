@@ -581,6 +581,34 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ["/tmp/ai-wash-label-create-result.xlsx", "/tmp/ai-wash-label-create-diagnostic.json"],
         )
 
+    def test_ai_wash_label_finalize_copies_result_tables_to_selected_output_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "Downloads"
+            runtime_dir.mkdir()
+            exported_excel = runtime_dir / "ai-wash-label-create-result_20260811-164733.xlsx"
+            exported_json = runtime_dir / "ai-wash-label-create-diagnostic_20260811-164733.json"
+            exported_excel.write_bytes(b"excel")
+            exported_json.write_text("[]", encoding="utf-8")
+            official_pdf = export_dir / "69788693165-6942749195590.pdf"
+            export_dir.mkdir()
+            official_pdf.write_bytes(b"%PDF-1.7\n")
+
+            result = api_server._finalize_temu_ai_wash_label_outputs(
+                runtime_files=[str(official_pdf)],
+                exported_files=[str(exported_excel), str(exported_json)],
+                run_params={"output_dir": str(export_dir)},
+                log=lambda _: None,
+            )
+
+            copied_excel = export_dir / exported_excel.name
+            copied_json = export_dir / exported_json.name
+            self.assertEqual(result, [str(official_pdf), str(copied_excel), str(copied_json)])
+            self.assertTrue(copied_excel.is_file())
+            self.assertTrue(copied_json.is_file())
+            self.assertTrue(exported_excel.is_file())
+
     async def test_bridge_call_async_times_out_external_dependency(self):
         class SlowBridge:
             async def get_tabs_async(self):

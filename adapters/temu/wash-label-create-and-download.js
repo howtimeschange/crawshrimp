@@ -11,6 +11,9 @@
   const skipAlreadyMade = params.skip_already_made !== false && String(params.skip_already_made || '').toLowerCase() !== 'false'
   const maxDownloads = Math.max(0, Math.min(10000, Math.floor(Number(params.max_downloads || 0))))
   const timeoutSeconds = Math.max(5, Math.min(120, Number(params.timeout_seconds || 60)))
+  const failedSkuMaxRetries = Math.max(0, Math.min(5, Math.floor(Number(
+    params.failed_sku_max_retries ?? params.failed_sku_auto_retries ?? 2,
+  ))))
   const outputDir = textOf(params.output_dir || params.export_dir || params.download_dir || '')
   const pilotStyle = compact(params.pilot_style || '')
   const maxSkc = Math.max(0, Math.min(10000, Math.floor(Number(params.max_skc || 0))))
@@ -1183,6 +1186,10 @@
       scmCareInstructionSource: textOf(target.scmCareInstructionSource),
       scmAttachmentRecognitionStatus: textOf(target.scmAttachmentRecognitionStatus),
       scmAttachmentRecognitionError: textOf(target.scmAttachmentRecognitionError),
+      autoRetryAttempt: Number(target.autoRetryAttempt || 0),
+      autoRetryReason: textOf(target.autoRetryReason),
+      autoRetrySourceResult: textOf(target.autoRetrySourceResult),
+      retryOfKey: textOf(target.retryOfKey),
     }
   }
 
@@ -1299,6 +1306,7 @@
       sku_skipped: progressCount(overrides.sku_skipped ?? nextShared.sku_skipped),
       sku_success: progressCount(overrides.sku_success ?? nextShared.sku_success),
       sku_failed: progressCount(overrides.sku_failed ?? nextShared.sku_failed),
+      sku_retrying: progressCount(overrides.sku_retrying ?? nextShared.sku_retrying),
       wash_label_store: targetStore,
       total_rows: activeTotal || Number(nextShared.total_rows || 0),
       current_exec_no: activeCurrent || Number(nextShared.current_exec_no || 0),
@@ -1350,6 +1358,8 @@
   function resultRow(result, reason = '', extra = {}, explicitTarget = null, rowShared = shared) {
     const target = explicitTarget || apiTarget()
     const currentExcelTarget = excelTarget()
+    const autoRetryAttempt = Number(extra.自动重试次数 ?? target?.autoRetryAttempt ?? currentExcelTarget?.autoRetryAttempt ?? 0)
+    const autoRetryReason = textOf(extra.自动重试原因 || target?.autoRetryReason || currentExcelTarget?.autoRetryReason)
     const targetIndex = excelMode()
       ? Math.max(0, Number(rowShared.currentExcelTargetIndex || 0))
       : Math.max(0, Number(rowShared.currentTargetIndex || 0))
@@ -1373,6 +1383,9 @@
       下载模式: downloadAfterSave ? 'official_after_create' : 'no_download',
       执行模式: executeMode,
       保存已授权: isSaveExplicitlyEnabled(),
+      自动重试次数: autoRetryAttempt,
+      是否重试后成功: extra.是否重试后成功 ?? (autoRetryAttempt > 0 && result === 'official_download_received'),
+      自动重试原因: autoRetryReason,
       结果: result,
       来源: String(extra.source || (result === 'official_download_received' ? 'temu_official_download' : result)),
       文件名: textOf(target?.outputFilename),
@@ -1490,17 +1503,184 @@
       excelLabelPaddingMm: Number.isFinite(Number(target?.labelPaddingMm ?? target?.excelLabelPaddingMm))
         ? Number(target?.labelPaddingMm ?? target?.excelLabelPaddingMm)
         : null,
+      autoRetryAttempt: Number(target?.autoRetryAttempt || 0),
+      autoRetryReason: textOf(target?.autoRetryReason),
+      autoRetrySourceResult: textOf(target?.autoRetrySourceResult),
+      retryOfKey: textOf(target?.retryOfKey),
     }
     attached.outputFilename = buildOutputFilenameForTarget(attached)
     return attached
   }
 
-  function continueAfterFailure(reason, extra = {}, nextShared = shared) {
+  function retryAttemptsByKey(nextShared = shared) {
+    const value = nextShared?.failedSkuRetryAttempts
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  }
+
+  function targetRetryKey(target) {
+    const productSkuId = Number(target?.productSkuId || 0)
+    if (productSkuId) return `productSkuId:${productSkuId}`
+    const sku = compact(target?.skuExtCode || target?.excelSkuNo || target?.skuNo || target?.enterpriseCode)
+    if (sku) return `sku:${sku}`
+    const label = Number(target?.labelCode || 0)
+    if (label) return `labelCode:${label}`
+    return ''
+  }
+
+  function retryCandidateTarget(nextShared = shared) {
+    const excel = nextShared.excelTarget || excelTarget() || {}
+    const api = nextShared.apiTarget || shared.apiTarget || {}
+    const merged = {
+      ...excel,
+      ...api,
+      inputMode: textOf(excel.inputMode || api.inputMode || 'style_sku'),
+      skuNo: compact(excel.skuNo || excel.excelSkuNo || api.skuExtCode || api.skuNo),
+      enterpriseCode: compact(excel.enterpriseCode || excel.skuNo || excel.excelSkuNo || api.skuExtCode || api.enterpriseCode),
+      status: 'ready',
+    }
+    merged.outputFilename = textOf(merged.outputFilename) || buildOutputFilenameForTarget(merged)
+    return merged
+  }
+
+  function shouldRetryFailure(result, reason, extra = {}, nextShared = shared) {
+    if (!excelMode() || failedSkuMaxRetries <= 0) return false
+    const target = retryCandidateTarget(nextShared)
+    if (!isSkuProgressTarget(target)) return false
+    const text = [result, reason, extra.temuRowStatus, extra.source].map(textOf).join(' ')
+    if (/dry[_ -]?run|风险确认|仅打印|不可制作|不唯一|缺少\s*SKU|Excel|目标标识缺失|缺少 productId/i.test(text)) {
+      return false
+    }
+    const key = targetRetryKey(target)
+    if (!key) return false
+    return Number(retryAttemptsByKey(nextShared)[key] || 0) < failedSkuMaxRetries
+  }
+
+  function scheduleFailedSkuRetry(result, reason, extra = {}, nextShared = shared) {
+    if (!shouldRetryFailure(result, reason, extra, nextShared)) return null
+    const target = retryCandidateTarget(nextShared)
+    const key = targetRetryKey(target)
+    const attempts = retryAttemptsByKey(nextShared)
+    const nextAttempt = Number(attempts[key] || 0) + 1
+    const targets = Array.isArray(nextShared.excelTargets) ? nextShared.excelTargets : excelTargets()
+    const retryTarget = {
+      ...target,
+      status: 'ready',
+      autoRetryAttempt: nextAttempt,
+      autoRetryReason: textOf(reason),
+      autoRetrySourceResult: textOf(result),
+      retryOfKey: key,
+      outputFilename: buildOutputFilenameForTarget(target),
+    }
+    const retryTargets = [...targets, retryTarget]
+    const retryShared = withAiWashProgress({
+      ...nextShared,
+      excelTargets: retryTargets,
+      failedSkuRetryAttempts: {
+        ...attempts,
+        [key]: nextAttempt,
+      },
+      lastAutoRetry: {
+        key,
+        skuNo: compact(retryTarget.skuNo || retryTarget.skuExtCode),
+        productSkuId: Number(retryTarget.productSkuId || 0),
+        attempt: nextAttempt,
+        maxAttempts: failedSkuMaxRetries,
+        reason: textOf(reason),
+      },
+      temuRowStatus: `已加入自动重试队列 ${nextAttempt}/${failedSkuMaxRetries}`,
+    }, {
+      sku_total: countSkuProgressTargets(retryTargets),
+      sku_retrying: Number(nextShared.sku_retrying || 0) + 1,
+      wash_label_stage: 'sku',
+    })
+    return nextPhase(advancePhaseName(), 100, retryShared, [])
+  }
+
+  function finishTargetFailure(result, reason, extra = {}, nextShared = shared) {
+    const retryAction = scheduleFailedSkuRetry(result, reason, extra, nextShared)
+    if (retryAction) return retryAction
+    const target = retryCandidateTarget(nextShared)
+    const retryAttempt = Number(target.autoRetryAttempt || 0)
+    const finalExtra = {
+      ...extra,
+      自动重试次数: retryAttempt,
+      自动重试原因: textOf(target.autoRetryReason),
+      是否重试后成功: false,
+    }
+    const finalSharedBase = {
+      ...nextShared,
+      temuRowStatus: String(extra.temuRowStatus || '单条失败'),
+    }
+    const finalShared = excelMode() && isSkuProgressTarget(target)
+      ? withAiWashProgress(finalSharedBase, {
+        sku_failed: Number(nextShared.sku_failed || 0) + 1,
+        wash_label_stage: 'sku',
+      })
+      : finalSharedBase
     return nextPhase(
       advancePhaseName(),
       100,
-      { ...nextShared, temuRowStatus: String(extra.temuRowStatus || '单条失败') },
-      [resultRow('official_download_failed', reason, extra)],
+      finalShared,
+      [resultRow(result, reason, finalExtra, null, finalShared)],
+    )
+  }
+
+  function continueAfterFailure(reason, extra = {}, nextShared = shared) {
+    return finishTargetFailure('official_download_failed', reason, extra, nextShared)
+  }
+
+  function officialPdfCheckItem(target) {
+    return {
+      label: `TEMU 官方洗水唛 PDF ${target.excelSkuCode || target.skcExtCode || ''}-${target.excelSkuNo || target.skuExtCode || ''}`,
+      filename: target.outputFilename,
+      target_dir: outputDir,
+      expected_magic: '%PDF-',
+      min_bytes: 1024,
+    }
+  }
+
+  function existingOfficialPdfCheckAction(apiRecord, nextShared, nextPhaseName) {
+    if (!downloadAfterSave || !outputDir || !nextPhaseName || !apiRecord?.outputFilename || nextShared.existingOfficialPdfChecked) return null
+    return {
+      success: true,
+      data: [],
+      meta: {
+        action: 'check_files',
+        items: [officialPdfCheckItem(apiRecord)],
+        strict: false,
+        shared_key: 'existingOfficialPdfCheck',
+        next_phase: 'verify_existing_official_pdf',
+        sleep_ms: 50,
+        shared: {
+          ...nextShared,
+          apiTarget: apiRecord,
+          existingOfficialPdfChecked: true,
+          existingOfficialPdfNextPhase: nextPhaseName,
+          temuRowStatus: '检查导出目录已有官方PDF',
+        },
+      },
+    }
+  }
+
+  function bestCheckedFile(checkResult) {
+    const items = Array.isArray(checkResult?.items) ? checkResult.items : []
+    return items.find(item => item?.success && item?.path)
+      || items.find(item => item?.path || item?.error)
+      || null
+  }
+
+  function continueAfterExistingPdfMiss(nextShared = shared) {
+    const target = apiTarget()
+    const nextPhaseName = textOf(nextShared.existingOfficialPdfNextPhase)
+      || (isDownloadable(target) ? 'prepare_search' : 'prepare_care_payload')
+    return nextPhase(
+      nextPhaseName,
+      100,
+      {
+        ...nextShared,
+        existingOfficialPdfNextPhase: '',
+        temuRowStatus: textOf(nextShared.temuRowStatus) || '导出目录未命中已有PDF',
+      },
     )
   }
 
@@ -3230,6 +3410,11 @@
         careInitial,
         careQueryAttempts: 0,
       }
+      const nextPhaseAfterExistingPdfCheck = isDownloadable(apiRecord)
+        ? (shouldResaveBeforeDownload(apiRecord) && !shared.saveResult?.success ? 'prepare_care_payload' : 'prepare_search')
+        : (isPendingCreatable(apiRecord) ? 'prepare_care_payload' : '')
+      const existingPdfCheck = existingOfficialPdfCheckAction(apiRecord, nextShared, nextPhaseAfterExistingPdfCheck)
+      if (existingPdfCheck) return existingPdfCheck
       if (isDownloadable(apiRecord)) {
         if (!downloadAfterSave) {
           return nextPhase(advancePhaseName(), 100, nextShared, [
@@ -3277,6 +3462,35 @@
         careLastError: safeApiError(error),
       })
     }
+  }
+
+  if (phase === 'verify_existing_official_pdf') {
+    const target = apiTarget()
+    const item = bestCheckedFile(shared.existingOfficialPdfCheck || {})
+    if (item?.success && item.path) {
+      const nextShared = withAiWashProgress({
+        ...shared,
+        officialDownloadPath: item.path,
+        officialDownloadReceived: true,
+        temuRowStatus: '导出目录已有官方PDF，断点续跑跳过',
+      }, {
+        sku_success: Number(shared.sku_success || 0) + 1,
+        wash_label_stage: 'sku',
+      })
+      return nextPhase(advancePhaseName(), 100, nextShared, [
+        resultRow('resume_existing_pdf_skipped', '导出目录已存在有效官方 PDF，跳过重复制作/下载。', {
+          path: item.path,
+          bytes: Number(item.bytes || 0),
+          signatureValidated: item.signatureValidated !== false,
+          source: 'local_resume_pdf',
+          是否重试后成功: Number(target.autoRetryAttempt || excelTarget().autoRetryAttempt || 0) > 0,
+        }, target, nextShared),
+      ])
+    }
+    return continueAfterExistingPdfMiss({
+      ...shared,
+      existingOfficialPdfMissReason: String(item?.error || '导出目录未发现有效官方 PDF'),
+    })
   }
 
   if (phase === 'prepare_care_payload') {
@@ -3379,16 +3593,14 @@
           saveLastError: safeApiError(error),
         })
       }
-      return nextPhase(advancePhaseName(), 100, {
+      return finishTargetFailure('save_failed', 'TEMU 洗水唛保存接口调用失败', {
+        temuRowStatus: '保存失败',
+        API错误: safeApiError(error),
+      }, {
         ...shared,
         saveLastError: safeApiError(error),
         temuRowStatus: '保存失败',
-      }, [
-        resultRow('save_failed', 'TEMU 洗水唛保存接口调用失败', {
-          temuRowStatus: '保存失败',
-          API错误: safeApiError(error),
-        }),
-      ])
+      })
     }
   }
 
@@ -3434,16 +3646,14 @@
           temuRowStatus: '保存后等待已制作',
         })
       }
-      return nextPhase(advancePhaseName(), 100, {
+      return finishTargetFailure('save_readback_failed', '已调用保存接口，但 TEMU 未在等待时间内回读为“已制作”。', {
+        temuRowStatus: '保存后未回读已制作',
+        TEMU匹配记录数: records.length,
+        TEMU可导出记录数: downloadable.length,
+      }, {
         ...shared,
         temuRowStatus: '保存后未回读已制作',
-      }, [
-        resultRow('save_readback_failed', '已调用保存接口，但 TEMU 未在等待时间内回读为“已制作”。', {
-          temuRowStatus: '保存后未回读已制作',
-          TEMU匹配记录数: records.length,
-          TEMU可导出记录数: downloadable.length,
-        }),
-      ])
+      })
     } catch (error) {
       const attempts = Number(shared.postSaveLookupAttempts || 0)
       if (attempts < 2) {
@@ -3453,16 +3663,14 @@
           postSaveLookupLastError: safeApiError(error),
         })
       }
-      return nextPhase(advancePhaseName(), 100, {
+      return finishTargetFailure('save_readback_query_failed', '保存后 TEMU 页面 API 回读失败', {
+        temuRowStatus: '保存后查询失败',
+        API错误: safeApiError(error),
+      }, {
         ...shared,
         postSaveLookupLastError: safeApiError(error),
         temuRowStatus: '保存后查询失败',
-      }, [
-        resultRow('save_readback_query_failed', '保存后 TEMU 页面 API 回读失败', {
-          temuRowStatus: '保存后查询失败',
-          API错误: safeApiError(error),
-        }),
-      ])
+      })
     }
   }
 
@@ -3728,11 +3936,15 @@
     const downloadResult = shared.downloadResult || {}
     const item = bestDownloadItem(downloadResult)
     if (item?.success && item.path) {
-      return nextPhase(advancePhaseName(), 100, {
+      const nextShared = withAiWashProgress({
         ...shared,
         officialDownloadPath: item.path,
         officialDownloadReceived: true,
-      }, [
+      }, {
+        sku_success: Number(shared.sku_success || 0) + 1,
+        wash_label_stage: 'sku',
+      })
+      return nextPhase(advancePhaseName(), 100, nextShared, [
         resultRow('official_download_received', '', {
           path: item.path,
           bytes: Number(item.bytes || 0),
@@ -3740,21 +3952,19 @@
           匹配方式: String(item.matchedBy || ''),
           浏览器下载控制: String(item.browserDownloadControl?.method || ''),
           导出触发来源: String(shared.exportSource || ''),
-        }),
+        }, null, nextShared),
       ])
     }
-    return nextPhase(advancePhaseName(), 100, {
+    return finishTargetFailure('official_download_failed', String(item?.error || '浏览器未返回官方 PDF 文件'), {
+      path: String(item?.path || ''),
+      bytes: Number(item?.bytes || 0),
+      signatureValidated: !!item?.signatureValidated,
+      下载返回: JSON.stringify(downloadResult).slice(0, 1200),
+    }, {
       ...shared,
       officialDownloadReceived: false,
       officialDownloadError: String(item?.error || '浏览器未返回官方 PDF 文件'),
-    }, [
-      resultRow('official_download_failed', String(item?.error || '浏览器未返回官方 PDF 文件'), {
-        path: String(item?.path || ''),
-        bytes: Number(item?.bytes || 0),
-        signatureValidated: !!item?.signatureValidated,
-        下载返回: JSON.stringify(downloadResult).slice(0, 1200),
-      }),
-    ])
+    })
   }
 
   if (phase === 'advance_excel_target') {

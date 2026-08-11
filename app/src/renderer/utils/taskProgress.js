@@ -491,6 +491,16 @@ function temuAiWashLabelStageLabel(stage, fallback = '进行中') {
   return fallback
 }
 
+function temuAiWashLabelCompletedFallback(live = {}) {
+  const current = toInt(live?.current)
+  return Math.max(
+    toInt(live?.completed),
+    toInt(live?.records),
+    toInt(live?.shared_results_count),
+    current > 0 ? current - 1 : 0,
+  )
+}
+
 function buildTemuAiWashLabelCreateProgress(live = {}, liveStatus = '', isRunning = false) {
   if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
 
@@ -502,14 +512,16 @@ function buildTemuAiWashLabelCreateProgress(live = {}, liveStatus = '', isRunnin
     ? Math.min(toInt(live?.style_completed), styleTotal)
     : toInt(live?.style_completed)
   const skuTotal = toInt(live?.sku_total) || toInt(live?.total)
+  const skuCompletedFallback = temuAiWashLabelCompletedFallback(live)
   const skuCompleted = skuTotal > 0
-    ? Math.min(toInt(live?.sku_completed), skuTotal)
-    : toInt(live?.sku_completed || live?.completed)
+    ? Math.min(Math.max(toInt(live?.sku_completed), skuCompletedFallback), skuTotal)
+    : Math.max(toInt(live?.sku_completed), skuCompletedFallback)
   const currentStyle = String(live?.style_current || '').trim()
   const currentSku = String(live?.sku_current || live?.buyer_id || '').trim()
   const skipped = toInt(live?.sku_skipped)
   const success = toInt(live?.sku_success)
   const failed = toInt(live?.sku_failed)
+  const retrying = toInt(live?.sku_retrying)
   const store = String(live?.wash_label_store || '').trim()
   const stylePercent = styleTotal > 0 ? clampPercent((styleCompleted / styleTotal) * 100) : 0
   const skuPercent = skuTotal > 0 ? clampPercent((skuCompleted / skuTotal) * 100) : 0
@@ -520,9 +532,12 @@ function buildTemuAiWashLabelCreateProgress(live = {}, liveStatus = '', isRunnin
   if (skipped > 0) skuDetailParts.push(`已跳过 ${skipped}`)
   if (success > 0) skuDetailParts.push(`成功 ${success}`)
   if (failed > 0) skuDetailParts.push(`失败 ${failed}`)
+  if (retrying > 0) skuDetailParts.push(`重试 ${retrying}`)
 
-  const tracks = [
-    buildTrack({
+  const tracks = []
+  const shouldShowStyleTrack = stage !== 'sku' || styleTotal > 0 || styleCompleted > 0 || !!currentStyle
+  if (shouldShowStyleTrack) {
+    tracks.push(buildTrack({
       id: 'temu-ai-wash-style',
       title: '款号展开',
       main: styleTotal > 0 ? `${styleCompleted} / ${styleTotal} 个款号` : '读取款号中',
@@ -536,23 +551,23 @@ function buildTemuAiWashLabelCreateProgress(live = {}, liveStatus = '', isRunnin
       indeterminate: styleActive && styleTotal <= 0,
       ariaLabel: 'AI洗唛制作款号展开进度',
       ariaText: [styleTotal > 0 ? `${styleCompleted}/${styleTotal} 个款号` : '读取款号中', currentStyle ? `当前款号 ${currentStyle}` : ''].filter(Boolean).join('，'),
-    }),
-    buildTrack({
-      id: 'temu-ai-wash-sku',
-      title: 'SKU 制作/下载',
-      main: skuTotal > 0 ? `${skuCompleted} / ${skuTotal} 个 SKU` : (styleCompleted > 0 ? '等待 SKU 队列' : '等待款号展开'),
-      percentValue: skuPercent,
-      percentLabel: skuTotal > 0 ? `${skuPercent}%` : (skuActive ? statusLabel : '待开始'),
-      caption: currentSku ? `当前 SKU ${currentSku}` : '',
-      detail: skuDetailParts.join(' · '),
-      status: progressState(skuCompleted, skuTotal, skuActive) === 'complete' ? '已完成' : skuActive ? '进行中' : '待开始',
-      tone: 'secondary',
-      state: progressState(skuCompleted, skuTotal, skuActive),
-      indeterminate: skuActive && skuTotal <= 0,
-      ariaLabel: 'AI洗唛制作SKU制作下载进度',
-      ariaText: [skuTotal > 0 ? `${skuCompleted}/${skuTotal} 个 SKU` : '等待 SKU 队列', currentSku ? `当前 SKU ${currentSku}` : ''].filter(Boolean).join('，'),
-    }),
-  ]
+    }))
+  }
+  tracks.push(buildTrack({
+    id: 'temu-ai-wash-sku',
+    title: 'SKU 制作/下载',
+    main: skuTotal > 0 ? `${skuCompleted} / ${skuTotal} 个 SKU` : (styleCompleted > 0 ? '等待 SKU 队列' : '等待款号展开'),
+    percentValue: skuPercent,
+    percentLabel: skuTotal > 0 ? `${skuPercent}%` : (skuActive ? statusLabel : '待开始'),
+    caption: currentSku ? `当前 SKU ${currentSku}` : '',
+    detail: skuDetailParts.join(' · '),
+    status: progressState(skuCompleted, skuTotal, skuActive) === 'complete' ? '已完成' : skuActive ? '进行中' : '待开始',
+    tone: 'secondary',
+    state: progressState(skuCompleted, skuTotal, skuActive),
+    indeterminate: skuActive && skuTotal <= 0,
+    ariaLabel: 'AI洗唛制作SKU制作下载进度',
+    ariaText: [skuTotal > 0 ? `${skuCompleted}/${skuTotal} 个 SKU` : '等待 SKU 队列', currentSku ? `当前 SKU ${currentSku}` : ''].filter(Boolean).join('，'),
+  }))
 
   return {
     title: 'AI洗唛制作',
@@ -572,6 +587,7 @@ function buildTemuAiWashLabelCreateProgress(live = {}, liveStatus = '', isRunnin
       skuTotal > 0 ? `SKU ${skuCompleted}/${skuTotal}` : '',
       currentSku ? `当前 SKU ${currentSku}` : currentStyle ? `当前款号 ${currentStyle}` : '',
       skipped > 0 ? `跳过 ${skipped}` : '',
+      retrying > 0 ? `重试 ${retrying}` : '',
       store,
     ]),
     tracks,
