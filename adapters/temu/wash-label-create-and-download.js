@@ -37,6 +37,7 @@
   const labelWidthMm = Math.max(10, Math.min(100, paramNumber('label_width_mm', 45)))
   const labelLengthMm = Math.max(50, Math.min(500, paramNumber('label_length_mm', 230)))
   const labelPaddingMm = Math.max(0, Math.min(100, paramNumber('label_padding_mm', 10)))
+  const taskStartedAt = textOf(params.__task_started_at || params.task_started_at || '')
   const API_PAGE_SIZE = 200
   const API_QUERY_PAGE_SIZE = 50
   const SCAN_PAGES_PER_PHASE = 8
@@ -50,6 +51,9 @@
   const SAFE_PRINT_LENGTH_FINE_STEP_MM = 5
   const SAFE_PRINT_LENGTH_FINE_MAX_STEPS = 16
   const TEMPLATE_FIELD_CORRECTION_MAX_ATTEMPTS = 3
+  const SCM_LOGIN_WAIT_MS = 500000
+  const SCM_LOGIN_RETRY_SLEEP_MS = 5000
+  const SCM_LOGIN_MAX_ATTEMPTS = Math.ceil(SCM_LOGIN_WAIT_MS / SCM_LOGIN_RETRY_SLEEP_MS)
   const AI_WASH_PROGRESS_KIND = 'temu_ai_wash_label'
   const REQUIRED_COLUMNS = ['款号']
   const OPTIONAL_COLUMNS = ['制造商名称', '制造商地址', '生产日期', '批次号', '洗水唛宽度mm', '洗水唛长度mm', '上下预留mm']
@@ -106,7 +110,8 @@
     },
   }
   const DEFAULT_ING_LANGS = ['en', 'de', 'fr', 'it', 'es', 'da', 'cs', 'sv']
-  const SCM_WASH_APPROVAL_REFERER = 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index'
+  const SCM_WASH_APPROVAL_URL = 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index'
+  const SCM_WASH_APPROVAL_REFERER = SCM_WASH_APPROVAL_URL
   const SCM_BRAND_BY_STORE = {
     'SEMIR Official Shop': { code: '10', label: '森马' },
     'balabala Official Shop': { code: '20', label: '巴拉巴拉' },
@@ -574,6 +579,8 @@
         target_types: Array.isArray(options.target_types) ? options.target_types : ['page'],
         shared_key: options.shared_key || '',
         user_gesture: !!options.user_gesture,
+        open_url_if_missing: options.open_url_if_missing || '',
+        open_wait_ms: Number(options.open_wait_ms || 0),
         next_phase: nextPhaseName,
         sleep_ms: sleepMs,
         shared: nextShared,
@@ -1669,7 +1676,7 @@
     const target = retryCandidateTarget(nextShared)
     if (!isSkuProgressTarget(target)) return false
     const text = [result, reason, extra.temuRowStatus, extra.source].map(textOf).join(' ')
-    if (/dry[_ -]?run|风险确认|仅打印|不可制作|不唯一|缺少\s*SKU|Excel|目标标识缺失|缺少 productId/i.test(text)) {
+    if (/dry[_ -]?run|风险确认|仅打印|不可制作|不唯一|缺少\s*SKU|Excel|目标标识缺失|缺少 productId|saved_template_fields_mismatch|保存字段回读不一致|字段回读仍不一致/i.test(text)) {
       return false
     }
     const key = targetRetryKey(target)
@@ -1758,6 +1765,7 @@
       target_dir: outputDir,
       expected_magic: '%PDF-',
       min_bytes: 1024,
+      not_before_iso: taskStartedAt,
     }
   }
 
@@ -2718,9 +2726,11 @@
   function scmLookupExpression(target) {
     const style = inferStyleFromTarget(target)
     const styleJson = JSON.stringify(style)
+    const washPageUrlJson = JSON.stringify(SCM_WASH_APPROVAL_URL)
     return `
 (async () => {
   const style = ${styleJson};
+  const washPageUrl = ${washPageUrlJson};
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const textOf = value => {
     if (value && typeof value === 'object') {
@@ -2736,11 +2746,25 @@
     const styleObj = getComputedStyle(element);
     return styleObj.display !== 'none' && styleObj.visibility !== 'hidden';
   };
-  const washPageUrl = 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index';
   if (!style) return { ok: false, reason: 'missing_style', rows: [] };
-  if (!/\\/scm-quality-mgm\\/index\\/scm-qc-wash-appr-index(?:$|[?#])/.test(String(location.href || ''))) {
+  const href = String(location.href || '');
+  const titleText = String(document.title || '');
+  const bodyText = textOf(document.body).slice(0, 1000);
+  const loginLike = /login|sso|oauth|cas|iam|auth|selfcare|passport/i.test(href)
+    || /登录|统一身份认证|身份验证|账号密码|扫码登录|验证码/.test(titleText + ' ' + bodyText);
+  if (loginLike) {
+    return {
+      ok: false,
+      retry: true,
+      loginRequired: true,
+      reason: 'scm_login_required',
+      title: titleText,
+      currentUrl: href,
+    };
+  }
+  if (!/\\/scm-quality-mgm\\/index\\/scm-qc-wash-appr-index(?:$|[?#])/.test(href)) {
     location.href = washPageUrl;
-    return { ok: false, retry: true, reason: 'navigating_to_scm_wash_appr_index', currentUrl: String(location.href || '') };
+    return { ok: false, retry: true, reason: 'navigating_to_scm_wash_appr_index', currentUrl: href };
   }
 
   function findDataset() {
@@ -3130,7 +3154,7 @@
             }, attached, { ...shared, apiTarget: attached, apiValidated: true }))
           }
         }
-        const replacedShared = withAiWashProgress(replaceCurrentExcelTarget(derivedTargets, {
+        const replacedBaseShared = replaceCurrentExcelTarget(derivedTargets, {
           ...shared,
           apiValidated: true,
           styleQueryTotal: total,
@@ -3138,12 +3162,13 @@
           styleQueryDerivedTargets: derivedTargets.length,
           styleQuerySkippedRows: skippedRows.length,
           temuRowStatus: derivedTargets.length ? '款号已展开到SKU' : '款号无可制作SKU',
-        }), {
+        })
+        const replacedShared = withAiWashProgress(replacedBaseShared, {
           style_total: Number(shared.style_total || 0)
             || Number(shared.workflowSummary?.selectedStyles || 0)
             || Number(shared.style_completed || 0) + 1,
           style_completed: Number(shared.style_completed || 0) + 1,
-          sku_total: Number(shared.sku_total || 0) + derivedTargets.length,
+          sku_total: countSkuProgressTargets(replacedBaseShared.excelTargets),
           sku_skipped: Number(shared.sku_skipped || 0) + skippedRows.length,
           wash_label_stage: derivedTargets.length ? 'sku' : 'expand_style',
         })
@@ -3338,6 +3363,8 @@
         target_types: ['page'],
         shared_key: 'scmLookupResult',
         user_gesture: true,
+        open_url_if_missing: SCM_WASH_APPROVAL_URL,
+        open_wait_ms: 2000,
       },
     )
   }
@@ -3349,6 +3376,23 @@
     const attempts = Number(shared.scmLookupAttempts || 0)
     if (!wrapper?.ok || !payload?.ok) {
       const reason = textOf(payload?.reason || wrapper?.error || 'SCM查询未返回成功结果')
+      const loginRequired = payload?.loginRequired === true
+        || /scm_login_required|login|sso|oauth|cas|iam|auth|selfcare|passport|登录|统一身份认证|身份验证/i.test([
+          reason,
+          payload?.title,
+          payload?.currentUrl,
+          wrapper?.target?.url,
+        ].map(textOf).join(' '))
+      if (loginRequired && attempts < SCM_LOGIN_MAX_ATTEMPTS) {
+        const nextAttempt = attempts + 1
+        return nextPhase('scm_lookup_target', SCM_LOGIN_RETRY_SLEEP_MS, {
+          ...shared,
+          scmLookupAttempts: nextAttempt,
+          scmLookupLastError: reason,
+          scmLookupLoginRequired: true,
+          scmLookupStatus: `等待 SCM 登录 ${Math.min(nextAttempt * SCM_LOGIN_RETRY_SLEEP_MS, SCM_LOGIN_WAIT_MS) / 1000}/${SCM_LOGIN_WAIT_MS / 1000}s`,
+        })
+      }
       if ((payload?.retry || /未找到匹配 target|not ready|navigating|dataset/i.test(reason)) && attempts < 12) {
         return nextPhase('scm_lookup_target', 900, {
           ...shared,
@@ -3364,8 +3408,8 @@
           scmLookupFailedReason: reason,
         },
         scmLookupAttempts: 0,
-        scmLookupLastError: reason,
-        scmLookupStatus: 'SCM查询失败，使用固定洗护符号',
+        scmLookupLastError: loginRequired ? `SCM登录等待超时：${reason}` : reason,
+        scmLookupStatus: loginRequired ? 'SCM登录等待超时，使用固定洗护符号' : 'SCM查询失败，使用固定洗护符号',
       })
     }
 
@@ -3542,7 +3586,7 @@
             savedTemplateFieldsVerified: false,
             savedTemplateFieldMismatchSummary: verification.summary,
             savedTemplateFieldReadback: verification,
-            temuRowStatus: '保存字段回读不一致',
+            temuRowStatus: '保存字段回读不一致，准备API修正',
           }
           if (attempts < TEMPLATE_FIELD_CORRECTION_MAX_ATTEMPTS) {
             return nextPhase('prepare_care_payload', 200, {
@@ -3550,11 +3594,11 @@
               saveResult: null,
               resaveExistingWashLabel: isDownloadable(apiRecord),
               templateFieldCorrectionAttempts: attempts + 1,
-              temuRowStatus: `保存字段回读不一致，重新保存 ${attempts + 1}/${TEMPLATE_FIELD_CORRECTION_MAX_ATTEMPTS}`,
+              temuRowStatus: `保存字段回读不一致，通过TEMU保存接口修正 ${attempts + 1}/${TEMPLATE_FIELD_CORRECTION_MAX_ATTEMPTS}`,
             })
           }
-          return finishTargetFailure('saved_template_fields_mismatch', `TEMU 保存后字段回读仍不一致：${verification.summary}`, {
-            temuRowStatus: '保存字段回读不一致',
+          return finishTargetFailure('saved_template_fields_mismatch', `TEMU 保存接口修正后字段回读仍不一致：${verification.summary}`, {
+            temuRowStatus: '保存字段API修正失败',
             保存字段差异: verification.summary,
             TEMU回读字段: JSON.stringify(verification.actual),
             目标字段: JSON.stringify(verification.expected),
@@ -3718,7 +3762,10 @@
       ])
     }
     try {
-      const response = await pagePost('/visage-agent-seller/labelcode/care/create', payload)
+      const saveEndpoint = shared.resaveExistingWashLabel && isDownloadable(target)
+        ? '/visage-agent-seller/labelcode/care/edit'
+        : '/visage-agent-seller/labelcode/care/create'
+      const response = await pagePost(saveEndpoint, payload)
       const saveResult = responseData(response)
       const rejectedSiteNames = Array.isArray(saveResult?.rejectedSiteNames)
         ? saveResult.rejectedSiteNames.map(textOf).filter(Boolean)
@@ -3738,9 +3785,10 @@
       return nextPhase('post_save_lookup', 1200, {
         ...shared,
         saveResult: { success: true },
+        saveEndpoint,
         saveAttempts: 0,
         postSaveLookupAttempts: 0,
-        temuRowStatus: '已调用保存',
+        temuRowStatus: saveEndpoint.endsWith('/edit') ? '已调用编辑保存' : '已调用保存',
       })
     } catch (error) {
       const attempts = Number(shared.saveAttempts || 0)

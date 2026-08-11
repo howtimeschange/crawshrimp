@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -1241,6 +1242,57 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         )
         refresh_ws_url.assert_awaited_once()
 
+    async def test_cdp_target_eval_opens_missing_page_target(self):
+        class Bridge:
+            def __init__(self):
+                self.opened = []
+
+            async def get_tabs_async(self):
+                return []
+
+            async def new_tab_async(self, url):
+                self.opened.append(url)
+                return {
+                    "id": "scm-tab",
+                    "type": "page",
+                    "url": url,
+                    "webSocketDebuggerUrl": "ws://example.invalid/scm",
+                }
+
+            def get_tab_ws_url(self, tab):
+                return tab.get("webSocketDebuggerUrl", "")
+
+        bridge = Bridge()
+        runner = JSRunner("ws://example.invalid/current")
+        fake_ws = FakeCDPWebSocket([
+            {
+                "id": 1,
+                "result": {
+                    "result": {
+                        "type": "object",
+                        "value": {"ok": False, "reason": "scm_login_required"},
+                    },
+                },
+            },
+        ])
+
+        with patch("core.cdp_bridge.get_bridge", return_value=bridge):
+            with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+                result = await runner.evaluate_cdp_target(
+                    "(() => ({ ok: false, reason: 'scm_login_required' }))()",
+                    target_url_contains=["scm.semir.com"],
+                    target_types=["page"],
+                    open_url_if_missing="https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index",
+                    open_wait_ms=0,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["opened_target"])
+        self.assertEqual(bridge.opened, ["https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index"])
+        self.assertEqual(result["target"]["id"], "scm-tab")
+        self.assertEqual(fake_ws.sent[0]["method"], "Runtime.evaluate")
+        self.assertIn("scm_login_required", fake_ws.sent[0]["params"]["expression"])
+
     async def test_capture_screenshot_saves_png_runtime_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = JSRunner("ws://example.invalid", artifact_dir=tmpdir)
@@ -1435,6 +1487,30 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["items"][0]["signatureValidated"])
         self.assertEqual(result["items"][0]["bytes"], 2057)
         self.assertIn(str(pdf), runner.runtime_output_files)
+
+    async def test_check_runtime_files_rejects_pdf_before_current_run(self):
+        runner = JSRunner("ws://example.invalid")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_dir = Path(tmpdir) / "exports"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            pdf = target_dir / "76096921633-9950019805299.pdf"
+            pdf.write_bytes(b"%PDF-1.7\n" + b"0" * 2048)
+            old_time = time.time() - 120
+            pdf.touch()
+            os.utime(pdf, (old_time, old_time))
+            result = runner.check_runtime_files([{
+                "filename": pdf.name,
+                "target_dir": str(target_dir),
+                "expected_magic": "%PDF-",
+                "min_bytes": 1024,
+                "not_before_ms": int((time.time() - 30) * 1000),
+            }])
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["items"][0]["success"])
+        self.assertEqual(result["items"][0]["error"], "文件早于本次任务启动时间")
+        self.assertNotIn(str(pdf), runner.runtime_output_files)
 
     async def test_run_script_file_handles_runtime_url_capture_action(self):
         runner = RuntimeUrlCaptureRunner()

@@ -1619,7 +1619,7 @@ tasks:
         label: 允许调用 TEMU 保存接口
         default: true
         hidden: true
-        hint: 仅在执行模式为“保存制作并下载”时生效；未勾选时不会调用 care/create。
+        hint: 仅在执行模式为“保存制作并下载”时生效；未勾选时不会调用 care/create 或 care/edit。
       - id: download_after_save
         type: checkbox
         label: 回读已制作后下载官方 PDF

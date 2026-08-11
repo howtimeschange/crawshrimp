@@ -482,6 +482,74 @@ test('style-code lookup expands a款号 into SKU targets and records print-only 
   assert.equal(result.data[0].TEMU需要洗水唛, false)
 })
 
+test('style expansion recomputes SKU progress total from actual queue', async () => {
+  const firstStyleSkuTargets = Array.from({ length: 18 }, (_, index) => ({
+    ...PENDING_TARGET,
+    skcExtCode: '208326104202',
+    skuExtCode: `69427491939${String(index).padStart(2, '0')}`,
+    productSkuId: 1000 + index,
+  }))
+  const pendingStyleTarget = {
+    inputMode: 'style_code',
+    style: '208326105215',
+    skc: '208326105215',
+    status: 'ready',
+  }
+  const secondStyleSkuTargets = Array.from({ length: 18 }, (_, index) => ({
+    ...PENDING_TARGET,
+    skcExtCode: '208326105215',
+    skuExtCode: `69146783110${String(index).padStart(2, '0')}`,
+    productSkuId: 2000 + index,
+  }))
+
+  const result = await runAdapter({
+    phase: 'api_lookup_excel_target',
+    shared: {
+      excelTargets: [
+        ...firstStyleSkuTargets.map(record => ({
+          ...record,
+          inputMode: 'style_sku',
+          style: '208326104202',
+          skc: record.skcExtCode,
+          skuNo: record.skuExtCode,
+          enterpriseCode: record.skuExtCode,
+          status: 'ready',
+        })),
+        pendingStyleTarget,
+      ],
+      excelTarget: pendingStyleTarget,
+      currentExcelTargetIndex: 18,
+      style_total: 2,
+      style_completed: 1,
+      sku_total: 35,
+      sku_completed: 18,
+    },
+    postImpl: async ({ requestPath, payload }) => {
+      assert.equal(requestPath, '/visage-agent-seller/labelcode/pageQuery')
+      assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+        page: 1,
+        pageSize: 200,
+        skcExtCodes: ['208326105215'],
+      })
+      return {
+        res: {
+          total: 18,
+          pageItems: secondStyleSkuTargets.map(record => makePageItem(record)),
+        },
+      }
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_lookup_excel_target')
+  assert.equal(result.meta.shared.excelTargets.length, 36)
+  assert.equal(result.meta.shared.sku_total, 36)
+  assert.equal(result.meta.shared.sku_completed, 18)
+  assert.equal(result.meta.shared.total_rows, 36)
+  assert.equal(result.meta.shared.current_exec_no, 19)
+  assert.match(result.meta.shared.current_store, /AI洗唛制作 \/ 制作 SKU 19\/36/)
+  assert.equal(result.meta.shared.excelTarget.skuNo, '6914678311000')
+})
+
 test('enterprise code lookup queries TEMU by enterprise code and then requests SCM lookup', async () => {
   const result = await runAdapter({
     phase: 'api_lookup_excel_target',
@@ -521,10 +589,41 @@ test('SCM lookup phase evaluates the logged-in SCM tab without copying credentia
   assert.equal(result.meta.next_phase, 'verify_scm_lookup')
   assert.equal(result.meta.shared_key, 'scmLookupResult')
   assert.deepEqual(Array.from(result.meta.target_url_contains), ['scm.semir.com'])
+  assert.equal(result.meta.open_url_if_missing, 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index')
+  assert.equal(result.meta.open_wait_ms, 2000)
   assert.match(result.meta.expression, /scm-qc-wash-appr-index/)
   assert.match(result.meta.expression, /input_0_P_MAT_CODE/)
   assert.match(result.meta.expression, /innerText \|\| value\.textContent/)
   assert.doesNotMatch(result.meta.expression, /cookie|localStorage|sf-token|Anti-Content/i)
+})
+
+test('SCM login page waits up to the manual login window before falling back', async () => {
+  const apiTarget = { ...PENDING_TARGET, ...ENTERPRISE_TARGET, excelStyle: '209225117208' }
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: false,
+          retry: true,
+          loginRequired: true,
+          reason: 'scm_login_required',
+          currentUrl: 'https://scm.semir.com/selfcare/login',
+          title: '统一身份认证 登录',
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'scm_lookup_target')
+  assert.equal(result.meta.sleep_ms, 5000)
+  assert.equal(result.meta.shared.scmLookupAttempts, 1)
+  assert.equal(result.meta.shared.scmLookupLoginRequired, true)
+  assert.match(result.meta.shared.scmLookupStatus, /等待 SCM 登录 5\/500s/)
 })
 
 test('SCM lookup result attaches completed composition evidence before care query', async () => {
@@ -566,7 +665,7 @@ test('SCM lookup failure continues with fixed care symbols instead of failing th
       scmLookupAttempts: 12,
       scmLookupResult: {
         ok: false,
-        error: 'SCM login expired',
+        error: 'SCM component crashed',
       },
     },
   })
@@ -574,7 +673,34 @@ test('SCM lookup failure continues with fixed care symbols instead of failing th
   assert.equal(result.meta.next_phase, 'api_care_query')
   assert.equal(result.data.length, 0)
   assert.equal(result.meta.shared.scmLookupStatus, 'SCM查询失败，使用固定洗护符号')
-  assert.equal(result.meta.shared.apiTarget.scmLookupFailedReason, 'SCM login expired')
+  assert.equal(result.meta.shared.apiTarget.scmLookupFailedReason, 'SCM component crashed')
+})
+
+test('SCM login wait falls back after the 500s manual login window is exhausted', async () => {
+  const apiTarget = { ...PENDING_TARGET, ...ENTERPRISE_TARGET, excelStyle: '209225117208' }
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupAttempts: 100,
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: false,
+          retry: true,
+          loginRequired: true,
+          reason: 'scm_login_required',
+          currentUrl: 'https://scm.semir.com/selfcare/login',
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_care_query')
+  assert.equal(result.meta.shared.scmLookupStatus, 'SCM登录等待超时，使用固定洗护符号')
+  assert.match(result.meta.shared.scmLookupLastError, /SCM登录等待超时/)
 })
 
 test('SCM evidence without composition still continues for care-symbol mapping', async () => {
@@ -1375,6 +1501,52 @@ test('save phase calls TEMU care create only with explicit double opt-in', async
   assert.equal(result.meta.next_phase, 'post_save_lookup')
 })
 
+test('save phase calls TEMU care edit when resaving an already made wash label', async () => {
+  const apiTarget = { ...READY_TARGET, excelStyle: EXCEL_TARGET.style }
+  let observed = null
+  const result = await runAdapter({
+    phase: 'save_care_label',
+    params: { execute_mode: 'create_and_download', allow_save: true },
+    shared: {
+      apiTarget,
+      resaveExistingWashLabel: true,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      carePayload: {
+        productSkuId: READY_TARGET.productSkuId,
+        productSkcId: READY_TARGET.productSkcId,
+        productId: READY_TARGET.productId,
+        manufacturerName: 'Zhejiang Semir Garment Co.,Ltd.',
+        manufacturerAddressPg: 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China',
+        batchNumber: 'PC241016',
+        productionDate: '2026-07-01',
+        washing: 13,
+        bleaching: 3,
+        drying: 4,
+        ironing: 3,
+        dryCleaning: 5,
+        len: 270,
+        width: 45,
+        padding: 10,
+        ukfrInfo: {},
+        ingLangs: ['en'],
+      },
+    },
+    postImpl: async request => {
+      observed = request
+      return { res: {} }
+    },
+  })
+
+  assert.equal(observed.requestPath, '/visage-agent-seller/labelcode/care/edit')
+  assert.equal(observed.payload.productSkuId, READY_TARGET.productSkuId)
+  assert.equal(observed.payload.productionDate, '2026-07-01')
+  assert.equal(observed.payload.len, 270)
+  assert.equal(result.meta.next_phase, 'post_save_lookup')
+  assert.equal(result.meta.shared.saveEndpoint, '/visage-agent-seller/labelcode/care/edit')
+  assert.equal(result.meta.shared.temuRowStatus, '已调用编辑保存')
+})
+
 test('save phase can resave an already made wash label before export', async () => {
   const apiTarget = { ...READY_TARGET, excelStyle: EXCEL_TARGET.style }
   let observed = null
@@ -1409,7 +1581,7 @@ test('save phase can resave an already made wash label before export', async () 
     },
   })
 
-  assert.equal(observed.requestPath, '/visage-agent-seller/labelcode/care/create')
+  assert.equal(observed.requestPath, '/visage-agent-seller/labelcode/care/edit')
   assert.equal(observed.payload.productSkuId, READY_TARGET.productSkuId)
   assert.equal(result.meta.next_phase, 'post_save_lookup')
 })
@@ -1538,7 +1710,60 @@ test('saved template field mismatch is corrected by resaving before download', a
   assert.equal(result.meta.shared.savedTemplateFieldsVerified, false)
   assert.match(result.meta.shared.savedTemplateFieldMismatchSummary, /生产日期/)
   assert.match(result.meta.shared.savedTemplateFieldMismatchSummary, /洗水唛长度mm/)
-  assert.match(result.meta.shared.temuRowStatus, /重新保存 1\/3/)
+  assert.match(result.meta.shared.temuRowStatus, /保存接口修正 1\/3/)
+})
+
+test('saved template field mismatch records final failure without auto retry after correction limit', async () => {
+  const apiTarget = {
+    ...READY_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    excelLabelWidthMm: 45,
+    excelLabelLengthMm: 270,
+    excelLabelPaddingMm: 10,
+  }
+  const result = await runAdapter({
+    phase: 'api_care_query',
+    params: { execute_mode: 'create_and_download', allow_save: true },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      saveResult: { success: true },
+      templateFieldCorrectionAttempts: 3,
+      carePayloadSummary: {
+        manufacturerName: 'Zhejiang Semir Garment Co.,Ltd.',
+        manufacturerAddressPg: 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China',
+        productionDate: '2026-07-01',
+        batchNumber: 'PC241016',
+        width: 45,
+        len: 270,
+        padding: 10,
+      },
+    },
+    postImpl: async ({ requestPath }) => {
+      assert.equal(requestPath, '/visage-agent-seller/labelcode/care/query')
+      return careQueryResponse({
+        productId: READY_TARGET.productId,
+        productSkuId: READY_TARGET.productSkuId,
+        productSkcId: READY_TARGET.productSkcId,
+        manufacturerName: 'Zhejiang Semir Garment Co.,Ltd.',
+        manufacturerAddressPg: 'No.98, Nanhui Road, Louqiao Industrial Park, Ouhai District, Wenzhou/Zhejiang, China',
+        productionDate: '2024-10-01',
+        batchNumber: 'PC241016',
+        width: 45,
+        len: 230,
+        padding: 10,
+      })
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'advance_excel_target')
+  assert.equal(result.meta.shared.excelTargets.length, 1)
+  assert.equal(result.meta.shared.failedSkuRetryAttempts, undefined)
+  assert.equal(result.data.length, 1)
+  assert.equal(result.data[0].结果, 'saved_template_fields_mismatch')
+  assert.match(result.data[0].保存字段差异, /生产日期/)
+  assert.match(result.data[0].保存字段差异, /洗水唛长度mm/)
 })
 
 test('prepare search closes stale export modal before querying the next SKU', async () => {

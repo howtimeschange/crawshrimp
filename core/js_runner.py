@@ -14,6 +14,7 @@ import secrets
 import shutil
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, List, Optional
 from urllib.error import HTTPError, URLError
@@ -350,6 +351,8 @@ class JSRunner:
         target_url_regex: Optional[str] = None,
         target_types: Optional[list[str]] = None,
         user_gesture: bool = False,
+        open_url_if_missing: str = "",
+        open_wait_ms: int = 0,
     ) -> dict:
         """Evaluate JavaScript in another CDP target, such as a cross-origin iframe."""
         expression = str(expression or "").strip()
@@ -373,32 +376,71 @@ class JSRunner:
             except re.error as e:
                 return {"ok": False, "error": f"cdp_target_eval target_url_regex 无效: {e}"}
 
-        tabs = await self._bridge_get_tabs()
-        matches = []
-        for tab in tabs or []:
-            tab_url = str(tab.get("url") or "")
-            tab_type = str(tab.get("type") or "")
-            if type_set and tab_type not in type_set:
-                continue
-            if contains and not all(part in tab_url for part in contains):
-                continue
-            if regex and not regex.search(tab_url):
-                continue
-            if not tab.get("webSocketDebuggerUrl"):
-                continue
-            matches.append(tab)
-
-        if not matches:
+        async def matching_tabs() -> tuple[list, list[str]]:
+            tabs = await self._bridge_get_tabs()
+            matches = []
+            for tab in tabs or []:
+                tab_url = str(tab.get("url") or "")
+                tab_type = str(tab.get("type") or "")
+                if type_set and tab_type not in type_set:
+                    continue
+                if contains and not all(part in tab_url for part in contains):
+                    continue
+                if regex and not regex.search(tab_url):
+                    continue
+                if not tab.get("webSocketDebuggerUrl"):
+                    continue
+                matches.append(tab)
             sample_urls = [
                 str(tab.get("url") or "")[:180]
                 for tab in (tabs or [])
                 if str(tab.get("type") or "") in (type_set or {"page", "iframe"})
             ][:8]
+            return matches, sample_urls
+
+        matches, sample_urls = await matching_tabs()
+        opened_target = False
+        opened_url = str(open_url_if_missing or "").strip()
+        if not matches and opened_url and (not type_set or "page" in type_set):
+            try:
+                from core.cdp_bridge import get_bridge
+
+                bridge = get_bridge()
+                target = await self._bridge_new_tab(opened_url)
+                target_ws = str(target.get("webSocketDebuggerUrl") or bridge.get_tab_ws_url(target) or "")
+                if not target_ws:
+                    return {
+                        "ok": False,
+                        "error": "cdp_target_eval 打开的标签页缺少 webSocketDebuggerUrl",
+                        "opened_url": opened_url,
+                    }
+                target = {
+                    **target,
+                    "webSocketDebuggerUrl": target_ws,
+                    "url": str(target.get("url") or opened_url),
+                    "type": str(target.get("type") or "page"),
+                }
+                matches = [target]
+                opened_target = True
+                if open_wait_ms and open_wait_ms > 0:
+                    await asyncio.sleep(min(float(open_wait_ms) / 1000.0, 10.0))
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "error": f"cdp_target_eval 打开目标页失败: {e}",
+                    "target_url_contains": contains,
+                    "target_url_regex": str(target_url_regex or ""),
+                    "open_url_if_missing": opened_url,
+                    "sample_urls": sample_urls,
+                }
+
+        if not matches:
             return {
                 "ok": False,
                 "error": "cdp_target_eval 未找到匹配 target",
                 "target_url_contains": contains,
                 "target_url_regex": str(target_url_regex or ""),
+                "open_url_if_missing": opened_url,
                 "sample_urls": sample_urls,
             }
 
@@ -416,6 +458,7 @@ class JSRunner:
             return {
                 "ok": False,
                 "error": str(e),
+                "opened_target": opened_target,
                 "target": {
                     "id": target.get("id"),
                     "url": target.get("url"),
@@ -428,6 +471,7 @@ class JSRunner:
             return {
                 "ok": False,
                 "error": str(response.get("error") or "Runtime.evaluate failed"),
+                "opened_target": opened_target,
                 "target": {
                     "id": target.get("id"),
                     "url": target.get("url"),
@@ -441,6 +485,7 @@ class JSRunner:
                 "ok": False,
                 "error": str(exception.get("text") or exception.get("exception", {}).get("description") or "Runtime exception"),
                 "exception": exception,
+                "opened_target": opened_target,
                 "target": {
                     "id": target.get("id"),
                     "url": target.get("url"),
@@ -456,6 +501,7 @@ class JSRunner:
         return {
             "ok": True,
             "value": value,
+            "opened_target": opened_target,
             "target": {
                 "id": target.get("id"),
                 "url": target.get("url"),
@@ -1144,9 +1190,18 @@ class JSRunner:
         filename: str = "",
     ) -> tuple[bool, str, dict]:
         try:
-            size = path.stat().st_size
+            stat = path.stat()
+            size = stat.st_size
         except OSError as exc:
             return False, f"下载文件无法读取: {exc}", {"bytes": 0}
+
+        min_mtime_ns = self._runtime_file_min_mtime_ns(item or {})
+        if min_mtime_ns and stat.st_mtime_ns < min_mtime_ns:
+            return False, "文件早于本次任务启动时间", {
+                "bytes": size,
+                "mtimeNs": stat.st_mtime_ns,
+                "minMtimeNs": min_mtime_ns,
+            }
 
         min_bytes = int((item or {}).get("min_bytes") or (item or {}).get("minBytes") or 1)
         if size < max(min_bytes, 1):
@@ -1185,9 +1240,68 @@ class JSRunner:
 
         return True, "", {
             "bytes": size,
+            "mtimeNs": stat.st_mtime_ns,
             "signatureValidated": signature_validated,
             "expectedMagic": expected_magic.decode("utf-8", "replace") if expected_magic else "",
         }
+
+    def _runtime_file_min_mtime_ns(self, item: dict) -> int:
+        raw = (
+            item.get("not_before_ns")
+            or item.get("notBeforeNs")
+            or item.get("min_mtime_ns")
+            or item.get("minMtimeNs")
+        )
+        if raw not in (None, ""):
+            try:
+                return max(0, int(float(raw)))
+            except (TypeError, ValueError):
+                return 0
+
+        raw_ms = (
+            item.get("not_before_ms")
+            or item.get("notBeforeMs")
+            or item.get("min_mtime_ms")
+            or item.get("minMtimeMs")
+        )
+        if raw_ms not in (None, ""):
+            try:
+                return max(0, int(float(raw_ms) * 1_000_000))
+            except (TypeError, ValueError):
+                return 0
+
+        raw_seconds = (
+            item.get("not_before_epoch")
+            or item.get("notBeforeEpoch")
+            or item.get("min_mtime_epoch")
+            or item.get("minMtimeEpoch")
+        )
+        if raw_seconds not in (None, ""):
+            try:
+                return max(0, int(float(raw_seconds) * 1_000_000_000))
+            except (TypeError, ValueError):
+                return 0
+
+        raw_iso = (
+            item.get("not_before_iso")
+            or item.get("notBeforeIso")
+            or item.get("not_before")
+            or item.get("notBefore")
+            or item.get("min_mtime_iso")
+            or item.get("minMtimeIso")
+        )
+        text = str(raw_iso or "").strip()
+        if not text:
+            return 0
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.astimezone()
+            else:
+                parsed = parsed.astimezone(timezone.utc)
+            return max(0, int(parsed.timestamp() * 1_000_000_000))
+        except (TypeError, ValueError, OSError):
+            return 0
 
     def _snapshot_download_state(
         self,
@@ -3473,6 +3587,8 @@ class JSRunner:
                                 target_url_regex=meta.get("target_url_regex") or meta.get("targetUrlRegex"),
                                 target_types=meta.get("target_types") or meta.get("targetTypes") or ["page", "iframe"],
                                 user_gesture=bool(meta.get("user_gesture") or meta.get("userGesture")),
+                                open_url_if_missing=str(meta.get("open_url_if_missing") or meta.get("openUrlIfMissing") or ""),
+                                open_wait_ms=int(meta.get("open_wait_ms") or meta.get("openWaitMs") or 0),
                             )
                             shared_key = str(meta.get("shared_key") or meta.get("sharedKey") or "").strip()
                             if shared_key:
