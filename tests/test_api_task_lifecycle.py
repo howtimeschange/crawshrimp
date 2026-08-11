@@ -92,6 +92,23 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persisted["organize_completed"], 4)
         self.assertEqual(persisted["organize_stage"], "复制命名")
 
+    async def test_read_local_excel_accepts_gbk_csv_headers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "temu-wash-label-demand.csv"
+            path.write_bytes(
+                (
+                    "款号,制造商名称,制造商地址,生产日期,批次号,洗水唛宽度mm,洗水唛长度mm,上下预留mm\n"
+                    '208326105215,"Zhejiang Semir Garment Co.,Ltd.",地址,2026/7/1,PC241016,45,270,10\n'
+                ).encode("gbk")
+            )
+
+            table = api_server._read_local_excel(str(path))
+
+        self.assertNotIn("error", table)
+        self.assertEqual(table["headers"][0], "款号")
+        self.assertEqual(table["rows"][0]["款号"], "208326105215")
+        self.assertEqual(table["rows"][0]["洗水唛长度mm"], "270")
+
     async def test_short_video_progress_exposes_shared_results_count(self):
         progress = api_server._build_live_progress(
             {
@@ -420,6 +437,149 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(live["detail_completed_targets"], 21)
         self.assertEqual(live["detail_current_target_index"], 21)
         self.assertEqual(live["detail_current_target"], "")
+
+    async def test_ai_wash_label_create_exports_result_excel_on_completion(self):
+        class FakeBridge:
+            def get_tabs(self):
+                return [{
+                    "id": "tab-1",
+                    "type": "page",
+                    "url": "https://agentseller.temu.com/goods/label",
+                    "webSocketDebuggerUrl": "ws://example.invalid",
+                }]
+
+            def get_tab_ws_url(self, tab):
+                return tab["webSocketDebuggerUrl"]
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+                self.tab_id = "tab-1"
+                self.tab_url = "https://agentseller.temu.com/goods/label"
+                self.last_runtime_shared = {}
+                self.last_runtime_phase = ""
+
+            async def evaluate(self, expression):
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "success": True,
+                        "data": [{"shared_shop_name": "balabala Official Shop"}],
+                        "meta": {"has_more": False},
+                        "error": None,
+                    },
+                )()
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                self.last_runtime_phase = "done"
+                self.last_runtime_shared = {
+                    "progress_kind": "temu_ai_wash_label",
+                    "wash_label_stage": "finalize",
+                    "total_rows": 1,
+                    "current_exec_no": 1,
+                    "current_store": "洗唛任务完成",
+                }
+                return [{
+                    "店铺": "balabala Official Shop",
+                    "款号": "208326105215",
+                    "SKU货号": "6914678311020",
+                    "结果": "official_download_received",
+                    "文件名": "59999054922-6914678311020.pdf",
+                    "文件路径": "/Users/xingyicheng/Downloads/59999054922-6914678311020.pdf",
+                }]
+
+        class FakeParam:
+            def __init__(self, id, default=None):
+                self.id = id
+                self.default = default
+
+        result_columns = ["店铺", "款号", "SKU货号", "结果", "文件名", "文件路径"]
+
+        class FakeTask:
+            id = "ai_wash_label_create"
+            name = "AI洗唛制作"
+            description = ""
+            entry_url = "https://agentseller.temu.com/goods/label"
+            tab_match_prefixes = ["https://agentseller.temu.com/goods/label"]
+            output = [
+                type(
+                    "Output",
+                    (),
+                    {
+                        "type": OutputType.excel,
+                        "filename": "ai-wash-label-create-result_{timestamp}.xlsx",
+                        "columns": result_columns,
+                        "column_groups": None,
+                        "sheet_key": None,
+                        "sheets": None,
+                    },
+                )(),
+                type(
+                    "Output",
+                    (),
+                    {
+                        "type": OutputType.json,
+                        "filename": "ai-wash-label-create-diagnostic_{timestamp}.json",
+                        "columns": None,
+                        "column_groups": None,
+                        "sheet_key": None,
+                        "sheets": None,
+                    },
+                )(),
+            ]
+            script = "wash-label-create-and-download.js"
+            skip_auth = True
+            params = [FakeParam("mode", "current")]
+
+        class FakeAdapter:
+            id = "temu"
+            name = "Temu 运营助手"
+            entry_url = "https://agentseller.temu.com"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = None
+
+        exported_rows = []
+        exported_column_order = []
+
+        def fake_export_excel(data_rows, *args, **kwargs):
+            exported_rows.extend([dict(row) for row in data_rows])
+            exported_column_order.extend(kwargs.get("column_order") or [])
+            return "/tmp/ai-wash-label-create-result.xlsx"
+
+        def fake_export_json(data_rows, *args, **kwargs):
+            return "/tmp/ai-wash-label-create-diagnostic.json"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "wash-label-create-and-download.js"
+            script_path.write_text("", encoding="utf-8")
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                        with patch("core.js_runner.JSRunner", FakeRunner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=2401):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                                        with patch("core.api_server.data_sink.export_excel", side_effect=fake_export_excel):
+                                            with patch("core.api_server.data_sink.export_json", side_effect=fake_export_json):
+                                                with patch("core.api_server.data_sink.finish_run") as finish_run:
+                                                    await api_server._execute_task(
+                                                        "temu",
+                                                        "ai_wash_label_create",
+                                                        {"mode": "current"},
+                                                        {},
+                                                    )
+
+        self.assertEqual(len(exported_rows), 1)
+        self.assertEqual(exported_rows[0]["结果"], "official_download_received")
+        self.assertEqual(exported_column_order, result_columns)
+        finish_run.assert_called_once_with(
+            2401,
+            1,
+            ["/tmp/ai-wash-label-create-result.xlsx", "/tmp/ai-wash-label-create-diagnostic.json"],
+        )
 
     async def test_bridge_call_async_times_out_external_dependency(self):
         class SlowBridge:

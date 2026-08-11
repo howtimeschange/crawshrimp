@@ -480,7 +480,7 @@ test('enterprise code lookup queries TEMU by enterprise code and then requests S
   assert.equal(result.meta.next_phase, 'scm_lookup_target')
   assert.equal(result.meta.shared.apiTarget.enterpriseCode, '9950019805206')
   assert.equal(result.meta.shared.apiTarget.excelStyle, '209225117208')
-  assert.equal(result.meta.shared.apiTarget.outputFilename, '209225117208-9950019805206.pdf')
+  assert.equal(result.meta.shared.apiTarget.outputFilename, '76096921633-9950019805206.pdf')
 })
 
 test('SCM lookup phase evaluates the logged-in SCM tab without copying credentials', async () => {
@@ -848,7 +848,36 @@ test('care query infers SKU code from SCM SKC plus TEMU size for enterprise file
 
   assert.equal(result.meta.next_phase, 'prepare_care_payload')
   assert.equal(result.meta.shared.apiTarget.excelSkuCode, '20922511720810101110')
-  assert.equal(result.meta.shared.apiTarget.outputFilename, '20922511720810101110-9950019805206.pdf')
+  assert.equal(result.meta.shared.apiTarget.outputFilename, '76096921633-9950019805299.pdf')
+})
+
+test('downloadable wash label is resaved from template before export in create-and-download mode', async () => {
+  const apiTarget = {
+    ...READY_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    excelLabelWidthMm: 45,
+    excelLabelLengthMm: 270,
+    excelLabelPaddingMm: 10,
+  }
+  const result = await runAdapter({
+    phase: 'api_care_query',
+    params: { execute_mode: 'create_and_download', allow_save: true },
+    shared: { apiTarget, excelTargets: [EXCEL_TARGET], excelTarget: EXCEL_TARGET },
+    postImpl: async ({ requestPath }) => {
+      assert.equal(requestPath, '/visage-agent-seller/labelcode/care/query')
+      return careQueryResponse({
+        productId: READY_TARGET.productId,
+        productSkuId: READY_TARGET.productSkuId,
+        productSkcId: READY_TARGET.productSkcId,
+        len: 230,
+        width: 30,
+      })
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_care_payload')
+  assert.equal(result.meta.shared.resaveExistingWashLabel, true)
+  assert.equal(result.meta.shared.temuRowStatus, '已制作，按模板重新保存后导出')
 })
 
 test('dry-run prepares AI defaults without manufacturer fields and never saves', async () => {
@@ -1131,6 +1160,40 @@ test('dry-run reports the configured label length used for TEMU save payload', a
   assert.equal(result.data[0].洗水唛尺码, '110')
 })
 
+test('payload uses template dimensions and forces tracking label display', async () => {
+  const apiTarget = {
+    ...READY_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    excelLabelWidthMm: 45,
+    excelLabelLengthMm: 270,
+    excelLabelPaddingMm: 10,
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse({
+        productId: READY_TARGET.productId,
+        productSkuId: READY_TARGET.productSkuId,
+        productSkcId: READY_TARGET.productSkcId,
+        showTrackingLabel: false,
+        len: 230,
+        width: 30,
+      }).res,
+      careLabel: { width: 30, len: 230, padding: 10, size: '90' },
+    },
+  })
+
+  assert.equal(result.meta.shared.carePayload.showTrackingLabel, true)
+  assert.equal(result.meta.shared.carePayload.len, 270)
+  assert.equal(result.meta.shared.carePayload.width, 45)
+  assert.equal(result.meta.shared.carePayload.padding, 10)
+  assert.equal(result.meta.shared.carePayloadSummary.len, 270)
+  assert.equal(result.meta.shared.carePayloadSummary.lengthSource, 'excel')
+})
+
 test('dry-run keeps SCM composition as evidence and preserves TEMU material payload', async () => {
   const apiTarget = {
     ...PENDING_TARGET,
@@ -1233,7 +1296,46 @@ test('save phase calls TEMU care create only with explicit double opt-in', async
   assert.equal(result.meta.next_phase, 'post_save_lookup')
 })
 
-test('post-save lookup waits until TEMU reports downloadable and preserves Excel filename', async () => {
+test('save phase can resave an already made wash label before export', async () => {
+  const apiTarget = { ...READY_TARGET, excelStyle: EXCEL_TARGET.style }
+  let observed = null
+  const result = await runAdapter({
+    phase: 'save_care_label',
+    params: { execute_mode: 'create_and_download', allow_save: true },
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      resaveExistingWashLabel: true,
+      carePayload: {
+        productSkuId: READY_TARGET.productSkuId,
+        productSkcId: READY_TARGET.productSkcId,
+        productId: READY_TARGET.productId,
+        showTrackingLabel: true,
+        washing: 13,
+        bleaching: 3,
+        drying: 8,
+        ironing: 3,
+        dryCleaning: 5,
+        len: 270,
+        width: 45,
+        padding: 10,
+        ukfrInfo: {},
+        ingLangs: ['en'],
+      },
+    },
+    postImpl: async request => {
+      observed = request
+      return { res: { success: true } }
+    },
+  })
+
+  assert.equal(observed.requestPath, '/visage-agent-seller/labelcode/care/create')
+  assert.equal(observed.payload.productSkuId, READY_TARGET.productSkuId)
+  assert.equal(result.meta.next_phase, 'post_save_lookup')
+})
+
+test('post-save lookup waits until TEMU reports downloadable and uses page SKU filename', async () => {
   const apiTarget = {
     ...PENDING_TARGET,
     excelStyle: EXCEL_TARGET.style,
@@ -1254,7 +1356,7 @@ test('post-save lookup waits until TEMU reports downloadable and preserves Excel
   })
 
   assert.equal(result.meta.next_phase, 'api_care_query')
-  assert.equal(result.meta.shared.apiTarget.outputFilename, '20922511720860904110-9950019805299.pdf')
+  assert.equal(result.meta.shared.apiTarget.outputFilename, '76096921633-9950019805299.pdf')
   assert.equal(result.meta.shared.apiTarget.cosmeticLabelStatus, 2)
 })
 
@@ -1270,7 +1372,7 @@ test('prepare search closes stale export modal before querying the next SKU', as
     phase: 'prepare_search',
     document,
     shared: {
-      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      apiTarget: { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' },
       excelTargets: [EXCEL_TARGET],
       excelTarget: EXCEL_TARGET,
     },
@@ -1279,6 +1381,37 @@ test('prepare search closes stale export modal before querying the next SKU', as
   assert.equal(result.meta.next_phase, 'prepare_search')
   assert.equal(result.meta.shared.exportModalCloseAttempts, 1)
   assert.equal(cancelClicked, true)
+})
+
+test('download verification closes export modal with return-to-edit action', async () => {
+  let returnClicked = false
+  const returnButton = new FakeElement({ tagName: 'button', text: '返回修改' })
+  returnButton.click = () => { returnClicked = true }
+  const staleModal = new FakeElement({ text: '确认导出吗？ PDF PNG 洗水唛预览 确认无误，导出 返回修改' })
+  staleModal.querySelectorAll = selector => (selector === 'button' ? [returnButton] : [])
+  const document = baseDocument().setSelector('[data-testid="beast-core-modal"]', [staleModal])
+
+  const result = await runAdapter({
+    phase: 'verify_download',
+    document,
+    shared: {
+      apiTarget: { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      downloadResult: {
+        items: [{
+          success: true,
+          signatureValidated: true,
+          path: '/tmp/official.pdf',
+          bytes: 712785,
+        }],
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'verify_download')
+  assert.equal(result.meta.shared.exportModalCloseAttempts, 1)
+  assert.equal(returnClicked, true)
 })
 
 test('prepare search closes stale wash-label edit drawer before querying the next SKU', async () => {
@@ -1293,7 +1426,7 @@ test('prepare search closes stale wash-label edit drawer before querying the nex
     phase: 'prepare_search',
     document,
     shared: {
-      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      apiTarget: { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' },
       excelTargets: [EXCEL_TARGET],
       excelTarget: EXCEL_TARGET,
     },
@@ -1333,7 +1466,7 @@ test('download flow opens wash-label editor instead of direct list export', asyn
     phase: 'verify_search',
     document,
     shared: {
-      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      apiTarget: { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' },
       excelTargets: [EXCEL_TARGET],
       excelTarget: EXCEL_TARGET,
       careLabel: { size: '110' },
@@ -1358,7 +1491,7 @@ test('wash-label editor complete-and-export button opens export preparation phas
     phase: 'prepare_edit_export',
     document,
     shared: {
-      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      apiTarget: { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' },
       excelTargets: [EXCEL_TARGET],
       excelTarget: EXCEL_TARGET,
     },
@@ -1368,6 +1501,128 @@ test('wash-label editor complete-and-export button opens export preparation phas
   assert.equal(result.meta.shared.exportSource, 'wash_label_edit_complete_export')
   assert.equal(result.meta.shared.temuRowStatus, '已从编辑窗口触发完成并导出')
   assert.equal(completeClicked, true)
+})
+
+test('safe print fallback starts from template length before export', async () => {
+  let sizeEditClicked = false
+  const editButton = new FakeElement({ tagName: 'a', text: '修改' })
+  const sizeScope = new FakeElement({ text: '*洗水唛尺寸 长：270mm 宽：45mm 修改' })
+  editButton.closest = () => sizeScope
+  editButton.click = () => { sizeEditClicked = true }
+  const completeButton = new FakeElement({ tagName: 'button', text: '完成并导出' })
+  const drawer = new FakeElement({ text: '修改洗水唛 尺寸 (270mm*45mm) 已超出安全打印区域 长：270mm 宽：45mm 修改 完成并导出 取消' })
+  drawer.querySelectorAll = selector => {
+    if (selector === 'a,button,[role="button"]') return [editButton]
+    if (selector === 'button') return [completeButton]
+    return []
+  }
+  const document = baseDocument()
+    .setSelector('[data-testid="beast-core-modal"], [class*="MDL_outerWrapper"], [class*="MDL_innerWrapper"]', [])
+    .setSelector('[class*="Drawer_visible"], [class*="Drawer_content"], [class*="drawer-body"], [class*="edit-modal_container"]', [drawer])
+
+  const result = await runAdapter({
+    phase: 'prepare_edit_export',
+    document,
+    shared: {
+      apiTarget: {
+        ...READY_TARGET,
+        outputFilename: '50588044853-9950019805206.pdf',
+        excelLabelLengthMm: 270,
+        excelLabelWidthMm: 45,
+        excelLabelPaddingMm: 10,
+      },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      carePayloadSummary: { width: 45, len: 270, padding: 10 },
+      careLabel: { width: 45, len: 270, padding: 10, size: '90' },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_edit_export')
+  assert.equal(result.meta.shared.safePrintLengthBaseMm, 270)
+  assert.equal(result.meta.shared.safePrintPendingLengthMm, 290)
+  assert.equal(result.meta.shared.safePrintLengthCoarseSteps, 1)
+  assert.equal(sizeEditClicked, true)
+})
+
+test('safe print fallback confirms adjusted length and updates result summary', async () => {
+  let confirmed = false
+  const lengthInput = new FakeElement({ tagName: 'input' })
+  lengthInput.value = '270'
+  const widthInput = new FakeElement({ tagName: 'input' })
+  widthInput.value = '45'
+  const confirmButton = new FakeElement({ tagName: 'button', text: '确认' })
+  confirmButton.click = () => { confirmed = true }
+  const modal = new FakeElement({ text: '修改洗水唛尺寸 长 mm 宽 mm 确认取消' })
+  modal.querySelectorAll = selector => {
+    if (selector === 'input') return [lengthInput, widthInput]
+    if (selector === 'button') return [confirmButton]
+    return []
+  }
+  const drawer = new FakeElement({ text: '修改洗水唛 尺寸 (270mm*45mm) 已超出安全打印区域 长：270mm 宽：45mm 完成并导出 取消' })
+  drawer.querySelectorAll = selector => (selector === 'button' ? [new FakeElement({ tagName: 'button', text: '完成并导出' })] : [])
+  const document = baseDocument()
+    .setSelector('[data-testid="beast-core-modal"], [class*="MDL_outerWrapper"], [class*="MDL_innerWrapper"]', [modal])
+    .setSelector('[class*="Drawer_visible"], [class*="Drawer_content"], [class*="drawer-body"], [class*="edit-modal_container"]', [drawer])
+
+  const result = await runAdapter({
+    phase: 'prepare_edit_export',
+    document,
+    shared: {
+      apiTarget: {
+        ...READY_TARGET,
+        outputFilename: '50588044853-9950019805206.pdf',
+        excelLabelLengthMm: 270,
+        excelLabelWidthMm: 45,
+      },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      safePrintLengthBaseMm: 270,
+      safePrintLengthCoarseSteps: 1,
+      safePrintPendingLengthMm: 290,
+      safePrintLengthAdjustmentStrategy: '+20mm',
+      carePayload: { len: 270, width: 45 },
+      carePayloadSummary: { width: 45, len: 270, padding: 10 },
+      careLabel: { width: 45, len: 270, padding: 10, size: '90' },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_edit_export')
+  assert.equal(result.meta.shared.carePayload.len, 290)
+  assert.equal(result.meta.shared.carePayloadSummary.len, 290)
+  assert.equal(result.meta.shared.carePayloadSummary.safePrintLengthAdjusted, true)
+  assert.equal(result.meta.shared.carePayloadSummary.safePrintLengthBaseMm, 270)
+  assert.equal(lengthInput.value, '290')
+  assert.equal(widthInput.value, '45')
+  assert.equal(confirmed, true)
+})
+
+test('export preparation retries complete-and-export when confirmation modal is delayed', async () => {
+  let completeClicks = 0
+  const completeButton = new FakeElement({ tagName: 'button', text: '完成并导出' })
+  completeButton.click = () => { completeClicks += 1 }
+  const drawer = new FakeElement({ text: '修改洗水唛 尺寸 (230mm*45mm) 完成并导出 取消' })
+  drawer.querySelectorAll = selector => (selector === 'button' ? [completeButton] : [])
+  const document = baseDocument()
+    .setSelector('[data-testid="beast-core-modal"]', [])
+    .setSelector('[class*="Drawer_visible"], [class*="Drawer_content"], [class*="drawer-body"], [class*="edit-modal_container"]', [drawer])
+
+  const result = await runAdapter({
+    phase: 'prepare_export',
+    document,
+    shared: {
+      apiTarget: { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' },
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      exportModalAttempts: 10,
+      temuRowStatus: '已从编辑窗口触发完成并导出',
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'prepare_export')
+  assert.equal(result.meta.shared.exportModalAttempts, 11)
+  assert.equal(result.meta.shared.temuRowStatus, '已重试从编辑窗口触发完成并导出')
+  assert.equal(completeClicks, 1)
 })
 
 test('official PDF export action writes to configured output directory', async () => {
@@ -1391,14 +1646,14 @@ test('official PDF export action writes to configured output directory', async (
     },
     document,
     shared: {
-      apiTarget: { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' },
+      apiTarget: { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' },
       excelTargets: [EXCEL_TARGET],
       excelTarget: EXCEL_TARGET,
     },
   })
 
   assert.equal(result.meta.action, 'download_clicks')
-  assert.equal(result.meta.items[0].filename, '20922511720810101110-9950019805206.pdf')
+  assert.equal(result.meta.items[0].filename, '50588044853-9950019805206.pdf')
   assert.equal(result.meta.items[0].target_dir, '/tmp/temu-ai-wash-pdfs')
   assert.equal(result.meta.items[0].source, 'temu_official_download')
   assert.equal(result.meta.next_phase, 'verify_download')
@@ -1406,7 +1661,7 @@ test('official PDF export action writes to configured output directory', async (
 })
 
 test('download verification prefers the successful signed fallback item', async () => {
-  const target = { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' }
+  const target = { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' }
   const result = await runAdapter({
     phase: 'verify_download',
     shared: {
@@ -1439,7 +1694,7 @@ test('download verification prefers the successful signed fallback item', async 
 })
 
 test('download verification accepts legacy runner success with a path', async () => {
-  const target = { ...READY_TARGET, outputFilename: '20922511720810101110-9950019805206.pdf' }
+  const target = { ...READY_TARGET, outputFilename: '50588044853-9950019805206.pdf' }
   const result = await runAdapter({
     phase: 'verify_download',
     shared: {
@@ -1453,7 +1708,7 @@ test('download verification accepts legacy runner success with a path', async ()
         items: [{
           success: true,
           path: '/tmp/legacy-runner.pdf',
-          filename: '20922511720810101110-9950019805206.pdf',
+          filename: '50588044853-9950019805206.pdf',
           matchedBy: 'expected_name',
         }],
       },

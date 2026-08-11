@@ -1628,10 +1628,10 @@ tasks:
         hint: 开启后通过 TEMU 官方导出弹窗仅选择 PDF，并校验本地文件以 %PDF- 开头。
       - id: skip_already_made
         type: checkbox
-        label: 已制作项不重复保存
+        label: 不下载时跳过已制作项
         default: true
         hidden: true
-        hint: 已制作项只按参数决定是否下载官方 PDF，不会自动编辑或重新保存。
+        hint: 仅在不下载官方 PDF 时跳过已制作项；保存制作并下载模式会按模板重新保存配置后再导出。
       - id: scm_lookup
         type: checkbox
         label: 自动查询 SCM 洗唛批复判定
@@ -1647,9 +1647,9 @@ tasks:
       - id: ai_wash_instruction_model_id
         type: text
         label: 洗护说明识别模型
-        default: ""
+        default: gpt-5.5
         hidden: true
-        hint: 留空使用系统 AI 能力默认模型。
+        hint: 默认使用 gpt-5.5 识别 SCM 洗唛附件中的洗护说明。
       - id: ai_wash_instruction_fallback_models
         type: text
         label: 洗护说明识别兜底模型
@@ -1746,7 +1746,7 @@ tasks:
         min: 50
         max: 500
         step: 5
-        hint: 以 230mm 为初始长度；如预览出现“已超出安全打印区域”，保存前可按 20mm、再按 5mm 递增重跑。
+        hint: 模板未填写时使用 230mm；如预览仍出现“已超出安全打印区域”，脚本会从模板长度开始先按 20mm、再按 5mm 自动加长。
       - id: label_padding_mm
         type: number
         label: 上下预留 mm
@@ -1766,6 +1766,66 @@ tasks:
     trigger:
       type: manual
     output:
+      - type: excel
+        filename: "ai-wash-label-create-result_{timestamp}.xlsx"
+        columns:
+          - 店铺
+          - 批量序号
+          - 批量总数
+          - 款号
+          - SKC
+          - 颜色
+          - 代表尺码
+          - 尺码数
+          - SKU编码
+          - SKU货号
+          - 企业码
+          - TEMU行状态
+          - 请求格式
+          - 下载模式
+          - 执行模式
+          - 保存已授权
+          - 结果
+          - 来源
+          - 文件名
+          - 文件路径
+          - 文件大小
+          - PDF签名已校验
+          - 页面API已校验
+          - TEMU产品ID
+          - TEMU商品SKU_ID
+          - TEMU商品SKC_ID
+          - TEMU标签编码
+          - SCM查询状态
+          - SCM申请单号
+          - SCM状态
+          - SCM色号
+          - SCM色名
+          - SCM判定结果
+          - SCM判定备注
+          - SCM洗唛文件
+          - SCM洗护说明来源
+          - SCM附件识别状态
+          - 洗水唛宽度mm
+          - 洗水唛长度mm
+          - 上下预留mm
+          - 安全打印区加长
+          - 安全打印区起始长度mm
+          - 安全打印区最终长度mm
+          - 洗水唛尺码
+          - 洗护符号模式
+          - 洗护符号
+          - 洗护符号来源
+          - 洗护符号说明
+          - SCM洗护说明
+          - 制造商名称
+          - 制造商地址
+          - 生产日期
+          - 批次号
+          - 洗唛成分
+          - 成分来源
+          - 产品线
+          - 原因
       - type: json
         filename: "ai-wash-label-create-diagnostic_{timestamp}.json"
 

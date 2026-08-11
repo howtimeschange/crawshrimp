@@ -38,6 +38,14 @@
   const API_QUERY_PAGE_SIZE = 50
   const SCAN_PAGES_PER_PHASE = 8
   const SCAN_CONCURRENCY = 4
+  const EXPORT_MODAL_WAIT_ATTEMPTS = 40
+  const EXPORT_MODAL_REFIRE_EVERY_ATTEMPTS = 10
+  const SAFE_PRINT_OVERFLOW_TEXT = '已超出安全打印区域'
+  const SAFE_PRINT_OVERFLOW_CONFIRM_TEXT = '填写信息已超出画布尺寸'
+  const SAFE_PRINT_LENGTH_COARSE_STEP_MM = 20
+  const SAFE_PRINT_LENGTH_COARSE_MAX_STEPS = 5
+  const SAFE_PRINT_LENGTH_FINE_STEP_MM = 5
+  const SAFE_PRINT_LENGTH_FINE_MAX_STEPS = 16
   const AI_WASH_PROGRESS_KIND = 'temu_ai_wash_label'
   const REQUIRED_COLUMNS = ['款号']
   const OPTIONAL_COLUMNS = ['制造商名称', '制造商地址', '生产日期', '批次号', '洗水唛宽度mm', '洗水唛长度mm', '上下预留mm']
@@ -307,10 +315,14 @@
     return compact(target?.enterpriseCode || target?.excelSkuNo || target?.skuNo || target?.skuExtCode)
   }
 
+  function temuSkuNoForFilename(target) {
+    return compact(target?.skuExtCode || target?.excelSkuNo || target?.skuNo || target?.enterpriseCode)
+  }
+
   function buildOutputFilenameForTarget(target, careLabel = {}) {
-    const skuCode = inferSkuCodeFromParts(target, careLabel)
-    const enterpriseCode = enterpriseCodeFromTarget(target)
-    return `${safeFilename(skuCode, String(target?.productSkcId || 'SKU编码'))}-${safeFilename(enterpriseCode, String(target?.productSkuId || '企业码'))}.pdf`
+    const temuSku = Number(target?.productSkuId || 0) || ''
+    const skuNo = temuSkuNoForFilename(target)
+    return `${safeFilename(temuSku, 'TEMU页面SKU')}-${safeFilename(skuNo, 'SKU货号')}.pdf`
   }
 
   function buildEnterpriseCodeWorkflow() {
@@ -908,7 +920,7 @@
     const batchNumberInput = textOf(target?.excelBatchNumber || target?.batchNumber) || batchNumberParam
     const batchNumberSource = textOf(target?.excelBatchNumber || target?.batchNumber) ? 'excel' : 'param'
 
-    const showTrackingLabel = care?.showTrackingLabel !== false
+    const showTrackingLabel = true
     const ukfr = care?.ukfrInfo || {}
     const materialOverride = buildMaterialOverride(care, target)
     const labelDimensions = resolvedLabelDimensions(target)
@@ -917,6 +929,7 @@
         productSkuId: Number(target.productSkuId || 0),
         productSkcId: Number(target.productSkcId || 0),
         productId: Number(target.productId || 0),
+        showTrackingLabel,
         manufacturerName: showTrackingLabel && manufacturerName.value ? manufacturerName.value : void 0,
         manufacturerAddressPg: manufacturerAddress.value || void 0,
         batchNumber: showTrackingLabel ? batchNumberInput : void 0,
@@ -1384,6 +1397,9 @@
       洗水唛宽度mm: Number(rowShared.carePayloadSummary?.width || rowShared.careLabel?.width || 0),
       洗水唛长度mm: Number(rowShared.carePayloadSummary?.len || rowShared.careLabel?.len || 0),
       上下预留mm: Number(rowShared.carePayloadSummary?.padding || rowShared.careLabel?.padding || 0),
+      安全打印区加长: rowShared.carePayloadSummary?.safePrintLengthAdjusted === true,
+      安全打印区起始长度mm: Number(rowShared.carePayloadSummary?.safePrintLengthBaseMm || 0),
+      安全打印区最终长度mm: Number(rowShared.carePayloadSummary?.safePrintLengthFinalMm || 0),
       洗水唛尺码: String(rowShared.careLabel?.size || ''),
       洗护符号模式: String(rowShared.carePayloadSummary?.careSymbolsMode || careSymbolsMode),
       洗护符号: rowShared.carePayloadSummary?.careSymbols ? JSON.stringify(rowShared.carePayloadSummary.careSymbols) : '',
@@ -1434,6 +1450,15 @@
       editDrawerAttempts: 0,
       editDrawerCloseAttempts: 0,
       editCompleteExportAttempts: 0,
+      staleEditModalCloseAttempts: 0,
+      overflowConfirmCloseAttempts: 0,
+      safePrintSizeModalAttempts: 0,
+      safePrintLengthBaseMm: 0,
+      safePrintLengthCoarseSteps: 0,
+      safePrintLengthFineSteps: 0,
+      safePrintLengthAdjustedMm: 0,
+      safePrintLengthAdjustmentStrategy: '',
+      safePrintPendingLengthMm: 0,
       officialDownloadPath: '',
       officialDownloadReceived: false,
       officialDownloadError: '',
@@ -1466,7 +1491,7 @@
         ? Number(target?.labelPaddingMm ?? target?.excelLabelPaddingMm)
         : null,
     }
-    attached.outputFilename = textOf(target?.outputFilename) || buildOutputFilenameForTarget(attached)
+    attached.outputFilename = buildOutputFilenameForTarget(attached)
     return attached
   }
 
@@ -1702,6 +1727,13 @@
     }
   }
 
+  function shouldResaveBeforeDownload(apiRecord) {
+    return executeMode === SAVE_MODE
+      && isSaveExplicitlyEnabled()
+      && downloadAfterSave
+      && isCareLabelRequired(apiRecord)
+  }
+
   function nextPhaseAfterTemuLookup(apiRecord, nextShared) {
     return nextPhase(shouldLookupScm(apiRecord) ? 'scm_lookup_target' : 'api_care_query', 150, resetTargetState({
       ...nextShared,
@@ -1826,11 +1858,15 @@
 
   function setInputValue(input, value) {
     if (!input) return false
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    const setter = typeof HTMLInputElement !== 'undefined'
+      ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      : null
     if (setter) setter.call(input, value)
     else input.value = value
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    input.dispatchEvent(new Event('change', { bubbles: true }))
+    if (typeof Event === 'function' && input.dispatchEvent) {
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    }
     return input.value === value
   }
 
@@ -1926,6 +1962,247 @@
       .find(candidate => visible(candidate) && textOf(candidate) === '完成并导出') || null
   }
 
+  function washLabelSafetyOverflowVisible() {
+    const drawer = washLabelEditDrawer()
+    return !!(drawer && textOf(drawer).includes(SAFE_PRINT_OVERFLOW_TEXT))
+  }
+
+  function sizeEditModal() {
+    const candidates = [
+      ...document.querySelectorAll('[data-testid="beast-core-modal"], [class*="MDL_outerWrapper"], [class*="MDL_innerWrapper"]'),
+    ].filter(visible)
+      .filter(modal => {
+        const modalText = textOf(modal)
+        return modalText.includes('修改洗水唛尺寸') && modalText.includes('确认')
+      })
+    return candidates.length ? candidates[candidates.length - 1] : null
+  }
+
+  function overflowConfirmModal() {
+    const candidates = [
+      ...document.querySelectorAll('[data-testid="beast-core-modal"], [class*="MDL_outerWrapper"], [class*="MDL_innerWrapper"]'),
+    ].filter(visible)
+      .filter(modal => {
+        const modalText = textOf(modal)
+        return modalText.includes(SAFE_PRINT_OVERFLOW_CONFIRM_TEXT)
+          || modalText.includes('超出的信息将无法被导出')
+      })
+    return candidates.length ? candidates[candidates.length - 1] : null
+  }
+
+  function closeOverflowConfirmModalIfPresent() {
+    const modal = overflowConfirmModal()
+    if (!modal) return false
+    const cancel = [...modal.querySelectorAll('button')]
+      .find(candidate => visible(candidate) && textOf(candidate) === '取消')
+    const close = [...modal.querySelectorAll('button,[role="button"],span')]
+      .find(candidate => visible(candidate) && ['关闭', 'Close', '×'].includes(textOf(candidate)))
+    const action = cancel || close
+    if (!action) return false
+    action.click?.()
+    return true
+  }
+
+  function closeSizeEditModalIfPresent() {
+    const modal = sizeEditModal()
+    if (!modal) return false
+    const cancel = [...modal.querySelectorAll('button')]
+      .find(candidate => visible(candidate) && textOf(candidate) === '取消')
+    const close = [...modal.querySelectorAll('button,[role="button"],span')]
+      .find(candidate => visible(candidate) && ['关闭', 'Close', '×'].includes(textOf(candidate)))
+    const action = cancel || close
+    if (!action) return false
+    action.click?.()
+    return true
+  }
+
+  function parseDrawerLabelSize() {
+    const drawer = washLabelEditDrawer()
+    const text = drawer ? textOf(drawer) : ''
+    const length = Number(text.match(/长[:：]\s*(\d+(?:\.\d+)?)\s*mm/i)?.[1] || 0)
+    const width = Number(text.match(/宽[:：]\s*(\d+(?:\.\d+)?)\s*mm/i)?.[1] || 0)
+    return {
+      length: Number.isFinite(length) && length > 0 ? length : 0,
+      width: Number.isFinite(width) && width > 0 ? width : 0,
+    }
+  }
+
+  function clickSizeEditAction() {
+    const drawer = washLabelEditDrawer()
+    if (!drawer) return false
+    const actions = [...drawer.querySelectorAll('a,button,[role="button"]')]
+      .filter(candidate => visible(candidate) && textOf(candidate) === '修改')
+      .map(action => ({
+        action,
+        scopeText: textOf(action.closest?.('[class*="Form_item"], [class*="form-block_item"], [class*="size-edit_container"]') || action.parentElement),
+      }))
+    const match = actions.find(item => item.scopeText.includes('洗水唛尺寸') || /长[:：]\s*\d/.test(item.scopeText))
+    if (!match) return false
+    match.action.click?.()
+    return true
+  }
+
+  function labelLengthAdjustmentBase(target = apiTarget()) {
+    const configured = resolvedLabelDimensions(target).len
+    const fromSummary = Number(shared.carePayloadSummary?.safePrintLengthBaseMm || 0)
+      || Number(shared.carePayloadSummary?.len || 0)
+    const fromPayload = Number(shared.carePayload?.len || 0)
+    const fromCare = Number(shared.careLabel?.len || 0)
+    return Math.max(50, Math.min(500, Number(configured || fromSummary || fromPayload || fromCare || labelLengthMm)))
+  }
+
+  function nextSafePrintLength(target = apiTarget()) {
+    const base = Math.max(50, Math.min(500, Number(shared.safePrintLengthBaseMm || labelLengthAdjustmentBase(target))))
+    const coarseSteps = Math.max(0, Math.floor(Number(shared.safePrintLengthCoarseSteps || 0)))
+    const fineSteps = Math.max(0, Math.floor(Number(shared.safePrintLengthFineSteps || 0)))
+    if (coarseSteps < SAFE_PRINT_LENGTH_COARSE_MAX_STEPS) {
+      const nextCoarseSteps = coarseSteps + 1
+      return {
+        base,
+        length: Math.min(500, base + SAFE_PRINT_LENGTH_COARSE_STEP_MM * nextCoarseSteps),
+        coarseSteps: nextCoarseSteps,
+        fineSteps,
+        strategy: '+20mm',
+      }
+    }
+    if (fineSteps < SAFE_PRINT_LENGTH_FINE_MAX_STEPS) {
+      const nextFineSteps = fineSteps + 1
+      return {
+        base,
+        length: Math.min(500, base
+          + SAFE_PRINT_LENGTH_COARSE_STEP_MM * SAFE_PRINT_LENGTH_COARSE_MAX_STEPS
+          + SAFE_PRINT_LENGTH_FINE_STEP_MM * nextFineSteps),
+        coarseSteps,
+        fineSteps: nextFineSteps,
+        strategy: '+5mm',
+      }
+    }
+    return {
+      base,
+      exhausted: true,
+      coarseSteps,
+      fineSteps,
+      length: Math.min(500, base
+        + SAFE_PRINT_LENGTH_COARSE_STEP_MM * SAFE_PRINT_LENGTH_COARSE_MAX_STEPS
+        + SAFE_PRINT_LENGTH_FINE_STEP_MM * SAFE_PRINT_LENGTH_FINE_MAX_STEPS),
+    }
+  }
+
+  function updateSafePrintLengthSummary(length, adjustment) {
+    const summary = shared.carePayloadSummary || {}
+    const careLabel = shared.careLabel || {}
+    const payload = shared.carePayload || {}
+    return {
+      ...shared,
+      safePrintLengthBaseMm: adjustment.base,
+      safePrintLengthCoarseSteps: adjustment.coarseSteps,
+      safePrintLengthFineSteps: adjustment.fineSteps,
+      safePrintLengthAdjustedMm: length,
+      safePrintLengthAdjustmentStrategy: adjustment.strategy,
+      carePayload: {
+        ...payload,
+        len: length,
+      },
+      careLabel: {
+        ...careLabel,
+        len: length,
+      },
+      carePayloadSummary: {
+        ...summary,
+        len: length,
+        safePrintLengthAdjusted: true,
+        safePrintLengthBaseMm: adjustment.base,
+        safePrintLengthFinalMm: length,
+        safePrintLengthCoarseSteps: adjustment.coarseSteps,
+        safePrintLengthFineSteps: adjustment.fineSteps,
+      },
+    }
+  }
+
+  function confirmSizeEditLength(lengthMm) {
+    const modal = sizeEditModal()
+    if (!modal) return { ok: false, reason: '尺寸修改弹窗未打开' }
+    const inputs = [...modal.querySelectorAll('input')].filter(visible)
+    if (inputs.length < 2) return { ok: false, reason: '尺寸修改弹窗缺少长宽输入框' }
+    const lengthInput = inputs[0]
+    const widthInput = inputs[1]
+    const width = textOf(widthInput.value) || String(parseDrawerLabelSize().width || shared.carePayloadSummary?.width || shared.careLabel?.width || labelWidthMm)
+    const lengthText = String(lengthMm)
+    const widthText = String(width)
+    if (!setInputValue(lengthInput, lengthText)) return { ok: false, reason: `长度输入框未能写入 ${lengthText}` }
+    if (widthText && !setInputValue(widthInput, widthText)) return { ok: false, reason: `宽度输入框未能保持 ${widthText}` }
+    const confirm = [...modal.querySelectorAll('button')]
+      .find(candidate => visible(candidate) && textOf(candidate) === '确认')
+    if (!confirm) return { ok: false, reason: '尺寸修改弹窗缺少确认按钮' }
+    if (confirm.disabled) return { ok: false, reason: '尺寸修改确认按钮不可用' }
+    confirm.click?.()
+    return { ok: true, width: Number(widthText) || 0 }
+  }
+
+  function prepareSafePrintLengthAdjustment() {
+    const modal = sizeEditModal()
+    const pendingLength = Number(shared.safePrintPendingLengthMm || 0)
+    if (modal && pendingLength > 0) {
+      const result = confirmSizeEditLength(pendingLength)
+      if (!result.ok) {
+        return continueAfterFailure(result.reason, {
+          temuRowStatus: '安全打印区尺寸调整失败',
+          安全打印区起始长度mm: Number(shared.safePrintLengthBaseMm || 0),
+          安全打印区目标长度mm: pendingLength,
+        })
+      }
+      const adjustment = {
+        base: Number(shared.safePrintLengthBaseMm || labelLengthAdjustmentBase()),
+        coarseSteps: Number(shared.safePrintLengthCoarseSteps || 0),
+        fineSteps: Number(shared.safePrintLengthFineSteps || 0),
+        strategy: textOf(shared.safePrintLengthAdjustmentStrategy),
+      }
+      return nextPhase('prepare_edit_export', 1000, {
+        ...updateSafePrintLengthSummary(pendingLength, adjustment),
+        safePrintPendingLengthMm: 0,
+        safePrintSizeModalAttempts: 0,
+        temuRowStatus: `安全打印区超出，已调整长度到 ${pendingLength}mm`,
+      })
+    }
+
+    if (!washLabelSafetyOverflowVisible()) return null
+    const adjustment = nextSafePrintLength()
+    if (adjustment.exhausted) {
+      return continueAfterFailure('洗水唛内容持续超出安全打印区域，已达到自动加长上限', {
+        temuRowStatus: '安全打印区超出',
+        安全打印区起始长度mm: adjustment.base,
+        安全打印区最终尝试长度mm: adjustment.length,
+        安全打印区20mm次数: adjustment.coarseSteps,
+        安全打印区5mm次数: adjustment.fineSteps,
+      })
+    }
+    if (!clickSizeEditAction()) {
+      const attempts = Number(shared.safePrintSizeModalAttempts || 0)
+      if (attempts >= 8) {
+        return continueAfterFailure('洗水唛内容超出安全打印区域，但未找到尺寸修改入口', {
+          temuRowStatus: '安全打印区尺寸入口缺失',
+          安全打印区起始长度mm: adjustment.base,
+          安全打印区目标长度mm: adjustment.length,
+        })
+      }
+      return nextPhase('prepare_edit_export', 500, {
+        ...shared,
+        safePrintSizeModalAttempts: attempts + 1,
+        safePrintLengthBaseMm: adjustment.base,
+      })
+    }
+    return nextPhase('prepare_edit_export', 300, {
+      ...shared,
+      safePrintLengthBaseMm: adjustment.base,
+      safePrintLengthCoarseSteps: adjustment.coarseSteps,
+      safePrintLengthFineSteps: adjustment.fineSteps,
+      safePrintLengthAdjustmentStrategy: adjustment.strategy,
+      safePrintPendingLengthMm: adjustment.length,
+      safePrintSizeModalAttempts: 0,
+      temuRowStatus: `安全打印区超出，准备调整长度到 ${adjustment.length}mm`,
+    })
+  }
+
   function exportModal() {
     const modals = [...document.querySelectorAll('[data-testid="beast-core-modal"]')]
       .filter(visible)
@@ -1942,10 +2219,12 @@
     if (attempts >= 3) return fail('导出弹窗关闭失败，已停止以避免复用旧预览')
     let clicked = 0
     for (const modal of modals.reverse()) {
-      const cancel = [...modal.querySelectorAll('button')]
-        .find(candidate => visible(candidate) && textOf(candidate) === '取消')
-      if (!cancel) continue
-      cancel.click?.()
+      const action = [...modal.querySelectorAll('button')]
+        .find(candidate => visible(candidate) && ['取消', '返回修改'].includes(textOf(candidate)))
+        || [...modal.querySelectorAll('button,[role="button"],span')]
+          .find(candidate => visible(candidate) && ['关闭', 'Close', '×'].includes(textOf(candidate)))
+      if (!action) continue
+      action.click?.()
       clicked += 1
     }
     if (clicked) {
@@ -2960,6 +3239,13 @@
             }, apiRecord, nextShared),
           ])
         }
+        if (shouldResaveBeforeDownload(apiRecord) && !shared.saveResult?.success) {
+          return nextPhase('prepare_care_payload', 100, {
+            ...nextShared,
+            resaveExistingWashLabel: true,
+            temuRowStatus: '已制作，按模板重新保存后导出',
+          })
+        }
         return nextPhase('prepare_search', 250, nextShared)
       }
       if (isPendingCreatable(apiRecord)) {
@@ -3049,7 +3335,7 @@
         }),
       ])
     }
-    if (!isPendingCreatable(target)) {
+    if (!isPendingCreatable(target) && !(shared.resaveExistingWashLabel && isDownloadable(target))) {
       return nextPhase(advancePhaseName(), 100, {
         ...shared,
         temuRowStatus: '非待制作项',
@@ -3122,7 +3408,6 @@
       if (downloadable.length === 1) {
         const apiRecord = {
           ...attachExcelTarget(downloadable[0], target),
-          outputFilename: target.outputFilename,
         }
         const nextShared = {
           ...shared,
@@ -3182,6 +3467,12 @@
   }
 
   if (phase === 'prepare_search') {
+    if (closeOverflowConfirmModalIfPresent() || closeSizeEditModalIfPresent()) {
+      return nextPhase('prepare_search', 300, {
+        ...shared,
+        staleEditModalCloseAttempts: Number(shared.staleEditModalCloseAttempts || 0) + 1,
+      })
+    }
     const closeModal = closeExportModalIfPresent('prepare_search')
     if (closeModal) return closeModal
     const closeDrawer = closeWashLabelEditDrawerIfPresent('prepare_search')
@@ -3271,6 +3562,15 @@
   }
 
   if (phase === 'prepare_edit_export') {
+    if (closeOverflowConfirmModalIfPresent()) {
+      return nextPhase('prepare_edit_export', 300, {
+        ...shared,
+        overflowConfirmCloseAttempts: Number(shared.overflowConfirmCloseAttempts || 0) + 1,
+        temuRowStatus: '已取消超出安全打印区确认弹窗，准备调整长度',
+      })
+    }
+    const safePrintAdjustment = prepareSafePrintLengthAdjustment()
+    if (safePrintAdjustment) return safePrintAdjustment
     const button = completeAndExportButton()
     if (!button) {
       const attempts = Number(shared.editDrawerAttempts || 0)
@@ -3310,14 +3610,20 @@
     const modal = exportModal()
     if (!modal) {
       const attempts = Number(shared.exportModalAttempts || 0)
-      if (attempts >= 10) {
+      if (attempts >= EXPORT_MODAL_WAIT_ATTEMPTS) {
         return continueAfterFailure('点击导出后未出现“确认导出吗？”弹窗', {
           temuRowStatus: '导出弹窗缺失',
         })
       }
+      const shouldRefire = attempts > 0 && attempts % EXPORT_MODAL_REFIRE_EVERY_ATTEMPTS === 0
+      const button = shouldRefire ? completeAndExportButton() : null
+      if (button && !button.disabled) button.click?.()
       return nextPhase('prepare_export', 500, {
         ...shared,
         exportModalAttempts: attempts + 1,
+        temuRowStatus: button && !button.disabled
+          ? '已重试从编辑窗口触发完成并导出'
+          : shared.temuRowStatus,
       })
     }
     const pdf = exportFormatLabel(modal, 'PDF')

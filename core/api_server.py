@@ -5759,8 +5759,18 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
         if suffix == '.csv':
             import csv
 
-            with open(p, newline='', encoding='utf-8-sig') as f:
-                rows_raw = list(csv.reader(f))
+            last_decode_error: Optional[Exception] = None
+            rows_raw = []
+            for encoding in ("utf-8-sig", "gb18030", "gbk"):
+                try:
+                    with open(p, newline='', encoding=encoding) as f:
+                        rows_raw = list(csv.reader(f))
+                    break
+                except UnicodeDecodeError as exc:
+                    last_decode_error = exc
+            else:
+                if last_decode_error:
+                    raise last_decode_error
             table = _rows_raw_to_table(rows_raw, header_row)
             table["sheet_name"] = "Sheet1"
             table["sheets"] = {

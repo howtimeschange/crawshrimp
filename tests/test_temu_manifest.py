@@ -194,7 +194,7 @@ class TemuManifestTests(unittest.TestCase):
         self.assertTrue(params["care_symbols_mode"]["hidden"])
         self.assertEqual(params["ai_wash_instruction_recognition"]["default"], True)
         self.assertTrue(params["ai_wash_instruction_recognition"]["hidden"])
-        self.assertEqual(params["ai_wash_instruction_model_id"]["default"], "")
+        self.assertEqual(params["ai_wash_instruction_model_id"]["default"], "gpt-5.5")
         self.assertTrue(params["ai_wash_instruction_model_id"]["hidden"])
         self.assertEqual(params["care_symbols_json"]["default"], '{"washing":13,"bleaching":3,"drying":4,"ironing":3,"dryCleaning":5}')
         self.assertTrue(params["care_symbols_json"]["hidden"])
@@ -216,7 +216,15 @@ class TemuManifestTests(unittest.TestCase):
         self.assertTrue(params["label_padding_mm"]["hidden"])
         self.assertEqual(params["timeout_seconds"]["default"], 60)
         self.assertTrue(params["timeout_seconds"]["hidden"])
-        self.assertEqual(task["output"][0]["filename"], "ai-wash-label-create-diagnostic_{timestamp}.json")
+        output_filenames = [item["filename"] for item in task["output"]]
+        self.assertIn("ai-wash-label-create-result_{timestamp}.xlsx", output_filenames)
+        self.assertIn("ai-wash-label-create-diagnostic_{timestamp}.json", output_filenames)
+        excel_output = next(item for item in task["output"] if item["type"] == "excel")
+        self.assertEqual(excel_output["columns"][0:5], ["店铺", "批量序号", "批量总数", "款号", "SKC"])
+        self.assertIn("文件路径", excel_output["columns"])
+        self.assertIn("SCM查询状态", excel_output["columns"])
+        self.assertIn("安全打印区最终长度mm", excel_output["columns"])
+        self.assertIn("原因", excel_output["columns"])
 
 
 if __name__ == "__main__":
