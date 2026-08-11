@@ -310,6 +310,30 @@ test('Excel preparation creates style targets and carries wash-label config', as
   assert.equal(result.meta.shared.excelTargets[0].outputFilename, '')
 })
 
+test('Excel preparation accepts xlsx date-time cells for production date', async () => {
+  const result = await runAdapter({
+    phase: 'excel_prepare',
+    params: {
+      input_file: {
+        rows: [{
+          款号: '208326105215',
+          生产日期: '2026-07-01 00:00:00',
+          批次号: 'PC241016',
+          洗水唛宽度mm: 45,
+          洗水唛长度mm: 270,
+          上下预留mm: 10,
+        }],
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_lookup_excel_target')
+  assert.equal(result.meta.shared.excelTargets[0].status, 'ready')
+  assert.equal(result.meta.shared.excelTargets[0].reason, '')
+  assert.equal(result.meta.shared.excelTargets[0].productionDate, '2026-07-01')
+  assert.equal(result.meta.shared.excelTargets[0].labelLengthMm, 270)
+})
+
 test('enterprise-code preparation does not require Excel and deduplicates codes', async () => {
   const result = await runAdapter({
     phase: 'excel_prepare',

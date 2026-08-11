@@ -605,15 +605,53 @@
     return `${name}: ${message}`
   }
 
-  function normalizeDate(value) {
-    const raw = textOf(value).replace(/[./]/g, '-')
-    const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
-    if (!match) return ''
+  function normalizeDateParts(year, month, day) {
+    const y = Number(year)
+    const m = Number(month)
+    const d = Number(day)
+    if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return ''
+    if (y < 1900 || y > 2200 || m < 1 || m > 12 || d < 1 || d > 31) return ''
+    const date = new Date(Date.UTC(y, m - 1, d))
+    if (
+      date.getUTCFullYear() !== y
+      || date.getUTCMonth() !== m - 1
+      || date.getUTCDate() !== d
+    ) return ''
     return [
-      match[1],
-      String(match[2]).padStart(2, '0'),
-      String(match[3]).padStart(2, '0'),
+      String(y).padStart(4, '0'),
+      String(m).padStart(2, '0'),
+      String(d).padStart(2, '0'),
     ].join('-')
+  }
+
+  function normalizeExcelSerialDate(value) {
+    const serial = Number(value)
+    if (!Number.isFinite(serial) || serial < 1 || serial > 80000) return ''
+    const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(serial) * 24 * 60 * 60 * 1000)
+    return normalizeDateParts(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate())
+  }
+
+  function normalizeDate(value) {
+    if (value && typeof value === 'object'
+      && typeof value.getFullYear === 'function'
+      && typeof value.getMonth === 'function'
+      && typeof value.getDate === 'function') {
+      return normalizeDateParts(value.getFullYear(), value.getMonth() + 1, value.getDate())
+    }
+    if (typeof value === 'number') return normalizeExcelSerialDate(value)
+
+    const raw = textOf(value)
+      .replace(/[./]/g, '-')
+      .replace(/[年月]/g, '-')
+      .replace(/[日号]/g, '')
+    const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s].*)?$/)
+    if (match) return normalizeDateParts(match[1], match[2], match[3])
+
+    const compactMatch = raw.match(/^(\d{4})(\d{2})(\d{2})$/)
+    if (compactMatch) return normalizeDateParts(compactMatch[1], compactMatch[2], compactMatch[3])
+
+    if (/^\d{5}(?:\.\d+)?$/.test(raw)) return normalizeExcelSerialDate(raw)
+    return ''
   }
 
   function normalizeProductionDate(value) {
