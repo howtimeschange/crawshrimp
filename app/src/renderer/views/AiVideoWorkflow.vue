@@ -1293,7 +1293,7 @@
         <header class="aiv-modal-head">
           <div>
             <strong id="aiv-delete-title">确认删除本地图片</strong>
-            <span>这会真实删除工作区或抓虾图片缓存里的 AI 生成文件</span>
+            <span>这会真实删除本地 AI 生成图片文件</span>
           </div>
         </header>
         <div class="aiv-confirm-copy">
@@ -1303,7 +1303,7 @@
           <div v-if="deleteVersionError" class="aiv-inline-error">{{ deleteVersionError }}</div>
         </div>
         <footer class="aiv-modal-foot">
-          <span>仅允许删除已授权工作区或抓虾图片缓存内的图片文件</span>
+          <span>仅允许删除本地普通图片文件</span>
           <button type="button" class="aiv-ghost" :disabled="deleteVersionBusy" @click="closeDeleteConfirmation">取消</button>
           <button type="button" class="aiv-danger" :disabled="deleteVersionBusy" @click="confirmDeleteGeneratedVersion">
             {{ deleteVersionBusy ? '正在删除...' : '确认删除' }}
@@ -3395,6 +3395,7 @@ let materialPollTimer = null
 let materialPollRunId = ''
 let aiPollTimer = null
 let aiPollRunId = ''
+let aiQueuedRequestId = ''
 let aiReviewPollToken = 0
 const activeAiPlaceholderIds = new Set()
 let videoPollTimer = null
@@ -3546,15 +3547,14 @@ async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
   localImagePreviewLoading.add(cacheKey)
   try {
     let dataUrl = ''
-    const workspaceRoot = String(workspaceDir.value || '').trim()
     const workspaceReader = thumbnail
       ? window.cs?.readBalaWorkspaceImageThumbnail
       : window.cs?.readBalaWorkspaceImagePreview
-    if (workspaceRoot && typeof workspaceReader === 'function') {
+    if (typeof workspaceReader === 'function') {
       try {
         const response = thumbnail
-          ? await workspaceReader(workspaceRoot, key, { maxEdge: 280, quality: 0.72 })
-          : await workspaceReader(workspaceRoot, key)
+          ? await workspaceReader(workspaceDir.value, key, { maxEdge: 280, quality: 0.72 })
+          : await workspaceReader(workspaceDir.value, key)
         if (response?.ok !== false) {
           dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
         }
@@ -3819,7 +3819,7 @@ function resolveRemoteVideoUrl(value = '') {
 async function loadLocalVideoPreview(path = '') {
   const key = String(path || '').trim()
   if (!key || localVideoPreviews[key] || brokenPreviews[key] || localVideoPreviewLoading.has(key)) return
-  if (!workspaceDir.value || typeof window.cs?.getBalaWorkspaceVideoMedia !== 'function') return
+  if (typeof window.cs?.getBalaWorkspaceVideoMedia !== 'function') return
   localVideoPreviewLoading.add(key)
   try {
     const response = await window.cs.getBalaWorkspaceVideoMedia(workspaceDir.value, key)
@@ -4100,8 +4100,7 @@ function applyMaterialRecallHiddenPaths(styleCodes = [], paths = [], { replaceAl
 async function deleteMaterialRecallLocalImages(paths = []) {
   const targets = [...new Set((paths || []).map(normalizedWorkspacePath).filter(Boolean))]
   if (!targets.length) return { deleted: 0 }
-  if (!workspaceDir.value) throw new Error('请先使用系统文件夹选择器选择工作区')
-  if (typeof window.cs?.deleteBalaWorkspaceImage !== 'function') throw new Error('当前运行环境不支持安全删除工作区图片')
+  if (typeof window.cs?.deleteBalaWorkspaceImage !== 'function') throw new Error('当前运行环境不支持删除本机图片')
   let deleted = 0
   for (const path of targets) {
     const result = await window.cs.deleteBalaWorkspaceImage(workspaceDir.value, path)
@@ -4157,6 +4156,7 @@ function clearMaterialRecallHistory({ hiddenPaths = [], deleteLocalFiles = false
   aiReviewPollToken += 1
   materialPollRunId = ''
   aiPollRunId = ''
+  aiQueuedRequestId = ''
   activeAiPlaceholderIds.clear()
   applyMaterialRecallHiddenPaths([], hiddenPaths, { replaceAll: true })
   materialBatch.value = null
@@ -5039,10 +5039,6 @@ async function confirmDeleteGeneratedVersion() {
     deleteVersionError.value = '当前结果没有可删除的本地图片文件'
     return
   }
-  if (!workspaceDir.value) {
-    deleteVersionError.value = '请先使用第一步的系统文件夹选择器选择工作区'
-    return
-  }
   deleteVersionBusy.value = true
   deleteVersionError.value = ''
   try {
@@ -5675,6 +5671,23 @@ function updateAiTaskState(patch = {}) {
   Object.assign(aiTaskState, patch)
 }
 
+function aiQueuedItemForRequest(status = {}, requestId = '') {
+  const target = String(requestId || '').trim()
+  if (!target) return null
+  return (status?.queue || []).find(item => String(item?.request_id || '').trim() === target) || null
+}
+
+function aiLiveRunForQueuedRequest(status = {}, requestId = '') {
+  const target = String(requestId || '').trim()
+  const live = status?.live
+  if (!target || !live) return null
+  return String(live?.queued_request_id || '').trim() === target ? live : null
+}
+
+function aiRunIdFromSnapshot(snapshot = {}) {
+  return String(snapshot?.run_id || snapshot?.id || '').trim()
+}
+
 function applyAiLiveStatus(live = {}) {
   const status = normalizeWorkflowStageStatus(live?.status)
   const total = Number(live?.total || live?.records || 0)
@@ -5790,6 +5803,7 @@ async function startAiImageGeneration() {
   const promptExtra = ['background_swap', 'pose_swap'].includes(activeAction.value) ? '' : promptText
   let placeholderIds = new Set()
   resetAiPoll()
+  aiQueuedRequestId = ''
   aiReviewPollToken += 1
   updateAiTaskState({
     status: 'running',
@@ -5863,6 +5877,8 @@ async function startAiImageGeneration() {
     const queuedRequestId = String(result.queued_request_id || result.queue_request_id || '').trim()
     if (result.queued && queuedRequestId) {
       queueAiGeneratingVersions(placeholderIds)
+      aiQueuedRequestId = queuedRequestId
+      aiPollRunId = ''
       updateAiTaskState({
         status: 'queued',
         message: `AI 改图任务已排队：${queuedRequestId}`,
@@ -5870,6 +5886,7 @@ async function startAiImageGeneration() {
         progress: 2,
         runId: queuedRequestId,
       })
+      scheduleAiPoll()
       return
     }
     const launch = await waitForAiImageRunStart(previousRunId)
@@ -5910,6 +5927,46 @@ async function pollAiImageTask() {
     const logPayload = await window.cs.getTaskLogs(BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_IMAGE_TASK_ID).catch(() => null)
     if (Array.isArray(logPayload?.logs)) aiTaskState.logs = logPayload.logs.slice(-80)
     const live = status?.live
+    if (aiQueuedRequestId) {
+      const queuedLive = aiLiveRunForQueuedRequest(status, aiQueuedRequestId)
+      if (queuedLive) {
+        const liveRunId = aiRunIdFromSnapshot(queuedLive)
+        if (liveRunId) {
+          aiPollRunId = liveRunId
+          aiQueuedRequestId = ''
+          updateAiTaskState({ runId: liveRunId })
+        }
+        applyAiLiveStatus(queuedLive)
+        if (!isTerminalAiStatus(queuedLive.status)) {
+          scheduleAiPoll()
+          return
+        }
+        await finalizeAiImageTask(String(liveRunId || aiPollRunId || ''))
+        return
+      }
+      if (aiQueuedItemForRequest(status, aiQueuedRequestId)) {
+        queueAiGeneratingVersions()
+        updateAiTaskState({
+          status: 'queued',
+          error: '',
+          progress: Math.max(2, Number(aiTaskState.progress) || 0),
+          message: `AI 改图任务排队中：${aiQueuedRequestId}`,
+        })
+        scheduleAiPoll()
+        return
+      }
+      const last = status?.last_run
+      if (last && (!aiPollRunId || String(last.id || '') !== aiPollRunId)) {
+        const lastRunId = aiRunIdFromSnapshot(last)
+        aiPollRunId = lastRunId
+        aiQueuedRequestId = ''
+        applyAiLiveStatus({ ...last, run_id: lastRunId, records: last.records_count })
+        if (isTerminalAiStatus(last.status)) {
+          await finalizeAiImageTask(String(lastRunId || aiPollRunId || ''))
+          return
+        }
+      }
+    }
     if (live && (!aiPollRunId || String(live.run_id || '') === aiPollRunId)) {
       applyAiLiveStatus(live)
       if (!isTerminalAiStatus(live.status)) {
@@ -6038,7 +6095,16 @@ async function restoreReviewWorkspaceBatches({ silent = false } = {}) {
     if (!batches.length) return 0
     for (const batch of batches) {
       const batchBoardUrl = String(batch?.board_url || batch?.boardUrl || '').trim()
-      const styles = normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: batchBoardUrl })
+      let sourceBatch = batch
+      const ref = parseBalaReviewBoardUrl(batchBoardUrl)
+      if (ref && hasGeneratingBalaReviewAssets(sourceBatch)) {
+        try {
+          sourceBatch = await window.cs.refreshBalaReviewBatch(ref.batchId, ref.token)
+        } catch (error) {
+          aiTaskState.logs.push(`恢复审核批次刷新失败：${ref.batchId} · ${error?.message || String(error)}`)
+        }
+      }
+      const styles = normalizeBalaReviewBatchStyles(sourceBatch, { reviewBoardUrl: batchBoardUrl })
       applyReviewBatchStyles(styles)
     }
     const latest = batches[batches.length - 1]

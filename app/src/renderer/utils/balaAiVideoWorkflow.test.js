@@ -77,7 +77,7 @@ test('video results resolve downloadable local files and remote playback URLs', 
   )
 })
 
-test('local video results use the authorized streaming-media bridge instead of Base64 object URLs', async () => {
+test('local video results use the local streaming-media bridge instead of Base64 object URLs', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
   assert.match(workflowSource, /getBalaWorkspaceVideoMedia/)
@@ -96,7 +96,7 @@ test('video-task asset selection keeps preview and selection as sibling native b
   assert.match(workflowSource, /@click\.stop="openImagePreview\(asset, videoTaskDraft\.styleCode\)"/)
 })
 
-test('video task images use the authorized workspace preview bridge', async () => {
+test('video task images use the local preview bridge', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
   assert.match(workflowSource, /readBalaWorkspaceImageThumbnail/)

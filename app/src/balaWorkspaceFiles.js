@@ -67,33 +67,19 @@ function rememberAuthorizedBalaWorkspaceRoot(rootPath, {
 
 function assertDescendant(rootPath, filePath) {
   const relative = path.relative(rootPath, filePath)
-  if (!relative) throw new Error('禁止删除工作区本身')
+  if (!relative) throw new Error('禁止操作工作区本身')
   if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
-    throw new Error('只能删除已授权工作区内的图片文件')
+    throw new Error('只能操作工作区内的文件')
   }
-}
-
-function descendantErrorForDeleteRoot(rootInfo = {}) {
-  return rootInfo.type === 'cache'
-    ? '禁止删除抓虾图片缓存目录本身'
-    : '禁止删除工作区本身'
-}
-
-function pathInsideRoot(rootPath, filePath) {
-  const relative = path.relative(rootPath, filePath)
-  if (!relative) return 'root'
-  if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return ''
-  return 'inside'
 }
 
 function authorizedWorkspaceRoot(workspaceRoot, { roots = new Set(), fsApi = fs } = {}) {
   const rawRoot = String(workspaceRoot || '').trim()
   if (!rawRoot) throw new Error('缺少 AI 视频工作区目录')
-  const canonicalRoot = canonicalPath(rawRoot, fsApi)
-  if (!roots.has(rootIdentity(canonicalRoot, fsApi))) {
-    throw new Error('当前工作区未授权，请重新使用系统文件夹选择器选择工作区')
-  }
-  return canonicalRoot
+  const stat = fsApi.lstatSync(rawRoot)
+  if (stat.isSymbolicLink()) throw new Error('工作区目录不能是符号链接')
+  if (!stat.isDirectory()) throw new Error('所选工作区不是目录')
+  return canonicalPath(rawRoot, fsApi)
 }
 
 function videoMimeForPath(filePath = '') {
@@ -113,7 +99,6 @@ function imageMimeForPath(filePath = '') {
 }
 
 function getAuthorizedBalaWorkspaceImage({ workspaceRoot, filePath, roots = new Set(), fsApi = fs } = {}) {
-  const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
   const rawFile = String(filePath || '').trim()
   if (!rawFile) throw new Error('缺少本地图片路径')
   const resolvedFile = path.resolve(rawFile)
@@ -125,7 +110,6 @@ function getAuthorizedBalaWorkspaceImage({ workspaceRoot, filePath, roots = new 
     throw new Error('只能预览 PNG、JPG、JPEG 或 WEBP 图片文件')
   }
   const canonicalFile = canonicalPath(resolvedFile, fsApi)
-  assertDescendant(canonicalRoot, canonicalFile)
   return {
     path: canonicalFile,
     mime,
@@ -173,7 +157,6 @@ function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), f
 }
 
 function getAuthorizedBalaWorkspaceVideo({ workspaceRoot, filePath, roots = new Set(), fsApi = fs } = {}) {
-  const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
   const rawFile = String(filePath || '').trim()
   if (!rawFile) throw new Error('缺少本地视频路径')
   const resolvedFile = path.resolve(rawFile)
@@ -185,7 +168,6 @@ function getAuthorizedBalaWorkspaceVideo({ workspaceRoot, filePath, roots = new 
     throw new Error('只能预览 MP4、M4V、MOV 或 WEBM 视频文件')
   }
   const canonicalFile = canonicalPath(resolvedFile, fsApi)
-  assertDescendant(canonicalRoot, canonicalFile)
   return {
     path: canonicalFile,
     mime,
@@ -243,71 +225,12 @@ function canonicalMissingPath(filePath, fsApi = fs) {
   return path.join(canonicalPath(cursor, fsApi), ...suffix)
 }
 
-function safeDeleteDirectoryRoot(rootPath, { type = 'cache', fsApi = fs } = {}) {
-  const raw = String(rootPath || '').trim()
-  if (!raw) return null
-  try {
-    const stat = fsApi.lstatSync(raw)
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return null
-    return { path: canonicalPath(raw, fsApi), type }
-  } catch {
-    return null
-  }
-}
-
-function deleteRootsForImage({ workspaceRoot, roots = new Set(), extraDeleteRoots = [], fsApi = fs } = {}) {
-  const candidates = []
-  let workspaceError = null
-  try {
-    candidates.push({ path: authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi }), type: 'workspace' })
-  } catch (error) {
-    workspaceError = error
-  }
-  for (const rootPath of extraDeleteRoots || []) {
-    const root = safeDeleteDirectoryRoot(rootPath, { type: 'cache', fsApi })
-    if (root) candidates.push(root)
-  }
-  const seen = new Set()
-  const allowedRoots = []
-  for (const root of candidates) {
-    const key = process.platform === 'win32' ? root.path.toLowerCase() : root.path
-    if (seen.has(key)) continue
-    seen.add(key)
-    allowedRoots.push(root)
-  }
-  return { allowedRoots, workspaceError }
-}
-
-function assertInsideAnyDeleteRoot(filePath, allowedRoots = [], workspaceError = null) {
-  for (const root of allowedRoots) {
-    const relation = pathInsideRoot(root.path, filePath)
-    if (relation === 'inside') return root
-    if (relation === 'root') throw new Error(descendantErrorForDeleteRoot(root))
-  }
-  if (!allowedRoots.length && workspaceError) throw workspaceError
-  const hasCacheRoot = allowedRoots.some(root => root.type === 'cache')
-  throw new Error(hasCacheRoot
-    ? '只能删除已授权工作区或抓虾图片缓存内的图片文件'
-    : '只能删除已授权工作区内的图片文件')
-}
-
 function deleteAuthorizedWorkspaceImage({
-  workspaceRoot,
   filePath,
-  roots = new Set(),
-  extraDeleteRoots = [],
   fsApi = fs,
 } = {}) {
-  const rawRoot = String(workspaceRoot || '').trim()
   const rawFile = String(filePath || '').trim()
-  if (!rawRoot || !rawFile) throw new Error('缺少工作区或待删除图片路径')
-
-  const { allowedRoots, workspaceError } = deleteRootsForImage({
-    workspaceRoot: rawRoot,
-    roots,
-    extraDeleteRoots,
-    fsApi,
-  })
+  if (!rawFile) throw new Error('缺少待删除图片路径')
 
   const resolvedFile = path.resolve(rawFile)
   if (!fsApi.existsSync(resolvedFile)) {
@@ -315,13 +238,11 @@ function deleteAuthorizedWorkspaceImage({
       throw new Error('只能删除 png、jpg、jpeg 或 webp 图片文件')
     }
     const canonicalFile = canonicalMissingPath(resolvedFile, fsApi)
-    assertInsideAnyDeleteRoot(canonicalFile, allowedRoots, workspaceError)
     return { ok: true, path: canonicalFile, alreadyMissing: true }
   }
   const stat = fsApi.lstatSync(resolvedFile)
   if (stat.isSymbolicLink()) throw new Error('禁止删除符号链接')
   const canonicalFile = canonicalPath(resolvedFile, fsApi)
-  assertInsideAnyDeleteRoot(canonicalFile, allowedRoots, workspaceError)
   if (!stat.isFile()) throw new Error('只能删除普通图片文件，不能删除目录')
   if (!BALA_IMAGE_EXTENSIONS.has(path.extname(resolvedFile).toLowerCase())) {
     throw new Error('只能删除 png、jpg、jpeg 或 webp 图片文件')

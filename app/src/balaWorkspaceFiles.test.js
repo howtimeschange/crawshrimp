@@ -31,19 +31,16 @@ function withTempTree(run) {
   }
 }
 
-test('authorized workspace deletion unlinks a regular nested image', () => {
+test('workspace deletion unlinks a regular nested image without a directory grant', () => {
   withTempTree(({ workspace }) => {
     const nested = path.join(workspace, 'AI生成图')
     const imagePath = path.join(nested, 'result.png')
     fs.mkdirSync(nested)
     fs.writeFileSync(imagePath, 'image')
 
-    const roots = new Set()
-    const authorizedRoot = authorizeBalaWorkspaceRoot(workspace, { roots })
     const result = deleteAuthorizedWorkspaceImage({
-      workspaceRoot: authorizedRoot,
+      workspaceRoot: workspace,
       filePath: imagePath,
-      roots,
     })
 
     assert.equal(result.ok, true)
@@ -52,7 +49,7 @@ test('authorized workspace deletion unlinks a regular nested image', () => {
   })
 })
 
-test('workspace deletion rejects an unapproved root and a path outside the approved root', () => {
+test('workspace deletion allows regular images outside an approved workspace', () => {
   withTempTree(({ workspace, outside }) => {
     const insideImage = path.join(workspace, 'inside.jpg')
     const outsideImage = path.join(outside, 'outside.jpg')
@@ -60,23 +57,26 @@ test('workspace deletion rejects an unapproved root and a path outside the appro
     fs.writeFileSync(outsideImage, 'outside')
     const roots = new Set()
 
-    assert.throws(() => deleteAuthorizedWorkspaceImage({
+    const insideResult = deleteAuthorizedWorkspaceImage({
       workspaceRoot: workspace,
       filePath: insideImage,
       roots,
-    }), /未授权/)
+    })
 
+    assert.equal(insideResult.ok, true)
+    assert.equal(fs.existsSync(insideImage), false)
     authorizeBalaWorkspaceRoot(workspace, { roots })
-    assert.throws(() => deleteAuthorizedWorkspaceImage({
+    const outsideResult = deleteAuthorizedWorkspaceImage({
       workspaceRoot: workspace,
       filePath: outsideImage,
       roots,
-    }), /工作区内/)
-    assert.equal(fs.existsSync(outsideImage), true)
+    })
+    assert.equal(outsideResult.ok, true)
+    assert.equal(fs.existsSync(outsideImage), false)
   })
 })
 
-test('workspace deletion permits app-owned AI image cache files without a workspace grant', () => {
+test('workspace deletion permits AI image cache files without a workspace grant', () => {
   withTempTree(({ parent, workspace, outside }) => {
     const cache = path.join(parent, 'ai-image-cache')
     const imagePath = path.join(cache, 'result-job-hash.png')
@@ -90,19 +90,18 @@ test('workspace deletion permits app-owned AI image cache files without a worksp
       workspaceRoot: workspace,
       filePath: imagePath,
       roots,
-      extraDeleteRoots: [cache],
     })
 
     assert.equal(result.ok, true)
     assert.equal(result.path, fs.realpathSync.native(cache) + path.sep + 'result-job-hash.png')
     assert.equal(fs.existsSync(imagePath), false)
-    assert.throws(() => deleteAuthorizedWorkspaceImage({
+    const outsideResult = deleteAuthorizedWorkspaceImage({
       workspaceRoot: workspace,
       filePath: outsideImage,
       roots,
-      extraDeleteRoots: [cache],
-    }), /工作区或抓虾图片缓存/)
-    assert.equal(fs.existsSync(outsideImage), true)
+    })
+    assert.equal(outsideResult.ok, true)
+    assert.equal(fs.existsSync(outsideImage), false)
   })
 })
 
@@ -114,13 +113,10 @@ test('workspace deletion rejects the root, directories, non-images, and symlinks
     fs.writeFileSync(textFile, 'notes')
     fs.writeFileSync(outsideImage, 'outside')
     fs.symlinkSync(outsideImage, link)
-    const roots = new Set()
-    authorizeBalaWorkspaceRoot(workspace, { roots })
-
-    assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: workspace, roots }), /工作区本身/)
-    assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: path.join(workspace, '.'), roots }), /工作区本身/)
-    assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: textFile, roots }), /图片文件/)
-    assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: link, roots }), /符号链接/)
+    assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: workspace }), /目录/)
+    assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: path.join(workspace, '.') }), /目录/)
+    assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: textFile }), /图片文件/)
+    assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: link }), /符号链接/)
     assert.equal(fs.existsSync(textFile), true)
     assert.equal(fs.existsSync(outsideImage), true)
   })
@@ -134,10 +130,7 @@ test('workspace image listing only returns real regular images with their curren
     fs.writeFileSync(imagePath, 'image')
     fs.writeFileSync(path.join(workspace, 'note.txt'), 'not an image')
     fs.symlinkSync(path.join(outside, 'outside.jpg'), path.join(workspace, 'unsafe.jpg'))
-    const roots = new Set()
-    authorizeBalaWorkspaceRoot(workspace, { roots })
-
-    const assets = listAuthorizedBalaWorkspaceImages({ workspaceRoot: workspace, roots })
+    const assets = listAuthorizedBalaWorkspaceImages({ workspaceRoot: workspace })
     assert.deepEqual(assets.map(asset => asset.path), [fs.realpathSync.native(imagePath)])
     assert.equal(assets[0].styleCode, '208326102205')
     assert.equal(assets[0].sourceType, 'model')
@@ -152,17 +145,14 @@ test('workspace image listing treats the AI result folder as selected model mate
     const imageDir = path.join(workspace, '208326102205', '03_AI图')
     fs.mkdirSync(imageDir, { recursive: true })
     fs.writeFileSync(path.join(imageDir, 'result.png'), 'image')
-    const roots = new Set()
-    authorizeBalaWorkspaceRoot(workspace, { roots })
-
-    const [asset] = listAuthorizedBalaWorkspaceImages({ workspaceRoot: workspace, roots })
+    const [asset] = listAuthorizedBalaWorkspaceImages({ workspaceRoot: workspace })
     assert.equal(asset.styleCode, '208326102205')
     assert.equal(asset.sourceType, 'model')
     assert.equal(asset.isAi, true)
   })
 })
 
-test('system-picked workspace authorization survives a main-process restart', () => {
+test('legacy workspace authorization store remains readable while deletion does not depend on it', () => {
   withTempTree(({ parent, workspace }) => {
     const storePath = path.join(parent, 'authorized-bala-workspaces.json')
     const imagePath = path.join(workspace, 'generated.webp')
@@ -190,17 +180,14 @@ test('system-picked workspace authorization survives a main-process restart', ()
   })
 })
 
-test('authorized workspace deletion is idempotent when the image is already missing', () => {
+test('workspace deletion is idempotent when the image is already missing anywhere on disk', () => {
   withTempTree(({ workspace, outside }) => {
     const missingImage = path.join(workspace, 'already-removed.png')
     const missingOutsideImage = path.join(outside, 'outside.png')
-    const roots = new Set()
-    authorizeBalaWorkspaceRoot(workspace, { roots })
 
     const result = deleteAuthorizedWorkspaceImage({
       workspaceRoot: workspace,
       filePath: missingImage,
-      roots,
     })
 
     assert.deepEqual(result, {
@@ -208,15 +195,19 @@ test('authorized workspace deletion is idempotent when the image is already miss
       path: fs.realpathSync.native(workspace) + path.sep + 'already-removed.png',
       alreadyMissing: true,
     })
-    assert.throws(() => deleteAuthorizedWorkspaceImage({
+    const missingOutsideResult = deleteAuthorizedWorkspaceImage({
       workspaceRoot: workspace,
       filePath: missingOutsideImage,
-      roots,
-    }), /工作区内/)
+    })
+    assert.deepEqual(missingOutsideResult, {
+      ok: true,
+      path: fs.realpathSync.native(outside) + path.sep + 'outside.png',
+      alreadyMissing: true,
+    })
   })
 })
 
-test('authorized workspace video metadata never serializes video bytes and rejects escapes', () => {
+test('workspace video metadata permits regular videos anywhere and never serializes video bytes', () => {
   withTempTree(({ workspace, outside }) => {
     const nested = path.join(workspace, '视频结果')
     const videoPath = path.join(nested, 'result.mp4')
@@ -226,27 +217,24 @@ test('authorized workspace video metadata never serializes video bytes and rejec
     fs.writeFileSync(videoPath, Buffer.alloc(64 * 1024, 7))
     fs.writeFileSync(outsideVideo, 'outside')
     fs.symlinkSync(outsideVideo, linkPath)
-    const roots = new Set()
-    authorizeBalaWorkspaceRoot(workspace, { roots })
 
-    const media = getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: videoPath, roots })
+    const media = getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: videoPath })
+    const outsideMedia = getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: outsideVideo })
 
     assert.equal(media.path, fs.realpathSync.native(videoPath))
     assert.equal(media.mime, 'video/mp4')
     assert.equal(media.size, 64 * 1024)
     assert.equal(Object.hasOwn(media, 'data_url'), false)
+    assert.equal(outsideMedia.path, fs.realpathSync.native(outsideVideo))
+    assert.equal(outsideMedia.mime, 'video/mp4')
     assert.throws(
-      () => getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: outsideVideo, roots }),
-      /工作区内/,
-    )
-    assert.throws(
-      () => getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: linkPath, roots }),
+      () => getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: linkPath }),
       /符号链接/,
     )
   })
 })
 
-test('authorized workspace image metadata permits only regular images inside the selected workspace', () => {
+test('workspace image metadata permits regular images anywhere and rejects symlinks', () => {
   withTempTree(({ workspace, outside }) => {
     const nested = path.join(workspace, '208326102205', '01_模拍原图')
     const imagePath = path.join(nested, '1-AI.jpg')
@@ -256,28 +244,23 @@ test('authorized workspace image metadata permits only regular images inside the
     fs.writeFileSync(imagePath, 'image')
     fs.writeFileSync(outsideImage, 'outside')
     fs.symlinkSync(outsideImage, linkPath)
-    const roots = new Set()
-    authorizeBalaWorkspaceRoot(workspace, { roots })
 
-    const media = getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: imagePath, roots })
+    const media = getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: imagePath })
+    const outsideMedia = getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: outsideImage })
 
     assert.equal(media.path, fs.realpathSync.native(imagePath))
     assert.equal(media.mime, 'image/jpeg')
+    assert.equal(outsideMedia.path, fs.realpathSync.native(outsideImage))
+    assert.equal(outsideMedia.mime, 'image/jpeg')
     assert.throws(
-      () => getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: outsideImage, roots }),
-      /工作区内/,
-    )
-    assert.throws(
-      () => getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: linkPath, roots }),
+      () => getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: linkPath }),
       /符号链接/,
     )
   })
 })
 
-test('workspace manifest restores video tasks and results only from its authorized workspace', () => {
+test('workspace manifest reads and writes under any selected workspace directory', () => {
   withTempTree(({ workspace, outside }) => {
-    const roots = new Set()
-    authorizeBalaWorkspaceRoot(workspace, { roots })
     const payload = {
       version: 1,
       workspaceDir: workspace,
@@ -287,13 +270,10 @@ test('workspace manifest restores video tasks and results only from its authoriz
       },
     }
 
-    const saved = writeAuthorizedBalaWorkspaceManifest({ workspaceRoot: workspace, payload, roots })
+    const saved = writeAuthorizedBalaWorkspaceManifest({ workspaceRoot: workspace, payload })
     assert.equal(saved.ok, true)
     assert.equal(fs.existsSync(saved.path), true)
-    assert.deepEqual(readAuthorizedBalaWorkspaceManifest({ workspaceRoot: workspace, roots }), payload)
-    assert.throws(
-      () => readAuthorizedBalaWorkspaceManifest({ workspaceRoot: outside, roots }),
-      /未授权/,
-    )
+    assert.deepEqual(readAuthorizedBalaWorkspaceManifest({ workspaceRoot: workspace }), payload)
+    assert.equal(readAuthorizedBalaWorkspaceManifest({ workspaceRoot: outside }), null)
   })
 })

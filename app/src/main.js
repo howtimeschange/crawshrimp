@@ -39,13 +39,12 @@ const { createUpdateInstallCoordinator } = require('./updateInstallCoordinator')
 const { createUpdateCheckScheduler } = require('./updateCheckScheduler')
 const { evaluateUpdatePlatform, resolveUpdateFeedUrl } = require('./updatePlatform')
 const {
+  authorizeBalaWorkspaceRoot,
   deleteAuthorizedWorkspaceImage,
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   listAuthorizedBalaWorkspaceImages,
-  loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,
-  rememberAuthorizedBalaWorkspaceRoot,
   writeAuthorizedBalaWorkspaceManifest,
 } = require('./balaWorkspaceFiles')
 const APP_METADATA = require('../package.json')
@@ -109,8 +108,6 @@ let resolvedCrawshrimpDataDir = ''
 let preferredCrawshrimpDataDir = ''
 let desktopServicesStartupPromise = null
 let dataDirRecoveryInfo = { recovered: false, from: '', to: '', errors: [] }
-const authorizedBalaWorkspaceRoots = new Set()
-let loadedBalaWorkspaceAuthorizationStore = ''
 
 function balaWorkspaceMediaUrl(workspaceRoot = '', filePath = '') {
   const payload = Buffer.from(JSON.stringify({ workspaceRoot, filePath }), 'utf8').toString('base64url')
@@ -153,12 +150,9 @@ function parseByteRange(rangeHeader, size) {
 
 async function handleBalaWorkspaceMediaRequest(request) {
   try {
-    ensureBalaWorkspaceAuthorizationsLoaded()
     const payload = parseBalaWorkspaceMediaPayload(request.url)
     const media = getAuthorizedBalaWorkspaceVideo({
-      workspaceRoot: payload.workspaceRoot,
       filePath: payload.filePath,
-      roots: authorizedBalaWorkspaceRoots,
     })
     const range = parseByteRange(request.headers.get('range'), media.size)
     const length = range.end - range.start + 1
@@ -648,29 +642,8 @@ function getCrawshrimpDataDir() {
   return resolvedCrawshrimpDataDir
 }
 
-function getBalaWorkspaceAuthorizationStorePath() {
-  return path.join(getCrawshrimpDataDir(), 'authorized-bala-workspaces.json')
-}
-
-function getBalaImageCacheDeleteRoots() {
-  const dataDir = getCrawshrimpDataDir()
-  return [
-    path.join(dataDir, 'ai-image-cache'),
-    path.join(dataDir, 'airimage-cache'),
-  ]
-}
-
 function getAiVideoInputDirectoryStorePath() {
   return path.join(getCrawshrimpDataDir(), 'ai-video-input-directory.json')
-}
-
-function ensureBalaWorkspaceAuthorizationsLoaded() {
-  const storePath = getBalaWorkspaceAuthorizationStorePath()
-  if (sameRuntimePath(storePath, loadedBalaWorkspaceAuthorizationStore)) return storePath
-  authorizedBalaWorkspaceRoots.clear()
-  loadAuthorizedBalaWorkspaceRoots(storePath, { roots: authorizedBalaWorkspaceRoots })
-  loadedBalaWorkspaceAuthorizationStore = storePath
-  return storePath
 }
 
 function getApiTokenPath() {
@@ -3295,54 +3268,43 @@ secureHandle('select-bala-workspace', async (_, opts = {}) => {
     properties: ['openDirectory', 'createDirectory'],
   })
   if (res.canceled || !res.filePaths?.length) return ''
-  const storePath = ensureBalaWorkspaceAuthorizationsLoaded()
-  return rememberAuthorizedBalaWorkspaceRoot(res.filePaths[0], {
-    roots: authorizedBalaWorkspaceRoots,
-    storePath,
-  })
+  return authorizeBalaWorkspaceRoot(res.filePaths[0], { roots: new Set() })
 })
 
 secureHandle('delete-bala-workspace-image', async (_, workspaceRoot, filePath) => {
-  ensureBalaWorkspaceAuthorizationsLoaded()
   return deleteAuthorizedWorkspaceImage({
-    workspaceRoot,
     filePath,
-    roots: authorizedBalaWorkspaceRoots,
-    extraDeleteRoots: getBalaImageCacheDeleteRoots(),
   })
 })
 
 secureHandle('get-bala-workspace-video-media', async (_, workspaceRoot, filePath) => {
-  ensureBalaWorkspaceAuthorizationsLoaded()
   const media = getAuthorizedBalaWorkspaceVideo({
-    workspaceRoot,
     filePath,
-    roots: authorizedBalaWorkspaceRoots,
+  })
+  const fileToken = signAiVideoCapability({
+    secret: AI_VIDEO_CAPABILITY_SECRET,
+    kind: 'file',
+    scope: 'media',
+    filePath: media.path,
   })
   return {
     ok: true,
     ...media,
-    media_url: balaWorkspaceMediaUrl(workspaceRoot, media.path),
+    media_url: localMediaUrl(fileToken),
   }
 })
 
 secureHandle('read-bala-workspace-image-preview', async (_, workspaceRoot, filePath) => {
-  ensureBalaWorkspaceAuthorizationsLoaded()
   const media = getAuthorizedBalaWorkspaceImage({
-    workspaceRoot,
     filePath,
-    roots: authorizedBalaWorkspaceRoots,
   })
   return readLocalImageDataUrl(media.path)
 })
 
 secureHandle('read-bala-workspace-image-thumbnail', async (_, workspaceRoot, filePath, opts = {}) => {
   try {
-    ensureBalaWorkspaceAuthorizationsLoaded()
     const media = getAuthorizedBalaWorkspaceImage({
-      workspaceRoot,
       filePath,
-      roots: authorizedBalaWorkspaceRoots,
     })
     return readLocalImageThumbnail(media.path, opts || {})
   } catch (error) {
@@ -3351,8 +3313,7 @@ secureHandle('read-bala-workspace-image-thumbnail', async (_, workspaceRoot, fil
 })
 
 secureHandle('list-bala-workspace-images', async (_, workspaceRoot) => {
-  ensureBalaWorkspaceAuthorizationsLoaded()
-  return listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots: authorizedBalaWorkspaceRoots })
+  return listAuthorizedBalaWorkspaceImages({ workspaceRoot })
 })
 
 secureHandle('get-local-media-url', async (_, filePath) => {
@@ -3372,19 +3333,15 @@ secureHandle('get-local-media-url', async (_, filePath) => {
 })
 
 secureHandle('read-bala-workspace-manifest', async (_, workspaceRoot) => {
-  ensureBalaWorkspaceAuthorizationsLoaded()
   return readAuthorizedBalaWorkspaceManifest({
     workspaceRoot,
-    roots: authorizedBalaWorkspaceRoots,
   })
 })
 
 secureHandle('write-bala-workspace-manifest', async (_, workspaceRoot, payload) => {
-  ensureBalaWorkspaceAuthorizationsLoaded()
   return writeAuthorizedBalaWorkspaceManifest({
     workspaceRoot,
     payload,
-    roots: authorizedBalaWorkspaceRoots,
   })
 })
 

@@ -439,13 +439,13 @@ test('video task thumbnails prefer the existing local image and only fall back t
   assert.match(queue, /else if \(next\.remoteSrc\) videoTaskThumbSrcMap\[next\.id\] = next\.remoteSrc/)
 })
 
-test('a successful workspace thumbnail response is retained instead of returning before it reaches the preview cache', () => {
+test('a successful local thumbnail response is retained instead of returning before it reaches the preview cache', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const start = source.indexOf('async function loadLocalImagePreview')
   const end = source.indexOf('function imagePreviewSource', start)
   const loader = source.slice(start, end)
 
-  assert.match(loader, /if \(workspaceRoot && typeof workspaceReader === 'function'\)[\s\S]*?dataUrl = String\(response\?\.data_url \|\| response\?\.dataUrl \|\| ''\)\.trim\(\)/)
+  assert.match(loader, /if \(typeof workspaceReader === 'function'\)[\s\S]*?dataUrl = String\(response\?\.data_url \|\| response\?\.dataUrl \|\| ''\)\.trim\(\)/)
   assert.doesNotMatch(loader, /else \{\s*return\s*\}/)
   assert.match(loader, /if \(!dataUrl\) throw new Error\(thumbnail \? '本地缩略图不可用'/)
   assert.match(loader, /localImagePreviews\[cacheKey\] = dataUrl/)
@@ -947,6 +947,36 @@ test('AI video workflow removes the operator review step but restores persisted 
   assert.match(source, /window\.cs\.getData\(BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_IMAGE_TASK_ID\)/)
   assert.match(source, /onMounted\(\(\) => \{[\s\S]*?restoreReviewWorkspaceBatches\(\{ silent: true \}\)[\s\S]*?if \(!restoredBatchCount\) await restoreLatestReviewBatch\(\{ silent: true \}\)/)
   assert.match(source, /async function refreshReviewBatch\(\)[\s\S]*?if \(!boardUrls\.length\) \{[\s\S]*?loadLatestReviewBatch\(\)/)
+})
+
+test('queued AI image workflow keeps polling until the queued run is finalized', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const startBlock = source.slice(
+    source.indexOf('async function startAiImageGeneration'),
+    source.indexOf('async function pollAiImageTask'),
+  )
+  const pollBlock = source.slice(
+    source.indexOf('async function pollAiImageTask'),
+    source.indexOf('async function finalizeAiImageTask'),
+  )
+
+  assert.match(source, /let aiQueuedRequestId = ''/)
+  assert.match(startBlock, /aiQueuedRequestId = queuedRequestId[\s\S]*?scheduleAiPoll\(\)[\s\S]*?return/)
+  assert.match(pollBlock, /aiLiveRunForQueuedRequest\(status,\s*aiQueuedRequestId\)/)
+  assert.match(pollBlock, /aiQueuedItemForRequest\(status,\s*aiQueuedRequestId\)/)
+  assert.match(pollBlock, /await finalizeAiImageTask\(String\(lastRunId \|\| aiPollRunId \|\| ''\)\)/)
+})
+
+test('restored Bala review batches refresh generating assets before merging into the workspace', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const restoreBlock = source.slice(
+    source.indexOf('async function restoreReviewWorkspaceBatches'),
+    source.indexOf('async function restoreLatestReviewBatch'),
+  )
+
+  assert.match(restoreBlock, /hasGeneratingBalaReviewAssets\(sourceBatch\)/)
+  assert.match(restoreBlock, /refreshBalaReviewBatch\(ref\.batchId,\s*ref\.token\)/)
+  assert.match(restoreBlock, /normalizeBalaReviewBatchStyles\(sourceBatch/)
 })
 
 test('AI video step navigation builds video jobs directly from the workspace selection', () => {
@@ -1521,7 +1551,7 @@ test('AI edit bulk controls align left and per-style selection uses a checkbox',
   assert.doesNotMatch(editTemplate, /<button[^>]*toggleStyleEditSelection/)
 })
 
-test('deleting an AI result requires confirmation and removes the authorized local image', () => {
+test('deleting an AI result requires confirmation and removes the local image without workspace authorization', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const templateSource = source.split('<script setup>')[0]
   const deleteStart = source.indexOf('async function confirmDeleteGeneratedVersion')
@@ -1537,11 +1567,11 @@ test('deleting an AI result requires confirmation and removes the authorized loc
   assert.match(preload, /deleteBalaWorkspaceImage/)
   assert.match(preload, /deleteBalaReviewAsset/)
   assert.match(main, /delete-bala-workspace-image/)
-  assert.match(main, /getBalaImageCacheDeleteRoots/)
-  assert.match(main, /extraDeleteRoots:\s*getBalaImageCacheDeleteRoots\(\)/)
-  assert.match(main, /rememberAuthorizedBalaWorkspaceRoot/)
-  assert.match(main, /loadAuthorizedBalaWorkspaceRoots/)
-  assert.match(main, /authorized-bala-workspaces\.json/)
+  assert.doesNotMatch(main, /getBalaImageCacheDeleteRoots/)
+  assert.doesNotMatch(main, /extraDeleteRoots:/)
+  assert.doesNotMatch(main, /rememberAuthorizedBalaWorkspaceRoot/)
+  assert.doesNotMatch(main, /loadAuthorizedBalaWorkspaceRoots/)
+  assert.doesNotMatch(main, /authorized-bala-workspaces\.json/)
   assert.match(deleteSource, /const remoteAssetId = String\(reviewAsset\?\.remoteAssetId/)
   assert.match(deleteSource, /const boardUrl = reviewAsset\?\.reviewBoardUrl/)
   assert.doesNotMatch(deleteSource, /reviewAsset\?\.reviewBoardUrl \|\| reviewBoardUrl\.value/)
@@ -1550,7 +1580,7 @@ test('deleting an AI result requires confirmation and removes the authorized loc
   assert.match(source, /function reviewAssetsForGeneratedVersion/)
   assert.match(source, /const archiveAsset = reviewAsset \|\|/)
   assert.match(source, /await archiveReviewAssetToWorkspace\(archiveAsset, styleCode\)/)
-  assert.match(source, /抓虾图片缓存/)
+  assert.match(templateSource, /仅允许删除本地普通图片文件/)
 })
 
 test('stuck generating AI result cards can be cleared without deleting local files', () => {

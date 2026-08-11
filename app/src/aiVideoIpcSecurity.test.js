@@ -92,14 +92,21 @@ test('legacy raw-path media stays bounded, while generic image previews honor im
   assert.match(legacyList, /getAuthorizedLocalMediaDirectory/)
 })
 
-test('Bala workspace image preview IPC stays constrained to a selected workspace', () => {
+test('Bala workspace media IPC accepts local files without workspace-root authorization', () => {
   assert.match(preload, /readBalaWorkspaceImagePreview: \(workspaceRoot, filePath\) => ipcRenderer\.invoke\('read-bala-workspace-image-preview'/)
   assert.match(preload, /readBalaWorkspaceImageThumbnail: \(workspaceRoot, filePath, opts = \{\}\) => ipcRenderer\.invoke\('read-bala-workspace-image-thumbnail'/)
 
+  const videoHandler = section(main, "secureHandle('get-bala-workspace-video-media'", "secureHandle('read-bala-workspace-image-preview'")
   const previewHandler = section(main, "secureHandle('read-bala-workspace-image-preview'", "secureHandle('read-bala-workspace-image-thumbnail'")
   const thumbnailHandler = section(main, "secureHandle('read-bala-workspace-image-thumbnail'", "secureHandle('get-local-media-url'")
+  assert.match(videoHandler, /getAuthorizedBalaWorkspaceVideo/)
+  assert.match(videoHandler, /signAiVideoCapability/)
+  assert.match(videoHandler, /localMediaUrl\(fileToken\)/)
+  assert.doesNotMatch(videoHandler, /ensureBalaWorkspaceAuthorizationsLoaded|authorizedBalaWorkspaceRoots|balaWorkspaceMediaUrl/)
   assert.match(previewHandler, /getAuthorizedBalaWorkspaceImage/)
   assert.match(thumbnailHandler, /getAuthorizedBalaWorkspaceImage/)
+  assert.doesNotMatch(previewHandler, /ensureBalaWorkspaceAuthorizationsLoaded|authorizedBalaWorkspaceRoots/)
+  assert.doesNotMatch(thumbnailHandler, /ensureBalaWorkspaceAuthorizationsLoaded|authorizedBalaWorkspaceRoots/)
 })
 
 test('AI video config IPC removes backend paths and returns the fixed output capability', () => {
