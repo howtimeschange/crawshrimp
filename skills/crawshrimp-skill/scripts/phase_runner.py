@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import hashlib
 import json
+import mimetypes
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -87,6 +90,82 @@ class WebPhaseRunner:
         self.downloader = DownloadManager(self.artifact_dir, browser_session_downloader=self._download_browser_session)
         self.download_dir: Path = Path.home() / "Downloads"
         self._sleep = sleep or asyncio.sleep
+
+    def _resolve_local_file(self, raw_path: str) -> Path:
+        path = Path(str(raw_path or "")).expanduser()
+        if not path.is_absolute():
+            path = path.resolve()
+        if not path.exists() or not path.is_file():
+            raise FileNotFoundError(f"文件不存在：{path}")
+        return path
+
+    def _prepare_safe_three_four_images(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        try:
+            from PIL import Image, ImageFilter, ImageOps
+        except Exception as e:
+            return {"ok": False, "items": [], "error": f"prepare_image_files 需要 Pillow: {e}"}
+
+        target_width = 750
+        target_height = 1000
+        output_dir = self.artifact_dir / "prepared-images"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        results: list[dict[str, Any]] = []
+        for index, item in enumerate(items or []):
+            raw_path = str((item or {}).get("path") or (item or {}).get("file") or "").strip()
+            if not raw_path:
+                results.append({"success": False, "index": index, "error": "缺少图片路径"})
+                continue
+            try:
+                source = self._resolve_local_file(raw_path)
+                image = Image.open(source)
+                image = ImageOps.exif_transpose(image).convert("RGB")
+                source_width, source_height = image.size
+                contain_scale = min(target_width / source_width, target_height / source_height)
+                draw_width = max(1, round(source_width * contain_scale))
+                draw_height = max(1, round(source_height * contain_scale))
+                offset_x = round((target_width - draw_width) / 2)
+                offset_y = round((target_height - draw_height) / 2)
+
+                cover_scale = max(target_width / source_width, target_height / source_height)
+                cover_width = max(1, round(source_width * cover_scale))
+                cover_height = max(1, round(source_height * cover_scale))
+                background = image.resize((cover_width, cover_height), Image.Resampling.LANCZOS)
+                left = round((cover_width - target_width) / 2)
+                top = round((cover_height - target_height) / 2)
+                background = background.crop((left, top, left + target_width, top + target_height))
+                background = background.filter(ImageFilter.GaussianBlur(radius=18))
+                background = Image.blend(background, Image.new("RGB", (target_width, target_height), (255, 255, 255)), 0.16)
+                foreground = image.resize((draw_width, draw_height), Image.Resampling.LANCZOS)
+                background.paste(foreground, (offset_x, offset_y))
+
+                digest = hashlib.sha1(f"{source}:{source.stat().st_size}:{source.stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
+                output_path = output_dir / f"{source.stem[:48]}-{digest}-3x4-safe.jpg"
+                background.save(output_path, format="JPEG", quality=92, optimize=True)
+                output_bytes = output_path.read_bytes()
+                source_ratio = source_width / max(source_height, 1)
+                results.append({
+                    "success": True,
+                    "index": index,
+                    "sourcePath": str(source),
+                    "path": str(output_path),
+                    "name": output_path.name,
+                    "mime": mimetypes.guess_type(output_path.name)[0] or "image/jpeg",
+                    "size": len(output_bytes),
+                    "dataUrl": "data:image/jpeg;base64," + base64.b64encode(output_bytes).decode("ascii"),
+                    "width": target_width,
+                    "height": target_height,
+                    "sourceWidth": source_width,
+                    "sourceHeight": source_height,
+                    "cropStatus": "matched" if abs(source_ratio - 0.75) < 0.01 else "contain-with-soft-background",
+                    "preservesFullSubject": True,
+                    "drawWidth": draw_width,
+                    "drawHeight": draw_height,
+                    "offsetX": offset_x,
+                    "offsetY": offset_y,
+                })
+            except Exception as e:
+                results.append({"success": False, "index": index, "sourcePath": raw_path, "error": str(e)})
+        return {"ok": all(item.get("success") for item in results), "items": results}
 
     def _params_storage_key(self, run_token: str) -> str:
         return f"__CRAWSHRIMP_PARAMS__:{run_token}"
@@ -248,6 +327,32 @@ class WebPhaseRunner:
                         phase = str(meta.get("next_phase") or phase)
                         continue
 
+                    if action == "cdp_target_eval":
+                        evaluator = getattr(self.backend, "evaluate_cdp_target", None)
+                        if evaluator is None:
+                            raise RuntimeError("backend does not support cdp_target_eval")
+                        eval_result = evaluator(
+                            str(meta.get("expression") or ""),
+                            target_url_contains=meta.get("target_url_contains") or meta.get("targetUrlContains") or [],
+                            target_url_regex=str(meta.get("target_url_regex") or meta.get("targetUrlRegex") or ""),
+                            target_types=meta.get("target_types") or meta.get("targetTypes") or ["page", "iframe"],
+                            user_gesture=bool(meta.get("user_gesture") or meta.get("userGesture")),
+                            open_url_if_missing=str(meta.get("open_url_if_missing") or meta.get("openUrlIfMissing") or ""),
+                            open_wait_ms=int(meta.get("open_wait_ms") or meta.get("openWaitMs") or 0),
+                            timeout_ms=int(meta.get("timeout_ms") or meta.get("timeoutMs") or eval_timeout_ms),
+                        )
+                        if hasattr(eval_result, "__await__"):
+                            eval_result = await eval_result
+                        shared = _merge_runtime_shared(
+                            shared,
+                            str(meta.get("shared_key") or meta.get("sharedKey") or "cdp_target_eval_result"),
+                            eval_result,
+                            bool(meta.get("shared_append")),
+                        )
+                        await self._sleep(float(meta.get("sleep_ms", 300)) / 1000.0)
+                        phase = str(meta.get("next_phase") or phase)
+                        continue
+
                     if action == "inject_files":
                         items = meta.get("items") or []
                         for item in items:
@@ -276,6 +381,26 @@ class WebPhaseRunner:
                             raise RuntimeError("file chooser upload failed")
                         shared = _merge_runtime_shared(shared, str(meta.get("shared_key") or ""), upload_result, bool(meta.get("shared_append")))
                         await self._sleep(float(meta.get("sleep_ms", 500)) / 1000.0)
+                        phase = str(meta.get("next_phase") or phase)
+                        continue
+
+                    if action == "prepare_image_files":
+                        items = meta.get("items") or []
+                        prepare_result = self._prepare_safe_three_four_images(items)
+                        if meta.get("strict") and not prepare_result.get("ok"):
+                            errors = [
+                                str(item.get("error") or "")
+                                for item in prepare_result.get("items", [])
+                                if not item.get("success")
+                            ]
+                            raise RuntimeError("prepare_image_files failed: " + "；".join(filter(None, errors)))
+                        shared = _merge_runtime_shared(
+                            shared,
+                            str(meta.get("shared_key") or "prepared_image_files"),
+                            prepare_result,
+                            bool(meta.get("shared_append")),
+                        )
+                        await self._sleep(float(meta.get("sleep_ms", 0)) / 1000.0)
                         phase = str(meta.get("next_phase") or phase)
                         continue
 

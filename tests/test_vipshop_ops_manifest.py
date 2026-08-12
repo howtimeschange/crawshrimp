@@ -21,7 +21,7 @@ class VipshopOpsManifestTests(unittest.TestCase):
 
         self.assertEqual(manifest["id"], "vipshop-ops-assistant")
         self.assertEqual(manifest["name"], "唯品会运营助手")
-        self.assertEqual(manifest["version"], "0.2.2")
+        self.assertEqual(manifest["version"], "0.2.3")
         self.assertEqual(task["name"], "轻供款商品报表")
         self.assertEqual(task["script"], "light-supply-goods-report.js")
         self.assertEqual(task["entry_url"], "https://compass.vip.com/frontend/index.html#/product/details")
@@ -190,6 +190,39 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertIn("商品ID", tmax_sheet["columns"])
         self.assertIn("加购成本", tmax_sheet["columns"])
         self.assertIn("销售额", tmax_sheet["columns"])
+
+    def test_manifest_declares_mop_sop_workflows(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        tasks = {item["id"]: item for item in manifest["tasks"]}
+
+        online = tasks["mop_online_status_statistics"]
+        info = tasks["mop_info_table_download_upload"]
+        new_arrival = tasks["mop_new_arrival_material_check"]
+
+        self.assertEqual(online["name"], "MOP-唯品商品在线情况统计")
+        self.assertEqual(online["script"], "MOP-vipshop-online-status-statistics.js")
+        self.assertIn("https://nov-admin.vip.com/", online["tab_match_prefixes"])
+        self.assertEqual(online["output"][1]["type"], "notify")
+        self.assertEqual(online["output"][1]["channel"], "dingtalk")
+        self.assertIn("上线数量环比", online["output"][0]["columns"])
+        self.assertIn("下线数量环比", online["output"][0]["columns"])
+
+        self.assertEqual(info["name"], "MOP-唯品商品信息表下载并上传云盘")
+        self.assertEqual(info["script"], "MOP-vipshop-info-table-download-upload.js")
+        info_params = {item["id"]: item for item in info["params"]}
+        self.assertIn("https://fmp.semirapp.com/", info["tab_match_prefixes"])
+        self.assertIn("MOP品牌/4.运营/02-唯品", info_params["semir_cloud_path"]["default"])
+        self.assertIn("网页上传状态", info["output"][0]["columns"])
+        self.assertEqual(info["output"][1]["type"], "notify")
+
+        self.assertEqual(new_arrival["name"], "MOP-唯品商品上新资料检查")
+        self.assertEqual(new_arrival["script"], "MOP-vipshop-new-arrival-material-check.js")
+        new_params = {item["id"]: item for item in new_arrival["params"]}
+        self.assertEqual(new_params["input_file"]["type"], "file_excel")
+        self.assertTrue(new_params["input_file"]["required"])
+        self.assertIn("禁售", new_params["forbidden_keywords"]["default"])
+        self.assertIn("问题说明", new_arrival["output"][0]["columns"])
+        self.assertEqual(new_arrival["output"][1]["channel"], "dingtalk")
 
 
 if __name__ == "__main__":

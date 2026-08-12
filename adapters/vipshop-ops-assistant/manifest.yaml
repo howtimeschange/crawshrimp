@@ -1,6 +1,6 @@
 id: vipshop-ops-assistant
 name: 唯品会运营助手
-version: 0.2.2
+version: 0.2.3
 author: codex
 description: "唯品会罗盘与供应商平台运营报表工具"
 entry_url: https://compass.vip.com/frontend/index.html#/product/details
@@ -548,6 +548,365 @@ tasks:
               - 数据来源接口
               - 执行结果
               - 备注
+
+  - id: mop_online_status_statistics
+    name: MOP-唯品商品在线情况统计
+    description: 按 SOP 从唯品商品列表读取商品信息，统计本次上线/下线数量，并结合上次商品信息表或手填数量计算环比，通过钉钉同步运营。
+    script: MOP-vipshop-online-status-statistics.js
+    entry_url: https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise
+    tab_match_prefixes:
+      - https://vis.vip.com/
+      - https://nov-admin.vip.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: current
+            label: 当前唯品商品列表页
+          - value: new
+            label: 新开商品列表页（推荐）
+        hint: 请先在 9222 端口 Chrome 登录唯品会；脚本使用商品资料页面 API 分页读取商品状态。
+      - id: previous_file
+        type: file_excel
+        label: 上次商品信息表
+        required: false
+        hint: 可选。上传上一次下载的商品信息表后，脚本按「商品状态」列自动统计上次上线/下线数量并计算环比。
+      - id: previous_online_count
+        type: number
+        label: 上次上线数量
+        required: false
+        min: 0
+        step: 1
+        ui_span: third
+        hint: 未上传上次商品信息表时可手填；用于计算「本次上线数量 / 上次上线数量 - 1」。
+      - id: previous_offline_count
+        type: number
+        label: 上次下线数量
+        required: false
+        min: 0
+        step: 1
+        ui_span: third
+        hint: 未上传上次商品信息表时可手填；用于计算「本次下线数量 / 上次下线数量 - 1」。
+      - id: style_codes
+        type: textarea
+        label: 限定款号
+        required: false
+        rows: 3
+        placeholder: "可选；留空统计全部商品"
+        hint: 多个款号可换行、逗号或空格分隔；留空时按当前账号权限统计全部商品列表。
+      - id: goods_codes
+        type: textarea
+        label: 限定货号
+        required: false
+        rows: 3
+        placeholder: "可选；留空统计全部商品"
+        hint: 多个货号可换行、逗号或空格分隔；填写后按完整货号查询。
+      - id: page_size
+        type: number
+        label: 每页数量
+        default: 500
+        min: 20
+        max: 500
+        step: 20
+        ui_span: third
+      - id: max_pages
+        type: number
+        label: 最多页数
+        default: 200
+        min: 1
+        max: 1000
+        step: 1
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "MOP-唯品商品在线情况统计_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 统计口径
+          - 本次商品总数
+          - 本次商品上线数量
+          - 本次商品下线数量
+          - 本次其他状态数量
+          - 上次商品上线数量
+          - 上次商品下线数量
+          - 上线数量环比
+          - 下线数量环比
+          - 上次数据来源
+          - 商品ID
+          - 款号
+          - 货号
+          - 商品名称
+          - 品牌编码
+          - 品牌名称
+          - 商品状态
+          - 状态分类
+          - 市场价
+          - 唯品价
+          - 在售库存
+          - 图片链接
+          - 数据来源接口
+          - 执行结果
+          - 备注
+        sheets:
+          - name: 执行摘要
+            columns:
+              - 统计口径
+              - 本次商品总数
+              - 本次商品上线数量
+              - 本次商品下线数量
+              - 本次其他状态数量
+              - 上次商品上线数量
+              - 上次商品下线数量
+              - 上线数量环比
+              - 下线数量环比
+              - 上次数据来源
+              - 数据来源接口
+              - 执行结果
+              - 备注
+          - name: 商品状态明细
+            columns:
+              - 商品ID
+              - 款号
+              - 货号
+              - 商品名称
+              - 品牌编码
+              - 品牌名称
+              - 商品状态
+              - 状态分类
+              - 市场价
+              - 唯品价
+              - 在售库存
+              - 图片链接
+              - 数据来源接口
+              - 执行结果
+              - 备注
+      - type: notify
+        channel: dingtalk
+        condition: "data.length > 0"
+
+  - id: mop_info_table_download_upload
+    name: MOP-唯品商品信息表下载并上传云盘
+    description: 按 SOP 下载唯品商品信息表，并按追加要求改为森马云盘 Web API 优先上传到指定目录，保留本地下载与上传读回结果。
+    script: MOP-vipshop-info-table-download-upload.js
+    entry_url: https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise
+    tab_match_prefixes:
+      - https://vis.vip.com/
+      - https://nov-admin.vip.com/
+      - https://fmp.semirapp.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: current
+            label: 当前唯品/云盘页面
+          - value: new
+            label: 新开商品列表页（推荐）
+        hint: 默认先在唯品商品列表页读取商品信息并生成 CSV，再切到森马云盘 Web 触发网页上传。
+      - id: semir_cloud_path
+        type: text
+        label: 森马云盘 Web 目标目录
+        required: false
+        default: "品牌电商项目部//MOP品牌/4.运营/02-唯品/历史资料/唯品每日商品货表汇总/2026/8月-12月/"
+        hint: 已按 SOP 目录预填；脚本会优先使用森马云盘网页 API 上传，不走本地客户端。
+      - id: local_download_dir
+        type: directory
+        label: 本地下载目录
+        required: false
+        hint: 可选。留空则使用抓虾运行时 artifact 目录；选择后会把 CSV 放到该目录。
+      - id: output_filename
+        type: text
+        label: 下载文件名
+        required: false
+        placeholder: "留空自动生成：唯品商品信息表_YYYYMMDD_HHMMSS.csv"
+      - id: style_codes
+        type: textarea
+        label: 限定款号
+        required: false
+        rows: 3
+        placeholder: "可选；留空下载全部商品信息"
+      - id: goods_codes
+        type: textarea
+        label: 限定货号
+        required: false
+        rows: 3
+        placeholder: "可选；留空下载全部商品信息"
+      - id: page_size
+        type: number
+        label: 每页数量
+        default: 500
+        min: 20
+        max: 500
+        step: 20
+        ui_span: third
+      - id: max_pages
+        type: number
+        label: 最多页数
+        default: 200
+        min: 1
+        max: 1000
+        step: 1
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "MOP-唯品商品信息表下载上传结果_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 处理环节
+          - 商品信息行数
+          - 下载文件名
+          - 本地文件
+          - 森马云盘目标目录
+          - 网页上传状态
+          - 数据来源接口
+          - 执行结果
+          - 备注
+        sheets:
+          - name: 执行摘要
+            columns:
+              - 处理环节
+              - 商品信息行数
+              - 下载文件名
+              - 本地文件
+              - 森马云盘目标目录
+              - 网页上传状态
+              - 数据来源接口
+              - 执行结果
+              - 备注
+      - type: notify
+        channel: dingtalk
+        condition: "data.length > 0"
+
+  - id: mop_new_arrival_material_check
+    name: MOP-唯品商品上新资料检查
+    description: 读取运营给到的上新款号+吊牌价表，查询唯品正式资料/PDC 详情，检查市场价、禁售风险、每个色号商品展示图方图和列表图长图，并将问题款号通过钉钉同步。
+    script: MOP-vipshop-new-arrival-material-check.js
+    entry_url: https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise
+    tab_match_prefixes:
+      - https://vis.vip.com/
+      - https://nov-admin.vip.com/
+      - https://pdc-portal.vip.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: current
+            label: 当前唯品商品资料页
+          - value: new
+            label: 新开商品资料页（推荐）
+        hint: 默认在 nov-admin 商品资料页运行，避免外层 vis 页面跨域拦截接口。
+      - id: input_file
+        type: file_excel
+        label: 上新款号+吊牌价表
+        required: true
+        hint: 至少包含「款号」或「货号」；如有「吊牌价/市场价」列，脚本会与唯品市场价比对。
+      - id: forbidden_keywords
+        type: text
+        label: 禁售关键词
+        default: "禁售 禁止 不可售 停售 审核驳回 不通过"
+        hint: 命中商品状态、审核状态或原因文本时会作为问题输出。
+      - id: price_tolerance
+        type: number
+        label: 价格容差
+        default: 0
+        min: 0
+        step: 0.01
+        ui_span: third
+        hint: 默认精确比对；如唯品价格存在分位舍入，可设置容差。
+      - id: vendor_type
+        type: number
+        label: 供应商类型
+        default: 1
+        min: 1
+        max: 9
+        step: 1
+        ui_span: third
+        hidden: true
+      - id: page_size
+        type: number
+        label: 每页数量
+        default: 500
+        min: 20
+        max: 500
+        step: 20
+        ui_span: third
+      - id: max_pages
+        type: number
+        label: 最多页数
+        default: 100
+        min: 1
+        max: 100
+        step: 1
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "MOP-唯品商品上新资料检查_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 输入行数
+          - 有效检查款数
+          - 问题行数
+          - 问题款号数
+          - 表格行号
+          - 款号
+          - 货号
+          - 运营表吊牌价
+          - 唯品市场价
+          - 商品ID
+          - V_SPU
+          - 商品名称
+          - 商品状态
+          - 色号
+          - 颜色
+          - 检查项
+          - 执行结果
+          - 问题说明
+          - 数据来源接口
+          - 备注
+        sheets:
+          - name: 执行摘要
+            columns:
+              - 输入行数
+              - 有效检查款数
+              - 问题行数
+              - 问题款号数
+              - 执行结果
+              - 备注
+          - name: 上新资料检查明细
+            columns:
+              - 表格行号
+              - 款号
+              - 货号
+              - 运营表吊牌价
+              - 唯品市场价
+              - 商品ID
+              - V_SPU
+              - 商品名称
+              - 商品状态
+              - 色号
+              - 颜色
+              - 检查项
+              - 执行结果
+              - 问题说明
+              - 数据来源接口
+              - 备注
+      - type: notify
+        channel: dingtalk
+        condition: "data.length > 0"
 
   - id: light_supply_goods_report
     name: 轻供款商品报表

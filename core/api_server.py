@@ -6603,14 +6603,28 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 elif out.type == OutputType.notify:
                     if notifier.should_notify(out.condition, data_rows):
                         try:
+                            notify_title = f"{m.name} - {task.name}"
+                            notify_message = None
+                            for row in data_rows or []:
+                                if not isinstance(row, dict):
+                                    continue
+                                candidate_message = str(row.get("__notify_body") or "").strip()
+                                if not candidate_message:
+                                    continue
+                                notify_message = candidate_message
+                                candidate_title = str(row.get("__notify_title") or "").strip()
+                                if candidate_title:
+                                    notify_title = candidate_title
+                                break
                             await asyncio.to_thread(
                                 notifier.send,
                                 channel=out.channel or 'dingtalk',
-                                title=f"{m.name} - {task.name}",
+                                title=notify_title,
                                 records=len(data_rows),
                                 adapter_name=m.name,
                                 task_name=task.name,
                                 sample_rows=data_rows[:3] if data_rows else None,
+                                message=notify_message,
                             )
                             log(f"Notification sent via {out.channel}")
                         except Exception as e:

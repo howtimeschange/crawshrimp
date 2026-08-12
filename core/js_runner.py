@@ -1097,6 +1097,78 @@ class JSRunner:
         self._file_payload_cache[cache_key] = payload
         return payload
 
+    def _prepare_safe_three_four_images(self, items: list[dict]) -> dict:
+        try:
+            from PIL import Image, ImageFilter, ImageOps
+        except Exception as e:
+            return {"ok": False, "items": [], "error": f"prepare_image_files 需要 Pillow: {e}"}
+
+        target_width = 750
+        target_height = 1000
+        output_dir = self.artifact_dir / "prepared-images"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        results: list[dict] = []
+        for index, item in enumerate(items or []):
+            raw_path = str((item or {}).get("path") or (item or {}).get("file") or "").strip()
+            if not raw_path:
+                results.append({"success": False, "error": "缺少图片路径", "index": index})
+                continue
+            try:
+                source = self._resolve_local_file(raw_path)
+                image = Image.open(source)
+                image = ImageOps.exif_transpose(image).convert("RGB")
+                source_width, source_height = image.size
+                contain_scale = min(target_width / source_width, target_height / source_height)
+                draw_width = max(1, round(source_width * contain_scale))
+                draw_height = max(1, round(source_height * contain_scale))
+                offset_x = round((target_width - draw_width) / 2)
+                offset_y = round((target_height - draw_height) / 2)
+
+                cover_scale = max(target_width / source_width, target_height / source_height)
+                cover_width = max(1, round(source_width * cover_scale))
+                cover_height = max(1, round(source_height * cover_scale))
+                background = image.resize((cover_width, cover_height), Image.Resampling.LANCZOS)
+                left = round((cover_width - target_width) / 2)
+                top = round((cover_height - target_height) / 2)
+                background = background.crop((left, top, left + target_width, top + target_height))
+                background = background.filter(ImageFilter.GaussianBlur(radius=18))
+                overlay = Image.new("RGB", (target_width, target_height), (255, 255, 255))
+                background = Image.blend(background, overlay, 0.16)
+
+                foreground = image.resize((draw_width, draw_height), Image.Resampling.LANCZOS)
+                background.paste(foreground, (offset_x, offset_y))
+                digest = hashlib.sha1(f"{source}:{source.stat().st_size}:{source.stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
+                output_path = output_dir / f"{source.stem[:48]}-{digest}-3x4-safe.jpg"
+                background.save(output_path, format="JPEG", quality=92, optimize=True)
+                output_bytes = output_path.read_bytes()
+                saved_path = str(output_path)
+                if saved_path not in self.runtime_output_files:
+                    self.runtime_output_files.append(saved_path)
+                source_ratio = source_width / max(source_height, 1)
+                results.append({
+                    "success": True,
+                    "index": index,
+                    "sourcePath": str(source),
+                    "path": saved_path,
+                    "name": output_path.name,
+                    "mime": mimetypes.guess_type(output_path.name)[0] or "image/jpeg",
+                    "size": len(output_bytes),
+                    "dataUrl": "data:image/jpeg;base64," + base64.b64encode(output_bytes).decode("ascii"),
+                    "width": target_width,
+                    "height": target_height,
+                    "sourceWidth": source_width,
+                    "sourceHeight": source_height,
+                    "cropStatus": "matched" if abs(source_ratio - 0.75) < 0.01 else "contain-with-soft-background",
+                    "preservesFullSubject": True,
+                    "drawWidth": draw_width,
+                    "drawHeight": draw_height,
+                    "offsetX": offset_x,
+                    "offsetY": offset_y,
+                })
+            except Exception as e:
+                results.append({"success": False, "index": index, "sourcePath": raw_path, "error": str(e)})
+        return {"ok": all(item.get("success") for item in results), "items": results}
+
     def _build_file_inject_expression(self, items: list[dict], seed_payloads: list[dict]) -> str:
         seed = {
             item["cache_key"]: {
@@ -3934,6 +4006,32 @@ class JSRunner:
                             )
                             phase = str(next_phase)
                             await self._refresh_ws_url()
+                            continue
+
+                        if action == "prepare_image_files":
+                            items = meta.get("items") or []
+                            shared_key = str(meta.get("shared_key") or "prepared_image_files").strip()
+                            prepare_result = self._prepare_safe_three_four_images(items)
+                            if meta.get("strict") and not prepare_result.get("ok"):
+                                errors = [
+                                    str(item.get("error") or "")
+                                    for item in prepare_result.get("items", [])
+                                    if not item.get("success")
+                                ]
+                                raise RuntimeError("prepare_image_files failed: " + "；".join(filter(None, errors)))
+                            shared = self._merge_runtime_shared(shared, shared_key, prepare_result)
+                            post_sleep = float(meta.get("sleep_ms", 0)) / 1000.0
+                            await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(post_sleep * 1000)})
+                            await asyncio.sleep(post_sleep)
+                            next_phase = meta.get("next_phase") or phase
+                            logger.info(
+                                "prepare_image_files: page=%s phase=%s 处理 %s 张图片 -> %s",
+                                page,
+                                phase,
+                                len(items),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
                             continue
 
                         if action == "capture_click_requests":
