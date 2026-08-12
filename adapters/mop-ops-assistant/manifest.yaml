@@ -376,3 +376,167 @@ tasks:
           - 执行结果
           - 备注
           - 抓取时间
+
+  - id: dress_collocation_material_draft
+    name: 搭配素材草稿
+    description: 输入 1-9 张搭配素材图、商品 ID、标题和文案，自动生成 3:4 安全图并保存千牛搭配素材草稿；只保存草稿，不发布内容。
+    script: dress-collocation-material-draft.js
+    entry_url: https://qn.taobao.com/home.htm/material-center/material-management?tab=recommend&subTab=SCU
+    tab_match_prefixes:
+      - https://qn.taobao.com/
+      - https://scenario-front.taobao.com/
+    skip_auth: false
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验素材 / 草稿规划
+    auto_precheck_note: 执行前会校验商品 ID、标题、文案和图片；live 模式会把本地图片处理成 3:4 安全图并保存搭配素材草稿，不会点击或调用发布。
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 打开素材列表
+        hint: 请先在 9222 端口 Chrome 登录千牛；当前停留在搭配素材草稿编辑页时会优先更新该草稿。
+      - id: execute_mode
+        type: radio
+        label: 运行方式
+        default: plan
+        options:
+          - value: plan
+            label: 先做预检
+          - value: live
+            label: 上传并保存草稿
+        hint: 预检不会上传；live 只保存草稿，不发布内容。
+      - id: material_images
+        type: file_images
+        label: 搭配素材图
+        required: true
+        hint: 支持 1-9 张；本地图片会自动放入 750x1000 的 3:4 画布，人物完整保留，边缘用柔化背景补齐。
+      - id: product_ids
+        type: textarea
+        label: 商品 ID
+        rows: 3
+        required: true
+        placeholder: "一行一个，例如：\n1057386891909\n1060933035333"
+        hint: 脚本会关联为搭配商品，并按上下装默认位置生成标签锚点。
+      - id: title
+        type: text
+        label: 标题
+        required: true
+        max_length: 30
+        placeholder: MOP桑蚕丝混纺牛仔套装
+      - id: description
+        type: textarea
+        label: 文案
+        rows: 4
+        required: true
+        max_length: 1000
+        placeholder: 莫代尔棉桑蚕丝牛仔叠穿马甲套装，为造型增添丹宁的率性质感
+      - id: draft_id
+        type: text
+        label: 草稿 ID
+        required: false
+        placeholder: 可选，例如 409527360556
+        hint: 留空时优先使用当前 URL 的 id；否则会在搭配素材列表中按标题和商品 ID 查找草稿。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "MOP搭配素材草稿结果_{timestamp}.xlsx"
+        columns:
+          - 搭配ID
+          - 发布内容ID
+          - 商品ID
+          - 标题
+          - 文案
+          - 素材数量
+          - 素材明细
+          - 切图策略
+          - 执行结果
+          - 备注
+          - 抓取时间
+
+  - id: dress_collocation_material_publish
+    name: 搭配素材真实发布
+    description: 输入 1-9 张搭配素材图、商品 ID、标题和文案，自动生成 3:4 安全图并调用千牛搭配素材发布接口真实发布内容。
+    script: dress-collocation-material-draft.js
+    entry_url: https://qn.taobao.com/home.htm/material-center/material-management?tab=recommend&subTab=SCU
+    tab_match_prefixes:
+      - https://qn.taobao.com/
+      - https://scenario-front.taobao.com/
+    skip_auth: false
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验素材 / 发布规划
+    auto_precheck_note: 执行前会校验商品 ID、标题、文案和图片；live_publish 模式会把本地图片处理成 3:4 安全图并真实发布搭配素材内容。
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 打开素材列表
+        hint: 请先在 9222 端口 Chrome 登录千牛；当前停留在搭配素材草稿编辑页时会优先发布该草稿。
+      - id: execute_mode
+        type: radio
+        label: 运行方式
+        default: plan
+        options:
+          - value: plan
+            label: 先做预检
+          - value: live_publish
+            label: 上传并真实发布
+        hint: 预检不会上传；live_publish 会调用千牛发布接口，产生真实发布内容。
+      - id: material_images
+        type: file_images
+        label: 搭配素材图
+        required: true
+        hint: 支持 1-9 张；本地图片会自动放入 750x1000 的 3:4 画布，人物完整保留，边缘用柔化背景补齐。
+      - id: product_ids
+        type: textarea
+        label: 商品 ID
+        rows: 3
+        required: true
+        placeholder: "一行一个，例如：\n1057386891909\n1060933035333"
+        hint: 脚本会关联为搭配商品，并按上下装默认位置生成标签锚点。
+      - id: title
+        type: text
+        label: 标题
+        required: true
+        max_length: 30
+        placeholder: MOP桑蚕丝混纺牛仔套装
+      - id: description
+        type: textarea
+        label: 文案
+        rows: 4
+        required: true
+        max_length: 1000
+        placeholder: 莫代尔棉桑蚕丝牛仔叠穿马甲套装，为造型增添丹宁的率性质感
+      - id: draft_id
+        type: text
+        label: 草稿 ID
+        required: false
+        placeholder: 可选，例如 409527360556
+        hint: 留空时优先使用当前 URL 的 id；否则会在搭配素材列表中按标题和商品 ID 查找草稿。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "MOP搭配素材真实发布结果_{timestamp}.xlsx"
+        columns:
+          - 搭配ID
+          - 发布内容ID
+          - 商品ID
+          - 标题
+          - 文案
+          - 素材数量
+          - 素材明细
+          - 切图策略
+          - 执行结果
+          - 备注
+          - 抓取时间

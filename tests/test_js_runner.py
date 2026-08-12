@@ -980,6 +980,63 @@ class RuntimeFileChooserRunner(JSRunner):
         }
 
 
+class RuntimePrepareImageFilesRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+        self.prepare_payloads = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
+        self.calls.append({"phase": phase, "shared": shared})
+        if phase == "main":
+            return JSResult(
+                success=True,
+                data=[],
+                meta={
+                    "action": "prepare_image_files",
+                    "items": [{"path": "/tmp/look.png"}],
+                    "shared_key": "prepared",
+                    "next_phase": "after_prepare",
+                    "shared": shared or {},
+                },
+            )
+        return JSResult(
+            success=True,
+            data=[shared or {}],
+            meta={"action": "complete", "has_more": False, "shared": shared or {}},
+        )
+
+    def _prepare_safe_three_four_images(self, items):
+        self.prepare_payloads.append(items)
+        return {
+            "ok": True,
+            "items": [{
+                "success": True,
+                "sourcePath": "/tmp/look.png",
+                "path": "/tmp/look-3x4-safe.jpg",
+                "width": 750,
+                "height": 1000,
+                "preservesFullSubject": True,
+            }],
+        }
+
+
 class FallbackFilenameDownloadRunner(JSRunner):
     def __init__(self, artifact_dir: str, downloads_dir: Path):
         super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
@@ -1917,6 +1974,20 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             runner.calls[1]["shared"]["chooser_uploads"]["items"][0]["backendNodeId"],
             5958,
         )
+
+    async def test_run_script_file_handles_runtime_prepare_image_files_action(self):
+        runner = RuntimePrepareImageFilesRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(len(data), 1)
+        self.assertEqual(runner.prepare_payloads[0][0]["path"], "/tmp/look.png")
+        self.assertIn("prepared", runner.calls[1]["shared"])
+        self.assertEqual(runner.calls[1]["shared"]["prepared"]["items"][0]["width"], 750)
+        self.assertTrue(runner.calls[1]["shared"]["prepared"]["items"][0]["preservesFullSubject"])
 
     def test_find_new_downloaded_file_detects_default_downloads_fallback(self):
         runner = JSRunner("ws://example.invalid")

@@ -680,6 +680,10 @@ class ChromeCDPBackend:
         tabs = self._get("/json")
         return [tab for tab in _safe_list(tabs) if isinstance(tab, dict) and tab.get("type") == "page"]
 
+    def list_targets(self) -> list[dict[str, Any]]:
+        tabs = self._get("/json")
+        return [tab for tab in _safe_list(tabs) if isinstance(tab, dict)]
+
     def select_tab(self) -> dict[str, Any]:
         tabs = self.list_tabs()
         if self.tab_id:
@@ -1116,6 +1120,129 @@ class ChromeCDPBackend:
         if hasattr(result, "__await__"):
             return await result
         return result
+
+    async def _send_to_target(self, target: dict[str, Any], method: str, params: dict[str, Any] | None = None, *, timeout: float = 10) -> dict[str, Any]:
+        ws_url = str(target.get("webSocketDebuggerUrl") or "")
+        if not ws_url:
+            raise RuntimeError("Selected Chrome target does not expose webSocketDebuggerUrl.")
+        message = {"id": self._next_id(), "method": method, "params": params or {}}
+        result = self._send_ws(ws_url, message, timeout)
+        if hasattr(result, "__await__"):
+            return await result
+        return result
+
+    async def evaluate_cdp_target(
+        self,
+        expression: str,
+        *,
+        target_url_contains: list[str] | None = None,
+        target_url_regex: str = "",
+        target_types: list[str] | None = None,
+        user_gesture: bool = False,
+        open_url_if_missing: str = "",
+        open_wait_ms: int = 0,
+        timeout_ms: int = 8000,
+    ) -> dict[str, Any]:
+        expression = str(expression or "").strip()
+        if not expression:
+            return {"ok": False, "error": "cdp_target_eval 缺少 expression"}
+        contains = [str(item or "").strip() for item in (target_url_contains or []) if str(item or "").strip()]
+        type_set = {str(item or "").strip() for item in (target_types or ["page", "iframe"]) if str(item or "").strip()}
+        regex = None
+        if target_url_regex:
+            try:
+                regex = re.compile(str(target_url_regex))
+            except re.error as exc:
+                return {"ok": False, "error": f"cdp_target_eval target_url_regex 无效: {exc}"}
+
+        def matches_target(target: dict[str, Any]) -> bool:
+            target_url = str(target.get("url") or "")
+            target_type = str(target.get("type") or "")
+            if type_set and target_type not in type_set:
+                return False
+            if contains and not all(part in target_url for part in contains):
+                return False
+            if regex and not regex.search(target_url):
+                return False
+            return bool(target.get("webSocketDebuggerUrl"))
+
+        targets = self.list_targets()
+        matches = [target for target in targets if matches_target(target)]
+        opened_target = False
+        opened_url = str(open_url_if_missing or "").strip()
+        if not matches and opened_url and (not type_set or "page" in type_set):
+            try:
+                target = self.new_tab(opened_url)
+                opened_target = True
+                if open_wait_ms > 0:
+                    await asyncio.sleep(min(float(open_wait_ms) / 1000.0, 10.0))
+                targets = self.list_targets()
+                matches = [item for item in targets if matches_target(item)] or [target]
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"cdp_target_eval 打开目标页失败: {exc}",
+                    "open_url_if_missing": opened_url,
+                    "sample_urls": [str(item.get("url") or "")[:180] for item in targets[:8]],
+                }
+        if not matches:
+            return {
+                "ok": False,
+                "error": "cdp_target_eval 未找到匹配 target",
+                "target_url_contains": contains,
+                "target_url_regex": str(target_url_regex or ""),
+                "open_url_if_missing": opened_url,
+                "sample_urls": [str(item.get("url") or "")[:180] for item in targets[:8]],
+            }
+
+        target = matches[0]
+        try:
+            response = await self._send_to_target(
+                target,
+                "Runtime.evaluate",
+                {
+                    "expression": expression,
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                    "userGesture": bool(user_gesture),
+                    "timeout": int(timeout_ms or 8000),
+                },
+                timeout=max(float(timeout_ms or 8000) / 1000.0 + 5.0, 10.0),
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "opened_target": opened_target,
+                "target": {key: target.get(key) for key in ["id", "url", "type", "title"]},
+            }
+        if response.get("error"):
+            return {
+                "ok": False,
+                "error": json.dumps(response["error"], ensure_ascii=False),
+                "opened_target": opened_target,
+                "target": {key: target.get(key) for key in ["id", "url", "type", "title"]},
+            }
+        result = response.get("result") or {}
+        exception = result.get("exceptionDetails")
+        if exception:
+            return {
+                "ok": False,
+                "error": json.dumps(exception, ensure_ascii=False),
+                "exception": exception,
+                "opened_target": opened_target,
+                "target": {key: target.get(key) for key in ["id", "url", "type", "title"]},
+            }
+        payload = result.get("result") or {}
+        value = payload.get("value")
+        if value is None and "description" in payload:
+            value = payload.get("description")
+        return {
+            "ok": True,
+            "value": value,
+            "opened_target": opened_target,
+            "target": {key: target.get(key) for key in ["id", "url", "type", "title"]},
+        }
 
     async def execute_async(self, action: BrowserAction) -> BrowserResult:
         kind = action.kind.strip().lower()
