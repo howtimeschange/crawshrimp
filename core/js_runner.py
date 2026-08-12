@@ -14,6 +14,7 @@ import secrets
 import shutil
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, List, Optional
@@ -881,6 +882,156 @@ class JSRunner:
             model_id=model_id,
             fallback_model_ids=fallback_model_ids or [],
         )
+
+    def _host_ocr_filename(self, item: dict, index: int) -> str:
+        raw = (
+            (item or {}).get("filename")
+            or (item or {}).get("label")
+            or self._derive_url_filename(str((item or {}).get("url") or ""), "")
+            or f"ocr-image-{index + 1}.jpg"
+        )
+        name = self._sanitize_artifact_filename(str(raw), f"ocr-image-{index + 1}.jpg")
+        if not Path(name).suffix:
+            name = f"{name}.jpg"
+        return name
+
+    async def recognize_ocr_images(
+        self,
+        items: list[dict],
+        *,
+        lang: str = "chi_sim",
+        strict: bool = False,
+        timeout_seconds: int = 30,
+        download_timeout_seconds: int = 30,
+        retry_attempts: int = 1,
+        use_browser_session: bool = False,
+    ) -> dict:
+        """Download remote images in the host process and run local Tesseract OCR."""
+        normalized_items = [dict(item or {}) for item in (items or []) if isinstance(item, dict)]
+        if not normalized_items:
+            return {"ok": False, "error": "recognize_ocr_images 缺少图片列表", "items": []}
+
+        status: dict[str, Any] = {}
+        try:
+            from core import ocr_service
+
+            status = ocr_service.project_tesseract_status()
+            if not status.get("available"):
+                return {
+                    "ok": False,
+                    "error": "宿主端 OCR 不可用：未找到 tesseract.js 或 Node 运行时",
+                    "items": [],
+                    "runtime": status,
+                }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"宿主端 OCR 初始化失败: {_clean_runtime_text(exc)}",
+                "items": [],
+                "runtime": status,
+            }
+
+        ocr_dir = self.artifact_dir / "host-ocr" / uuid.uuid4().hex
+        ocr_dir.mkdir(parents=True, exist_ok=True)
+        results: list[dict] = []
+        per_image_timeout = max(1, int(timeout_seconds or 30))
+        download_timeout = max(1, int(download_timeout_seconds or 30))
+        attempts = max(1, int(retry_attempts or 1))
+
+        for index, item in enumerate(normalized_items):
+            url = str(item.get("url") or item.get("src") or item.get("imageUrl") or "").strip()
+            global_index = item.get("globalIndex", item.get("global_index", index))
+            image_index = item.get("imageIndex", item.get("image_index"))
+            result = {
+                "globalIndex": global_index,
+                "imageIndex": image_index,
+                "src": url,
+                "url": url,
+                "text": "",
+                "confidence": 0,
+            }
+            if not url:
+                result.update({"success": False, "error": "图片 URL 为空"})
+                results.append(result)
+                continue
+
+            filename = self._host_ocr_filename(item, index)
+            target_path = ocr_dir / filename
+            download_item = {
+                "url": url,
+                "filename": filename,
+                "label": str(item.get("label") or filename),
+                "target_dir": str(ocr_dir),
+                "retry_attempts": attempts,
+                "timeout_seconds": download_timeout,
+                "browser_session": bool(use_browser_session or item.get("browser_session") or item.get("browserSession")),
+            }
+            try:
+                download = await self._download_url_item(
+                    download_item,
+                    default_retry_attempts=attempts,
+                    default_timeout_seconds=download_timeout,
+                )
+            except Exception as exc:
+                download = {
+                    "success": False,
+                    "path": str(target_path),
+                    "error": f"下载异常: {_clean_runtime_text(exc)}",
+                }
+
+            result["download"] = {
+                key: value
+                for key, value in (download or {}).items()
+                if key in {"success", "path", "filename", "url", "status", "error", "bytes", "contentType", "attempts", "browserSession"}
+            }
+            if not download.get("success"):
+                result.update({
+                    "success": False,
+                    "error": str(download.get("error") or "图片下载失败"),
+                })
+                results.append(result)
+                continue
+
+            image_path = Path(str(download.get("path") or target_path)).expanduser()
+            try:
+                recognized = await asyncio.to_thread(
+                    ocr_service.recognize_image_with_tesseract_js,
+                    image_path,
+                    lang=str(lang or "chi_sim"),
+                    timeout_seconds=per_image_timeout,
+                )
+                result.update({
+                    "success": True,
+                    "text": _clean_runtime_text(recognized.get("text") or ""),
+                    "confidence": float(recognized.get("confidence") or 0),
+                    "path": str(image_path),
+                })
+            except Exception as exc:
+                result.update({
+                    "success": False,
+                    "error": f"OCR识别失败: {_clean_runtime_text(exc)}",
+                    "path": str(image_path),
+                })
+            results.append(result)
+
+        ok = all(bool(item.get("success")) for item in results) if strict else any(
+            bool(item.get("success")) for item in results
+        )
+        payload = {
+            "ok": ok,
+            "engine": "tesseract.js-host",
+            "lang": str(lang or "chi_sim"),
+            "scanned": len([item for item in results if item.get("success")]),
+            "items": results,
+            "results": results,
+            "runtime": status,
+        }
+        if not ok:
+            first_error = next((item.get("error") for item in results if item.get("error")), "")
+            payload["error"] = first_error or "宿主端 OCR 未识别到任何图片"
+            if strict:
+                raise RuntimeError(str(payload["error"]))
+        return payload
 
     async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
         """用 CDP Input.dispatchMouseEvent 在真实坐标上执行鼠标点击。
@@ -4117,6 +4268,49 @@ class JSRunner:
                                 page,
                                 phase,
                                 bool(recognition_result.get("ok")),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "recognize_ocr_images":
+                            items = meta.get("items") or []
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+                            strict = bool(meta.get("strict"))
+                            await cooperate("before_recognize_ocr_images", page, phase, shared, {
+                                "ocr_image_total": len(items),
+                            })
+                            ocr_result = await self.recognize_ocr_images(
+                                items,
+                                lang=str(meta.get("lang") or meta.get("ocr_lang") or meta.get("ocrLang") or "chi_sim").strip(),
+                                strict=strict,
+                                timeout_seconds=int(meta.get("timeout_seconds") or meta.get("timeoutSeconds") or 30),
+                                download_timeout_seconds=int(
+                                    meta.get("download_timeout_seconds")
+                                    or meta.get("downloadTimeoutSeconds")
+                                    or 30
+                                ),
+                                retry_attempts=int(meta.get("retry_attempts") or meta.get("retryAttempts") or 1),
+                                use_browser_session=bool(meta.get("browser_session") or meta.get("browserSession")),
+                            )
+                            if strict and not ocr_result.get("ok"):
+                                raise RuntimeError(str(ocr_result.get("error") or "宿主端 OCR 失败"))
+
+                            shared = self._merge_runtime_shared(shared, shared_key, ocr_result, append=shared_append)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "recognize_ocr_images: page=%s phase=%s ok=%s scanned=%s/%s -> %s",
+                                page,
+                                phase,
+                                bool(ocr_result.get("ok")),
+                                int(ocr_result.get("scanned") or 0),
+                                len(items),
                                 next_phase,
                             )
                             phase = str(next_phase)

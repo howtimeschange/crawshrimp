@@ -137,6 +137,56 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result["items"][0]["success"])
             self.assertEqual(attempts["https://example.com/a.jpg"], 3)
 
+    async def test_recognize_ocr_images_downloads_then_uses_project_tesseract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://unused", artifact_dir=tmpdir)
+            downloads = []
+
+            async def fake_download(item, **kwargs):
+                downloads.append({"item": item, "kwargs": kwargs})
+                path = Path(item["target_dir"]) / item["filename"]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"image")
+                return {
+                    "success": True,
+                    "path": str(path),
+                    "filename": path.name,
+                    "bytes": path.stat().st_size,
+                    "attempts": 1,
+                }
+
+            runner._download_url_item = fake_download  # type: ignore[method-assign]
+
+            with (
+                patch("core.ocr_service.project_tesseract_status", return_value={
+                    "available": True,
+                    "node_executable": "node",
+                    "node_modules": "/tmp/node_modules",
+                    "package": "tesseract.js",
+                }),
+                patch("core.ocr_service.recognize_image_with_tesseract_js", return_value={
+                    "ok": True,
+                    "text": "想要的信息看这里",
+                    "confidence": 91,
+                    "words": [],
+                }) as recognize,
+            ):
+                result = await runner.recognize_ocr_images([{
+                    "url": "https://img.example/detail-01.jpg",
+                    "globalIndex": 4,
+                    "imageIndex": 605,
+                }], lang="chi_sim", timeout_seconds=12, download_timeout_seconds=7, retry_attempts=2)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["engine"], "tesseract.js-host")
+            self.assertEqual(result["scanned"], 1)
+            self.assertEqual(result["results"][0]["text"], "想要的信息看这里")
+            self.assertEqual(result["results"][0]["globalIndex"], 4)
+            self.assertEqual(result["results"][0]["imageIndex"], 605)
+            self.assertEqual(downloads[0]["item"]["retry_attempts"], 2)
+            self.assertEqual(downloads[0]["item"]["timeout_seconds"], 7)
+            recognize.assert_called_once()
+
     async def test_download_urls_honors_concurrency_limit(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = JSRunner("ws://unused", artifact_dir=tmpdir)

@@ -50,17 +50,19 @@ async function loadExports(params = {}, fetchImpl = async () => jsonResponse({ c
   return exportsBox
 }
 
-async function runScript({ params = {}, shared = {}, phase = 'main', fetchImpl, locationHref = 'https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise', bodyText = '' }) {
+async function runScript({ params = {}, shared = {}, phase = 'main', fetchImpl, locationHref = 'https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise', bodyText = '', documentOverrides = {}, windowOverrides = {} }) {
   const scriptPath = path.resolve('adapters/vipshop-ops-assistant/vipshop-package-main-image-replace.js')
   const source = fs.readFileSync(scriptPath, 'utf8')
+  const documentBase = { title: '', body: { innerText: bodyText, textContent: bodyText } }
   const context = {
     window: {
       __CRAWSHRIMP_PARAMS__: params,
       __CRAWSHRIMP_PHASE__: phase,
       __CRAWSHRIMP_SHARED__: shared,
       __CRAWSHRIMP_EXPORTS__: null,
+      ...windowOverrides,
     },
-    document: { title: '', body: { innerText: bodyText, textContent: bodyText } },
+    document: { ...documentBase, ...documentOverrides },
     location: { href: locationHref },
     fetch: fetchImpl,
     URL,
@@ -605,6 +607,30 @@ test('uses style-folder micro detail images as Vipshop display positions 3 to 5'
   assert.deepEqual(plain(entries.filter(item => item.usageKey === 'package_micro_square').map(item => item.imageIndex)), [3, 4, 15])
 })
 
+test('skips too-short Vipshop detail tail slices before upload', async () => {
+  const helpers = await loadExports()
+  const plan = helpers.classifyVipshopAssets({
+    styleCode: '204326141002',
+    goodsCode: '20432614100200377',
+  }, [
+    image('/01-产品包装/2026Q3/鞋品/204326141002/images/204326141002_01.jpg', 750, 982),
+    image('/01-产品包装/2026Q3/鞋品/204326141002/images/204326141002_10.jpg', 750, 102),
+  ])
+  const entries = helpers.selectedVipshopAssetEntries({
+    styleCode: '204326141002',
+    goodsCode: '20432614100200377',
+    operationScope: ['package'],
+  }, plan)
+
+  assert.deepEqual(plain(plan.groups.detailSlices.map(item => item.filename)), ['204326141002_01.jpg'])
+  assert.ok(plan.groups.unmatched.some(item => item.filename === '204326141002_10.jpg' && item.reason === '商详切片高度过小，疑似无产品尾图，已跳过'))
+  assert.deepEqual(plain(entries.filter(item => item.usageKey === 'detail_slice').map(item => item.imageIndex)), [601])
+  assert.match(
+    helpers.validateInjectedVipshopAsset({ usageKey: 'detail_slice', filename: '204326141002_10.jpg' }, { width: 750, height: 102 }),
+    /商详切片高度过小/,
+  )
+})
+
 test('applies package micro display images to every Vipshop color at display positions 3 to 5', async () => {
   const helpers = await loadExports()
   const colors = [
@@ -1006,12 +1032,11 @@ test('validates injected Vipshop image dimensions before live upload', async () 
   )
 })
 
-test('builds Vipshop image upload fields with both type and imageIndex', async () => {
+test('builds Vipshop image upload fields like the official PDC upload component', async () => {
   const helpers = await loadExports()
 
   assert.deepEqual(plain(helpers.buildVipshopImageUploadFields(601, 1)), {
     type: '601',
-    imageIndex: '601',
     vendorType: '1',
   })
 })
@@ -1250,6 +1275,163 @@ test('Vipshop OCR runtime prefetches worker script into a same-page blob by defa
   assert.ok(fetchedUrls.some(url => url === 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/worker.min.js'))
   assert.match(params.__createdWorkerOptions.workerPath, /^blob:/)
   assert.equal(params.__createdWorkerOptions.workerBlobURL, false)
+})
+
+test('Vipshop detail OCR defaults to page OCR before host fallback', async () => {
+  const detailImages = [
+    { imageUrl: 'https://img.example/detail-01.jpg', imageIndex: 601 },
+    { imageUrl: 'https://img.example/detail-02.jpg', imageIndex: 602 },
+  ]
+  const editable = {
+    info: { sn: '204326141002', itemSkuAttr: [{ colourGSN: '20432614100200377', detailImages }] },
+    opts: { detailImages },
+    saveAndApprove() {},
+  }
+  const fetchedUrls = []
+  const result = await runScript({
+    phase: 'detect_vipshop_detail_ocr_anchors',
+    params: {},
+    shared: {
+      live_index: 0,
+      live_contexts: [{
+        vendorProductId: '3108687302839656448',
+        vendorType: 1,
+        job: { rowNo: 2, styleCode: '204326141002', goodsCode: '20432614100200377', operationScope: ['package'] },
+        assets: [{ usageKey: 'detail_slice', scope: 'package', path: '/tmp/detail.jpg' }],
+        product: { sn: '204326141002', itemSkuAttr: [{ colourGSN: '20432614100200377' }] },
+      }],
+    },
+    fetchImpl: async url => {
+      fetchedUrls.push(String(url))
+      if (String(url).includes('tesseract.min.js')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => `window.Tesseract = {
+          createWorker: async () => ({
+              recognize: async source => ({
+                data: {
+                  text: '想要的信息看这里',
+                  confidence: 90
+                }
+              }),
+              terminate: async () => {}
+            })
+          }`,
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        blob: async () => new Blob(['image']),
+        text: async () => `/* ${url} */`,
+      }
+    },
+    documentOverrides: {
+      body: { innerText: '', textContent: '' },
+      querySelectorAll: selector => (String(selector) === '*' ? [{ __vue__: editable }] : []),
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'process_live_job')
+  assert.equal(result.meta.shared.current_detail_ocr_result.engine, 'tesseract.js')
+  assert.equal(result.meta.shared.current_detail_page_ocr_error, undefined)
+  assert.equal(result.meta.shared.current_detail_host_ocr_requested, undefined)
+  assert.ok(fetchedUrls.some(url => url.includes('/vendor/tesseract/tesseract.min.js')))
+})
+
+test('Vipshop detail OCR falls back to host only after page OCR runtime load failure', async () => {
+  const detailImages = [
+    { imageUrl: 'https://img.example/detail-01.jpg', imageIndex: 601 },
+    { imageUrl: 'https://img.example/detail-02.jpg', imageIndex: 602 },
+  ]
+  const editable = {
+    info: { sn: '204326141002', itemSkuAttr: [{ colourGSN: '20432614100200377', detailImages }] },
+    opts: { detailImages },
+    saveAndApprove() {},
+  }
+  const result = await runScript({
+    phase: 'detect_vipshop_detail_ocr_anchors',
+    params: {},
+    shared: {
+      live_index: 0,
+      live_contexts: [{
+        vendorProductId: '3108687302839656448',
+        vendorType: 1,
+        job: { rowNo: 2, styleCode: '204326141002', goodsCode: '20432614100200377', operationScope: ['package'] },
+        assets: [{ usageKey: 'detail_slice', scope: 'package', path: '/tmp/detail.jpg' }],
+        product: { sn: '204326141002', itemSkuAttr: [{ colourGSN: '20432614100200377' }] },
+      }],
+    },
+    fetchImpl: async () => ({
+      ok: false,
+      status: 404,
+      headers: { get: () => '' },
+      body: { cancel: async () => {} },
+      text: async () => '',
+    }),
+    documentOverrides: {
+      body: { innerText: '', textContent: '' },
+      querySelectorAll: selector => (String(selector) === '*' ? [{ __vue__: editable }] : []),
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'recognize_ocr_images')
+  assert.equal(result.meta.next_phase, 'detect_vipshop_detail_ocr_anchors_from_host')
+  assert.match(result.meta.shared.current_detail_page_ocr_error, /OCR运行时加载失败/)
+  assert.equal(result.meta.shared.current_detail_host_ocr_requested, true)
+  assert.deepEqual(plain(result.meta.items.map(item => [item.url, item.imageIndex])), [
+    ['https://img.example/detail-01.jpg', 601],
+    ['https://img.example/detail-02.jpg', 602],
+  ])
+})
+
+test('Vipshop OCR runtime failure can request host-side OCR fallback', async () => {
+  const helpers = await loadExports()
+  const result = helpers.recognizeOcrImages([
+    { src: 'https://img.example/detail-01.jpg', globalIndex: 0, imageIndex: 601 },
+    { src: 'https://img.example/detail-02.jpg', globalIndex: 1, imageIndex: 602 },
+  ], 'after_host_ocr', {
+    shared_key: 'current_detail_host_ocr_result',
+    lang: 'chi_sim',
+    timeout_seconds: 25,
+    retry_attempts: 2,
+  }, {
+    current_store: '宿主端OCR识别商详保留锚点：VP-1',
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'recognize_ocr_images')
+  assert.equal(result.meta.next_phase, 'after_host_ocr')
+  assert.equal(result.meta.shared_key, 'current_detail_host_ocr_result')
+  assert.equal(result.meta.lang, 'chi_sim')
+  assert.equal(result.meta.timeout_seconds, 25)
+  assert.equal(result.meta.retry_attempts, 2)
+  assert.deepEqual(plain(result.meta.items.map(item => [item.url, item.globalIndex, item.imageIndex])), [
+    ['https://img.example/detail-01.jpg', 0, 601],
+    ['https://img.example/detail-02.jpg', 1, 602],
+  ])
+})
+
+test('Vipshop host-side OCR results build anchors with host source', async () => {
+  const helpers = await loadExports()
+  const anchors = helpers.buildVipshopDetailAnchorsFromOcrResults([
+    { src: 'https://img.example/detail-01.jpg', globalIndex: 0 },
+    { src: 'https://img.example/detail-02.jpg', globalIndex: 1 },
+  ], [
+    { globalIndex: 0, text: '商品卖点介绍' },
+    { globalIndex: 1, text: '想要的信息看这里', confidence: 88 },
+  ], {
+    source: 'tesseract_ocr_host',
+  })
+
+  assert.equal(anchors.ocrStatus, 'recognized')
+  assert.equal(anchors.source, 'tesseract_ocr_host')
+  assert.equal(anchors.stopImageIndex, 1)
+  assert.equal(anchors.stopAnchorKind, 'wanted_info')
 })
 
 test('visible alert confirm recognizes 确认 buttons', async () => {

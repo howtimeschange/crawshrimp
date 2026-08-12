@@ -829,6 +829,85 @@ class RuntimeWashCareRecognitionRunner(JSRunner):
         }
 
 
+class RuntimeOcrImagesRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+        self.ocr_payloads = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
+
+        self.calls.append({
+            "phase": phase,
+            "shared": shared,
+        })
+
+        if phase == "main":
+            return JSResult(
+                success=True,
+                data=[],
+                meta={
+                    "action": "recognize_ocr_images",
+                    "items": [{
+                        "url": "https://img.example/detail-01.jpg",
+                        "globalIndex": 0,
+                        "imageIndex": 601,
+                    }],
+                    "lang": "chi_sim",
+                    "timeout_seconds": 25,
+                    "download_timeout_seconds": 20,
+                    "retry_attempts": 2,
+                    "shared_key": "detail_ocr",
+                    "next_phase": "after_ocr",
+                    "shared": shared or {},
+                },
+            )
+
+        return JSResult(
+            success=True,
+            data=[shared or {}],
+            meta={
+                "action": "complete",
+                "has_more": False,
+                "shared": shared or {},
+            },
+        )
+
+    async def recognize_ocr_images(self, items, **kwargs):
+        self.ocr_payloads.append({
+            "items": items,
+            "kwargs": kwargs,
+        })
+        return {
+            "ok": True,
+            "engine": "tesseract.js-host",
+            "lang": "chi_sim",
+            "scanned": 1,
+            "results": [{
+                "globalIndex": 0,
+                "imageIndex": 601,
+                "text": "想要的信息看这里",
+                "confidence": 92,
+            }],
+        }
+
+
 class RuntimeFileChooserRunner(JSRunner):
     def __init__(self):
         super().__init__("ws://example.invalid")
@@ -1798,6 +1877,28 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "ironing": 4,
                 "dryCleaning": 5,
             },
+        )
+
+    async def test_run_script_file_handles_runtime_ocr_images_action(self):
+        runner = RuntimeOcrImagesRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(len(data), 1)
+        self.assertEqual(len(runner.ocr_payloads), 1)
+        self.assertEqual(runner.ocr_payloads[0]["items"][0]["url"], "https://img.example/detail-01.jpg")
+        self.assertEqual(runner.ocr_payloads[0]["kwargs"]["lang"], "chi_sim")
+        self.assertEqual(runner.ocr_payloads[0]["kwargs"]["timeout_seconds"], 25)
+        self.assertEqual(runner.ocr_payloads[0]["kwargs"]["download_timeout_seconds"], 20)
+        self.assertEqual(runner.ocr_payloads[0]["kwargs"]["retry_attempts"], 2)
+        self.assertIn("detail_ocr", runner.calls[1]["shared"])
+        self.assertEqual(runner.calls[1]["shared"]["detail_ocr"]["engine"], "tesseract.js-host")
+        self.assertEqual(
+            runner.calls[1]["shared"]["detail_ocr"]["results"][0]["text"],
+            "想要的信息看这里",
         )
 
     async def test_run_script_file_handles_runtime_file_chooser_upload_action(self):

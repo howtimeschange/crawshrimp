@@ -52,6 +52,7 @@
   const TESSERACT_VENDOR_PATH = '/adapter-assets/vipshop-ops-assistant/vendor/tesseract'
   const TESSERACT_LANG = 'chi_sim'
   const VIPSHOP_MAX_UPLOAD_BYTES = 1024 * 1024
+  const VIPSHOP_DETAIL_MIN_UPLOAD_HEIGHT = 180
   const DEFAULT_SEMIR_LOGIN_WAIT_MS = 500000
   const SEMIR_LOGIN_WAIT_MS = Math.max(1000, Number(params.semir_login_wait_ms || DEFAULT_SEMIR_LOGIN_WAIT_MS) || DEFAULT_SEMIR_LOGIN_WAIT_MS)
   const SEMIR_LOGIN_RETRY_MS = Math.min(5000, Math.max(1000, Number(params.semir_login_retry_ms || 5000) || 5000))
@@ -570,6 +571,13 @@
     return /(?:预览|效果图|整图|源文件|preview|overview|source)/i.test(text)
   }
 
+  function isTooShortVipshopDetailSlice(item, dimension = parseImageDimensions(item)) {
+    const width = Number(dimension?.width || 0)
+    const height = Number(dimension?.height || 0)
+    if (!width || !height) return false
+    return height < VIPSHOP_DETAIL_MIN_UPLOAD_HEIGHT || (width >= 600 && height / width < 0.2)
+  }
+
   function pathHasAny(item, words) {
     const text = `${fileNameOf(item)} ${filePathOf(item)}`.toLowerCase()
     return words.some(word => text.includes(String(word).toLowerCase()))
@@ -805,6 +813,10 @@
           note: dimension.width === 1200 ? '文件名/元数据为1200x950，已按文档950x1200类目兼容识别' : '',
         })
         recognized = true
+      }
+      if (detailHint && styleSequenceDetail && !square && !listDimension && isTooShortVipshopDetailSlice(file, dimension)) {
+        groups.unmatched.push({ ...file, reason: '商详切片高度过小，疑似无产品尾图，已跳过' })
+        return
       }
       if (detailHint && styleSequenceDetail && !square && !listDimension) {
         groups.detailSlices.push({ ...file, usage: '包装-商品详情切片' })
@@ -1423,7 +1435,11 @@
         colorName: compact(first.目标颜色),
         finalStatus,
         downloadedCount: itemRows.filter(row => compact(row.执行结果) === '已下载').length,
-        plannedCount: itemRows.filter(row => compact(row.执行结果) === '计划替换').length,
+        plannedCount: itemRows.filter(row => compact(row.执行结果) === '计划替换' && !itemRows.some(other => (
+          compact(other.执行结果) === '已跳过' &&
+          compact(other.图片用途) === compact(row.图片用途) &&
+          compact(other.图片索引) === compact(row.图片索引)
+        ))).length,
         uploadedCount: itemRows.filter(row => compact(row.执行结果) === '已上传待保存').length,
         finalNote,
       }
@@ -2765,7 +2781,6 @@
     const type = String(imageIndex)
     return {
       type,
-      imageIndex: type,
       vendorType: String(vendorType || 1),
     }
   }
@@ -2775,7 +2790,6 @@
     const fields = buildVipshopImageUploadFields(imageIndex, vendorType)
     form.append('image', file)
     form.append('type', fields.type)
-    form.append('imageIndex', fields.imageIndex)
     form.append('vendorType', fields.vendorType)
     const response = await fetch(PDC_UPLOAD_SQUARE_IMAGE_URL, {
       method: 'POST',
@@ -3694,6 +3708,55 @@
     return normalizeVipshopDetailImagesForOcr(currentDetailImagesForContext(context, editable, root, targetColor, merged))
   }
 
+  function hostOcrItemsFromDetailImages(images = []) {
+    return (Array.isArray(images) ? images : []).map((image, index) => ({
+      url: image.src || image.imageUrl,
+      src: image.src || image.imageUrl,
+      globalIndex: Number(image.globalIndex ?? index),
+      imageIndex: image.imageIndex,
+      filename: image.filename || image.originalFilename || `detail-${index + 1}.jpg`,
+      label: `商详图${index + 1}`,
+    })).filter(item => compact(item.url || item.src))
+  }
+
+  function isOcrRuntimeLoadFailureReason(reason) {
+    const text = compact(reason)
+    return /OCR运行时加载失败|OCR依赖预检失败|Tesseract(?:\.js)?|worker预加载失败|Failed to fetch/i.test(text)
+  }
+
+  function buildDetectedAnchorsFromOcr(images, ocr, source = 'tesseract_ocr', rawParams = params) {
+    const anchors = buildVipshopDetailAnchorsFromOcrResults(images, ocr?.results || ocr?.items || [], {
+      source,
+      allowFallbackAnchors: truthy(rawParams.allow_detail_anchor_fallback || rawParams.allow_detail_anchor_fallbacks),
+    })
+    return {
+      ok: Number.isFinite(Number(anchors.stopImageIndex)),
+      reason: Number.isFinite(Number(anchors.stopImageIndex)) ? '' : 'OCR 未识别到“想要的信息看这里”保留锚点',
+      images,
+      ocr,
+      anchors,
+    }
+  }
+
+  function requestHostDetailOcr(images, context, reason = '', state = shared, rawParams = params) {
+    const pageOcrSeconds = Number(rawParams.ocr_per_image_timeout_ms)
+    return recognizeOcrImages(hostOcrItemsFromDetailImages(images), 'detect_vipshop_detail_ocr_anchors_from_host', {
+      shared_key: 'current_detail_host_ocr_result',
+      strict: false,
+      lang: compact(rawParams.host_ocr_lang || rawParams.tesseract_lang || rawParams.ocr_lang || TESSERACT_LANG),
+      timeout_seconds: positiveInt(rawParams.host_ocr_per_image_timeout_seconds || (Number.isFinite(pageOcrSeconds) ? Math.ceil(pageOcrSeconds / 1000) : 0), 30),
+      download_timeout_seconds: positiveInt(rawParams.host_ocr_download_timeout_seconds, 30),
+      retry_attempts: positiveInt(rawParams.host_ocr_retry_attempts, 2),
+      browser_session: truthy(rawParams.host_ocr_browser_session),
+    }, {
+      ...state,
+      current_detail_host_ocr_requested: true,
+      current_detail_page_ocr_error: compact(reason),
+      current_detail_existing_images: images,
+      current_store: `宿主端OCR识别商详保留锚点：${context.vendorProductId}`,
+    })
+  }
+
   async function detectVipshopDetailOcrAnchors(context, rawParams = params) {
     const images = getCurrentVipshopDetailImages(context)
     if (!images.length) {
@@ -3707,17 +3770,7 @@
     }
     try {
       const ocr = await runTesseractOcrForImages(images, rawParams)
-      const anchors = buildVipshopDetailAnchorsFromOcrResults(images, ocr.results, {
-        source: 'tesseract_ocr',
-        allowFallbackAnchors: truthy(rawParams.allow_detail_anchor_fallback || rawParams.allow_detail_anchor_fallbacks),
-      })
-      return {
-        ok: Number.isFinite(Number(anchors.stopImageIndex)),
-        reason: Number.isFinite(Number(anchors.stopImageIndex)) ? '' : 'OCR 未识别到“想要的信息看这里”保留锚点',
-        images,
-        ocr,
-        anchors,
-      }
+      return buildDetectedAnchorsFromOcr(images, ocr, 'tesseract_ocr', rawParams)
     } catch (error) {
       return {
         ok: false,
@@ -3997,7 +4050,12 @@
     if (asset.usageKey === 'list_image' && !((width === 950 && height === 1200) || (width === 1200 && height === 950))) {
       return `商品列表图要求950x1200或1200x950，当前${size}`
     }
+    if (asset.usageKey === 'detail_slice' && isTooShortVipshopDetailSlice(asset, { width, height })) return `商详切片高度过小，疑似无产品尾图，当前${size}`
     return ''
+  }
+
+  function canSkipInjectedVipshopAsset(asset, validation) {
+    return asset?.usageKey === 'detail_slice' && /商详切片高度过小/.test(compact(validation))
   }
 
   async function uploadInjectedFilesAndApply(context, assets, detailOptions = {}) {
@@ -4006,6 +4064,7 @@
     if (files.length < assets.length) throw new Error(`文件注入失败：仅注入 ${files.length}/${assets.length} 个文件`)
     const enrichedAssets = []
     const uploadFiles = []
+    const skippedRecords = []
     const validationErrors = []
     for (let index = 0; index < assets.length; index += 1) {
       const sourceDimensions = await loadImageDimensions(files[index])
@@ -4030,6 +4089,10 @@
         ].filter(Boolean).join('；')),
       }
       const validation = validateInjectedVipshopAsset(asset, dimensions)
+      if (validation && canSkipInjectedVipshopAsset(asset, validation)) {
+        skippedRecords.push({ asset, usageKey: asset.usageKey, usage: asset.usage, imageIndex: asset.imageIndex, reason: validation })
+        continue
+      }
       if (validation) validationErrors.push(`${asset.usage || asset.usageKey || '图片'}：${validation}`)
       if (Number(normalized.file?.size || 0) > VIPSHOP_MAX_UPLOAD_BYTES) {
         validationErrors.push(`${asset.usage || asset.usageKey || '图片'}：图片大小${Math.ceil(Number(normalized.file.size || 0) / 1024)}KB超过唯品限制1024KB`)
@@ -4058,7 +4121,7 @@
         note: compact([applyResult.detailApplyResult.note, `新图balaOne OCR失败，已按文件名兜底：${uploadedDetailOcr.error}`].filter(Boolean).join('；')),
       }
     }
-    return { uploadRecords, applyResult }
+    return { uploadRecords, skippedRecords, applyResult }
   }
 
   function isVisibleElement(el) {
@@ -4281,6 +4344,9 @@
       current_detail_ocr_anchors: null,
       current_detail_ocr_result: null,
       current_detail_existing_images: [],
+      current_detail_host_ocr_requested: false,
+      current_detail_host_ocr_result: null,
+      current_detail_page_ocr_error: '',
       force_pdc_reload: !!nextContext,
       total_rows: contexts.length || state.total_rows || 0,
       current_exec_no: nextContext ? Math.min(nextIndex + 1, contexts.length || nextIndex + 1) : (contexts.length || nextIndex),
@@ -4315,6 +4381,35 @@
       meta: {
         action: 'complete',
         has_more: false,
+        shared: nextShared,
+      },
+    }
+  }
+
+  function recognizeOcrImages(items, nextPhaseName, options = {}, nextShared = shared, data = []) {
+    const normalizedItems = (Array.isArray(items) ? items : []).map((item, index) => ({
+      ...item,
+      url: compact(item?.url || item?.src || item?.imageUrl),
+      src: compact(item?.src || item?.url || item?.imageUrl),
+      globalIndex: Number.isFinite(Number(item?.globalIndex ?? item?.global_index)) ? Number(item?.globalIndex ?? item?.global_index) : index,
+      imageIndex: item?.imageIndex ?? item?.image_index,
+    })).filter(item => compact(item.url || item.src))
+    return {
+      success: true,
+      data,
+      meta: {
+        action: 'recognize_ocr_images',
+        items: normalizedItems,
+        shared_key: options.shared_key || 'ocr_result',
+        shared_append: !!options.shared_append,
+        strict: !!options.strict,
+        lang: options.lang || TESSERACT_LANG,
+        timeout_seconds: Number(options.timeout_seconds || options.timeoutSeconds || 30),
+        download_timeout_seconds: Number(options.download_timeout_seconds || options.downloadTimeoutSeconds || 30),
+        retry_attempts: Number(options.retry_attempts || options.retryAttempts || 1),
+        browser_session: !!options.browser_session,
+        next_phase: nextPhaseName,
+        sleep_ms: options.sleep_ms || 0,
         shared: nextShared,
       },
     }
@@ -4397,6 +4492,7 @@
       tesseractRuntimeDependencyUrls,
       summarizeTesseractRuntimeProbe,
       runTesseractOcrForImages,
+      recognizeOcrImages,
       needsVipshopDetailAnchorDetection,
       clickVisibleAlertConfirm,
     })
@@ -4750,6 +4846,13 @@
       }
       const detected = await detectVipshopDetailOcrAnchors(context, params)
       if (!detected.ok) {
+        if (
+          isOcrRuntimeLoadFailureReason(detected.reason) &&
+          !shared.current_detail_host_ocr_requested &&
+          hostOcrItemsFromDetailImages(detected.images).length
+        ) {
+          return requestHostDetailOcr(detected.images, context, detected.reason, shared, params)
+        }
         return advanceLiveJob(buildLiveContextRows(
           context,
           '商详OCR阻断',
@@ -4785,6 +4888,57 @@
       })
     }
 
+    if (phase === 'detect_vipshop_detail_ocr_anchors_from_host') {
+      const { context } = currentLiveContext(shared)
+      if (!context) return advanceLiveJob([], shared)
+      const images = Array.isArray(shared.current_detail_existing_images) ? shared.current_detail_existing_images : getCurrentVipshopDetailImages(context)
+      const hostOcr = shared.current_detail_host_ocr_result || {}
+      const detected = buildDetectedAnchorsFromOcr(images, {
+        ok: !!hostOcr.ok,
+        engine: hostOcr.engine || 'tesseract.js-host',
+        lang: hostOcr.lang || '',
+        scanned: hostOcr.scanned || 0,
+        results: hostOcr.results || hostOcr.items || [],
+        error: hostOcr.error || '',
+      }, 'tesseract_ocr_host', params)
+      if (!detected.ok) {
+        return advanceLiveJob(buildLiveContextRows(
+          context,
+          '商详OCR阻断',
+          compact([
+            shared.current_detail_page_ocr_error ? `页面OCR失败：${shared.current_detail_page_ocr_error}` : '',
+            hostOcr.error ? `宿主端OCR失败：${hostOcr.error}` : detected.reason || 'OCR 未识别到可靠保留锚点',
+            `已扫${detected.ocr?.scanned || 0}/${images.length || 0}张`,
+            `状态=${detected.anchors?.ocrStatus || ''}`,
+          ].filter(Boolean).join('；')),
+        ), shared)
+      }
+      return nextPhase('process_live_job', 0, {
+        ...shared,
+        current_detail_ocr_attempted: true,
+        current_detail_ocr_anchors: detected.anchors,
+        current_detail_ocr_result: {
+          ok: !!detected.ocr?.ok,
+          engine: detected.ocr?.engine || 'tesseract.js-host',
+          lang: detected.ocr?.lang || '',
+          scanned: detected.ocr?.scanned || 0,
+          pageOcrError: shared.current_detail_page_ocr_error || '',
+          results: (detected.ocr?.results || []).map(result => ({
+            globalIndex: result.globalIndex,
+            imageIndex: result.imageIndex,
+            text: compact(result.text).slice(0, 160),
+            confidence: Number(result.confidence || 0),
+            error: compact(result.error),
+          })),
+        },
+        current_detail_existing_images: images,
+        current_store: compact([
+          `宿主OCR锚点=${detected.anchors.stopAnchorKind}@${Number(detected.anchors.stopImageIndex) + 1}`,
+          detected.anchors.balaOneImageIndex != null ? `balaOne@${Number(detected.anchors.balaOneImageIndex) + 1}` : '',
+        ].filter(Boolean).join('；')),
+      })
+    }
+
     if (phase === 'after_files_injected') {
       const { context } = currentLiveContext(shared)
       if (!context) return advanceLiveJob([], shared)
@@ -4796,6 +4950,7 @@
           existingDetailImages: shared.current_detail_existing_images || [],
         })
         callSaveAndApprove(context)
+        clickVisibleAlertConfirm()
         const rows = result.uploadRecords.map(record => {
           const recordColor = findTargetColor(context.product, record.asset?.targetGoodsCode || context.job.goodsCode) || context.color || {}
           return buildOutputRow(context.job, {
@@ -4826,10 +4981,33 @@
             ].filter(Boolean).join('；')),
           })
         })
+        const skippedRows = (Array.isArray(result.skippedRecords) ? result.skippedRecords : []).map(record => {
+          const recordColor = findTargetColor(context.product, record.asset?.targetGoodsCode || context.job.goodsCode) || context.color || {}
+          return buildOutputRow(context.job, {
+            task: record.usage,
+            scope: record.asset.scope,
+            imageIndex: String(record.imageIndex),
+            file: record.asset.path,
+            dimension: imageSizeOf(record.asset),
+            endpoint: PDC_UPLOAD_SQUARE_IMAGE_URL,
+            status: '已跳过',
+            merchandiseNo: context.merchandise?.merchandiseNo,
+            vendorSpuId: context.vendorProductId,
+            prodSpuId: context.merchandise?.prodSpuId,
+            productStatus: statusLabel(context.product?.status),
+            productName: context.merchandise?.name || context.product?.title,
+            backendStyle: context.product?.sn || context.merchandise?.osn,
+            mergedStyle: context.merged ? '是' : '否',
+            colorName: recordColor.aliasesName || recordColor.colourName,
+            colorCode: record.asset?.targetGoodsCode || recordColor.colourGSN,
+            colorMatch: recordColor.colourGSN ? '已匹配' : '',
+            note: record.reason,
+          })
+        })
         return nextPhase('verify_live_job', VIPSHOP_SAVE_WAIT_MS, {
           ...shared,
           current_live_uploads: result.uploadRecords,
-          live_rows: [...(Array.isArray(shared.live_rows) ? shared.live_rows : []), ...rows],
+          live_rows: [...(Array.isArray(shared.live_rows) ? shared.live_rows : []), ...rows, ...skippedRows],
           live_verify_attempts: 0,
           apply_result: result.applyResult,
           current_store: `保存提交读回：${context.vendorProductId}`,
