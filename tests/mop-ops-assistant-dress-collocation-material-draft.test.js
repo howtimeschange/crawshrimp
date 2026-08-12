@@ -130,6 +130,80 @@ test('publish plan mode reports real publish intent without submitting', async (
   assert.equal(result.meta.shared.job.executeMode, 'live_publish')
 })
 
+test('batch publish rows match local MOP cloud folders by style-code combination', async () => {
+  const helpers = await loadExports()
+  const jobs = helpers.normalizeBatchJobs({
+    execute_mode: 'plan',
+    input_file: {
+      rows: [{
+        款号1: '653100C4202Z',
+        商品ID1: '1057386891909',
+        款号2: '653100C2003Z',
+        商品ID2: '1060933035333',
+        标题: 'MOP桑蚕丝混纺牛仔套装',
+        文案: '莫代尔棉桑蚕丝牛仔叠穿马甲套装，为造型增添丹宁的率性质感',
+      }],
+    },
+    material_root: '/tmp/MOP云盘模拍图包',
+    material_root_files: {
+      root: '/tmp/MOP云盘模拍图包',
+      paths: [
+        {
+          path: '/tmp/MOP云盘模拍图包/653100C4202Z+653100C2003Z(2)/01.jpg',
+          relativePath: '653100C4202Z+653100C2003Z(2)/01.jpg',
+        },
+        {
+          path: '/tmp/MOP云盘模拍图包/653100C4202Z+653100C2003Z(2)/sub/02.png',
+          relativePath: '653100C4202Z+653100C2003Z(2)/sub/02.png',
+        },
+        {
+          path: '/tmp/MOP云盘模拍图包/653124B2108Z100/01.jpg',
+          relativePath: '653124B2108Z100/01.jpg',
+        },
+      ],
+    },
+  })
+  assert.equal(jobs.length, 1)
+  assert.deepEqual(Array.from(jobs[0].productIds), ['1057386891909', '1060933035333'])
+  assert.deepEqual(Array.from(jobs[0].styleCodes), ['653100C4202Z', '653100C2003Z'])
+  assert.equal(jobs[0].folderName, '653100C4202Z+653100C2003Z(2)')
+  assert.equal(jobs[0].materialRefs.length, 2)
+  assert.match(jobs[0].materialSource, /653100C4202Z\+653100C2003Z\(2\)/)
+  assert.equal(helpers.validateJob(jobs[0]).length, 0)
+})
+
+test('batch plan mode validates Excel rows and local material root without requesting upload', async () => {
+  const result = await runAdapter({
+    params: {
+      execute_mode: 'plan',
+      input_file: {
+        rows: [{
+          款号1: '653100C4202Z',
+          商品ID1: '1057386891909',
+          款号2: '653100C2003Z',
+          商品ID2: '1060933035333',
+          标题: 'MOP桑蚕丝混纺牛仔套装',
+          文案: '莫代尔棉桑蚕丝牛仔叠穿马甲套装，为造型增添丹宁的率性质感',
+        }],
+      },
+      material_root: '/tmp/MOP云盘模拍图包',
+      material_root_files: {
+        root: '/tmp/MOP云盘模拍图包',
+        paths: [{
+          path: '/tmp/MOP云盘模拍图包/653100C4202Z+653100C2003Z/01.jpg',
+          relativePath: '653100C4202Z+653100C2003Z/01.jpg',
+        }],
+      },
+    },
+  })
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0].执行结果, '预检通过')
+  assert.equal(result.data[0].文件夹名, '653100C4202Z+653100C2003Z')
+  assert.match(result.data[0].素材来源, /本地素材目录/)
+  assert.match(result.data[0].备注, /真实发布内容/)
+})
+
 test('live mode prepares local image before API-first upload', async () => {
   const document = {
     querySelectorAll(selector) {
@@ -681,10 +755,19 @@ test('save phase can use material returned by sucai selector without falling bac
 test('MOP manifest declares dress collocation draft task', async () => {
   const manifest = fs.readFileSync(MANIFEST_PATH, 'utf8')
   assert.match(manifest, /id: dress_collocation_material_draft/)
+  assert.match(manifest, /id: dress_collocation_material_draft[\s\S]*?hidden: true/)
   assert.match(manifest, /id: dress_collocation_material_publish/)
   assert.match(manifest, /script: dress-collocation-material-draft\.js/)
   assert.match(manifest, /MOP搭配素材草稿结果_\{timestamp\}\.xlsx/)
   assert.match(manifest, /MOP搭配素材真实发布结果_\{timestamp\}\.xlsx/)
   assert.match(manifest, /只保存草稿，不发布内容/)
   assert.match(manifest, /上传并真实发布/)
+  const publishSection = manifest.split('  - id: dress_collocation_material_publish')[1] || ''
+  assert.match(publishSection, /id: input_file[\s\S]*type: file_excel/)
+  assert.match(publishSection, /id: material_root[\s\S]*type: directory[\s\S]*include_file_listing: true/)
+  assert.match(publishSection, /id: mode[\s\S]*?default: new[\s\S]*?label: 打开素材列表/)
+  assert.match(publishSection, /id: execute_mode[\s\S]*?default: live_publish[\s\S]*?label: 上传并真实发布/)
+  assert.match(publishSection, /dress-collocation-material-publish-template\.csv/)
+  assert.doesNotMatch(publishSection, /id: material_images/)
+  assert.doesNotMatch(publishSection, /id: product_ids/)
 })

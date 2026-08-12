@@ -494,6 +494,7 @@ onMounted(async () => {
     try {
       await refreshRuntimeStatus()
       await refreshCloudApprovalStatus()
+      await loadScriptGroups({ preserveOnShrink: true })
     } catch (error) {
       console.error('Failed to poll runtime status', error)
     }

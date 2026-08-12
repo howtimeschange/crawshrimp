@@ -27,7 +27,7 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: new
+        default: current
         options:
           - value: new
             label: 全新页面（推荐）
@@ -379,6 +379,7 @@ tasks:
 
   - id: dress_collocation_material_draft
     name: 搭配素材草稿
+    hidden: true
     description: 输入 1-9 张搭配素材图、商品 ID、标题和文案，自动生成 3:4 安全图并保存千牛搭配素材草稿；只保存草稿，不发布内容。
     script: dress-collocation-material-draft.js
     entry_url: https://qn.taobao.com/home.htm/material-center/material-management?tab=recommend&subTab=SCU
@@ -393,7 +394,7 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
           - value: current
             label: 当前页面（推荐）
@@ -461,7 +462,7 @@ tasks:
 
   - id: dress_collocation_material_publish
     name: 搭配素材真实发布
-    description: 输入 1-9 张搭配素材图、商品 ID、标题和文案，自动生成 3:4 安全图并调用千牛搭配素材发布接口真实发布内容。
+    description: 读取 Excel 中款号与商品 ID 的对应关系、标题和文案，从素材根目录按款号组合搜索 MOP 云盘下载文件夹，自动生成 3:4 安全图并调用千牛搭配素材发布接口真实发布内容。
     script: dress-collocation-material-draft.js
     entry_url: https://qn.taobao.com/home.htm/material-center/material-management?tab=recommend&subTab=SCU
     tab_match_prefixes:
@@ -469,13 +470,13 @@ tasks:
       - https://scenario-front.taobao.com/
     skip_auth: false
     execution_ui_mode: precheck_before_live
-    validation_only_label: 仅校验素材 / 发布规划
-    auto_precheck_note: 执行前会校验商品 ID、标题、文案和图片；live_publish 模式会把本地图片处理成 3:4 安全图并真实发布搭配素材内容。
+    validation_only_label: 仅校验 Excel / 素材规划
+    auto_precheck_note: 执行前会校验款号、商品 ID、标题、文案和本地素材目录匹配；live_publish 模式会把匹配到的本地图片处理成 3:4 安全图并真实发布搭配素材内容。
     params:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
           - value: current
             label: 当前页面（推荐）
@@ -485,55 +486,60 @@ tasks:
       - id: execute_mode
         type: radio
         label: 运行方式
-        default: plan
+        default: live_publish
         options:
           - value: plan
             label: 先做预检
           - value: live_publish
             label: 上传并真实发布
         hint: 预检不会上传；live_publish 会调用千牛发布接口，产生真实发布内容。
-      - id: material_images
-        type: file_images
-        label: 搭配素材图
+      - id: input_file
+        type: file_excel
+        label: 搭配素材发布任务 Excel
         required: true
-        hint: 支持 1-9 张；本地图片会自动放入 750x1000 的 3:4 画布，人物完整保留，边缘用柔化背景补齐。
-      - id: product_ids
-        type: textarea
-        label: 商品 ID
-        rows: 3
+        templates:
+          - file: templates/dress-collocation-material-publish-template.csv
+            label: CSV 简版填写模板
+            description: 每行填写款号1/商品ID1 到 款号6/商品ID6，以及标题、文案；脚本会用款号组合到素材根目录搜索 MOP 云盘下载文件夹。
+            version: "2026.08.12.1"
+        hint: 表格每行填写“款号1/商品ID1、款号2/商品ID2...标题、文案”；脚本会按款号组合在素材根目录中搜索类似“653100C4202Z+653100C2003Z(2)”的文件夹，不需要在表格里手动填图片路径。
+      - id: material_root
+        type: directory
+        label: 素材根目录
         required: true
-        placeholder: "一行一个，例如：\n1057386891909\n1060933035333"
-        hint: 脚本会关联为搭配商品，并按上下装默认位置生成标签锚点。
-      - id: title
-        type: text
-        label: 标题
-        required: true
-        max_length: 30
-        placeholder: MOP桑蚕丝混纺牛仔套装
-      - id: description
-        type: textarea
-        label: 文案
-        rows: 4
-        required: true
-        max_length: 1000
-        placeholder: 莫代尔棉桑蚕丝牛仔叠穿马甲套装，为造型增添丹宁的率性质感
+        include_file_listing: true
+        placeholder: "例如：/Users/you/Downloads/MOP云盘模拍图包"
+        hint: 选择“MOP云盘文件夹下载”脚本下载出来的本地素材包根目录；脚本会递归扫描图片，并用表格里的款号组合匹配本地文件夹名。
       - id: draft_id
         type: text
         label: 草稿 ID
         required: false
         placeholder: 可选，例如 409527360556
         hint: 留空时优先使用当前 URL 的 id；否则会在搭配素材列表中按标题和商品 ID 查找草稿。
+      - id: submit_delay_ms
+        type: number
+        label: 每行提交间隔毫秒
+        default: 2500
+        min: 0
+        max: 30000
+        step: 500
+        ui_span: third
+        hint: 控制批量真实发布节奏，避免过快触发平台限流。
     trigger:
       type: manual
     output:
       - type: excel
         filename: "MOP搭配素材真实发布结果_{timestamp}.xlsx"
         columns:
+          - 表格行号
           - 搭配ID
           - 发布内容ID
+          - 文件夹名
+          - 款号
           - 商品ID
           - 标题
           - 文案
+          - 素材来源
           - 素材数量
           - 素材明细
           - 切图策略

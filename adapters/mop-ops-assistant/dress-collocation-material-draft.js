@@ -15,6 +15,7 @@
   const TITLE_MAX = 30
   const DESCRIPTION_MAX = 1000
   const REMOTE_IMAGE_RE = /^(?:https?:)?\/\//i
+  const IMAGE_EXT_RE = /\.(?:jpe?g|png|webp)$/i
   const DRAFT_STATUS_RE = /草稿|draft/i
   const SELECTOR_IFRAME_RE = /sucai-selector-ng/i
   const PICTURE_CENTER_UPLOAD_ENDPOINT = 'https://stream-upload.taobao.com/api/upload.api'
@@ -117,6 +118,196 @@
     )
   }
 
+  function rowValue(row, aliases) {
+    for (const alias of aliases) {
+      if (row && Object.prototype.hasOwnProperty.call(row, alias)) {
+        const value = cleanText(row[alias])
+        if (value) return value
+      }
+    }
+    const wanted = aliases.map(alias => compact(alias).toLowerCase())
+    for (const [key, value] of Object.entries(row || {})) {
+      if (wanted.includes(compact(key).toLowerCase())) {
+        const text = cleanText(value)
+        if (text) return text
+      }
+    }
+    return ''
+  }
+
+  function stripDuplicateFolderSuffix(folderName) {
+    return cleanText(folderName).replace(/\s*\(\d+\)\s*$/, '').trim()
+  }
+
+  function splitStyleCodesFromFolderName(folderName) {
+    return stripDuplicateFolderSuffix(folderName)
+      .split('+')
+      .map(cleanText)
+      .filter(Boolean)
+  }
+
+  function normalizeStyleCode(value) {
+    return compact(value).toUpperCase()
+  }
+
+  function normalizeFolderIdentity(value, { stripDuplicate = false } = {}) {
+    const text = stripDuplicate ? stripDuplicateFolderSuffix(value) : cleanText(value)
+    return compact(text).toUpperCase()
+  }
+
+  function firstPathSegmentForFolder(relativePath, folderName) {
+    const segments = cleanText(relativePath).replace(/\\/g, '/').split('/').filter(Boolean)
+    const exact = normalizeFolderIdentity(folderName)
+    const base = normalizeFolderIdentity(folderName, { stripDuplicate: true })
+    return segments.find(segment => normalizeFolderIdentity(segment) === exact) ||
+      segments.find(segment => normalizeFolderIdentity(segment, { stripDuplicate: true }) === base) ||
+      ''
+  }
+
+  function normalizeDirectoryFileEntry(entry, root = '') {
+    if (!entry) return null
+    const rawPath = cleanText(entry.path || entry.fullPath || entry.file || entry.name || '')
+    const relativePath = cleanText(entry.relativePath || entry.relative_path || entry.localPath || entry.name || rawPath)
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+    const absolutePath = rawPath || (root && relativePath ? `${String(root).replace(/\/+$/, '')}/${relativePath}` : relativePath)
+    if (!absolutePath && !relativePath) return null
+    return {
+      ...entry,
+      path: absolutePath,
+      relativePath: relativePath || pathBasename(absolutePath),
+      name: pathBasename(relativePath || absolutePath),
+    }
+  }
+
+  function directoryFileEntries(options = params) {
+    const listing = options.material_root_files || options.materialRootFiles || {}
+    const root = cleanText(listing.root || options.material_root || options.materialRoot || '')
+    const paths = Array.isArray(listing.paths)
+      ? listing.paths
+      : Array.isArray(options.material_root_files)
+        ? options.material_root_files
+        : []
+    return paths
+      .map(entry => normalizeDirectoryFileEntry(entry, root))
+      .filter(entry => entry && IMAGE_EXT_RE.test(entry.path || entry.relativePath || entry.name || ''))
+  }
+
+  function styleSetFromFolderSegment(segment) {
+    return new Set(splitStyleCodesFromFolderName(segment).map(normalizeStyleCode).filter(Boolean))
+  }
+
+  function findCollocationImagesForJob(job, options = params) {
+    const entries = directoryFileEntries(options)
+    const folderName = cleanText(job.folderName || job.collocationFolderName || '')
+    const styleCodes = (job.styleCodes || []).map(normalizeStyleCode).filter(Boolean)
+    const exactMatches = []
+    const baseMatches = []
+    const styleMatches = []
+
+    for (const entry of entries) {
+      const rel = cleanText(entry.relativePath || entry.path || '').replace(/\\/g, '/')
+      const segments = rel.split('/').filter(Boolean)
+      if (!segments.length) continue
+      if (folderName) {
+        const exactIdentity = normalizeFolderIdentity(folderName)
+        const baseIdentity = normalizeFolderIdentity(folderName, { stripDuplicate: true })
+        const exactSegment = segments.find(segment => normalizeFolderIdentity(segment) === exactIdentity)
+        if (exactSegment) {
+          exactMatches.push({ ...entry, folderSegment: exactSegment, source: 'material-root-folder-exact' })
+          continue
+        }
+        const baseSegment = segments.find(segment => normalizeFolderIdentity(segment, { stripDuplicate: true }) === baseIdentity)
+        if (baseSegment) {
+          baseMatches.push({ ...entry, folderSegment: baseSegment, source: 'material-root-folder-base' })
+          continue
+        }
+      }
+      if (styleCodes.length) {
+        const matchedSegment = segments.find(segment => {
+          const set = styleSetFromFolderSegment(segment)
+          return styleCodes.every(code => set.has(code))
+        })
+        if (matchedSegment) styleMatches.push({ ...entry, folderSegment: matchedSegment, source: 'material-root-style-set' })
+      }
+    }
+
+    const matched = exactMatches.length ? exactMatches : (baseMatches.length ? baseMatches : styleMatches)
+    return matched
+      .sort((a, b) => cleanText(a.relativePath || a.path).localeCompare(cleanText(b.relativePath || b.path), 'zh-Hans-CN'))
+      .slice(0, MAX_IMAGE_COUNT)
+      .map(entry => entry.path)
+      .filter(Boolean)
+  }
+
+  function findCollocationFolderSegmentForJob(job, options = params) {
+    const refs = findCollocationImagesForJob(job, options)
+    if (!refs.length) return ''
+    const entries = directoryFileEntries(options)
+    const firstEntry = entries.find(entry => refs.includes(entry.path))
+    const segments = cleanText(firstEntry?.relativePath || firstEntry?.path || '').replace(/\\/g, '/').split('/').filter(Boolean)
+    const folderName = cleanText(job.folderName || job.collocationFolderName || '')
+    if (folderName) return firstPathSegmentForFolder(firstEntry?.relativePath || firstEntry?.path || '', folderName)
+    const styleCodes = (job.styleCodes || []).map(normalizeStyleCode).filter(Boolean)
+    return segments.find(segment => {
+      const set = styleSetFromFolderSegment(segment)
+      return styleCodes.length && styleCodes.every(code => set.has(code))
+    }) || ''
+  }
+
+  function numberedRowValue(row, prefixes, index) {
+    const aliases = []
+    for (const prefix of prefixes) {
+      aliases.push(`${prefix}${index}`, `${prefix} ${index}`, `${prefix}_${index}`, `${prefix}-${index}`)
+    }
+    return rowValue(row, aliases)
+  }
+
+  function collectStyleProductPairs(row) {
+    const pairs = []
+    for (let index = 1; index <= 6; index += 1) {
+      const styleCode = numberedRowValue(row, ['款号', '搭配款号', 'style', 'style_code'], index)
+      const productId = normalizeProductId(numberedRowValue(row, ['商品ID', '商品 ID', 'itemId', 'item_id', 'productId', 'product_id'], index))
+      if (styleCode || productId) pairs.push({ styleCode: cleanText(styleCode), productId, index })
+    }
+    if (pairs.length) return pairs
+
+    const styles = splitMultiValues(rowValue(row, ['款号', '搭配款号', '商家编码', '货号', 'style_codes', 'style_code']))
+    const productIds = normalizeProductIds(rowValue(row, ['商品ID', '商品 ID', '商品id', 'itemIds', 'item_ids', 'product_ids', 'productIds']))
+    return styles.map((styleCode, index) => ({ styleCode, productId: productIds[index] || '', index: index + 1 }))
+  }
+
+  function normalizeBatchJobs(options = params) {
+    const rows = Array.isArray(options.input_file?.rows) ? options.input_file.rows : []
+    return rows.map((row, rowIndex) => {
+      const folderName = rowValue(row, ['文件夹名', '搭配方式', '顶层文件夹', '素材文件夹', '文件夹'])
+      const pairs = collectStyleProductPairs(row)
+      const styleCodes = pairs.map(pair => cleanText(pair.styleCode)).filter(Boolean)
+      const productIds = pairs.map(pair => pair.productId).filter(Boolean)
+      const inferredStyles = styleCodes.length ? styleCodes : splitStyleCodesFromFolderName(folderName)
+      const searchFolderName = folderName || inferredStyles.join('+')
+      const matchSeed = { folderName: searchFolderName, styleCodes: inferredStyles }
+      const materialRefs = findCollocationImagesForJob(matchSeed, options)
+      const matchedFolderName = findCollocationFolderSegmentForJob(matchSeed, options)
+      const fallbackRefs = materialRefs.length ? materialRefs : normalizeImageRefs(rowValue(row, ['素材图片', '素材路径', '图片', 'material_images', 'images']))
+      return normalizeJob({
+        ...options,
+        product_ids: productIds.join('\n'),
+        title: rowValue(row, ['标题', '搭配标题', '添加标题', 'title']) || options.title,
+        description: rowValue(row, ['文案', '描述', '内容描述', 'description', 'copy']) || options.description,
+        material_images: fallbackRefs,
+        draft_id: rowValue(row, ['草稿ID', '草稿 ID', '搭配ID', 'scuId', 'draft_id']) || options.draft_id,
+        execute_mode: hasInputRows(options) ? 'live_publish' : (options.execute_mode || 'plan'),
+        folderName: folderName || matchedFolderName,
+        collocationFolderName: folderName || matchedFolderName,
+        styleCodes: inferredStyles,
+        styleProductPairs: pairs,
+        tableRowNumber: rowValue(row, ['表格行号', '行号', '序号']) || String(rowIndex + 2),
+        materialSource: materialRefs.length ? `本地素材目录/${matchedFolderName || inferredStyles.join('+')}` : '',
+      })
+    })
+  }
+
   function buildSafeThreeFourPlan(width, height, options = {}) {
     const sourceWidth = Number(width || 0)
     const sourceHeight = Number(height || 0)
@@ -185,7 +376,20 @@
     const draftId = cleanText(options.draft_id || options.id || currentDraftIdFromLocation() || '')
     const executeMode = cleanText(options.execute_mode || 'plan') || 'plan'
     const anchors = Array.isArray(options.anchors) && options.anchors.length ? options.anchors : defaultAnchors(productIds)
-    return { productIds, title, description, materialRefs, draftId, executeMode, anchors }
+    return {
+      productIds,
+      title,
+      description,
+      materialRefs,
+      draftId,
+      executeMode,
+      anchors,
+      folderName: cleanText(options.folderName || options.collocationFolderName || ''),
+      styleCodes: Array.isArray(options.styleCodes) ? options.styleCodes.map(cleanText).filter(Boolean) : [],
+      styleProductPairs: Array.isArray(options.styleProductPairs) ? options.styleProductPairs : [],
+      tableRowNumber: cleanText(options.tableRowNumber || ''),
+      materialSource: cleanText(options.materialSource || ''),
+    }
   }
 
   function isPublishMode(job) {
@@ -207,17 +411,25 @@
     if (job.description.length > DESCRIPTION_MAX) errors.push(`文案不能超过 ${DESCRIPTION_MAX} 字`)
     if (!job.materialRefs.length) errors.push('至少选择 1 张素材图片')
     if (job.materialRefs.length > MAX_IMAGE_COUNT) errors.push(`素材图片不能超过 ${MAX_IMAGE_COUNT} 张`)
+    const missingProductStyles = (job.styleProductPairs || [])
+      .filter(pair => cleanText(pair.styleCode) && !normalizeProductId(pair.productId))
+      .map(pair => cleanText(pair.styleCode))
+    if (missingProductStyles.length) errors.push(`款号缺少商品ID：${missingProductStyles.join('、')}`)
     return errors
   }
 
   function outputRow(job, extra = {}) {
     const materials = extra.materials || job.materials || []
     return {
+      表格行号: cleanText(job.tableRowNumber || ''),
+      文件夹名: cleanText(job.folderName || ''),
+      款号: (job.styleCodes || []).join(','),
       搭配ID: cleanText(extra.draftId || job.draftId || ''),
       发布内容ID: cleanText(extra.contentId || ''),
       商品ID: (job.productIds || []).join(','),
       标题: cleanText(job.title || ''),
       文案: cleanText(job.description || ''),
+      素材来源: cleanText(job.materialSource || ''),
       素材数量: materials.length || (job.materialRefs || []).length || '',
       素材明细: (materials.length ? materials : (job.materialRefs || []).map(ref => ({ ref })))
         .map(item => cleanText(item.url || item.ref || item.name || ''))
@@ -323,6 +535,57 @@
 
   function fail(message) {
     return { success: false, error: String(message || 'MOP 搭配素材草稿执行失败') }
+  }
+
+  function hasInputRows(options = params) {
+    return Array.isArray(options.input_file?.rows)
+  }
+
+  function hasBatchRun(state = shared) {
+    return Array.isArray(state.jobs)
+  }
+
+  function collectLocalRefs(jobs) {
+    const seen = new Set()
+    const refs = []
+    for (const job of jobs || []) {
+      for (const ref of job.materialRefs || []) {
+        if (!isRemoteImage(ref) && !seen.has(ref)) {
+          seen.add(ref)
+          refs.push(ref)
+        }
+      }
+    }
+    return refs
+  }
+
+  function buildBatchShared(jobs, previewRows = [], options = {}) {
+    return {
+      ...shared,
+      jobs,
+      results: options.initialResults || [],
+      preview_rows: previewRows,
+      job_index: 0,
+      total_rows: previewRows.length || jobs.length,
+      execute_mode: options.executeMode || params.execute_mode || 'plan',
+      submit_delay_ms: parseInteger(options.submitDelayMs ?? params.submit_delay_ms, 2500),
+      local_refs: collectLocalRefs(jobs),
+    }
+  }
+
+  function finishBatchJob(row, state = shared, extra = {}) {
+    const results = [...(state.results || []), row]
+    return {
+      ...state,
+      ...extra,
+      prepared_image_files: withoutPreparedImageDataUrls(state.prepared_image_files),
+      materials: [],
+      selected_materials: [],
+      api_upload_result: null,
+      job: null,
+      results,
+      job_index: Number(state.job_index || 0) + 1,
+    }
   }
 
   function ensureUploadInput() {
@@ -1262,6 +1525,7 @@
   }
 
   async function runMainPhase() {
+    if (hasInputRows(params)) return runBatchMainPhase()
     const job = normalizeJob(params)
     const errors = validateJob(job)
     const preview = planRow(job, errors)
@@ -1281,6 +1545,71 @@
       })
     }
     return nextPhase(isPublishMode(job) ? 'publish_content' : 'save_draft', 0, { ...shared, job, results: [] })
+  }
+
+  async function runBatchMainPhase() {
+    const jobs = normalizeBatchJobs(params)
+    if (!jobs.length) {
+      return complete([outputRow({}, { status: '预检失败', note: 'Excel 没有可执行数据行' })], shared)
+    }
+    const assessed = jobs.map(job => ({ job, errors: validateJob(job) }))
+    const previewRows = assessed.map(item => planRow(item.job, item.errors))
+    if (params.execute_mode !== 'live_publish') {
+      return complete(previewRows, {
+        ...shared,
+        total_rows: previewRows.length,
+        results: previewRows,
+      })
+    }
+    const validJobs = assessed.filter(item => !item.errors.length).map(item => item.job)
+    const invalidRows = assessed.filter(item => item.errors.length).map(item => planRow(item.job, item.errors))
+    if (!validJobs.length) {
+      return complete(previewRows, {
+        ...shared,
+        total_rows: previewRows.length,
+        results: previewRows,
+      })
+    }
+    return nextPhase('process_batch_row', 0, buildBatchShared(validJobs, previewRows, {
+      executeMode: 'live_publish',
+      submitDelayMs: params.submit_delay_ms,
+      initialResults: invalidRows,
+    }))
+  }
+
+  async function runProcessBatchRowPhase() {
+    const jobs = Array.isArray(shared.jobs) ? shared.jobs : []
+    const index = Number(shared.job_index || 0)
+    const job = jobs[index]
+    if (!job) {
+      return complete(shared.results || [], {
+        ...shared,
+        prepared_image_files: withoutPreparedImageDataUrls(shared.prepared_image_files),
+      })
+    }
+    const errors = validateJob(job)
+    if (errors.length) {
+      const row = planRow(job, errors)
+      return nextPhase('process_batch_row', shared.submit_delay_ms || 0, finishBatchJob(row, {
+        ...shared,
+        job,
+      }), [row])
+    }
+    const localRefs = job.materialRefs.filter(ref => !isRemoteImage(ref))
+    if (localRefs.length) {
+      const beforeMaterials = findPrimarySelectedDressImages()
+      return prepareImageFiles(localRefs.map(path => ({ path })), 'api_upload_materials', 0, {
+        ...shared,
+        job,
+        before_material_urls: beforeMaterials.map(item => item.url),
+      })
+    }
+    return nextPhase('publish_content', 0, {
+      ...shared,
+      job,
+      selected_materials: [],
+      materials: [],
+    })
   }
 
   async function runOpenMaterialSelectorPhase() {
@@ -1541,7 +1870,20 @@
         urlsOk ? '图片URL已读回' : '图片URL未完全读回',
       ]
     } catch (error) {
-      throw new Error(`真实发布未完成：${cleanText(error?.message || error)}`)
+      const message = `真实发布未完成：${cleanText(error?.message || error)}`
+      if (hasBatchRun(shared)) {
+        const row = outputRow(job, {
+          materials,
+          status: '发布失败',
+          cropMode: '3:4安全切图',
+          note: message,
+        })
+        return nextPhase('process_batch_row', shared.submit_delay_ms || 0, finishBatchJob(row, {
+          ...shared,
+          job,
+        }), [row])
+      }
+      throw new Error(message)
     }
     const row = outputRow({ ...job, draftId }, {
       draftId,
@@ -1551,6 +1893,21 @@
       cropMode: '3:4安全切图',
       note: noteParts.join('；'),
     })
+    if (hasBatchRun(shared)) {
+      return nextPhase('process_batch_row', shared.submit_delay_ms || 0, finishBatchJob(row, {
+        ...shared,
+        job: { ...job, draftId, executeMode: 'live_publish' },
+        materials,
+        draft_id: draftId,
+        content_id: contentId,
+        publish_result: {
+          contentId,
+          precheckPassed: Boolean(published?.precheckPassed),
+          precheckNote: cleanText(published?.precheckNote || ''),
+        },
+        readback: { titleOk, descOk, idsOk, urlsOk, visible },
+      }), [row])
+    }
     return complete([row], {
       ...shared,
       prepared_image_files: withoutPreparedImageDataUrls(),
@@ -1577,6 +1934,12 @@
       normalizeProductIds,
       normalizeImageRefs,
       normalizeMaterialRefs,
+      stripDuplicateFolderSuffix,
+      splitStyleCodesFromFolderName,
+      normalizeStyleCode,
+      directoryFileEntries,
+      findCollocationImagesForJob,
+      normalizeBatchJobs,
       buildSafeThreeFourPlan,
       defaultAnchors,
       normalizeJob,
@@ -1606,6 +1969,7 @@
 
   try {
     if (phase === 'main' || phase === 'init') return await runMainPhase()
+    if (phase === 'process_batch_row') return await runProcessBatchRowPhase()
     if (phase === 'api_upload_materials') return await runApiUploadMaterialsPhase()
     if (phase === 'apply_api_upload_result') return await runApplyApiUploadResultPhase()
     if (phase === 'open_material_selector') return await runOpenMaterialSelectorPhase()
