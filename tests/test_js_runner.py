@@ -967,6 +967,12 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ironing=4是不可熨烫/do not iron", prompt)
         self.assertIn("8=D03 flat drying / 平摊晾干", prompt)
         self.assertIn("4=I04 do not iron / 不可熨烫", prompt)
+        self.assertIn("人工校准梳理-LZH0812 高频样例", prompt)
+        self.assertIn("13=W01 最高洗涤温度 40°C 手洗 / hand wash, maximum temperature 40 ℃", prompt)
+        self.assertIn("10=W03 最高洗涤温度30℃ 常规程序 / maximum temperature 30 ℃, normal process", prompt)
+        self.assertIn("5=D05 在阴凉处悬挂晾干 / line drying in the shade", prompt)
+        self.assertIn("3=I07 熨斗底板最高温度120℃", prompt)
+        self.assertIn("5=P05 不可干洗，不可专业干洗 / do not dry clean", prompt)
 
     def test_care_symbols_from_wash_payload_accepts_only_temu_enum_values(self):
         payload = {

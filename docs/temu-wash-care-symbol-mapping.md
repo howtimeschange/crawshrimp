@@ -3,6 +3,7 @@
 来源：
 
 - `/Users/xingyicheng/Downloads/TEMU洗唛符号人工校准表.xlsx`
+- `/Users/xingyicheng/Downloads/人工校准梳理-LZH0812.xlsx`：人工图标对照表，覆盖 9 个高频项：手洗 40℃、30℃常规洗、不可漂白、悬挂晾干、平摊晾干、阴凉处悬挂晾干、低温熨烫、不可熨烫、不可干洗
 - 2026-08-12 通过已登录 TEMU 后台 `https://agentseller.temu.com/goods/label` 前端 `product-label` bundle 核查的五类枚举
 - 2026-08-12 通过 TEMU 洗水唛编辑抽屉核查字段：洗涤、漂白、干燥、熨烫、专业护理，对应接口字段 `washing`、`bleaching`、`drying`、`ironing`、`dryCleaning`
 - 2026-08-12 通过 SCM `https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index` 洗唛批复判定页核查数据来源字段：洗唛文件、中文成分、英文成分、判定结果、判定备注
@@ -20,6 +21,7 @@
 ## 程序使用规则
 
 - 优先使用 SCM 判定备注或洗唛附件 AI/OCR 识别出的洗护说明，按下方表格逐项映射。
+- AI/OCR 多模态识别提示会内置 `人工校准梳理-LZH0812.xlsx` 的 9 个高频图标样例，要求模型直接返回 TEMU `careSymbols` 枚举值。
 - 五类中只要有某一类识别成功，就保留该类映射；仅对缺失类使用默认兜底。
 - 默认兜底为：`washing=13` 手洗 40℃、`bleaching=3` 不可漂白、`drying=4` 悬挂晾干、`ironing=3` 低温熨烫、`dryCleaning=5` 不可干洗。
 - TEMU 页面英文里存在历史/平台拼写差异，例如 `protessional`，程序匹配时兼容页面原文和常见正确拼写。

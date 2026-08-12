@@ -95,6 +95,23 @@ WASH_CARE_TEMU_SYMBOL_OPTIONS = {
         (9, "P09", "do not wet clean, no professional wet cleaning allowed", "不可湿洗，不可专业湿洗"),
     ],
 }
+WASH_CARE_LZH_MANUAL_CALIBRATION_EXAMPLES = [
+    ("washing", 13, "W01", "最高洗涤温度 40°C 手洗 / hand wash, maximum temperature 40 ℃"),
+    ("washing", 10, "W03", "最高洗涤温度30℃ 常规程序 / maximum temperature 30 ℃, normal process"),
+    ("bleaching", 3, "B03", "不可漂白 / do not bleach"),
+    ("drying", 4, "D01", "悬挂晾干 / line drying"),
+    ("drying", 8, "D03", "平摊晾干 / flat drying"),
+    ("drying", 5, "D05", "在阴凉处悬挂晾干 / line drying in the shade"),
+    (
+        "ironing",
+        3,
+        "I07",
+        "熨斗底板最高温度120℃，蒸汽熨烫可能造成不可回复的损伤 / "
+        "iron at a maximal sole plate temperature of 120 ℃, steam iron may cause irreversible damage",
+    ),
+    ("ironing", 4, "I04", "不可熨烫 / do not iron"),
+    ("dryCleaning", 5, "P05", "不可干洗，不可专业干洗 / do not dry clean, No professional dry cleaning allowed"),
+]
 
 
 def _encode_request_url(url: str) -> str:
@@ -151,6 +168,11 @@ def _wash_care_calibration_prompt() -> str:
         )
         lines.append(f"- {field}: {option_text}")
     lines.extend([
+        "人工校准梳理-LZH0812 高频样例，看到同类商家/TEMU图标或字段时按这些值返回：",
+        *(
+            f"- {field}: {value}={standard_id} {text}"
+            for field, value, standard_id, text in WASH_CARE_LZH_MANUAL_CALIBRATION_EXAMPLES
+        ),
         "关键纠偏：drying=4是悬挂晾干/line drying；drying=8是平摊晾干/flat drying。",
         "关键纠偏：ironing=3是低温熨烫；ironing=4是不可熨烫/do not iron。",
         "如果某一类看不清，不要猜测；该字段返回null，并在uncertainFields中列出。",

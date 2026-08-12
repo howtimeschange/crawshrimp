@@ -113,7 +113,7 @@
     washing: [
       { standardId: 'W02', value: 14, label: 'Do not wash', patterns: [/do not wash/i, /不可水洗|不可洗|禁止水洗/] },
       { standardId: 'W15', value: 15, label: 'Hand wash, ambient temperature', patterns: [/hand wash,\s*ambient temperature/i, /常温\s*手洗|冷水手洗|环境温度手洗/] },
-      { standardId: 'W01', value: 13, label: 'Hand wash, maximum temperature 40℃', patterns: [/hand wash,\s*maximum temperature\s*40℃/i, /wash by hand(?!\s*ambient)/i, /(?:最高洗涤温度\s*)?40℃?\s*手洗|手洗(?:，?最高洗涤温度\s*40℃)?/] },
+      { standardId: 'W01', value: 13, label: 'Hand wash, maximum temperature 40℃', patterns: [/hand wash,\s*maximum temperature\s*40\s*℃/i, /wash by hand(?!\s*ambient)/i, /(?:最高洗涤温度\s*)?40\s*℃?\s*手洗|手洗(?:，?最高洗涤温度\s*40\s*℃)?/] },
       { standardId: 'W12', value: 1, label: 'Maximum washing temperature 95℃ normal process', patterns: [/maximum washing temperature\s*95℃\s*normal process/i, /95℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
       { standardId: 'W11', value: 2, label: 'Maximum washing temperature 70℃ normal process', patterns: [/maximum washing temperature\s*70℃\s*normal process/i, /70℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
       { standardId: 'W10', value: 4, label: 'Maximum washing temperature 60℃ mild process', patterns: [/maximum washing temperature\s*60℃\s*mild process/i, /60℃\s*(?:缓和程序|轻柔洗|缓和洗)/] },
@@ -123,9 +123,9 @@
       { standardId: 'W08', value: 9, label: 'Maximum washing temperature 40℃ very mild process', patterns: [/maximum washing temperature\s*40℃\s*very mild process/i, /40℃\s*(?:非常缓和程序|极轻柔洗|非常缓和洗)/] },
       { standardId: 'W07', value: 8, label: 'Maximum washing temperature 40℃ mild process', patterns: [/maximum washing temperature\s*40℃\s*mild process/i, /40℃\s*(?:缓和程序|轻柔洗|缓和洗)/] },
       { standardId: 'W06', value: 7, label: 'Maximum washing temperature 40℃ normal process', patterns: [/maximum washing temperature\s*40℃(?!\s*(mild|very mild))/i, /40℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
-      { standardId: 'W05', value: 12, label: 'Maximum washing temperature 30℃ very mild process', patterns: [/maximum washing temperature\s*30℃\s*very mild process/i, /30℃\s*(?:非常缓和程序|极轻柔洗|非常缓和洗)/] },
-      { standardId: 'W04', value: 11, label: 'Maximum washing temperature 30℃ mild process', patterns: [/maximum washing temperature\s*30℃\s*mild process/i, /30℃\s*(?:缓和程序|轻柔洗|缓和洗)/] },
-      { standardId: 'W03', value: 10, label: 'Maximum washing temperature 30℃ normal process', patterns: [/maximum washing temperature\s*30℃(?!\s*(mild|very mild))/i, /30℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
+      { standardId: 'W05', value: 12, label: 'Maximum washing temperature 30℃ very mild process', patterns: [/maximum (?:washing )?temperature\s*30\s*℃\s*very mild process/i, /30\s*℃\s*(?:非常缓和程序|极轻柔洗|非常缓和洗)/] },
+      { standardId: 'W04', value: 11, label: 'Maximum washing temperature 30℃ mild process', patterns: [/maximum (?:washing )?temperature\s*30\s*℃\s*mild process/i, /30\s*℃\s*(?:缓和程序|轻柔洗|缓和洗)/] },
+      { standardId: 'W03', value: 10, label: 'Maximum washing temperature 30℃ normal process', patterns: [/maximum (?:washing )?temperature\s*30\s*℃(?!\s*(mild|very mild))/i, /30\s*℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
     ],
     bleaching: [
       { standardId: 'B03', value: 3, label: 'Do not bleach', patterns: [/do not bleach/i, /不可漂白|禁止漂白/] },
@@ -148,7 +148,7 @@
     ironing: [
       { standardId: 'I04', value: 4, label: 'Do not iron', patterns: [/do not iron/i, /不可熨烫|禁止熨烫/] },
       { standardId: 'I08', value: 5, label: 'Iron at maximum sole plate temperature 120℃ without steam', patterns: [/120℃\s*without steam/i, /120℃.*(?:不可蒸汽熨烫|无蒸汽|不可蒸汽)/] },
-      { standardId: 'I07', value: 3, label: 'Iron at maximal sole plate temperature 120℃, steam may cause irreversible damage', patterns: [/120℃.*steam.*irreversible damage/i, /maximum sole-?plate temperature(?: of)?\s*110℃/i, /110℃.*(?:without steam|无蒸汽)/, /低温熨烫|低温无蒸汽|120℃.*蒸汽.*损伤|(?:^|[，,；;\s])可熨烫/] },
+      { standardId: 'I07', value: 3, label: 'Iron at maximal sole plate temperature 120℃, steam may cause irreversible damage', patterns: [/120\s*℃.*steam.*irreversible damage/i, /maximum sole-?plate temperature(?: of)?\s*110℃/i, /110℃.*(?:without steam|无蒸汽)/, /低温熨烫|低温无蒸汽|120\s*℃.*蒸汽.*损伤|(?:^|[，,；;\s])可熨烫/] },
       { standardId: 'I06', value: 2, label: 'Iron at maximal sole plate temperature 160℃', patterns: [/sole plate temperature\s*(?:150|160)℃/i, /(?:150|160)℃.*熨烫|中温熨烫/] },
       { standardId: 'I05', value: 1, label: 'Iron at maximal sole plate temperature 210℃', patterns: [/sole plate temperature\s*(?:200|210)℃/i, /(?:200|210)℃.*熨烫|高温熨烫/] },
     ],

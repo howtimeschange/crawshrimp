@@ -1594,6 +1594,86 @@ test('dry-run maps SCM wash-care text to TEMU symbol enums', async () => {
   assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Line drying in the shade')
 })
 
+test('dry-run maps LZH manual calibration TEMU field wording to symbol enums', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: [
+      '最高洗涤温度 40°C 手洗   hand wash, maximum temperature 40 ℃',
+      '不可漂白 / do not bleach',
+      '在阴凉处悬挂晾干 / line drying in the shade',
+      '熨斗底板最高温度120℃，蒸汽熨烫可能造成不可回复的损伤 / iron at a maximal sole plate temperature of 120 ℃, steam iron may cause irreversible damage',
+      '不可干洗，不可专业干洗 / do not dry clean, No professional dry cleaning allowed',
+    ].join('\n'),
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+    },
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 5,
+    ironing: 3,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_instruction_mapping')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbolsStandardIds)), {
+    washing: 'W01',
+    bleaching: 'B03',
+    drying: 'D05',
+    ironing: 'I07',
+    dryCleaning: 'P05',
+  })
+})
+
+test('dry-run maps LZH 30C normal wash and flat drying calibration wording', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: [
+      '最高洗涤温度30℃ 常规程序 / maximum temperature 30 ℃, normal process',
+      '不可漂白 / do not bleach',
+      '平摊晾干 / flat drying',
+      '不可熨烫 / do not iron',
+      '不可干洗，不可专业干洗 / do not dry clean, No professional dry cleaning allowed',
+    ].join('\n'),
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+    },
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 10,
+    bleaching: 3,
+    drying: 8,
+    ironing: 4,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_instruction_mapping')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbolsStandardIds)), {
+    washing: 'W03',
+    bleaching: 'B03',
+    drying: 'D03',
+    ironing: 'I04',
+    dryCleaning: 'P05',
+  })
+})
+
 test('dry-run reports the configured label length used for TEMU save payload', async () => {
   const apiTarget = { ...PENDING_TARGET, excelStyle: EXCEL_TARGET.style, outputFilename: EXCEL_TARGET.outputFilename }
   const result = await runAdapter({
