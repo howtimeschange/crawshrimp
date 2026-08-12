@@ -10,7 +10,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.js_runner import JSRunner, RunAbortedError, _encode_request_url
+from core.js_runner import (
+    JSRunner,
+    RunAbortedError,
+    _care_symbols_from_wash_payload,
+    _encode_request_url,
+    _wash_care_calibration_prompt,
+)
 from core.models import JSResult
 
 
@@ -812,7 +818,14 @@ class RuntimeWashCareRecognitionRunner(JSRunner):
         return {
             "ok": True,
             "source": "scm_wash_attachment_multimodal",
-            "instructionText": "手洗，不可漂白，悬挂晾晒，可熨烫，不可干洗",
+            "instructionText": "手洗，不可漂白，平摊晾干，不可熨烫，不可干洗",
+            "careSymbols": {
+                "washing": 13,
+                "bleaching": 3,
+                "drying": 8,
+                "ironing": 4,
+                "dryCleaning": 5,
+            },
         }
 
 
@@ -945,6 +958,47 @@ class FakeCDPWebSocket:
 
 
 class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
+    def test_wash_care_calibration_prompt_contains_latest_temu_symbol_mapping(self):
+        prompt = _wash_care_calibration_prompt()
+
+        self.assertIn("drying=4是悬挂晾干/line drying", prompt)
+        self.assertIn("drying=8是平摊晾干/flat drying", prompt)
+        self.assertIn("ironing=3是低温熨烫", prompt)
+        self.assertIn("ironing=4是不可熨烫/do not iron", prompt)
+        self.assertIn("8=D03 flat drying / 平摊晾干", prompt)
+        self.assertIn("4=I04 do not iron / 不可熨烫", prompt)
+
+    def test_care_symbols_from_wash_payload_accepts_only_temu_enum_values(self):
+        payload = {
+            "careSymbols": {
+                "washing": "13",
+                "bleaching": 3,
+                "drying": 8,
+                "ironing": 4,
+                "dryCleaning": 5,
+            },
+            "symbolValues": {
+                "washing": 14,
+                "drying": 4,
+            },
+        }
+
+        self.assertEqual(_care_symbols_from_wash_payload(payload), {
+            "washing": 13,
+            "bleaching": 3,
+            "drying": 8,
+            "ironing": 4,
+            "dryCleaning": 5,
+        })
+
+        self.assertEqual(_care_symbols_from_wash_payload({
+            "careSymbols": {
+                "washing": 999,
+                "drying": "flat drying",
+                "ironing": None,
+            },
+        }), {})
+
     async def test_encode_request_url_percent_encodes_non_ascii_path(self):
         encoded = _encode_request_url("https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/洗唛1776744450203_175.jpg")
 
@@ -1727,7 +1781,17 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("wash_recognition", runner.calls[1]["shared"])
         self.assertEqual(
             runner.calls[1]["shared"]["wash_recognition"]["instructionText"],
-            "手洗，不可漂白，悬挂晾晒，可熨烫，不可干洗",
+            "手洗，不可漂白，平摊晾干，不可熨烫，不可干洗",
+        )
+        self.assertEqual(
+            runner.calls[1]["shared"]["wash_recognition"]["careSymbols"],
+            {
+                "washing": 13,
+                "bleaching": 3,
+                "drying": 8,
+                "ironing": 4,
+                "dryCleaning": 5,
+            },
         )
 
     async def test_run_script_file_handles_runtime_file_chooser_upload_action(self):

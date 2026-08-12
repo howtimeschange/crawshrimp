@@ -38,6 +38,8 @@ const LATEST_CARE_TEXT = [
   'Iron at maximum sole-plate temperature of 110°C without steam',
   'Do not dry clean',
 ].join('\n')
+const TEMU_HAND_WASH_40_LABEL = 'Hand wash, maximum temperature 40℃'
+const TEMU_LOW_IRON_LABEL = 'Iron at maximal sole plate temperature 120℃, steam may cause irreversible damage'
 
 const ROW_MANUFACTURER_NAME = 'Custom Template Garment Co.,Ltd.'
 const ROW_MANUFACTURER_ADDRESS = 'No.1 Template Road, Wenzhou/Zhejiang, China'
@@ -482,6 +484,51 @@ test('style-code lookup expands a款号 into SKU targets and records print-only 
   assert.equal(result.data[0].TEMU需要洗水唛, false)
 })
 
+test('style-code expansion honors max downloads after SKU expansion', async () => {
+  const styleTarget = {
+    inputMode: 'style_code',
+    style: '208326101201',
+    skc: '208326101201',
+    status: 'ready',
+  }
+  const result = await runAdapter({
+    phase: 'api_lookup_excel_target',
+    params: { max_downloads: 1 },
+    shared: {
+      excelTargets: [styleTarget],
+      excelTarget: styleTarget,
+      currentExcelTargetIndex: 0,
+    },
+    postImpl: async ({ requestPath, payload }) => {
+      assert.equal(requestPath, '/visage-agent-seller/labelcode/pageQuery')
+      assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+        page: 1,
+        pageSize: 200,
+        skcExtCodes: ['208326101201'],
+      })
+      return {
+        res: {
+          total: 3,
+          pageItems: [
+            makePageItem({ ...PENDING_TARGET, skcExtCode: '208326101201', skuExtCode: '6942749192292', productSkuId: 6942749192292 }),
+            makePageItem({ ...PENDING_TARGET, skcExtCode: '208326101201', skuExtCode: '6942749192285', productSkuId: 6942749192285 }),
+            makePageItem({ ...PENDING_TARGET, skcExtCode: '208326101201', skuExtCode: '6942749192278', productSkuId: 6942749192278 }),
+          ],
+        },
+      }
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'api_lookup_excel_target')
+  assert.equal(result.meta.shared.excelTargets.length, 1)
+  assert.equal(result.meta.shared.excelTarget.skuNo, '6942749192292')
+  assert.equal(result.meta.shared.styleQueryDerivedTargets, 3)
+  assert.equal(result.meta.shared.styleQuerySelectedTargets, 1)
+  assert.equal(result.meta.shared.styleQuerySkuLimit, 1)
+  assert.equal(result.meta.shared.sku_total, 1)
+  assert.match(result.meta.shared.current_store, /AI洗唛制作 \/ 制作 SKU 1\/1/)
+})
+
 test('style expansion recomputes SKU progress total from actual queue', async () => {
   const firstStyleSkuTargets = Array.from({ length: 18 }, (_, index) => ({
     ...PENDING_TARGET,
@@ -875,6 +922,13 @@ test('AI-recognized SCM wash instruction is attached before TEMU care query', as
         ok: true,
         source: 'scm_wash_attachment_multimodal',
         instructionText: '手洗，不可漂白，平坦，熨烫，不可干洗',
+        careSymbols: {
+          washing: 13,
+          bleaching: 3,
+          drying: 8,
+          ironing: 4,
+          dryCleaning: 5,
+        },
       },
     },
   })
@@ -882,9 +936,23 @@ test('AI-recognized SCM wash instruction is attached before TEMU care query', as
   assert.equal(result.meta.next_phase, 'api_care_query')
   assert.equal(result.meta.shared.apiTarget.scmCareInstructionText, '手洗，不可漂白，平坦，熨烫，不可干洗')
   assert.equal(result.meta.shared.apiTarget.scmCareInstructionSource, 'scm_wash_attachment_multimodal')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.apiTarget.scmCareSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 8,
+    ironing: 4,
+    dryCleaning: 5,
+  })
   assert.equal(result.meta.shared.apiTarget.scmAttachmentRecognitionStatus, 'recognized')
   assert.equal(result.meta.shared.scmWashInstructionByStyle['209225117208'].ok, true)
   assert.equal(result.meta.shared.scmWashInstructionByStyle['209225117208'].instructionText, '手洗，不可漂白，平坦，熨烫，不可干洗')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.scmWashInstructionByStyle['209225117208'].careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 8,
+    ironing: 4,
+    dryCleaning: 5,
+  })
 })
 
 test('same style reuses one recognized SCM wash attachment result', async () => {
@@ -913,6 +981,13 @@ test('same style reuses one recognized SCM wash attachment result', async () => 
         209225117208: {
           ok: true,
           instructionText: '手洗，不可漂白，平坦，熨烫，不可干洗',
+          careSymbols: {
+            washing: 13,
+            bleaching: 3,
+            drying: 8,
+            ironing: 4,
+            dryCleaning: 5,
+          },
           source: 'scm_wash_attachment_multimodal',
           status: 'recognized',
         },
@@ -932,6 +1007,13 @@ test('same style reuses one recognized SCM wash attachment result', async () => 
   assert.equal(result.meta.action, 'next_phase')
   assert.equal(result.meta.next_phase, 'api_care_query')
   assert.equal(result.meta.shared.apiTarget.scmCareInstructionText, '手洗，不可漂白，平坦，熨烫，不可干洗')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.apiTarget.scmCareSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 8,
+    ironing: 4,
+    dryCleaning: 5,
+  })
   assert.equal(result.meta.shared.apiTarget.scmCareInstructionSource, 'scm_wash_attachment_multimodal')
   assert.equal(result.meta.shared.apiTarget.scmAttachmentRecognitionStatus, 'recognized_reused')
   assert.equal(result.meta.shared.scmLookupStatus, 'SCM查询成功，复用同款洗唛附件识别结果')
@@ -1260,7 +1342,7 @@ test('dry-run prepares DingTalk SOP fixed payload when the SOP profile is select
     ironing: 3,
     dryCleaning: 5,
   })
-  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.washing, 'Wash by hand')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.washing, TEMU_HAND_WASH_40_LABEL)
   assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Line drying')
 })
 
@@ -1290,7 +1372,7 @@ test('dry-run maps DingTalk SOP wash-care wording to TEMU symbol enums', async (
     ironing: 3,
     dryCleaning: 5,
   })
-  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.washing, 'Wash by hand')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.washing, TEMU_HAND_WASH_40_LABEL)
   assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Line drying')
 })
 
@@ -1312,6 +1394,173 @@ test('dry-run maps SOP flat-drying wording from PDF evidence', async () => {
   })
 
   assert.equal(result.meta.shared.carePayloadSummary.careSymbols.drying, 8)
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Flat drying')
+})
+
+test('SCM flat-drying and low-temperature ironing map to TEMU calibrated symbols', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: '手洗，不可漂白，平摊晾干，低温熨烫，不可干洗',
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+    },
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 8,
+    ironing: 3,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_instruction_mapping')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Flat drying')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.ironing, TEMU_LOW_IRON_LABEL)
+})
+
+test('SCM flat-drying and do-not-iron map without falling back to defaults', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: '手洗，不可漂白，平摊晾干，不可熨烫，不可干洗',
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+    },
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 8,
+    ironing: 4,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_instruction_mapping')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Flat drying')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.ironing, 'Do not iron')
+})
+
+test('AI-recognized TEMU care symbols drive save payload before text fallback', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: '手洗，不可漂白，平坦，熨烫，不可干洗',
+    scmCareSymbols: {
+      washing: 13,
+      bleaching: 3,
+      drying: 8,
+      ironing: 4,
+      dryCleaning: 5,
+    },
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+    },
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 8,
+    ironing: 4,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayload.drying, 8)
+  assert.equal(result.meta.shared.carePayload.ironing, 4)
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_attachment_ai_care_symbols')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Flat drying')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.ironing, 'Do not iron')
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbolsStandardIds)), {
+    washing: 'W01',
+    bleaching: 'B03',
+    drying: 'D03',
+    ironing: 'I04',
+    dryCleaning: 'P05',
+  })
+})
+
+test('partial AI care symbols are completed with latest SCM text mapping', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: '手洗，不可漂白，平摊晾干，低温熨烫，不可干洗',
+    scmCareSymbols: {
+      washing: 13,
+      bleaching: 3,
+      drying: 8,
+      dryCleaning: 5,
+    },
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+    },
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 8,
+    ironing: 3,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_attachment_ai_care_symbols_partial_fallback:ironing')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Flat drying')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.ironing, TEMU_LOW_IRON_LABEL)
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsStandardIds.ironing, 'I07')
+})
+
+test('SCM partial mapping preserves mapped fields when one care symbol is unknown', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: EXCEL_TARGET.style,
+    outputFilename: EXCEL_TARGET.outputFilename,
+    scmCareInstructionText: '手洗，不可漂白，平摊晾干，未知熨烫方式，不可干洗',
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [EXCEL_TARGET],
+      excelTarget: EXCEL_TARGET,
+      careInitial: careQueryResponse().res,
+    },
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result.meta.shared.carePayloadSummary.careSymbols)), {
+    washing: 13,
+    bleaching: 3,
+    drying: 8,
+    ironing: 3,
+    dryCleaning: 5,
+  })
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_instruction_mapping_partial_fallback:ironing')
   assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Flat drying')
 })
 

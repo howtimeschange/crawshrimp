@@ -39,6 +39,62 @@ NAVIGATION_ERROR_MARKERS = (
 )
 WASH_CARE_FIELDS = ("washing", "bleaching", "drying", "ironing", "dryCleaning")
 WASH_CARE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+WASH_CARE_TEMU_SYMBOL_OPTIONS = {
+    "washing": [
+        (1, "W12", "maximum temperature 95 ℃, normal process", "最高洗涤温度95℃ 常规程序"),
+        (2, "W11", "maximum temperature 70 ℃, normal process", "最高洗涤温度70℃ 常规程序"),
+        (3, "W09", "maximum temperature 60 ℃, normal process", "最高洗涤温度60℃ 常规程序"),
+        (4, "W10", "maximum temperature 60 ℃, mild process", "最高洗涤温度60℃ 缓和程序"),
+        (5, "W13", "maximum temperature 50 ℃, normal process", "最高洗涤温度50℃ 常规程序"),
+        (6, "W14", "maximum temperature 50 ℃, mild process", "最高洗涤温度50℃ 缓和程序"),
+        (7, "W06", "maximum temperature 40 ℃, normal process", "最高洗涤温度40℃ 常规程序"),
+        (8, "W07", "maximum temperature 40 ℃, mild process", "最高洗涤温度40℃ 缓和程序"),
+        (9, "W08", "maximum temperature 40 ℃, very mild process", "最高洗涤温度40℃ 非常缓和程序"),
+        (10, "W03", "maximum temperature 30 ℃, normal process", "最高洗涤温度30℃ 常规程序"),
+        (11, "W04", "maximum temperature 30 ℃, mild process", "最高洗涤温度30℃ 缓和程序"),
+        (12, "W05", "maximum temperature 30 ℃, very mild process", "最高洗涤温度30℃ 非常缓和程序"),
+        (13, "W01", "hand wash, maximum temperature 40 ℃", "最高洗涤温度 40°C 手洗"),
+        (15, "W15", "hand wash, ambient temperature", "常温 手洗"),
+        (14, "W02", "do not wash", "不可水洗"),
+    ],
+    "bleaching": [
+        (1, "B01", "any bleaching agent allowed", "允许任何漂白剂"),
+        (2, "B02", "only oxygen /non-chlorine bleach allowed", "仅允许氧漂/非氯漂"),
+        (3, "B03", "do not bleach", "不可漂白"),
+    ],
+    "drying": [
+        (1, "D09", "tumble drying possible, normal temperature, exhaust temperature max. 80 ℃", "可使用翻转干燥，常规温度，排气口最高温度80°C"),
+        (2, "D10", "tumble drying possible, normal temperature, exhaust temperature max. 60 ℃", "可使用翻转干燥，较低温度，排气口最高温度60°C"),
+        (3, "D11", "do not tumble dry", "不可翻转干燥"),
+        (4, "D01", "line drying", "悬挂晾干"),
+        (5, "D05", "line drying in the shade", "在阴凉处悬挂晾干"),
+        (6, "D02", "drip line drying", "悬挂滴干"),
+        (7, "D06", "drip line drying in the shade", "在阴凉处悬挂滴干"),
+        (8, "D03", "flat drying", "平摊晾干"),
+        (9, "D07", "flat drying in the shade", "在阴凉处平摊晾干"),
+        (10, "D04", "drip flat drying", "平摊滴干"),
+        (11, "D08", "drip flat drying in the shade", "在阴凉处平摊滴干"),
+    ],
+    "ironing": [
+        (1, "I05", "iron at a maximal sole plate temperature of 210 ℃", "熨烫底板最高温度210℃"),
+        (2, "I06", "iron at a maximal sole plate temperature of 160 ℃", "熨斗底板最高温度160 ℃"),
+        (3, "I07", "iron at a maximal sole plate temperature of 120 ℃, steam iron may cause irreversible damage", "熨斗底板最高温度120℃，蒸汽熨烫可能造成不可回复的损伤"),
+        (4, "I04", "do not iron", "不可熨烫"),
+        (5, "I08", "iron at a maximum sole plate temperature of 120 ℃ without steam", "熨斗底板最高温度120℃，不可蒸汽熨烫"),
+    ],
+    "dryCleaning": [
+        (1, "P01", "professional dry cleaning in tetrachloroethene, DBM and F solvents, normal process", "P类专业干洗，常规程序"),
+        (2, "P02", "professional dry cleaning in tetrachloroethene, DBM and F solvents, mild process", "P类专业干洗，缓和程序"),
+        (21, "P10", "professional dry cleaning in tetrachloroethene, DBM and F solvents, very mild process", "P类专业干洗，非常缓和程序"),
+        (3, "P03", "professional dry cleaning in hydrocarbons, normal process", "F类专业干洗，常规程序"),
+        (4, "P04", "professional dry cleaning in hydrocarbons, mild process", "F类专业干洗，缓和程序"),
+        (5, "P05", "do not dry clean, No professional dry cleaning allowed", "不可干洗，不可专业干洗"),
+        (6, "P06", "professional wet cleaning, normal process", "专业湿洗，常规湿洗"),
+        (7, "P07", "professional wet cleaning, mild process", "专业湿洗，缓和湿洗"),
+        (8, "P08", "professional wet cleaning, very mild process", "专业湿洗，非常缓和湿洗"),
+        (9, "P09", "do not wet clean, no professional wet cleaning allowed", "不可湿洗，不可专业湿洗"),
+    ],
+}
 
 
 def _encode_request_url(url: str) -> str:
@@ -82,6 +138,61 @@ def _wash_care_media_paths(items: list[dict]) -> list[Path]:
         if path.is_file() and path not in paths:
             paths.append(path)
     return paths
+
+
+def _wash_care_calibration_prompt() -> str:
+    lines = [
+        "TEMU五类洗护符号枚举表，返回careSymbols时必须只使用这些数字值：",
+    ]
+    for field in WASH_CARE_FIELDS:
+        option_text = "；".join(
+            f"{value}={standard_id} {english} / {chinese}"
+            for value, standard_id, english, chinese in WASH_CARE_TEMU_SYMBOL_OPTIONS[field]
+        )
+        lines.append(f"- {field}: {option_text}")
+    lines.extend([
+        "关键纠偏：drying=4是悬挂晾干/line drying；drying=8是平摊晾干/flat drying。",
+        "关键纠偏：ironing=3是低温熨烫；ironing=4是不可熨烫/do not iron。",
+        "如果某一类看不清，不要猜测；该字段返回null，并在uncertainFields中列出。",
+    ])
+    return "\n".join(lines)
+
+
+def _coerce_wash_care_symbol_value(field: str, value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value or value.lower() in {"unknown", "unclear", "n/a", "na", "null", "none"}:
+            return None
+    try:
+        number = int(value)
+    except Exception:
+        return None
+    allowed = {option[0] for option in WASH_CARE_TEMU_SYMBOL_OPTIONS.get(field, [])}
+    return number if number in allowed else None
+
+
+def _care_symbols_from_wash_payload(payload: Any) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    containers = [
+        payload.get("careSymbols"),
+        payload.get("temuCareSymbols"),
+        payload.get("symbolValues"),
+        payload,
+    ]
+    symbols: dict[str, int] = {}
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for field in WASH_CARE_FIELDS:
+            if field in symbols:
+                continue
+            value = _coerce_wash_care_symbol_value(field, container.get(field))
+            if value is not None:
+                symbols[field] = value
+    return symbols
 
 
 def _instruction_from_wash_payload(payload: Any) -> str:
@@ -206,14 +317,17 @@ def _recognize_wash_care_media_sync(
             payload, route = llm_gateway.generate_multimodal_json(
                 system_prompt=(
                     "你是服装洗唛洗护符号识别助手。只依据图片或PDF渲染页中可见的一组洗涤说明符号识别，"
-                    "多个重复排列时只取其中一组。不要猜测看不清的符号。只返回 JSON。"
+                    "多个重复排列时只取其中一组。不要猜测看不清的符号。必须按给定TEMU枚举返回 JSON。"
                 ),
                 user_prompt=(
+                    f"{_wash_care_calibration_prompt()}\n"
                     "识别洗唛附件中的洗涤说明，返回 JSON："
-                    '{"instructionText":"手洗，不可漂白，悬挂晾晒，可熨烫，不可干洗",'
-                    '"washing":"...","bleaching":"...","drying":"...","ironing":"...","dryCleaning":"...",'
-                    '"confidence":0.0}。'
-                    "中文或英文均可，但 instructionText 需要便于后续规则映射。"
+                    '{"instructionText":"手洗，不可漂白，平摊晾干，不可熨烫，不可干洗",'
+                    '"careSymbols":{"washing":13,"bleaching":3,"drying":8,"ironing":4,"dryCleaning":5},'
+                    '"washing":"hand wash, maximum temperature 40 ℃","bleaching":"do not bleach",'
+                    '"drying":"flat drying","ironing":"do not iron","dryCleaning":"do not dry clean",'
+                    '"uncertainFields":[],"confidence":0.0}。'
+                    "instructionText 需要便于人工核查；careSymbols 必须按TEMU枚举填写。"
                     f"\nPDF可提取文字片段：{prompt_context}"
                 ),
                 image_inputs=images[:5],
@@ -221,11 +335,13 @@ def _recognize_wash_care_media_sync(
                 fallback_model_ids=fallback_model_ids or [],
             )
             instruction = _instruction_from_wash_payload(payload) or inferred_text
-            if instruction:
+            care_symbols = _care_symbols_from_wash_payload(payload)
+            if instruction or care_symbols:
                 return {
                     "ok": True,
                     "source": "scm_wash_attachment_multimodal",
                     "instructionText": instruction,
+                    "careSymbols": care_symbols,
                     "payload": payload if isinstance(payload, dict) else {},
                     "model": route.model_id,
                     "images": images[:5],

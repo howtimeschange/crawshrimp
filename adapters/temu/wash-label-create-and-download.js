@@ -87,7 +87,7 @@
         washing: 'Maximum washing temperature 30℃',
         bleaching: 'Do not bleach',
         drying: 'Line drying in the shade',
-        ironing: 'Iron at maximum sole-plate temperature of 110℃ without steam',
+        ironing: 'Iron at maximal sole plate temperature 120℃, steam may cause irreversible damage',
         dryCleaning: 'Do not dry clean',
       },
     },
@@ -101,14 +101,71 @@
         dryCleaning: 5,
       },
       labels: {
-        washing: 'Wash by hand',
+        washing: 'Hand wash, maximum temperature 40℃',
         bleaching: 'Do not bleach',
         drying: 'Line drying',
-        ironing: 'Iron at maximum sole-plate temperature of 110℃ without steam',
+        ironing: 'Iron at maximal sole plate temperature 120℃, steam may cause irreversible damage',
         dryCleaning: 'Do not dry clean',
       },
     },
   }
+  const TEMU_CARE_SYMBOL_OPTIONS = {
+    washing: [
+      { standardId: 'W02', value: 14, label: 'Do not wash', patterns: [/do not wash/i, /不可水洗|不可洗|禁止水洗/] },
+      { standardId: 'W15', value: 15, label: 'Hand wash, ambient temperature', patterns: [/hand wash,\s*ambient temperature/i, /常温\s*手洗|冷水手洗|环境温度手洗/] },
+      { standardId: 'W01', value: 13, label: 'Hand wash, maximum temperature 40℃', patterns: [/hand wash,\s*maximum temperature\s*40℃/i, /wash by hand(?!\s*ambient)/i, /(?:最高洗涤温度\s*)?40℃?\s*手洗|手洗(?:，?最高洗涤温度\s*40℃)?/] },
+      { standardId: 'W12', value: 1, label: 'Maximum washing temperature 95℃ normal process', patterns: [/maximum washing temperature\s*95℃\s*normal process/i, /95℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
+      { standardId: 'W11', value: 2, label: 'Maximum washing temperature 70℃ normal process', patterns: [/maximum washing temperature\s*70℃\s*normal process/i, /70℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
+      { standardId: 'W10', value: 4, label: 'Maximum washing temperature 60℃ mild process', patterns: [/maximum washing temperature\s*60℃\s*mild process/i, /60℃\s*(?:缓和程序|轻柔洗|缓和洗)/] },
+      { standardId: 'W09', value: 3, label: 'Maximum washing temperature 60℃ normal process', patterns: [/maximum washing temperature\s*60℃(?!\s*(mild|very mild))/i, /60℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
+      { standardId: 'W14', value: 6, label: 'Maximum washing temperature 50℃ mild process', patterns: [/maximum washing temperature\s*50℃\s*mild process/i, /50℃\s*(?:缓和程序|轻柔洗|缓和洗)/] },
+      { standardId: 'W13', value: 5, label: 'Maximum washing temperature 50℃ normal process', patterns: [/maximum washing temperature\s*50℃(?!\s*(mild|very mild))/i, /50℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
+      { standardId: 'W08', value: 9, label: 'Maximum washing temperature 40℃ very mild process', patterns: [/maximum washing temperature\s*40℃\s*very mild process/i, /40℃\s*(?:非常缓和程序|极轻柔洗|非常缓和洗)/] },
+      { standardId: 'W07', value: 8, label: 'Maximum washing temperature 40℃ mild process', patterns: [/maximum washing temperature\s*40℃\s*mild process/i, /40℃\s*(?:缓和程序|轻柔洗|缓和洗)/] },
+      { standardId: 'W06', value: 7, label: 'Maximum washing temperature 40℃ normal process', patterns: [/maximum washing temperature\s*40℃(?!\s*(mild|very mild))/i, /40℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
+      { standardId: 'W05', value: 12, label: 'Maximum washing temperature 30℃ very mild process', patterns: [/maximum washing temperature\s*30℃\s*very mild process/i, /30℃\s*(?:非常缓和程序|极轻柔洗|非常缓和洗)/] },
+      { standardId: 'W04', value: 11, label: 'Maximum washing temperature 30℃ mild process', patterns: [/maximum washing temperature\s*30℃\s*mild process/i, /30℃\s*(?:缓和程序|轻柔洗|缓和洗)/] },
+      { standardId: 'W03', value: 10, label: 'Maximum washing temperature 30℃ normal process', patterns: [/maximum washing temperature\s*30℃(?!\s*(mild|very mild))/i, /30℃\s*(?:常规程序|常规洗|水洗|洗涤|机洗)/] },
+    ],
+    bleaching: [
+      { standardId: 'B03', value: 3, label: 'Do not bleach', patterns: [/do not bleach/i, /不可漂白|禁止漂白/] },
+      { standardId: 'B02', value: 2, label: 'Only oxygen/non-chlorine bleach allowed', patterns: [/only oxygen\s*\/\s*non-chlorine bleach allowed/i, /oxygen\/non-chlorine bleach/i, /仅允许氧漂|非氯漂|不可氯漂/] },
+      { standardId: 'B01', value: 1, label: 'Any bleaching agent allowed', patterns: [/any bleaching agent allowed/i, /允许任何漂白剂|可漂白|任何漂白/] },
+    ],
+    drying: [
+      { standardId: 'D08', value: 11, label: 'Drip flat drying in the shade', patterns: [/drip flat drying in the shade/i, /阴凉处(?:滴干后平摊晾干|平摊滴干|滴水平摊)/] },
+      { standardId: 'D04', value: 10, label: 'Drip flat drying', patterns: [/drip flat drying/i, /滴干后平摊晾干|平摊滴干|滴水平摊干燥/] },
+      { standardId: 'D07', value: 9, label: 'Flat drying in the shade', patterns: [/flat drying in the shade/i, /阴凉处平摊晾干|阴凉处平放干燥/] },
+      { standardId: 'D03', value: 8, label: 'Flat drying', patterns: [/flat drying|dry flat/i, /平摊晾干|平摊|平坦|平放干燥|平放/] },
+      { standardId: 'D06', value: 7, label: 'Drip line drying in the shade', patterns: [/drip line drying in the shade/i, /阴凉处(?:悬挂滴干|滴水吊干)/] },
+      { standardId: 'D02', value: 6, label: 'Drip line drying', patterns: [/drip line drying/i, /悬挂滴干|滴水悬挂晾干|滴水吊干/] },
+      { standardId: 'D05', value: 5, label: 'Line drying in the shade', patterns: [/line drying in the shade/i, /阴凉处悬挂晾干|阴凉处晾干|阴凉处吊干|阴干/] },
+      { standardId: 'D01', value: 4, label: 'Line drying', patterns: [/line drying|line dry/i, /悬挂晾干|悬挂晾晒|挂晾|吊干|悬挂干燥/] },
+      { standardId: 'D11', value: 3, label: 'Do not tumble dry', patterns: [/do not tumble dry/i, /不可(?:翻转|滚筒)干燥|禁止烘干/] },
+      { standardId: 'D10', value: 2, label: 'Tumble drying possible, low temperature', patterns: [/tumble drying possible.*(?:60℃|lower temperature|low temperature)/i, /低温(?:翻转|滚筒)?干燥|较低温度.*60℃/] },
+      { standardId: 'D09', value: 1, label: 'Tumble drying possible, normal temperature', patterns: [/tumble drying possible.*(?:80℃|normal temperature)/i, /常规温度.*80℃|常温(?:翻转|滚筒)?干燥|正常温度烘干/] },
+    ],
+    ironing: [
+      { standardId: 'I04', value: 4, label: 'Do not iron', patterns: [/do not iron/i, /不可熨烫|禁止熨烫/] },
+      { standardId: 'I08', value: 5, label: 'Iron at maximum sole plate temperature 120℃ without steam', patterns: [/120℃\s*without steam/i, /120℃.*(?:不可蒸汽熨烫|无蒸汽|不可蒸汽)/] },
+      { standardId: 'I07', value: 3, label: 'Iron at maximal sole plate temperature 120℃, steam may cause irreversible damage', patterns: [/120℃.*steam.*irreversible damage/i, /maximum sole-?plate temperature(?: of)?\s*110℃/i, /110℃.*(?:without steam|无蒸汽)/, /低温熨烫|低温无蒸汽|120℃.*蒸汽.*损伤|(?:^|[，,；;\s])可熨烫/] },
+      { standardId: 'I06', value: 2, label: 'Iron at maximal sole plate temperature 160℃', patterns: [/sole plate temperature\s*(?:150|160)℃/i, /(?:150|160)℃.*熨烫|中温熨烫/] },
+      { standardId: 'I05', value: 1, label: 'Iron at maximal sole plate temperature 210℃', patterns: [/sole plate temperature\s*(?:200|210)℃/i, /(?:200|210)℃.*熨烫|高温熨烫/] },
+    ],
+    dryCleaning: [
+      { standardId: 'P05', value: 5, label: 'Do not dry clean', patterns: [/do not dry clean/i, /不可干洗|不可专业干洗|禁止干洗/] },
+      { standardId: 'P09', value: 9, label: 'Do not wet clean', patterns: [/do not wet clean/i, /不可湿洗|不可专业湿洗|禁止专业湿洗/] },
+      { standardId: 'P10', value: 21, label: 'Professional dry cleaning P very mild process', patterns: [/tetrachloroethene.*very mild process/i, /P类专业干洗.*非常缓和|专业干洗.*非常缓和干洗/] },
+      { standardId: 'P02', value: 2, label: 'Professional dry cleaning P mild process', patterns: [/tetrachloroethene.*mild process/i, /P类专业干洗.*缓和|专业干洗.*缓和干洗/] },
+      { standardId: 'P01', value: 1, label: 'Professional dry cleaning P normal process', patterns: [/tetrachloroethene.*normal process/i, /P类专业干洗.*常规|专业干洗.*常规干洗/] },
+      { standardId: 'P04', value: 4, label: 'Professional dry cleaning F mild process', patterns: [/hydrocarbons.*mild process/i, /F类专业干洗.*缓和|碳氢化合物.*缓和干洗/] },
+      { standardId: 'P03', value: 3, label: 'Professional dry cleaning F normal process', patterns: [/hydrocarbons.*normal process/i, /F类专业干洗.*常规|碳氢化合物.*常规干洗/] },
+      { standardId: 'P08', value: 8, label: 'Professional wet cleaning very mild process', patterns: [/professional wet cleaning.*very mild process/i, /专业湿洗.*非常缓和|W极缓和湿洗/] },
+      { standardId: 'P07', value: 7, label: 'Professional wet cleaning mild process', patterns: [/[pr]otessional wet cleaning.*mild process/i, /专业湿洗.*缓和|W缓和湿洗/] },
+      { standardId: 'P06', value: 6, label: 'Professional wet cleaning normal process', patterns: [/professional wet cleaning(?!.*(?:mild|very mild))/i, /专业湿洗.*常规|W常规湿洗/] },
+    ],
+  }
+  const CARE_SYMBOL_FIELDS = ['washing', 'bleaching', 'drying', 'ironing', 'dryCleaning']
   const DEFAULT_ING_LANGS = ['en', 'de', 'fr', 'it', 'es', 'da', 'cs', 'sv']
   const SCM_WASH_APPROVAL_URL = 'https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index'
   const SCM_WASH_APPROVAL_REFERER = SCM_WASH_APPROVAL_URL
@@ -717,77 +774,154 @@
     return null
   }
 
+  function careSymbolOptionByValue(field, value) {
+    const number = Number(value)
+    return (TEMU_CARE_SYMBOL_OPTIONS[field] || []).find(option => option.value === number) || null
+  }
+
+  function careSymbolsFromObject(value, source, sourceText = '') {
+    const input = value && typeof value === 'object' && !Array.isArray(value)
+      ? (value.careSymbols && typeof value.careSymbols === 'object' ? value.careSymbols : value)
+      : null
+    if (!input) return null
+    const symbols = {}
+    const labels = {}
+    const standardIds = {}
+    const missing = []
+    for (const field of CARE_SYMBOL_FIELDS) {
+      const option = careSymbolOptionByValue(field, input[field])
+      if (!option) {
+        missing.push(field)
+        continue
+      }
+      symbols[field] = option.value
+      labels[field] = option.label
+      standardIds[field] = option.standardId
+    }
+    if (Object.keys(symbols).length === 0) return null
+    if (missing.length) {
+      return {
+        ...symbols,
+        __labels: labels,
+        __standardIds: standardIds,
+        error: `${source}_care_symbols_unmapped:${missing.join(',')}`,
+        missing,
+        sourceText: sourceText || '',
+      }
+    }
+    return withCareSymbolMeta(symbols, source, labels, standardIds, sourceText || '')
+  }
+
+  function plainCareSymbols(value) {
+    const parsed = careSymbolsFromObject(value, 'plain')
+    return parsed ? careSymbolValues(parsed) : null
+  }
+
+  function withCareSymbolMeta(symbols, source, labels = {}, standardIds = {}, sourceText = '', fallbackReason = '') {
+    return {
+      ...symbols,
+      __source: source,
+      __labels: labels,
+      __standardIds: standardIds,
+      __sourceText: sourceText,
+      __fallbackReason: fallbackReason,
+    }
+  }
+
+  function mergeMissingCareSymbols(
+    mapped,
+    fallback,
+    missing,
+    reason,
+    sourceText,
+    sourcePrefix = 'scm_instruction_mapping_partial_fallback',
+  ) {
+    const symbols = {}
+    const labels = {}
+    const standardIds = {}
+    for (const field of CARE_SYMBOL_FIELDS) {
+      if (mapped[field] != null) {
+        symbols[field] = mapped[field]
+        labels[field] = mapped.__labels?.[field] || ''
+        standardIds[field] = mapped.__standardIds?.[field] || ''
+      } else {
+        symbols[field] = fallback[field]
+        labels[field] = fallback.__labels?.[field] || ''
+        standardIds[field] = fallback.__standardIds?.[field] || ''
+      }
+    }
+    return withCareSymbolMeta(
+      symbols,
+      `${sourcePrefix}:${missing.join(',')}`,
+      labels,
+      standardIds,
+      sourceText,
+      reason,
+    )
+  }
+
+  function parseAiCareSymbols(target) {
+    const sourceText = normalizedCareInstructionText(target?.scmCareInstructionText || '')
+    const parsed = careSymbolsFromObject(target?.scmCareSymbols || target?.careSymbols, 'scm_attachment_ai_care_symbols', sourceText)
+    if (!parsed) return null
+    if (!parsed.error) return parsed
+    const mapped = mapCareSymbolsFromScmText(target)
+    const fallback = mapped && !mapped.error ? mapped : fixedCareSymbols(parsed.error)
+    return mergeMissingCareSymbols(
+      parsed,
+      fallback,
+      parsed.missing || [],
+      parsed.error,
+      sourceText || parsed.sourceText || mapped?.sourceText || '',
+      'scm_attachment_ai_care_symbols_partial_fallback',
+    )
+  }
+
   function mapCareSymbolsFromScmText(target) {
     const text = normalizedCareInstructionText(target?.scmCareInstructionText || params.scm_care_instruction_text || '')
     if (!text) return { error: 'missing_scm_care_instruction_text' }
-    const rules = {
-      washing: [
-        { value: 14, label: 'Do not wash', patterns: [/do not wash/i, /不可水洗/] },
-        { value: 13, label: 'Wash by hand', patterns: [/wash by hand(?!\s*ambient)/i, /手洗/] },
-        { value: 10, label: 'Maximum washing temperature 30℃', patterns: [/maximum washing temperature\s*30℃(?!\s*(mild|very mild))/i, /30℃\s*(水洗|洗涤|机洗)/i] },
-        { value: 11, label: 'Maximum washing temperature 30℃ mild process', patterns: [/maximum washing temperature\s*30℃\s*mild process/i] },
-        { value: 12, label: 'Maximum washing temperature 30℃ very mild process', patterns: [/maximum washing temperature\s*30℃\s*very mild process/i] },
-        { value: 7, label: 'Maximum washing temperature 40℃', patterns: [/maximum washing temperature\s*40℃(?!\s*(mild|very mild))/i] },
-      ],
-      bleaching: [
-        { value: 3, label: 'Do not bleach', patterns: [/do not bleach/i, /不可漂白/] },
-        { value: 2, label: 'Only oxygen/non-chlorine bleach allowed', patterns: [/oxygen\/non-chlorine bleach/i, /非氯漂/] },
-        { value: 1, label: 'Any bleaching agent allowed', patterns: [/any bleaching agent allowed/i] },
-      ],
-      drying: [
-        { value: 11, label: 'Drip Flat drying in the shade', patterns: [/drip flat drying in the shade/i] },
-        { value: 10, label: 'Drip Flat drying', patterns: [/drip flat drying/i] },
-        { value: 9, label: 'Flat drying in the shade', patterns: [/flat drying in the shade/i, /阴凉处平摊晾干/] },
-        { value: 8, label: 'Flat drying', patterns: [/flat drying/i, /平摊晾干|平摊|平坦|平放/] },
-        { value: 7, label: 'Drip line drying in the shade', patterns: [/drip line drying in the shade/i] },
-        { value: 6, label: 'Drip line drying', patterns: [/drip line drying/i] },
-        { value: 5, label: 'Line drying in the shade', patterns: [/line drying in the shade/i, /阴凉处悬挂晾干|阴凉处晾干|阴干/] },
-        { value: 4, label: 'Line drying', patterns: [/line drying/i, /悬挂晾干|悬挂晾晒|挂晾/] },
-        { value: 3, label: 'Do not tumble dry', patterns: [/do not tumble dry/i, /不可翻转干燥/] },
-      ],
-      ironing: [
-        { value: 4, label: 'Do not iron', patterns: [/do not iron/i, /不可熨烫/] },
-        { value: 3, label: 'Iron at maximum sole-plate temperature of 110℃ without steam', patterns: [/110℃\s*without steam/i, /maximum sole-plate temperature of 110℃/i, /110℃.*无蒸汽/, /(?:^|[，,；;\s])可?熨烫/] },
-        { value: 5, label: 'Iron at maximum sole-plate temperature of 120℃ without steam', patterns: [/120℃\s*without steam/i] },
-        { value: 2, label: 'Iron at maximum sole-plate temperature of 150℃', patterns: [/maximum sole-plate temperature of 150℃/i] },
-        { value: 1, label: 'Iron at maximum sole-plate temperature of 200℃', patterns: [/maximum sole-plate temperature of 200℃/i] },
-      ],
-      dryCleaning: [
-        { value: 5, label: 'Do not dry clean', patterns: [/do not dry clean/i, /不可干洗/] },
-        { value: 6, label: 'Professional wet cleaning', patterns: [/professional wet cleaning(?!\s*(mild|very mild))/i] },
-      ],
-    }
     const symbols = {}
     const labels = {}
+    const standardIds = {}
     const missing = []
-    for (const field of ['washing', 'bleaching', 'drying', 'ironing', 'dryCleaning']) {
-      const matched = firstRuleMatch(text, rules[field])
+    for (const field of CARE_SYMBOL_FIELDS) {
+      const matched = firstRuleMatch(text, TEMU_CARE_SYMBOL_OPTIONS[field])
       if (!matched) {
         missing.push(field)
         continue
       }
       symbols[field] = matched.value
       labels[field] = matched.label
+      standardIds[field] = matched.standardId
     }
     if (missing.length) {
       return {
+        ...symbols,
+        __labels: labels,
+        __standardIds: standardIds,
         error: `scm_care_instruction_unmapped:${missing.join(',')}`,
         missing,
         sourceText: text.slice(0, 500),
       }
     }
-    return {
-      ...symbols,
-      __source: 'scm_instruction_mapping',
-      __labels: labels,
-      __sourceText: text.slice(0, 500),
-    }
+    return withCareSymbolMeta(symbols, 'scm_instruction_mapping', labels, standardIds, text.slice(0, 500))
   }
 
   function parseCareSymbols(target) {
     if (careSymbolsMode === 'scm_or_fixed' || careSymbolsMode === 'auto') {
+      const aiSymbols = parseAiCareSymbols(target)
+      if (aiSymbols && !aiSymbols.error) return aiSymbols
       const mapped = mapCareSymbolsFromScmText(target)
       if (!mapped.error) return mapped
+      if (mapped.missing?.length && Object.keys(careSymbolValues(mapped)).some(field => mapped[field] != null)) {
+        return mergeMissingCareSymbols(
+          mapped,
+          fixedCareSymbols(mapped.error),
+          mapped.missing,
+          mapped.error,
+          mapped.sourceText || '',
+        )
+      }
       return fixedCareSymbols(mapped.error)
     }
     if (careSymbolsMode === 'fixed_defaults' || careSymbolsMode === 'pilot_defaults') return fixedCareSymbols(careSymbolsMode)
@@ -1111,6 +1245,7 @@
         careSymbolsMode,
         careSymbolsSource: textOf(symbols.__source),
         careSymbolsLabels: symbols.__labels || {},
+        careSymbolsStandardIds: symbols.__standardIds || {},
         careSymbolsSourceText: textOf(symbols.__sourceText),
         compositionMode: materialOverride.mode,
         compositionModeReason: materialOverride.reason || '',
@@ -1306,6 +1441,7 @@
       scmHangTagFile: textOf(target.scmHangTagFile),
       scmCareInstructionText: textOf(target.scmCareInstructionText),
       scmCareInstructionSource: textOf(target.scmCareInstructionSource),
+      scmCareSymbols: plainCareSymbols(target.scmCareSymbols || target.careSymbols),
       scmAttachmentRecognitionStatus: textOf(target.scmAttachmentRecognitionStatus),
       scmAttachmentRecognitionError: textOf(target.scmAttachmentRecognitionError),
       autoRetryAttempt: Number(target.autoRetryAttempt || 0),
@@ -1348,6 +1484,12 @@
 
   function countSkuProgressTargets(targets) {
     return (Array.isArray(targets) ? targets : []).filter(isSkuProgressTarget).length
+  }
+
+  function remainingSkuLimitBeforeTarget(targets, index) {
+    if (maxDownloads <= 0) return Number.POSITIVE_INFINITY
+    const before = Array.isArray(targets) ? targets.slice(0, Math.max(0, index)) : []
+    return Math.max(0, maxDownloads - countSkuProgressTargets(before))
   }
 
   function progressCount(value, total = 0) {
@@ -1543,6 +1685,7 @@
       洗护符号: rowShared.carePayloadSummary?.careSymbols ? JSON.stringify(rowShared.carePayloadSummary.careSymbols) : '',
       洗护符号来源: String(rowShared.carePayloadSummary?.careSymbolsSource || ''),
       洗护符号说明: rowShared.carePayloadSummary?.careSymbolsLabels ? JSON.stringify(rowShared.carePayloadSummary.careSymbolsLabels) : '',
+      洗护符号标准ID: rowShared.carePayloadSummary?.careSymbolsStandardIds ? JSON.stringify(rowShared.carePayloadSummary.careSymbolsStandardIds) : '',
       SCM洗护说明: String(rowShared.carePayloadSummary?.careSymbolsSourceText || target?.scmCareInstructionText || ''),
       制造商名称: String(rowShared.carePayloadSummary?.manufacturerName || ''),
       制造商地址: String(rowShared.carePayloadSummary?.manufacturerAddressPg || ''),
@@ -1885,6 +2028,8 @@
     if (careSymbolsMode !== 'scm_or_fixed' && careSymbolsMode !== 'auto') return false
     const url = textOf(evidence?.selected?.washFileUrl || apiRecord?.scmWashFile)
     if (!url) return false
+    const aiSymbols = parseAiCareSymbols(apiRecord)
+    if (aiSymbols && !aiSymbols.error) return false
     const mapped = mapCareSymbolsFromScmText(apiRecord)
     return !!mapped.error
   }
@@ -1909,6 +2054,7 @@
           style,
           ok: entry?.ok === true,
           instructionText: normalizedCareInstructionText(entry?.instructionText || ''),
+          careSymbols: plainCareSymbols(entry?.careSymbols),
           source: textOf(entry?.source || ''),
           status: textOf(entry?.status || ''),
           error: textOf(entry?.error || ''),
@@ -1929,13 +2075,15 @@
     const cached = cachedScmWashInstructionForTarget(target)
     if (!cached) return null
     const instructionText = normalizedCareInstructionText(cached.instructionText || '')
-    if (cached.ok && instructionText) {
+    const careSymbols = plainCareSymbols(cached.careSymbols)
+    if (cached.ok && (instructionText || careSymbols)) {
       return nextPhase('api_care_query', 100, {
         ...shared,
         apiTarget: {
           ...target,
           scmCareInstructionText: instructionText,
           scmCareInstructionSource: textOf(cached.source || 'scm_wash_attachment_ai_ocr'),
+          scmCareSymbols: careSymbols,
           scmAttachmentRecognitionStatus: 'recognized_reused',
           scmAttachmentRecognitionError: '',
         },
@@ -3127,7 +3275,7 @@
       const style = compact(target.style || target.skc)
       try {
         const { total, records } = await queryApiRecordsByStyle(style)
-        const derivedTargets = []
+        const allDerivedTargets = []
         const skippedRows = []
         for (const record of records) {
           const attached = attachExcelTarget(record, {
@@ -3142,7 +3290,7 @@
             status: 'ready',
           })
           if (isCareLabelRequired(record)) {
-            derivedTargets.push(attached)
+            allDerivedTargets.push(attached)
           } else {
             skippedRows.push(resultRow('print_only_skipped', 'TEMU 该 SKU 仅显示打印/合规标签，未出现洗水唛制作入口；按 SOP 跳过并记录。', {
               temuRowStatus: '仅打印无制作',
@@ -3154,14 +3302,22 @@
             }, attached, { ...shared, apiTarget: attached, apiValidated: true }))
           }
         }
+        const skuLimit = remainingSkuLimitBeforeTarget(excelTargets(), Math.max(0, Number(shared.currentExcelTargetIndex || 0)))
+        const derivedTargets = Number.isFinite(skuLimit) ? allDerivedTargets.slice(0, skuLimit) : allDerivedTargets
         const replacedBaseShared = replaceCurrentExcelTarget(derivedTargets, {
           ...shared,
           apiValidated: true,
           styleQueryTotal: total,
           styleQueryMatchedRecords: records.length,
-          styleQueryDerivedTargets: derivedTargets.length,
+          styleQueryDerivedTargets: allDerivedTargets.length,
+          styleQuerySelectedTargets: derivedTargets.length,
+          styleQuerySkuLimit: Number.isFinite(skuLimit) ? skuLimit : 0,
           styleQuerySkippedRows: skippedRows.length,
-          temuRowStatus: derivedTargets.length ? '款号已展开到SKU' : '款号无可制作SKU',
+          temuRowStatus: derivedTargets.length
+            ? '款号已展开到SKU'
+            : allDerivedTargets.length
+              ? '款号SKU已被限量参数截断'
+              : '款号无可制作SKU',
         })
         const replacedShared = withAiWashProgress(replacedBaseShared, {
           style_total: Number(shared.style_total || 0)
@@ -3483,7 +3639,8 @@
       || recognition.washCareInstruction
       || '',
     )
-    if (recognition?.ok && instructionText) {
+    const recognizedCareSymbols = plainCareSymbols(recognition.careSymbols || recognition.payload?.careSymbols)
+    if (recognition?.ok && (instructionText || recognizedCareSymbols)) {
       const source = textOf(recognition.source || 'scm_wash_attachment_ai_ocr')
       const nextShared = withScmWashInstructionCache({
         ...shared,
@@ -3491,6 +3648,7 @@
           ...target,
           scmCareInstructionText: instructionText,
           scmCareInstructionSource: source,
+          scmCareSymbols: recognizedCareSymbols,
           scmAttachmentRecognitionStatus: 'recognized',
         },
         scmAttachmentRecognitionStatus: 'recognized',
@@ -3498,6 +3656,7 @@
       }, target, {
         ok: true,
         instructionText,
+        careSymbols: recognizedCareSymbols,
         source,
         status: 'recognized',
         washFile: target.scmWashFile,
