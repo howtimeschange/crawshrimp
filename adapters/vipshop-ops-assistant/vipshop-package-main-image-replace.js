@@ -3174,6 +3174,129 @@
     })
   }
 
+  function shortOcrResourceUrl(url) {
+    return compact(url)
+      .replace(/^https?:\/\/127\.0\.0\.1:\d+\/adapter-assets\/vipshop-ops-assistant\/vendor\/tesseract\/?/i, 'tesseract/')
+      .replace(/^https?:\/\/localhost:\d+\/adapter-assets\/vipshop-ops-assistant\/vendor\/tesseract\/?/i, 'tesseract/')
+  }
+
+  function adjacentTesseractWasmUrl(corePath) {
+    const raw = compact(corePath)
+    if (!raw) return ''
+    try {
+      const url = new URL(raw, location.href)
+      if (url.pathname.endsWith('.wasm.js')) {
+        url.pathname = url.pathname.slice(0, -3)
+        return url.href
+      }
+    } catch (error) {
+      if (raw.endsWith('.wasm.js')) return raw.slice(0, -3)
+    }
+    return ''
+  }
+
+  function tesseractRuntimeDependencyUrls(config = tesseractRuntimeConfig()) {
+    const urls = []
+    const add = (name, url) => {
+      const value = compact(url)
+      if (value && !urls.some(item => item.url === value)) urls.push({ name, url: value })
+    }
+    add('script', config.scriptUrl)
+    add('worker', config.workerPath)
+    add('core-js', config.corePath)
+    add('core-wasm', adjacentTesseractWasmUrl(config.corePath))
+    if (config.langPath && config.lang) add(`lang-${config.lang}`, `${config.langPath.replace(/\/+$/, '')}/${config.lang}.traineddata.gz`)
+    return urls
+  }
+
+  async function probeTesseractResource(item, timeoutMs = 12000) {
+    const startedAt = Date.now()
+    try {
+      if (typeof fetch !== 'function') throw new Error('当前页面不支持 fetch')
+      const response = await withTimeout(fetch(item.url, {
+        credentials: 'omit',
+        cache: 'no-cache',
+      }), timeoutMs, `OCR依赖${item.name}`)
+      try { await response.body?.cancel?.() } catch (error) {}
+      return {
+        name: item.name,
+        url: item.url,
+        ok: !!response.ok,
+        status: Number(response.status || 0),
+        type: compact(response.headers?.get?.('content-type')),
+        size: Number(response.headers?.get?.('content-length') || 0) || 0,
+        elapsedMs: Date.now() - startedAt,
+      }
+    } catch (error) {
+      return {
+        name: item.name,
+        url: item.url,
+        ok: false,
+        error: String(error?.message || error),
+        elapsedMs: Date.now() - startedAt,
+      }
+    }
+  }
+
+  async function probeTesseractRuntimeDependencies(config = tesseractRuntimeConfig()) {
+    const resources = tesseractRuntimeDependencyUrls(config)
+    const results = []
+    for (const item of resources) {
+      results.push(await probeTesseractResource(item))
+    }
+    return results
+  }
+
+  function summarizeTesseractRuntimeProbe(results = []) {
+    const failures = (Array.isArray(results) ? results : []).filter(item => !item?.ok)
+    if (!failures.length) return 'OCR依赖预检通过'
+    return `OCR依赖预检失败：${failures.map(item => compact([
+      item.name,
+      item.status ? `HTTP ${item.status}` : '',
+      item.error || '',
+      shortOcrResourceUrl(item.url),
+    ].filter(Boolean).join(' '))).join('；')}`
+  }
+
+  async function createWorkerBlobUrl(workerPath) {
+    if (typeof fetch !== 'function' || typeof Blob === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) return null
+    const response = await withTimeout(fetch(workerPath, {
+      credentials: 'omit',
+      cache: 'no-cache',
+    }), 18000, 'OCR worker预加载')
+    if (!response.ok) throw new Error(`OCR worker预加载失败 HTTP ${response.status}: ${shortOcrResourceUrl(workerPath)}`)
+    const code = await response.text()
+    const blobUrl = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }))
+    return {
+      url: blobUrl,
+      cleanup: () => {
+        try { URL.revokeObjectURL(blobUrl) } catch (error) {}
+      },
+    }
+  }
+
+  async function enrichTesseractRuntimeError(error, config) {
+    let probeSummary = ''
+    try {
+      probeSummary = summarizeTesseractRuntimeProbe(await probeTesseractRuntimeDependencies(config))
+    } catch (probeError) {
+      probeSummary = `OCR依赖预检异常：${String(probeError?.message || probeError)}`
+    }
+    return new Error(compact([
+      'OCR运行时加载失败',
+      String(error?.message || error),
+      probeSummary,
+    ].filter(Boolean).join('；')))
+  }
+
+  async function loadTesseractRuntimeWithDiagnostics(config) {
+    try {
+      return await loadTesseractRuntime(config)
+    } catch (error) {
+      throw await enrichTesseractRuntimeError(error, config)
+    }
+  }
+
   function ensureAbsoluteImageUrl(src) {
     const raw = compact(src)
     if (!raw) return ''
@@ -3224,17 +3347,32 @@
   }
 
   async function createTesseractWorker(Tesseract, config) {
+    let workerBlob = null
+    let workerBlobError = null
+    try {
+      workerBlob = await createWorkerBlobUrl(config.workerPath)
+    } catch (error) {
+      workerBlobError = error
+    }
     const engineOptions = {
-      workerPath: config.workerPath,
+      workerPath: workerBlob?.url || config.workerPath,
       corePath: config.corePath,
       langPath: config.langPath,
       logger: () => {},
     }
-    if (!Tesseract?.createWorker) return null
+    if (workerBlob?.url) engineOptions.workerBlobURL = false
+    const cleanup = () => {
+      try { workerBlob?.cleanup?.() } catch (error) {}
+    }
+    if (!Tesseract?.createWorker) {
+      cleanup()
+      return null
+    }
     let firstError = null
+    let secondError = null
     try {
       const worker = await Tesseract.createWorker(config.lang, 1, engineOptions)
-      if (worker?.recognize) return worker
+      if (worker?.recognize) return { worker, cleanup }
     } catch (error) {
       firstError = error
     }
@@ -3242,12 +3380,17 @@
       const worker = await Tesseract.createWorker(engineOptions)
       if (worker?.loadLanguage) await worker.loadLanguage(config.lang)
       if (worker?.initialize) await worker.initialize(config.lang)
-      if (worker?.recognize) return worker
+      if (worker?.recognize) return { worker, cleanup }
     } catch (error) {
-      if (firstError) throw firstError
-      throw error
+      secondError = error
     }
-    return null
+    cleanup()
+    throw new Error(compact([
+      workerBlobError ? `worker预加载失败：${String(workerBlobError?.message || workerBlobError)}` : '',
+      firstError ? `新版worker创建失败：${String(firstError?.message || firstError)}` : '',
+      secondError ? `兼容worker创建失败：${String(secondError?.message || secondError)}` : '',
+      !firstError && !secondError ? 'Tesseract worker未返回recognize接口' : '',
+    ].filter(Boolean).join('；')))
   }
 
   async function imageSourceForOcr(src) {
@@ -3308,11 +3451,18 @@
     )
 
     return withTimeout((async () => {
-      const Tesseract = await loadTesseractRuntime(config)
+      const Tesseract = await loadTesseractRuntimeWithDiagnostics(config)
       let worker = null
+      let workerCleanup = null
       const results = []
       try {
-        worker = await createTesseractWorker(Tesseract, config)
+        try {
+          const workerHandle = await createTesseractWorker(Tesseract, config)
+          worker = workerHandle?.worker || null
+          workerCleanup = workerHandle?.cleanup || null
+        } catch (error) {
+          throw await enrichTesseractRuntimeError(error, config)
+        }
         for (const image of candidates) {
           try {
             results.push(await recognizeImageWithTesseract(Tesseract, worker, image, config))
@@ -3329,6 +3479,7 @@
         }
       } finally {
         try { await worker?.terminate?.() } catch (error) {}
+        try { workerCleanup?.() } catch (error) {}
       }
       return {
         ok: true,
@@ -4243,6 +4394,9 @@
       buildAnchoredVipshopDetailImages,
       orderUploadedVipshopDetailImages,
       tesseractRuntimeConfig,
+      tesseractRuntimeDependencyUrls,
+      summarizeTesseractRuntimeProbe,
+      runTesseractOcrForImages,
       needsVipshopDetailAnchorDetection,
       clickVisibleAlertConfirm,
     })

@@ -26,6 +26,8 @@ async function loadExports(params = {}, fetchImpl = async () => jsonResponse({ c
     document: { body: { innerText: '' } },
     location: { href: 'https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise' },
     fetch: fetchImpl,
+    URL,
+    Blob: globalThis.Blob,
     URLSearchParams,
     console,
     setTimeout,
@@ -61,6 +63,8 @@ async function runScript({ params = {}, shared = {}, phase = 'main', fetchImpl, 
     document: { title: '', body: { innerText: bodyText, textContent: bodyText } },
     location: { href: locationHref },
     fetch: fetchImpl,
+    URL,
+    Blob: globalThis.Blob,
     URLSearchParams,
     console,
     setTimeout,
@@ -1173,6 +1177,79 @@ test('Vipshop tesseract runtime config uses its own bundled OCR assets by defaul
   assert.equal(config.corePath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/tesseract-core-lstm.wasm.js')
   assert.equal(config.langPath, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/lang')
   assert.equal(config.lang, 'chi_sim')
+})
+
+test('Vipshop OCR runtime dependency probe covers worker, wasm, and language assets', async () => {
+  const helpers = await loadExports()
+  const urls = helpers.tesseractRuntimeDependencyUrls(helpers.tesseractRuntimeConfig({}))
+
+  assert.deepEqual(plain(urls.map(item => item.name)), ['script', 'worker', 'core-js', 'core-wasm', 'lang-chi_sim'])
+  assert.equal(urls.find(item => item.name === 'core-wasm').url, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/tesseract-core-lstm.wasm')
+  assert.equal(urls.find(item => item.name === 'lang-chi_sim').url, 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/lang/chi_sim.traineddata.gz')
+})
+
+test('Vipshop OCR runtime probe summary reports the concrete failed dependency', async () => {
+  const helpers = await loadExports()
+  const note = helpers.summarizeTesseractRuntimeProbe([
+    { name: 'script', ok: true, url: 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/tesseract.min.js' },
+    {
+      name: 'worker',
+      ok: false,
+      status: 403,
+      url: 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/worker.min.js',
+      error: 'Failed to fetch',
+    },
+  ])
+
+  assert.match(note, /OCR依赖预检失败/)
+  assert.match(note, /worker HTTP 403 Failed to fetch tesseract\/worker\.min\.js/)
+})
+
+test('Vipshop OCR runtime load failure includes dependency probe details', async () => {
+  const helpers = await loadExports({}, async url => ({
+    ok: false,
+    status: String(url).includes('tesseract.min.js') ? 404 : 200,
+    headers: { get: () => '' },
+    body: { cancel: async () => {} },
+    text: async () => '',
+  }))
+
+  await assert.rejects(
+    () => helpers.runTesseractOcrForImages([{ src: 'https://img.example/detail.jpg', globalIndex: 0 }], {}),
+    /OCR运行时加载失败.*script HTTP 404.*tesseract\/tesseract\.min\.js/,
+  )
+})
+
+test('Vipshop OCR runtime prefetches worker script into a same-page blob by default', async () => {
+  const params = {}
+  const fetchedUrls = []
+  const helpers = await loadExports(params, async url => {
+    fetchedUrls.push(String(url))
+    if (String(url).includes('tesseract.min.js')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `window.Tesseract = {
+          createWorker: async (lang, count, options) => {
+            window.__CRAWSHRIMP_PARAMS__.__createdWorkerOptions = options
+            return { recognize: async () => ({ data: { text: 'OK', confidence: 99 } }), terminate: async () => {} }
+          }
+        }`,
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => `/* worker ${url} */`,
+    }
+  })
+
+  const ocr = await helpers.runTesseractOcrForImages([{ src: 'https://img.example/detail.jpg', globalIndex: 0 }], {})
+
+  assert.equal(ocr.ok, true)
+  assert.ok(fetchedUrls.some(url => url === 'http://127.0.0.1:18765/adapter-assets/vipshop-ops-assistant/vendor/tesseract/worker.min.js'))
+  assert.match(params.__createdWorkerOptions.workerPath, /^blob:/)
+  assert.equal(params.__createdWorkerOptions.workerBlobURL, false)
 })
 
 test('visible alert confirm recognizes 确认 buttons', async () => {
