@@ -68,6 +68,28 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    async def test_adapter_asset_private_network_preflight_bypasses_global_cors(self):
+        async def call_next(_request):
+            return PlainTextResponse("should not reach downstream cors")
+
+        with patch.dict(os.environ, {"CRAWSHRIMP_API_TOKEN": "unit-token"}, clear=False):
+            response = await api_server.require_local_api_token(
+                FakeRequest(
+                    "/adapter-assets/vipshop-ops-assistant/vendor/tesseract/worker.min.js",
+                    headers={
+                        "origin": "https://pdc-portal.vip.com",
+                        "access-control-request-method": "GET",
+                        "access-control-request-private-network": "true",
+                    },
+                    method="OPTIONS",
+                ),
+                call_next,
+            )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "*")
+        self.assertEqual(response.headers.get("access-control-allow-private-network"), "true")
+
     async def test_bala_material_batch_creation_requires_api_auth_while_tokenized_images_stay_public(self):
         async def call_next(_request):
             return PlainTextResponse("ok")
@@ -115,6 +137,12 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
             with patch("core.api_server.adapter_loader.get_adapter_dir", return_value=adapter_dir):
                 response = api_server.get_adapter_asset("demo-adapter", "vendor/tesseract/tesseract.min.js")
                 self.assertEqual(response.headers.get("access-control-allow-origin"), "*")
+                self.assertEqual(response.headers.get("access-control-allow-private-network"), "true")
+
+                preflight = api_server.options_adapter_asset("demo-adapter", "vendor/tesseract/tesseract.min.js")
+                self.assertEqual(preflight.status_code, 204)
+                self.assertEqual(preflight.headers.get("access-control-allow-origin"), "*")
+                self.assertEqual(preflight.headers.get("access-control-allow-private-network"), "true")
 
                 with self.assertRaises(api_server.HTTPException) as ctx:
                     api_server.get_adapter_asset("demo-adapter", "../outside.js")

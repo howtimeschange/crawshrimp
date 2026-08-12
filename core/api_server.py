@@ -34,7 +34,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from core import runtime_paths
@@ -7395,6 +7395,8 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_local_api_token(request: Request, call_next):
+    if request.method == "OPTIONS" and str(request.url.path or "").startswith("/adapter-assets/"):
+        return Response(status_code=204, headers=_adapter_asset_headers())
     if request.method == "OPTIONS" or _is_public_api_path(request.url.path):
         return await call_next(request)
 
@@ -7480,9 +7482,17 @@ def _is_public_api_path(path: str) -> bool:
 def _adapter_asset_headers() -> dict[str, str]:
     return {
         "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Access-Control-Request-Private-Network",
+        "Access-Control-Allow-Private-Network": "true",
         "Cross-Origin-Resource-Policy": "cross-origin",
         "Cache-Control": "public, max-age=31536000, immutable",
     }
+
+
+@app.options("/adapter-assets/{adapter_id}/{asset_path:path}")
+def options_adapter_asset(adapter_id: str, asset_path: str):
+    return Response(status_code=204, headers=_adapter_asset_headers())
 
 
 @app.get("/adapter-assets/{adapter_id}/{asset_path:path}")
