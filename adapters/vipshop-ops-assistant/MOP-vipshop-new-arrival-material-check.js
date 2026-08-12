@@ -63,6 +63,7 @@
   }
 
   function formatMoney(value) {
+    if (value === undefined || value === null || compact(value) === '') return ''
     const number = Number(value)
     if (!Number.isFinite(number)) return ''
     return number.toFixed(2)
@@ -358,14 +359,16 @@
     const detailRows = (rows || []).filter(row => row.__sheet_name === DETAIL_SHEET)
     const issueRows = detailRows.filter(row => row.执行结果 !== '通过')
     const problemStyles = new Set(issueRows.map(row => row.款号).filter(Boolean))
+    const issueLines = buildIssueNotifyLines(issueRows)
     const body = [
       '### MOP 唯品商品上新资料检查',
       `- 输入行数：${parsed.totalRows}`,
       `- 有效检查款数：${parsed.jobs.length}`,
       `- 问题行数：${issueRows.length}`,
       `- 问题款号数：${problemStyles.size}`,
-      issueRows.length ? `- 请优先处理：${Array.from(problemStyles).slice(0, 10).join('、')}` : '- 未发现市场价/禁售/图片规格问题',
-    ].join('\n')
+      issueRows.length ? '- 问题明细：' : '- 未发现市场价/禁售/图片规格问题',
+      ...issueLines,
+    ].filter(line => compact(line)).join('\n')
     return {
       __sheet_name: SUMMARY_SHEET,
       输入行数: parsed.totalRows,
@@ -377,6 +380,32 @@
       __notify_title: 'MOP 唯品商品上新资料检查',
       __notify_body: body,
     }
+  }
+
+  function buildIssueNotifyLines(issueRows, limit = 12) {
+    const lines = []
+    const seen = new Set()
+    let uniqueCount = 0
+    for (const row of issueRows || []) {
+      const rowNo = compact(row.表格行号)
+      const styleCode = compact(row.款号) || '未填款号'
+      const goodsCode = compact(row.货号)
+      const checkItem = compact(row.检查项)
+      const reason = compact(row.问题说明 || row.备注 || row.执行结果 || '未填写原因')
+      const isRowLevelIssue = /市场价与运营表吊牌价不一致|疑似涉及禁售|输入表|缺少款号或货号|唯品商品资料未命中/.test(reason)
+      const key = [rowNo, styleCode, goodsCode, isRowLevelIssue ? '' : checkItem, reason].join('|')
+      if (seen.has(key)) continue
+      seen.add(key)
+      uniqueCount += 1
+
+      if (lines.length >= limit) continue
+      const target = goodsCode && goodsCode !== styleCode ? `${styleCode}/${goodsCode}` : styleCode
+      const prefix = rowNo ? `第${rowNo}行 ${target}` : target
+      const checkSuffix = checkItem && !isRowLevelIssue ? `（${checkItem}）` : ''
+      lines.push(`- ${prefix}${checkSuffix}：${reason}`)
+    }
+    if (uniqueCount > limit) lines.push(`- 其余 ${uniqueCount - limit} 条问题详见结果表`)
+    return lines
   }
 
   function navigateTo(url, nextPhaseName, sleepMs = 1800, nextShared = shared) {
@@ -417,6 +446,7 @@
       forbiddenIssue,
       buildCheckRow,
       summarizeRows,
+      buildIssueNotifyLines,
     })
   }
 

@@ -483,10 +483,54 @@ test('MOP new-arrival helpers detect price, forbidden and image-ratio issues', a
 
   assert.equal(parsed.jobs.length, 1)
   assert.equal(parsed.invalidRows[0].问题说明, '输入表重复')
+  assert.equal(parsed.invalidRows[0].唯品市场价, '')
   assert.match(price, /市场价与运营表吊牌价不一致/)
   assert.match(forbidden, /疑似涉及禁售/)
   assert.equal(main, '商品展示图不是方图：1200x900')
   assert.equal(list, '商品列表图不是长图：1200x950')
+})
+
+test('MOP new-arrival notification body lists concrete issue styles and reasons', async () => {
+  const helpers = await loadExports('MOP-vipshop-new-arrival-material-check.js')
+  const priceReason = '市场价与运营表吊牌价不一致：唯品569.00，表格999.00'
+  const rows = [
+    helpers.buildCheckRow(
+      { rowNo: 2, styleCode: '10E6622140121', goodsCode: '10E6622140121-2001', expectedPrice: 999 },
+      { marketPrice: '569', vendorSpuId: '99719292612243456' },
+      {},
+      '图片规格检查/浅灰2001',
+      '有问题',
+      priceReason,
+      { colourGSN: '10E6622140121-2001', colourName: '浅灰2001' },
+    ),
+    helpers.buildCheckRow(
+      { rowNo: 2, styleCode: '10E6622140121', goodsCode: '10E6622140121-2001', expectedPrice: 999 },
+      { marketPrice: '569', vendorSpuId: '99719292612243456' },
+      {},
+      '图片规格检查/白咖色调0115',
+      '有问题',
+      priceReason,
+      { colourGSN: '10E6622140121-0115', colourName: '白咖色调0115' },
+    ),
+    helpers.buildCheckRow(
+      { rowNo: 3, styleCode: 'MOPTESTSTYLE999999', goodsCode: 'MOPTESTGOODS999999-0001', expectedPrice: 88 },
+      null,
+      null,
+      '商品资料查询',
+      '失败',
+      '唯品商品资料未命中',
+    ),
+  ]
+  const summary = helpers.summarizeRows(rows, {
+    totalRows: 3,
+    jobs: [{}, {}, {}],
+  })
+  const body = summary.__notify_body
+
+  assert.match(body, /问题明细/)
+  assert.match(body, /第2行 10E6622140121\/10E6622140121-2001：市场价与运营表吊牌价不一致：唯品569\.00，表格999\.00/)
+  assert.match(body, /第3行 MOPTESTSTYLE999999\/MOPTESTGOODS999999-0001：唯品商品资料未命中/)
+  assert.equal((body.match(/市场价与运营表吊牌价不一致/g) || []).length, 1)
 })
 
 test('MOP new-arrival main phase queries Vipshop and PDC then summarizes issues', async () => {
@@ -539,6 +583,7 @@ test('MOP new-arrival main phase queries Vipshop and PDC then summarizes issues'
   assert.equal(result.meta.action, 'complete')
   assert.equal(result.data[0].__sheet_name, '执行摘要')
   assert.equal(result.data[0].问题行数, 1)
+  assert.match(result.data[0].__notify_body, /第2行 201326108015\/20132610801500311：市场价与运营表吊牌价不一致/)
   assert.match(result.data[1].问题说明, /市场价与运营表吊牌价不一致/)
   assert.match(result.data[1].问题说明, /商品展示图不是方图/)
 })
