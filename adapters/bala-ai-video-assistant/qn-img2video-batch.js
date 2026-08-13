@@ -782,6 +782,28 @@
     return null
   }
 
+  function firstFailedBatchTaskError(payload) {
+    const result = payload?.result || payload?.data?.result || payload?.data || payload
+    const batchTask = result?.batchTask || result?.result?.batchTask
+    const items = Array.isArray(batchTask) ? batchTask : []
+    for (const item of items) {
+      const parsed = safeParseJson(item, item)
+      if (parsed?.success !== false) continue
+      const task = parsed?.task || parsed?.result?.task || {}
+      const message = cleanText(
+        task.errorMsg
+        || task.message
+        || task.errorMessage
+        || parsed.errorMsg
+        || parsed.message
+        || parsed.errorMessage
+      )
+      if (message) return message
+      return 'batch 任务创建失败'
+    }
+    return ''
+  }
+
   function extractTaskId(result) {
     const batch = firstSuccessfulBatchTask(result)
     if (batch?.task) return cleanText(batch.task.id || batch.task.taskId || batch.task.videoTaskId)
@@ -1624,7 +1646,10 @@
       }
       const taskId = extractTaskId(submit)
       const submitTaskId = extractSubmitTaskId(submit)
-      if (!taskId) throw new Error('提交成功但未识别到任务ID')
+      if (!taskId) {
+        const batchError = firstFailedBatchTaskError(submit)
+        throw new Error(batchError ? `提交成功但视频任务创建失败：${batchError}` : '提交成功但未识别到任务ID')
+      }
       const activeJob = {
         ...job,
         resolvedMaterials: materials,
@@ -1672,6 +1697,8 @@
         ...buildOutputRow(job, {
           status: '提交失败',
           result: '失败',
+          api: payload?.api || '',
+          materials,
           note: error?.message || error,
           templatePreviewPath: shared.downloaded_template_previews?.[job.templateId] || '',
         }),
@@ -1893,6 +1920,7 @@
       buildBatchVideoPayload,
       buildGenerationPayload,
       firstSuccessfulBatchTask,
+      firstFailedBatchTaskError,
       extractTaskId,
       extractSubmitTaskId,
       taskIdsFromText,

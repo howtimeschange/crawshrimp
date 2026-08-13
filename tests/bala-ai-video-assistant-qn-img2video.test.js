@@ -397,6 +397,26 @@ test('extracts task IDs from upgraded batch generate responses', async () => {
   assert.equal(helpers.extractSubmitTaskId(response), 'submit-164365688266')
 })
 
+test('extracts readable errors from upgraded batch generate item failures', async () => {
+  const helpers = await loadExports()
+  const response = {
+    result: {
+      batchTask: [
+        JSON.stringify({
+          success: false,
+          task: {
+            errorMsg: '点数不足',
+            status: 2,
+          },
+        }),
+      ],
+    },
+  }
+
+  assert.equal(helpers.extractTaskId(response), '')
+  assert.equal(helpers.firstFailedBatchTaskError(response), '点数不足')
+})
+
 test('treats the upgraded software-manager page as upload-ready without legacy helper', async () => {
   const result = await runScript({
     params: {
@@ -602,6 +622,65 @@ test('falls back to legacy direct submit only when the upgraded batch API is una
   assert.equal(result.meta.next_phase, 'poll_job')
   assert.equal(result.meta.shared.active_job.taskId, '162085738211')
   assert.equal(result.meta.shared.active_job.submitApi, 'mtop.taobao.qn.copilot.image.generate.video.submit')
+})
+
+test('reports upgraded batch item failures with uploaded image evidence', async () => {
+  const job = directVideoJob()
+
+  const result = await runScript({
+    phase: 'process_row',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      poll_timeout_ms: 600000,
+      poll_interval_ms: 5000,
+      submit_recovery_timeout_ms: 60000,
+      submit_recovery_interval_ms: 3000,
+      download_videos: false,
+    },
+    windowOverrides: {
+      document: {
+        body: {
+          innerText: '',
+          textContent: '',
+        },
+      },
+      lib: {
+        mtop: {
+          request: async request => {
+            assert.equal(request.api, 'mtop.taobao.qn.copilot.video.batch.generate')
+            return {
+              data: {
+                result: {
+                  batchTask: [
+                    JSON.stringify({
+                      success: false,
+                      task: {
+                        errorMsg: '点数不足',
+                        status: 2,
+                      },
+                    }),
+                  ],
+                },
+              },
+            }
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'process_row')
+  assert.equal(result.meta.shared.job_index, 1)
+  assert.equal(result.meta.shared.results.length, 1)
+  const [row] = result.meta.shared.results
+  assert.equal(row.执行结果, '失败')
+  assert.equal(row.任务状态, '提交失败')
+  assert.equal(row.提交API, 'mtop.taobao.qn.copilot.video.batch.generate')
+  assert.equal(row.上传URL, 'https://img.example/208326103207-1.png')
+  assert.match(row.备注, /点数不足/)
 })
 
 test('recover_submit_task phase continues polling once the page exposes a new task ID', async () => {

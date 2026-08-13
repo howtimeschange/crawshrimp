@@ -240,6 +240,9 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(params["material_root"]["include_file_listing"], True)
         self.assertEqual(params["download_template_previews"]["default"], True)
         self.assertEqual(params["download_videos"]["default"], True)
+        self.assertEqual(params["video_model"]["default"], "standard")
+        self.assertIn("economy", [option["value"] for option in params["video_model"]["options"]])
+        self.assertEqual(params["video_duration"]["default"], 15)
         self.assertEqual(params["output_dir"]["type"], "directory")
         output_columns = task["output"][0]["columns"]
         self.assertIn("模板预览本地文件", output_columns)

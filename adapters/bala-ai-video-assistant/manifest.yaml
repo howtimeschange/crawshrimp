@@ -603,6 +603,30 @@ tasks:
         label: 视频 Prompt
         rows: 2
         placeholder: "可选；action 模板通常可留空"
+      - id: video_model
+        type: select
+        label: 生成模型档位
+        default: standard
+        options:
+          - value: standard
+            label: 均衡（15秒，默认）
+          - value: economy
+            label: 经济（点数不足时使用）
+          - value: advanced
+            label: 进阶
+          - value: premium
+            label: 极致
+        ui_span: third
+        hint: 标准档点数不足时，可改用经济档继续生成。
+      - id: video_duration
+        type: number
+        label: 视频时长秒
+        default: 15
+        min: 4
+        max: 15
+        step: 1
+        ui_span: third
+        hint: 经济档可设置较短时长；留默认按 15 秒生成。
       - id: download_template_previews
         type: checkbox
         label: 下载模板预览视频
