@@ -197,12 +197,18 @@
     return new Set(splitStyleCodesFromFolderName(segment).map(normalizeStyleCode).filter(Boolean))
   }
 
+  function fileStem(value) {
+    return pathBasename(value).replace(/\.[^.]+$/, '')
+  }
+
   function findCollocationImagesForJob(job, options = params) {
     const entries = directoryFileEntries(options)
     const folderName = cleanText(job.folderName || job.collocationFolderName || '')
     const styleCodes = (job.styleCodes || []).map(normalizeStyleCode).filter(Boolean)
+    const primaryStyleCode = normalizeStyleCode(job.primaryStyleCode || styleCodes[0] || '')
     const exactMatches = []
     const baseMatches = []
+    const filenameMatches = []
     const styleMatches = []
 
     for (const entry of entries) {
@@ -223,6 +229,13 @@
           continue
         }
       }
+      if (primaryStyleCode) {
+        const nameKey = normalizeStyleCode(fileStem(entry.name || entry.relativePath || entry.path || ''))
+        if (nameKey.includes(primaryStyleCode)) {
+          filenameMatches.push({ ...entry, folderSegment: segments[0] || '', source: 'material-root-primary-style-filename' })
+          continue
+        }
+      }
       if (styleCodes.length) {
         const matchedSegment = segments.find(segment => {
           const set = styleSetFromFolderSegment(segment)
@@ -232,7 +245,7 @@
       }
     }
 
-    const matched = exactMatches.length ? exactMatches : (baseMatches.length ? baseMatches : styleMatches)
+    const matched = exactMatches.length ? exactMatches : (baseMatches.length ? baseMatches : (filenameMatches.length ? filenameMatches : styleMatches))
     return matched
       .sort((a, b) => cleanText(a.relativePath || a.path).localeCompare(cleanText(b.relativePath || b.path), 'zh-Hans-CN'))
       .slice(0, MAX_IMAGE_COUNT)
@@ -247,7 +260,14 @@
     const firstEntry = entries.find(entry => refs.includes(entry.path))
     const segments = cleanText(firstEntry?.relativePath || firstEntry?.path || '').replace(/\\/g, '/').split('/').filter(Boolean)
     const folderName = cleanText(job.folderName || job.collocationFolderName || '')
-    if (folderName) return firstPathSegmentForFolder(firstEntry?.relativePath || firstEntry?.path || '', folderName)
+    if (folderName) {
+      const matchedFolder = firstPathSegmentForFolder(firstEntry?.relativePath || firstEntry?.path || '', folderName)
+      if (matchedFolder) return matchedFolder
+    }
+    const primaryStyleCode = normalizeStyleCode(job.primaryStyleCode || job.styleCodes?.[0] || '')
+    if (primaryStyleCode && normalizeStyleCode(fileStem(firstEntry?.name || firstEntry?.relativePath || firstEntry?.path || '')).includes(primaryStyleCode)) {
+      return primaryStyleCode
+    }
     const styleCodes = (job.styleCodes || []).map(normalizeStyleCode).filter(Boolean)
     return segments.find(segment => {
       const set = styleSetFromFolderSegment(segment)
@@ -268,7 +288,15 @@
     for (let index = 1; index <= 6; index += 1) {
       const styleCode = numberedRowValue(row, ['款号', '搭配款号', 'style', 'style_code'], index)
       const productId = normalizeProductId(numberedRowValue(row, ['商品ID', '商品 ID', 'itemId', 'item_id', 'productId', 'product_id'], index))
-      if (styleCode || productId) pairs.push({ styleCode: cleanText(styleCode), productId, index })
+      const category = numberedRowValue(row, ['品类', '商品品类', '类目', '商品类目', '分类', '角色', '标签', '搭配标签', '位置'], index)
+      const itemTitle = numberedRowValue(row, ['商品标题', '商品名称', '商品名', '宝贝标题', '货品标题', 'title', 'name'], index)
+      if (styleCode || productId) pairs.push({
+        styleCode: cleanText(styleCode),
+        productId,
+        category: cleanText(category),
+        itemTitle: cleanText(itemTitle),
+        index,
+      })
     }
     if (pairs.length) return pairs
 
@@ -285,8 +313,9 @@
       const styleCodes = pairs.map(pair => cleanText(pair.styleCode)).filter(Boolean)
       const productIds = pairs.map(pair => pair.productId).filter(Boolean)
       const inferredStyles = styleCodes.length ? styleCodes : splitStyleCodesFromFolderName(folderName)
+      const primaryStyleCode = cleanText(pairs[0]?.styleCode || inferredStyles[0] || '')
       const searchFolderName = folderName || inferredStyles.join('+')
-      const matchSeed = { folderName: searchFolderName, styleCodes: inferredStyles }
+      const matchSeed = { folderName: searchFolderName, styleCodes: inferredStyles, primaryStyleCode }
       const materialRefs = findCollocationImagesForJob(matchSeed, options)
       const matchedFolderName = findCollocationFolderSegmentForJob(matchSeed, options)
       const fallbackRefs = materialRefs.length ? materialRefs : normalizeImageRefs(rowValue(row, ['素材图片', '素材路径', '图片', 'material_images', 'images']))
@@ -301,9 +330,10 @@
         folderName: folderName || matchedFolderName,
         collocationFolderName: folderName || matchedFolderName,
         styleCodes: inferredStyles,
+        primaryStyleCode,
         styleProductPairs: pairs,
         tableRowNumber: rowValue(row, ['表格行号', '行号', '序号']) || String(rowIndex + 2),
-        materialSource: materialRefs.length ? `本地素材目录/${matchedFolderName || inferredStyles.join('+')}` : '',
+        materialSource: materialRefs.length ? `本地素材目录/${matchedFolderName || primaryStyleCode || inferredStyles.join('+')}` : '',
       })
     })
   }
@@ -368,6 +398,68 @@
     }))
   }
 
+  const GARMENT_ROLE_PRESETS = {
+    top: { x: 0.52, y: 0.38, role: '上装', text: '上装' },
+    bottom: { x: 0.54, y: 0.64, role: '下装', text: '下装' },
+    onepiece: { x: 0.52, y: 0.5, role: '连体/套装', text: '连体/套装' },
+  }
+
+  function textIncludesAny(text, keywords) {
+    return keywords.some(keyword => text.includes(keyword))
+  }
+
+  function classifyGarmentRole(value) {
+    const text = cleanText(Array.isArray(value) ? value.filter(Boolean).join(' ') : value)
+    if (!text) return null
+    const bottomKeywords = ['下装', '裤', '长裤', '短裤', '阔腿裤', '直筒裤', '牛仔裤', '休闲裤', '西裤', '半裙', '短裙', '长裙', '裙裤', 'A字裙', 'a字裙']
+    const topKeywords = ['上装', '上衣', '针织衫', 'T恤', 't恤', '衬衫', '卫衣', '毛衣', '马甲', '背心', '吊带', '外套', '西装', '开衫', '短袖', '长袖', '小高领', '打底衫', '夹克', '风衣']
+    const onepieceKeywords = ['连衣裙', '连体裤', '套装']
+    if (textIncludesAny(text, bottomKeywords)) return { kind: 'bottom', ...GARMENT_ROLE_PRESETS.bottom }
+    if (textIncludesAny(text, topKeywords)) return { kind: 'top', ...GARMENT_ROLE_PRESETS.top }
+    if (textIncludesAny(text, onepieceKeywords)) return { kind: 'onepiece', ...GARMENT_ROLE_PRESETS.onepiece }
+    return null
+  }
+
+  function extractGarmentRoleHints(text) {
+    const source = cleanText(text)
+    if (!source) return []
+    const segments = source
+      .split(/[\n\r,，。；;、|/]+|搭配|配/)
+      .map(segment => cleanText(segment))
+      .filter(Boolean)
+    const hints = []
+    for (const segment of segments) {
+      const role = classifyGarmentRole(segment)
+      if (role && hints[hints.length - 1]?.kind !== role.kind) hints.push(role)
+    }
+    return hints
+  }
+
+  function applyGarmentRoleToAnchor(anchor, role, source) {
+    if (!role) return anchor
+    return {
+      ...anchor,
+      x: role.x,
+      y: role.y,
+      role: role.role,
+      text: role.text,
+      garmentRole: role.kind,
+      roleSource: source || anchor.roleSource || '',
+    }
+  }
+
+  function roleAwareAnchors(productIds, pairs = [], context = {}) {
+    const fallback = defaultAnchors(productIds)
+    const hints = extractGarmentRoleHints(`${context.description || ''}\n${context.title || ''}`)
+    return (productIds || []).map((id, index) => {
+      const pair = pairs.find(item => item.productId && String(item.productId) === String(id)) || pairs[index] || {}
+      const pairRole = classifyGarmentRole([pair.category, pair.role, pair.itemTitle, pair.title, pair.name].filter(Boolean).join(' '))
+      const rowHintRole = hints[index] || null
+      const role = pairRole || rowHintRole
+      return applyGarmentRoleToAnchor(fallback[index] || {}, role, pairRole ? 'row-category' : (rowHintRole ? 'row-copy' : ''))
+    })
+  }
+
   function normalizeJob(options = params) {
     const productIds = normalizeProductIds(options.product_ids || options.item_ids || options.products || options.product_id)
     const title = cleanText(options.title || options.short_title || '')
@@ -375,7 +467,10 @@
     const materialRefs = normalizeMaterialRefs(options)
     const draftId = cleanText(options.draft_id || options.id || currentDraftIdFromLocation() || '')
     const executeMode = cleanText(options.execute_mode || 'plan') || 'plan'
-    const anchors = Array.isArray(options.anchors) && options.anchors.length ? options.anchors : defaultAnchors(productIds)
+    const styleProductPairs = Array.isArray(options.styleProductPairs) ? options.styleProductPairs : []
+    const anchors = Array.isArray(options.anchors) && options.anchors.length
+      ? options.anchors
+      : roleAwareAnchors(productIds, styleProductPairs, { title, description })
     return {
       productIds,
       title,
@@ -386,7 +481,8 @@
       anchors,
       folderName: cleanText(options.folderName || options.collocationFolderName || ''),
       styleCodes: Array.isArray(options.styleCodes) ? options.styleCodes.map(cleanText).filter(Boolean) : [],
-      styleProductPairs: Array.isArray(options.styleProductPairs) ? options.styleProductPairs : [],
+      primaryStyleCode: cleanText(options.primaryStyleCode || ''),
+      styleProductPairs,
       tableRowNumber: cleanText(options.tableRowNumber || ''),
       materialSource: cleanText(options.materialSource || ''),
     }
@@ -898,36 +994,56 @@
     return [...new Set((text.match(/\d{8,}/g) || []))]
   }
 
-  function draftMatchesJob(item, job) {
+  function collocationMatchesJob(item, job, options = {}) {
     const title = cleanText(item?.title || item?.name || item?.shortTitle || item?.contentTitle || '')
     const ids = itemProductIds(item)
     const status = cleanText(item?.statusName || item?.statusDesc || item?.stateName || item?.status || '')
     const titleOk = title && job.title && title.includes(job.title)
     const idsOk = job.productIds.every(id => ids.includes(id))
     const draftOk = !status || DRAFT_STATUS_RE.test(status) || String(item?.status ?? '').includes('0')
-    return (titleOk || idsOk) && draftOk
+    return (titleOk || idsOk) && (!options.requireDraft || draftOk)
   }
 
-  async function findDraftForJob(job) {
+  function draftMatchesJob(item, job) {
+    return collocationMatchesJob(item, job, { requireDraft: true })
+  }
+
+  function collocationIdFromItem(item) {
+    return cleanText(item?.scuId || item?.id || item?.collocateId || item?.collocationId)
+  }
+
+  async function findCollocationForJob(job, options = {}) {
     if (job.draftId) return { id: job.draftId, source: 'param-or-url' }
+    const requireDraft = options.requireDraft !== false
     const candidates = [
       apiUrl('/api/collocate/list', { page: 1, pageSize: 20, status: 0 }),
       apiUrl('/api/collocate/list', { pageNo: 1, pageSize: 20, status: 0 }),
-      apiUrl('/api/collocate/list', { page: 1, pageSize: 20 }),
+      apiUrl('/api/collocate/list', { page: 1, pageSize: 50 }),
+      apiUrl('/api/collocate/list', { pageNo: 1, pageSize: 50 }),
     ]
     for (const url of candidates) {
       try {
         const payload = await fetchJson(url)
         const list = flattenListPayload(unwrapData(payload))
-        const matched = list.find(item => draftMatchesJob(item, job))
+        const matched = list.find(item => collocationMatchesJob(item, job, { requireDraft }))
+        const id = collocationIdFromItem(matched)
         if (matched) {
-          return { id: cleanText(matched.id || matched.collocateId || matched.collocationId), item: matched, source: url }
+          return { id, item: matched, source: url, draft: requireDraft }
         }
       } catch (error) {
         window.__MOP_DRESS_COLLOCATION_LAST_LIST_ERROR__ = String(error?.message || error)
       }
     }
     return null
+  }
+
+  async function findDraftForJob(job) {
+    return findCollocationForJob(job, { requireDraft: true })
+  }
+
+  async function findPublishCollocationForJob(job) {
+    return (await findCollocationForJob(job, { requireDraft: true })) ||
+      (await findCollocationForJob(job, { requireDraft: false }))
   }
 
   function firstExistingArray(record, keys) {
@@ -958,7 +1074,11 @@
     const existing = firstExistingArray(record, ['items', 'itemList', 'products', 'productList', 'goodsList'])
     return job.productIds.map((id, index) => {
       const old = existing.find(item => String(item?.itemId || item?.id || item?.productId || '').includes(id)) || existing[index] || {}
-      const anchor = job.anchors[index] || defaultAnchors(job.productIds)[index]
+      const baseAnchor = job.anchors[index] || defaultAnchors(job.productIds)[index]
+      const titleRole = classifyGarmentRole([old.label, old.rawTitle, old.title].filter(Boolean).join(' '))
+      const anchor = baseAnchor?.garmentRole && baseAnchor.roleSource !== 'row-copy'
+        ? baseAnchor
+        : applyGarmentRoleToAnchor(baseAnchor, titleRole, titleRole ? 'item-title' : '')
       return {
         ...old,
         itemId: id,
@@ -971,7 +1091,7 @@
         y: old.y ?? anchor.y,
         anchorX: old.anchorX ?? anchor.x,
         anchorY: old.anchorY ?? anchor.y,
-        label: old.label || anchor.text || anchor.role || '',
+        label: anchor.text || anchor.role || old.label || '',
       }
     })
   }
@@ -986,23 +1106,26 @@
       const existingAnchors = Array.isArray(existing.anchors) ? existing.anchors : []
       const anchors = (existingAnchors.length ? existingAnchors : items.map((item, index) => {
         const anchor = job.anchors[index] || fallbackAnchors[index] || {}
+        const x = Number(item.x ?? item.anchorX ?? anchor.x ?? 0.5)
+        const y = Number(item.y ?? item.anchorY ?? anchor.y ?? Math.min(0.82, 0.38 + index * 0.18))
         return {
-          x: Number(((anchor.x ?? 0.5) * 100).toFixed(2)),
-          y: Number(((anchor.y ?? Math.min(0.82, 0.38 + index * 0.18)) * 100).toFixed(2)),
+          x: Number((x * 100).toFixed(2)),
+          y: Number((y * 100).toFixed(2)),
           itemId: item.itemId,
           itemUrl: item.itemUrl || `//item.taobao.com/item.htm?id=${item.itemId}`,
           coverUrl: item.coverUrl || item.picUrl || '',
           rawTitle: item.rawTitle || item.title || '',
-          title: anchor.text || anchor.role || item.label || item.title || '',
+          title: item.label || anchor.text || anchor.role || item.title || '',
           type: 'item',
         }
       })).map((anchor, index) => {
         const matched = items.find(item => String(item.itemId) === String(anchor.itemId)) || items[index] || {}
+        const roleTitle = cleanText(matched.label || '')
         return {
           x: anchor.x,
           y: anchor.y,
           direction: anchor.direction ?? null,
-          title: anchor.title || anchor.tagName || matched.label || matched.title || '',
+          title: roleTitle || anchor.title || anchor.tagName || matched.title || '',
           rawTitle: anchor.rawTitle || matched.rawTitle || matched.title || '',
           itemId: anchor.itemId || matched.itemId,
           itemUrl: anchor.itemUrl || matched.itemUrl || `//item.taobao.com/item.htm?id=${anchor.itemId || matched.itemId || ''}`,
@@ -1028,7 +1151,6 @@
     const displayChannels = Array.isArray(record?.displayChannels) && record.displayChannels.length ? record.displayChannels : [1, 6, 7]
     const payload = {
       ...(record && typeof record === 'object' ? record : {}),
-      scuId: parseInteger(id, id),
       id: undefined,
       title: job.title,
       name: job.title,
@@ -1044,6 +1166,7 @@
       scuSource: record?.scuSource ?? 2,
       scuEntrySource: record?.scuEntrySource ?? 4,
     }
+    if (id) payload.scuId = parseInteger(id, id)
     delete payload.id
     return payload
   }
@@ -1183,8 +1306,15 @@
   };
   const dataUrlToBlob = async dataUrl => {
     if (!String(dataUrl || '').startsWith('data:')) throw new Error('预处理图片缺少 dataUrl，无法 API 上传');
-    const response = await fetch(dataUrl);
-    return await response.blob();
+    const parts = String(dataUrl).split(',');
+    const meta = parts.shift() || '';
+    const body = parts.join(',');
+    const mime = (meta.match(/data:([^;]+)/) || [])[1] || 'image/jpeg';
+    if (!body) throw new Error('预处理图片 dataUrl 内容为空');
+    const binary = meta.includes(';base64') ? atob(body) : decodeURIComponent(body);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: mime });
   };
   const uploaded = [];
   const errors = [];
@@ -1593,7 +1723,7 @@
       return nextPhase('process_batch_row', shared.submit_delay_ms || 0, finishBatchJob(row, {
         ...shared,
         job,
-      }), [row])
+      }))
     }
     const localRefs = job.materialRefs.filter(ref => !isRemoteImage(ref))
     if (localRefs.length) {
@@ -1631,8 +1761,8 @@
       buildApiUploadExpression(prepared),
       'apply_api_upload_result',
       {
-        targetUrlContains: ['qn.taobao.com'],
-        targetTypes: ['page', 'iframe'],
+        targetUrlContains: ['https://qn.taobao.com/home.htm/material-center/material-management'],
+        targetTypes: ['page'],
         sharedKey: 'api_upload_result',
         sleepMs: 500,
       },
@@ -1844,15 +1974,12 @@
       if (expectsLocalUpload && !materials.length) {
         throw new Error('真实本地图片尚未通过 API 上传，拒绝沿用页面旧图发布')
       }
-      const found = await findDraftForJob(job)
-      if (!found?.id) {
-        throw new Error('未找到可发布的搭配素材草稿；请先在千牛创建草稿或传入 draft_id')
-      }
-      draftId = found.id
-      const record = await queryDraftById(found.id)
-      published = await publishViaCreateScu(record || { scuId: found.id }, { ...job, draftId: found.id, executeMode: 'live_publish' }, materials)
+      const found = await findPublishCollocationForJob(job)
+      draftId = found?.id || ''
+      const record = draftId ? await queryDraftById(draftId) : {}
+      published = await publishViaCreateScu(record || (draftId ? { scuId: draftId } : {}), { ...job, draftId, executeMode: 'live_publish' }, materials)
       contentId = published.contentId || ''
-      readback = await queryDraftById(contentId || found.id)
+      readback = await queryDraftById(contentId || draftId)
       readbackText = JSON.stringify(readback || {})
       titleOk = !job.title || readbackText.includes(job.title)
       descOk = !job.description || readbackText.includes(job.description)
@@ -1862,13 +1989,14 @@
       status = published.contentId && titleOk && descOk && idsOk ? '发布成功' : '发布失败'
       noteParts = [
         `payload=${published.payloadShape}`,
+        found?.source ? `匹配已有搭配=${found.id}` : '新建图文搭配',
         published.precheckPassed ? 'preCheck通过' : `preCheck提示：${published.precheckNote || '已按授权继续'}`,
         published.contentId ? `发布内容ID=${contentId}` : `平台未返回发布内容ID：${published.businessMessage || '发布接口返回失败'}`,
         titleOk ? '标题已读回' : '标题未读回',
         descOk ? '文案已读回' : '文案未读回',
         idsOk ? '商品已读回' : '商品未读回',
         urlsOk ? '图片URL已读回' : '图片URL未完全读回',
-      ]
+      ].filter(Boolean)
     } catch (error) {
       const message = `真实发布未完成：${cleanText(error?.message || error)}`
       if (hasBatchRun(shared)) {
@@ -1881,7 +2009,7 @@
         return nextPhase('process_batch_row', shared.submit_delay_ms || 0, finishBatchJob(row, {
           ...shared,
           job,
-        }), [row])
+        }))
       }
       throw new Error(message)
     }
@@ -1906,7 +2034,7 @@
           precheckNote: cleanText(published?.precheckNote || ''),
         },
         readback: { titleOk, descOk, idsOk, urlsOk, visible },
-      }), [row])
+      }))
     }
     return complete([row], {
       ...shared,

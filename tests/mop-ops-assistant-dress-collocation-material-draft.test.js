@@ -172,6 +172,69 @@ test('batch publish rows match local MOP cloud folders by style-code combination
   assert.equal(helpers.validateJob(jobs[0]).length, 0)
 })
 
+test('batch publish rows can match material images by the first style code filename', async () => {
+  const helpers = await loadExports()
+  const jobs = helpers.normalizeBatchJobs({
+    execute_mode: 'plan',
+    input_file: {
+      rows: [{
+        款号1: '650235Q51271',
+        商品ID1: '1056916528315',
+        款号2: '657500360295',
+        商品ID2: '1055005602619',
+        标题: '棕色系穿搭',
+        文案: '这套棕色穿搭也太高级了吧',
+      }],
+    },
+    material_root: '/tmp/MOP 搭配',
+    material_root_files: {
+      root: '/tmp/MOP 搭配',
+      paths: [
+        {
+          path: '/tmp/MOP 搭配/650235Q51271案例.jpg',
+          relativePath: '650235Q51271案例.jpg',
+        },
+        {
+          path: '/tmp/MOP 搭配/558552B6001Y案例.jpg',
+          relativePath: '558552B6001Y案例.jpg',
+        },
+      ],
+    },
+  })
+  assert.equal(jobs.length, 1)
+  assert.equal(jobs[0].primaryStyleCode, '650235Q51271')
+  assert.equal(jobs[0].folderName, '650235Q51271')
+  assert.deepEqual(Array.from(jobs[0].materialRefs), ['/tmp/MOP 搭配/650235Q51271案例.jpg'])
+  assert.equal(helpers.validateJob(jobs[0]).length, 0)
+})
+
+test('batch publish rows infer top and bottom labels from numbered category columns', async () => {
+  const helpers = await loadExports()
+  const jobs = helpers.normalizeBatchJobs({
+    execute_mode: 'plan',
+    input_file: {
+      rows: [{
+        款号1: '657500360295',
+        商品ID1: '1055005602619',
+        品类1: '阔腿裤',
+        款号2: '650235Q51271',
+        商品ID2: '1056916528315',
+        品类2: '圆领镂空针织衫',
+        标题: '棕色系穿搭',
+        文案: '针织衫搭配阔腿裤',
+      }],
+    },
+    material_root_files: { root: '/tmp/MOP 搭配', paths: [] },
+  })
+  assert.equal(jobs.length, 1)
+  assert.equal(jobs[0].anchors[0].garmentRole, 'bottom')
+  assert.equal(jobs[0].anchors[0].text, '下装')
+  assert.equal(jobs[0].anchors[0].y, 0.64)
+  assert.equal(jobs[0].anchors[1].garmentRole, 'top')
+  assert.equal(jobs[0].anchors[1].text, '上装')
+  assert.equal(jobs[0].anchors[1].y, 0.38)
+})
+
 test('batch plan mode validates Excel rows and local material root without requesting upload', async () => {
   const result = await runAdapter({
     params: {
@@ -202,6 +265,31 @@ test('batch plan mode validates Excel rows and local material root without reque
   assert.equal(result.data[0].文件夹名, '653100C4202Z+653100C2003Z')
   assert.match(result.data[0].素材来源, /本地素材目录/)
   assert.match(result.data[0].备注, /真实发布内容/)
+})
+
+test('batch row processing caches row results without emitting duplicate phase data', async () => {
+  const result = await runAdapter({
+    phase: 'process_batch_row',
+    shared: {
+      jobs: [{
+        productIds: [],
+        title: '缺商品测试',
+        description: '缺商品测试',
+        materialRefs: [],
+        executeMode: 'live_publish',
+        anchors: [],
+      }],
+      job_index: 0,
+      submit_delay_ms: 0,
+      results: [],
+    },
+  })
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(Array.isArray(result.data), true)
+  assert.equal(result.data.length, 0)
+  assert.equal(result.meta.shared.results.length, 1)
+  assert.equal(result.meta.shared.results[0].执行结果, '预检失败')
 })
 
 test('live mode prepares local image before API-first upload', async () => {
@@ -263,10 +351,23 @@ test('API upload phase posts prepared data URL through current qn target', async
   assert.equal(result.meta.action, 'cdp_target_eval')
   assert.equal(result.meta.next_phase, 'apply_api_upload_result')
   assert.equal(result.meta.shared_key, 'api_upload_result')
-  assert.deepEqual(Array.from(result.meta.target_url_contains), ['qn.taobao.com'])
+  assert.deepEqual(Array.from(result.meta.target_url_contains), ['https://qn.taobao.com/home.htm/material-center/material-management'])
+  assert.deepEqual(Array.from(result.meta.target_types), ['page'])
   assert.match(result.meta.expression, /stream-upload\.taobao\.com\/api\/upload\.api/)
   assert.match(result.meta.expression, /FormData/)
   assert.match(result.meta.expression, /credentials: 'include'/)
+})
+
+test('API upload expression converts data URLs without fetching the data URL itself', async () => {
+  const helpers = await loadExports()
+  const expression = helpers.buildApiUploadExpression([{
+    path: '/tmp/look.jpg',
+    dataUrl: 'data:image/jpeg;base64,AAAA',
+    name: 'look.jpg',
+  }])
+  assert.match(expression, /atob\(body\)/)
+  assert.match(expression, /new Blob\(\[bytes\]/)
+  assert.doesNotMatch(expression, /fetch\(dataUrl\)/)
 })
 
 test('API upload result is accepted as the real local material', async () => {
@@ -442,6 +543,66 @@ test('draftScu payload updates draft fields and never publishes', async () => {
   assert.doesNotMatch(text, /publish|发布内容|发布成功/)
 })
 
+test('draftScu payload infers anchor labels from existing item titles', async () => {
+  const helpers = await loadExports()
+  const job = helpers.normalizeJob({
+    product_ids: '1055005602619\n1056916528315',
+    title: '棕色系穿搭',
+    description: '温柔到骨子里',
+    material_images: ['/tmp/look.png'],
+    draft_id: '409527360556',
+  })
+  const payload = helpers.buildDraftScuPayload(
+    {
+      scuId: '409527360556',
+      normalImgList: [{ imgUrl: 'https://img.alicdn.com/old.jpg', anchors: [] }],
+      itemList: [
+        { itemId: '1055005602619', title: '棕色阔腿裤' },
+        { itemId: '1056916528315', title: '圆领镂空针织衫' },
+      ],
+    },
+    job,
+    [{ url: 'https://img.alicdn.com/imgextra/look.jpg', width: 750, height: 1000 }],
+  )
+  assert.equal(payload.itemList[0].label, '下装')
+  assert.equal(payload.itemList[0].y, 0.64)
+  assert.equal(payload.itemList[1].label, '上装')
+  assert.equal(payload.itemList[1].y, 0.38)
+  assert.equal(payload.normalImgList[0].anchors[0].title, '下装')
+  assert.equal(payload.normalImgList[0].anchors[1].title, '上装')
+})
+
+test('draftScu payload rewrites existing anchor titles with inferred garment labels', async () => {
+  const helpers = await loadExports()
+  const job = helpers.normalizeJob({
+    product_ids: '1055005602619\n1056916528315',
+    title: '棕色系穿搭',
+    description: '针织衫搭配阔腿裤',
+    material_images: ['/tmp/look.png'],
+    draft_id: '409527360556',
+  })
+  const payload = helpers.buildDraftScuPayload(
+    {
+      scuId: '409527360556',
+      normalImgList: [{
+        imgUrl: 'https://img.alicdn.com/old.jpg',
+        anchors: [
+          { itemId: '1055005602619', x: 40, y: 60, title: '旧商品短标题' },
+          { itemId: '1056916528315', x: 50, y: 30, title: '旧商品短标题2' },
+        ],
+      }],
+      itemList: [
+        { itemId: '1055005602619', title: '棕色阔腿裤' },
+        { itemId: '1056916528315', title: '圆领镂空针织衫' },
+      ],
+    },
+    job,
+    [{ url: 'https://img.alicdn.com/imgextra/look.jpg', width: 750, height: 1000 }],
+  )
+  assert.equal(payload.normalImgList[0].anchors[0].title, '下装')
+  assert.equal(payload.normalImgList[0].anchors[1].title, '上装')
+})
+
 test('publish phase calls preCheck then createScu and reads back published content', async () => {
   const document = {
     body: { innerText: '发布成功 MOP桑蚕丝混纺牛仔套装' },
@@ -508,6 +669,163 @@ test('publish phase calls preCheck then createScu and reads back published conte
   assert.ok(createCall)
   assert.match(String(createCall.options.body), /skipSameItemCheck/)
   assert.ok(fetchCalls.some(call => String(call.url).includes('/api/collocate/queryById?scuId=509000001')))
+})
+
+test('publish phase can reuse an existing non-draft collocation when no draft matches', async () => {
+  const document = {
+    body: { innerText: '发布成功 棕色系穿搭☕️温柔到骨子里！' },
+    documentElement: {},
+    querySelector() { return null },
+    querySelectorAll() { return [] },
+  }
+  const fetchCalls = []
+  const fetch = async (url, options = {}) => {
+    fetchCalls.push({ url, options })
+    if (String(url).includes('/api/collocate/list')) {
+      const isDraftList = String(url).includes('status=0')
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          data: isDraftList ? [] : [{
+            scuId: 409724640556,
+            title: '棕色系穿搭☕️温柔到骨子里！',
+            scuStatus: 3,
+            itemIdList: [1056916528315, 1055005602619],
+          }],
+        }),
+      }
+    }
+    if (String(url).includes('/queryById')) {
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          data: {
+            scuId: String(url).includes('509') ? '509000002' : '409724640556',
+            title: '棕色系穿搭☕️温柔到骨子里！',
+            description: '这套棕色穿搭也太高级了吧',
+            normalImgList: [{ imgUrl: 'https://img.alicdn.com/imgextra/i3/new.jpg', anchors: [] }],
+            itemList: [
+              { itemId: '1056916528315', title: '圆领T恤' },
+              { itemId: '1055005602619', title: '圆领镂空针织衫' },
+            ],
+          },
+        }),
+      }
+    }
+    if (String(url).includes('/preCheck')) {
+      return { ok: true, text: async () => JSON.stringify({ success: true, data: { success: true } }) }
+    }
+    if (String(url).includes('/createScu')) {
+      return { ok: true, text: async () => JSON.stringify({ success: true, data: { success: true, data: '509000002' } }) }
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  const result = await runAdapter({
+    phase: 'publish_content',
+    shared: {
+      job: {
+        productIds: ['1056916528315', '1055005602619'],
+        title: '棕色系穿搭☕️温柔到骨子里！',
+        description: '这套棕色穿搭也太高级了吧',
+        materialRefs: ['/tmp/look.png'],
+        draftId: '',
+        executeMode: 'live_publish',
+        anchors: [
+          { itemId: '1056916528315', x: 0.52, y: 0.38, text: '上装', role: '上装' },
+          { itemId: '1055005602619', x: 0.54, y: 0.64, text: '下装', role: '下装' },
+        ],
+      },
+      materials: [{
+        ref: 'look.png',
+        url: 'https://img.alicdn.com/imgextra/i3/new.jpg',
+        width: 750,
+        height: 1000,
+        source: 'local-upload-api-stream-upload',
+      }],
+    },
+    contextExtra: { document, fetch },
+  })
+  assert.equal(result.success, true)
+  assert.equal(result.data[0].执行结果, '发布成功')
+  assert.equal(result.data[0].搭配ID, '409724640556')
+  assert.equal(result.data[0].发布内容ID, '509000002')
+  assert.match(result.data[0].备注, /匹配已有搭配=409724640556/)
+  assert.ok(fetchCalls.some(call => String(call.url).includes('/api/collocate/createScu')))
+})
+
+test('publish phase creates a new collocation when no existing item matches', async () => {
+  const fetchCalls = []
+  const fetch = async (url, options = {}) => {
+    fetchCalls.push({ url, options })
+    if (String(url).includes('/api/collocate/list')) {
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ success: true, data: [] }),
+      }
+    }
+    if (String(url).includes('/queryById')) {
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          data: {
+            scuId: '509000003',
+            title: 'MOP桑蚕丝混纺牛仔套装',
+            description: '莫代尔棉桑蚕丝牛仔叠穿马甲套装，为造型增添丹宁的率性质感',
+            normalImgList: [{ imgUrl: 'https://img.alicdn.com/imgextra/i3/new-create.jpg' }],
+            itemList: [
+              { itemId: '1057386891909', title: '桑蚕丝牛仔马甲' },
+              { itemId: '1060933035333', title: '牛仔阔腿裤' },
+            ],
+          },
+        }),
+      }
+    }
+    if (String(url).includes('/preCheck')) {
+      return { ok: true, text: async () => JSON.stringify({ success: true, data: { success: true } }) }
+    }
+    if (String(url).includes('/createScu')) {
+      return { ok: true, text: async () => JSON.stringify({ success: true, data: { success: true, data: '509000003' } }) }
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  const result = await runAdapter({
+    phase: 'publish_content',
+    shared: {
+      job: {
+        productIds: ['1057386891909', '1060933035333'],
+        title: 'MOP桑蚕丝混纺牛仔套装',
+        description: '莫代尔棉桑蚕丝牛仔叠穿马甲套装，为造型增添丹宁的率性质感',
+        materialRefs: ['/tmp/look.png'],
+        draftId: '',
+        executeMode: 'live_publish',
+        anchors: [],
+      },
+      materials: [{
+        ref: 'look.png',
+        url: 'https://img.alicdn.com/imgextra/i3/new-create.jpg',
+        width: 750,
+        height: 1000,
+        source: 'local-upload-api-stream-upload',
+      }],
+    },
+    contextExtra: {
+      fetch,
+      document: { body: { innerText: '' }, querySelectorAll() { return [] }, querySelector() { return null }, documentElement: {} },
+    },
+  })
+  assert.equal(result.success, true)
+  assert.equal(result.data[0].执行结果, '发布成功')
+  assert.equal(result.data[0].搭配ID, '')
+  assert.equal(result.data[0].发布内容ID, '509000003')
+  assert.match(result.data[0].备注, /新建图文搭配/)
+  const createCall = fetchCalls.find(call => String(call.url).includes('/api/collocate/createScu'))
+  assert.ok(createCall)
+  assert.doesNotMatch(String(createCall.options.body), /"scuId"\s*:\s*0/)
+  assert.doesNotMatch(String(createCall.options.body), /"scuId"/)
+  assert.ok(fetchCalls.some(call => String(call.url).includes('/api/collocate/queryById?scuId=509000003')))
 })
 
 test('publish phase records platform business failure without claiming success', async () => {
