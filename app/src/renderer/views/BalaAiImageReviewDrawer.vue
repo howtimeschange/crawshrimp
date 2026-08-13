@@ -79,6 +79,20 @@
                 <input v-model="templateMatch" type="text" placeholder="标题/描述关键词，可选" />
               </label>
               <label>
+                <span>生成档位</span>
+                <select v-model="videoModel">
+                  <option v-for="option in QN_VIDEO_MODEL_OPTIONS" :key="option.value" :value="option.value">
+                    {{ option.label }}{{ option.detail ? `（${option.detail}）` : '' }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>视频时长</span>
+                <select v-model.number="videoDuration">
+                  <option v-for="sec in qnVideoDurationOptions" :key="sec" :value="sec">{{ sec }} 秒</option>
+                </select>
+              </label>
+              <label>
                 <span>视频 Prompt</span>
                 <textarea v-model="videoPrompt" rows="5" placeholder="可选，自定义图生视频提示词"></textarea>
               </label>
@@ -101,7 +115,10 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import {
+  QN_VIDEO_MODEL_OPTIONS,
   buildBalaVideoStageRequest,
+  normalizeQnVideoDuration,
+  normalizeQnVideoModel,
   parseBalaReviewBoardUrl,
   summarizeBalaReviewBatch,
 } from '../utils/balaAiVideoWorkflow'
@@ -130,6 +147,8 @@ const error = ref('')
 const activeStatus = ref('')
 const templateId = ref('')
 const templateMatch = ref('')
+const videoModel = ref('standard')
+const videoDuration = ref(15)
 const videoPrompt = ref('')
 const regeneratingAssetId = ref('')
 
@@ -137,6 +156,11 @@ const boardRef = computed(() => parseBalaReviewBoardUrl(props.boardUrl))
 const allItems = computed(() => Array.isArray(batch.value?.items) ? batch.value.items : [])
 const summary = computed(() => summarizeBalaReviewBatch(batch.value || {}))
 const approvedCount = computed(() => summary.value.approved)
+const qnVideoDurationOptions = computed(() => {
+  const options = []
+  for (let i = 4; i <= 15; i += 1) options.push(i)
+  return options
+})
 const summaryText = computed(() => {
   const value = summary.value
   return value.total
@@ -249,6 +273,8 @@ async function exportToVideo() {
       provider: 'qn_img2video',
       template_id: templateId.value,
       template_match: templateMatch.value,
+      video_model: normalizeQnVideoModel(videoModel.value),
+      video_duration: normalizeQnVideoDuration(videoDuration.value),
       prompt: videoPrompt.value,
       download_videos: true,
     })
@@ -477,6 +503,7 @@ function statusClass(value) {
 }
 
 .bala-video-card input,
+.bala-video-card select,
 .bala-video-card textarea {
   width: 100%;
   border: 1px solid #cbd5e1;

@@ -1101,6 +1101,11 @@ test('Bala image review drawer exposes approval, retry, refresh, and video hando
   assert.match(source, /start-video-stage/)
   assert.match(source, /进入视频生成/)
   assert.match(source, /submit_async:\s*true/)
+  assert.match(source, /QN_VIDEO_MODEL_OPTIONS/)
+  assert.match(source, /<span>生成档位<\/span>/)
+  assert.match(source, /<span>视频时长<\/span>/)
+  assert.match(source, /video_model:\s*normalizeQnVideoModel\(videoModel\.value\)/)
+  assert.match(source, /video_duration:\s*normalizeQnVideoDuration\(videoDuration\.value\)/)
 })
 
 test('review retry keeps display status out of the generation prompt', () => {
@@ -1331,8 +1336,40 @@ test('AI video workflow only downloads software-manager previews when a template
 
   assert.match(builder, /download_template_previews:\s*Boolean\(task\.template\)/)
   assert.match(builder, /ratio:\s*'3:4'/)
+  assert.match(builder, /video_model:\s*gen\.video_model \|\| 'standard'/)
+  assert.match(builder, /video_duration:\s*gen\.video_duration \|\| 15/)
   assert.match(builder, /poll_interval_seconds:\s*5/)
   assert.match(builder, /download_concurrency:\s*2/)
+})
+
+test('business-manager video task exposes four generation tiers and persists the selected tier', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+  const taskStart = source.indexOf('function persistedVideoTask')
+  const resultStart = source.indexOf('function persistedVideoResult', taskStart)
+  const taskSource = source.slice(taskStart, resultStart)
+
+  assert.deepEqual(balaWorkflow.QN_VIDEO_MODEL_OPTIONS.map(option => option.value), [
+    'standard',
+    'economy',
+    'advanced',
+    'premium',
+  ])
+  assert.equal(balaWorkflow.normalizeQnVideoModel('经济'), 'economy')
+  assert.equal(balaWorkflow.normalizeQnVideoModel('ultimate'), 'premium')
+  assert.equal(balaWorkflow.normalizeQnVideoModel('bad-value'), 'standard')
+  assert.equal(balaWorkflow.normalizeQnVideoDuration('3'), 4)
+  assert.equal(balaWorkflow.normalizeQnVideoDuration('16'), 15)
+  assert.equal(balaWorkflow.normalizeQnVideoDuration('bad-value'), 15)
+  assert.match(templateSource, /aria-label="生意管家生成参数"/)
+  assert.match(templateSource, /role="radiogroup" aria-label="生成模型档位"/)
+  assert.match(templateSource, /v-for="option in QN_VIDEO_MODEL_OPTIONS"/)
+  assert.match(templateSource, /v-model\.number="videoTaskDraft\.videoDuration"/)
+  assert.match(source, /const videoTaskDraft = reactive\(\{[\s\S]*?videoModel:\s*'standard'[\s\S]*?videoDuration:\s*15/)
+  assert.match(source, /function videoTaskGenerationParams\(task = videoTaskDraft\)[\s\S]*?provider === 'qn'[\s\S]*?video_model:\s*normalizeQnVideoModel/)
+  assert.match(source, /function videoTaskParamSummary\(task = \{\}\)[\s\S]*?qnVideoModelLabel\(gen\.video_model\)/)
+  assert.match(taskSource, /videoModel:\s*normalizeQnVideoModel\(task\.videoModel \|\| task\.video_model\)/)
+  assert.match(taskSource, /videoDuration:\s*normalizeQnVideoDuration\(task\.videoDuration \|\| task\.video_duration\)/)
 })
 
 test('legacy provider wording is migrated when persisted video tasks and results are restored', () => {

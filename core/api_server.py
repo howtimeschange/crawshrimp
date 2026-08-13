@@ -7573,6 +7573,8 @@ class BalaReviewExportVideoInputRequest(BaseModel):
     output_dir: str = ""
     template_id: str = ""
     template_match: str = ""
+    video_model: str = "standard"
+    video_duration: int = 15
     prompt: str = ""
     download_videos: bool = True
 
@@ -9039,6 +9041,15 @@ def export_bala_ai_video_review_video_input(batch_id: str, req: BalaReviewExport
     if req.prompt:
         params["prompt"] = req.prompt
         params["custom_prompt"] = req.prompt
+    video_model = str(req.video_model or "standard").strip().lower()
+    if video_model not in {"standard", "economy", "advanced", "premium"}:
+        video_model = "standard"
+    params["video_model"] = video_model
+    try:
+        video_duration = int(req.video_duration or 15)
+    except (TypeError, ValueError):
+        video_duration = 15
+    params["video_duration"] = max(4, min(15, video_duration))
     params["download_template_previews"] = True
     params["download_videos"] = bool(req.download_videos)
     return {

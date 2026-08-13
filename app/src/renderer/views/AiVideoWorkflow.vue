@@ -968,7 +968,7 @@
                 <div class="aiv-video-task-meta-line">
                   <span><strong>素材</strong>{{ task.assets.length }} 张组成一条视频</span>
                   <span
-                    v-if="isApiVideoProvider(task.provider)"
+                    v-if="videoTaskParamSummary(task)"
                     :title="videoTaskParamSummary(task)"
                   ><strong>参数</strong>{{ videoTaskParamSummary(task) }}</span>
                   <span :title="task.prompt || '生意管家页面生成可不填写 Prompt'"><strong>Prompt</strong>{{ task.prompt || '可不填写' }}</span>
@@ -1802,6 +1802,41 @@
             </section>
 
             <section
+              v-if="videoTaskDraft.provider === 'qn'"
+              class="aiv-video-gen-params"
+              aria-label="生意管家生成参数"
+            >
+              <header class="aiv-video-gen-params-head">
+                <strong>生意管家参数</strong>
+                <span>{{ qnVideoModelLabel(videoTaskDraft.videoModel) }} · {{ videoTaskDraft.videoDuration }}秒</span>
+              </header>
+              <div class="aiv-field compact">
+                <span>生成档位</span>
+                <div class="aiv-segmented qn-model" role="radiogroup" aria-label="生成模型档位">
+                  <button
+                    v-for="option in QN_VIDEO_MODEL_OPTIONS"
+                    :key="option.value"
+                    type="button"
+                    role="radio"
+                    :aria-checked="videoTaskDraft.videoModel === option.value ? 'true' : 'false'"
+                    :class="{ active: videoTaskDraft.videoModel === option.value }"
+                    :title="option.detail || option.label"
+                    @click="videoTaskDraft.videoModel = option.value"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </div>
+              <label class="aiv-field compact">
+                <span>视频时长</span>
+                <select v-model.number="videoTaskDraft.videoDuration">
+                  <option v-for="sec in qnVideoDurationOptions" :key="sec" :value="sec">{{ sec }} 秒</option>
+                </select>
+              </label>
+              <p class="aiv-video-gen-params-hint">新版生意管家图生视频支持 4 档；默认均衡 15 秒，点数不足时可切经济档并缩短时长。</p>
+            </section>
+
+            <section
               v-if="videoTaskDraft.provider === 'pixverse-motioncontrol'"
               class="aiv-video-gen-params"
               aria-label="PixVerse 动作模仿素材"
@@ -2053,6 +2088,7 @@ import {
   BALA_AI_VIDEO_ADAPTER_ID,
   BALA_MATERIAL_PREPARE_TASK_ID,
   BALA_QN_VIDEO_TASK_ID,
+  QN_VIDEO_MODEL_OPTIONS,
   applyBalaMaterialBatchToWorkspaceGroups,
   balaMaterialPanelControl,
   buildBalaAiStageRequest,
@@ -2078,6 +2114,8 @@ import {
   migrateBalaBusinessManagerText,
   normalizeBalaMaterialGroups,
   normalizeBalaMaterialProgress,
+  normalizeQnVideoDuration,
+  normalizeQnVideoModel,
   normalizeBalaReviewBatchStyles,
   normalizeBalaReviewStatus,
   normalizeOperationType,
@@ -2090,6 +2128,7 @@ import {
   parseBalaReviewBoardUrl,
   parseRunOutputFiles,
   qnTerminalRunFailure,
+  qnVideoModelOption,
   qnVideoResultFailure,
   rebaseBalaMaterialRowsToWorkspace,
   reconcileBalaWorkspaceFiles,
@@ -2263,6 +2302,8 @@ const videoTaskDraft = reactive({
   outputDir: workspaceDir.value,
   templateId: '',
   assetIds: [],
+  videoModel: 'standard',
+  videoDuration: 15,
   // 与 AI 生视频工作台对齐的生成参数
   duration: 5,
   resolution: '720p',
@@ -2877,6 +2918,8 @@ function persistedVideoTask(task = {}) {
     runId: String(task.runId || ''),
     queuedRequestId: String(task.queuedRequestId || ''),
     assets: (task.assets || []).map(persistedVideoAsset),
+    videoModel: normalizeQnVideoModel(task.videoModel || task.video_model),
+    videoDuration: normalizeQnVideoDuration(task.videoDuration || task.video_duration),
     duration: Number(task.duration ?? gen.duration ?? 5),
     resolution: String(task.resolution || gen.resolution || ''),
     ratio: String(task.ratio ?? gen.ratio ?? ''),
@@ -3113,6 +3156,11 @@ const videoTaskShowRatio = computed(() => !(
 ))
 const videoTaskShowAudio = computed(() => videoTaskDraft.provider === 'seedance' || isKlingVideoProvider(videoTaskDraft.provider))
 const videoTaskShowKlingMode = computed(() => isKlingVideoProvider(videoTaskDraft.provider))
+const qnVideoDurationOptions = computed(() => {
+  const options = []
+  for (let i = 4; i <= 15; i += 1) options.push(i)
+  return options
+})
 const videoTaskDurationOptions = computed(() => {
   const min = videoTaskDraft.provider === 'seedance' ? 4 : 3
   const options = []
@@ -3138,6 +3186,9 @@ const videoTaskParamBadge = computed(() => {
   if (isPixVerseVideoProvider(videoTaskDraft.provider)) return 'PixVerse Motion'
   return `HH · ${happyHorseModeLabel(videoTaskDraft.happyhorseMode)}`
 })
+function qnVideoModelLabel(value = '') {
+  return qnVideoModelOption(value).label
+}
 const happyHorseAutoModeHint = computed(() => {
   const n = selectedVideoTaskAssetCount.value
   if (n <= 0) return '当前 0 张图 → 自动文生视频（t2v）'
@@ -3164,6 +3215,17 @@ const videoTaskParamHint = computed(() => {
 })
 
 function applyVideoTaskProviderDefaults(provider = videoTaskDraft.provider) {
+  if (provider === 'qn') {
+    videoTaskDraft.videoModel = normalizeQnVideoModel(videoTaskDraft.videoModel)
+    videoTaskDraft.videoDuration = 15
+    videoTaskDraft.ratio = '9:16'
+    videoTaskDraft.resolution = '720p'
+    videoTaskDraft.duration = 5
+    videoTaskDraft.generateAudio = false
+    videoTaskDraft.klingMode = 'std'
+    videoTaskDraft.watermark = false
+    return
+  }
   if (provider === 'seedance') {
     videoTaskDraft.ratio = '9:16'
     videoTaskDraft.resolution = '720p'
@@ -3234,6 +3296,12 @@ function videoTaskGenerationParams(task = videoTaskDraft) {
   const provider = String(task?.provider || '').trim()
   const duration = Number(task?.duration || 5)
   const watermark = Boolean(task?.watermark)
+  if (provider === 'qn') {
+    return {
+      video_model: normalizeQnVideoModel(task?.videoModel || task?.video_model),
+      video_duration: normalizeQnVideoDuration(task?.videoDuration || task?.video_duration),
+    }
+  }
   if (provider === 'seedance') {
     return {
       duration: Number.isFinite(duration) ? Math.max(4, Math.min(15, duration)) : 5,
@@ -3281,6 +3349,9 @@ function videoTaskGenerationParams(task = videoTaskDraft) {
 function videoTaskParamSummary(task = {}) {
   const gen = videoTaskGenerationParams(task)
   if (!gen || !Object.keys(gen).length) return ''
+  if (task.provider === 'qn') {
+    return `${qnVideoModelLabel(gen.video_model)} · ${gen.video_duration || 15}s`
+  }
   if (isKlingVideoProvider(task.provider)) {
     return [
       gen.mode || 'std',
@@ -7205,6 +7276,7 @@ function videoTaskVideoPaths(task) {
 }
 
 function buildQnVideoTaskParams(task, mode = 'plan') {
+  const gen = videoTaskGenerationParams(task)
   return {
     execute_mode: mode,
     material_images: { paths: videoTaskImagePaths(task) },
@@ -7214,6 +7286,8 @@ function buildQnVideoTaskParams(task, mode = 'plan') {
     prompt: task.prompt || '',
     custom_prompt: task.prompt || '',
     ratio: '3:4',
+    video_model: gen.video_model || 'standard',
+    video_duration: gen.video_duration || 15,
     output_dir: task.outputDir || videoOutputDir.value,
     download_template_previews: Boolean(task.template),
     download_videos: mode === 'live',
@@ -8176,6 +8250,8 @@ function openVideoTaskDialog(styleCode = '', sourceTask = null, mode = 'new') {
   videoTaskDraft.prompt = task?.prompt || ''
   videoTaskDraft.outputDir = task?.outputDir || videoOutputDir.value
   videoTaskDraft.templateId = task?.template?.id || ''
+  videoTaskDraft.videoModel = normalizeQnVideoModel(task?.videoModel || task?.video_model)
+  videoTaskDraft.videoDuration = normalizeQnVideoDuration(task?.videoDuration || task?.video_duration)
   videoTaskDraft.pixverseImagePath = ''
   videoTaskDraft.pixverseImageUrl = ''
   videoTaskDraft.pixverseVideoPath = ''
@@ -8184,6 +8260,8 @@ function openVideoTaskDialog(styleCode = '', sourceTask = null, mode = 'new') {
   if (task) {
     videoTaskDraft.assetIds = (task.assets || []).map(asset => asset?.id).filter(Boolean)
     const gen = videoTaskGenerationParams(task)
+    videoTaskDraft.videoModel = gen.video_model || videoTaskDraft.videoModel
+    videoTaskDraft.videoDuration = normalizeQnVideoDuration(gen.video_duration || videoTaskDraft.videoDuration)
     videoTaskDraft.duration = Number(task.duration ?? gen.duration ?? 5)
     videoTaskDraft.resolution = String(task.resolution || gen.resolution || '')
     videoTaskDraft.ratio = String(task.ratio ?? gen.ratio ?? gen.aspect_ratio ?? '')
@@ -8338,6 +8416,8 @@ function createVideoTaskFromDraft() {
     runId: '',
     queuedRequestId: '',
     assets: assets.map(asset => ({ ...asset })),
+    videoModel: gen.video_model || normalizeQnVideoModel(videoTaskDraft.videoModel),
+    videoDuration: gen.video_duration || normalizeQnVideoDuration(videoTaskDraft.videoDuration),
     duration: gen.duration ?? videoTaskDraft.duration,
     resolution: gen.resolution || videoTaskDraft.resolution,
     ratio: gen.ratio ?? gen.aspect_ratio ?? videoTaskDraft.ratio,
@@ -8728,6 +8808,8 @@ watch(
     videoTaskDraft.happyhorseMode,
     videoTaskDraft.prompt,
     videoTaskDraft.outputDir,
+    videoTaskDraft.videoModel,
+    videoTaskDraft.videoDuration,
     videoTaskDraft.assetIds.join('|'),
   ],
   () => {

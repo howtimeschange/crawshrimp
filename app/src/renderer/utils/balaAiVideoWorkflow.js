@@ -11,6 +11,12 @@ export const BALA_AI_VIDEO_ADAPTER_ID = 'bala-ai-video-assistant'
 export const BALA_MATERIAL_PREPARE_TASK_ID = 'semir_video_material_prepare'
 export const BALA_AI_IMAGE_TASK_ID = 'bala_ai_face_background_generate'
 export const BALA_QN_VIDEO_TASK_ID = 'qn_img2video_batch'
+export const QN_VIDEO_MODEL_OPTIONS = Object.freeze([
+  { value: 'standard', label: '均衡', detail: '15秒，默认' },
+  { value: 'economy', label: '经济', detail: '点数不足时使用' },
+  { value: 'advanced', label: '进阶', detail: '' },
+  { value: 'premium', label: '极致', detail: '' },
+])
 
 const LEGACY_BALA_BUSINESS_MANAGER_NAME = ['软件', '管家'].join('')
 
@@ -81,6 +87,25 @@ export function normalizeBalaVideoTaskProvider(value = '') {
   if (provider === 'qn' || provider === BALA_QN_VIDEO_TASK_ID) return 'qn'
   if (migrateBalaBusinessManagerText(provider).includes('生意管家')) return 'qn'
   return provider
+}
+
+export function normalizeQnVideoModel(value = '') {
+  const text = String(value || '').trim().toLowerCase()
+  if (text === 'economy' || text === '经济') return 'economy'
+  if (text === 'advanced' || text === '进阶') return 'advanced'
+  if (text === 'premium' || text === 'ultimate' || text === '极致') return 'premium'
+  return 'standard'
+}
+
+export function qnVideoModelOption(value = '') {
+  const normalized = normalizeQnVideoModel(value)
+  return QN_VIDEO_MODEL_OPTIONS.find(option => option.value === normalized) || QN_VIDEO_MODEL_OPTIONS[0]
+}
+
+export function normalizeQnVideoDuration(value = 15) {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds)) return 15
+  return Math.max(4, Math.min(15, Math.round(seconds)))
 }
 
 const MATERIAL_PREPARE_DEFAULTS = Object.freeze({

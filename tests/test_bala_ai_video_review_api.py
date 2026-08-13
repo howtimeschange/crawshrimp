@@ -90,6 +90,8 @@ def test_bala_review_decisions_and_export_video_input(tmp_path, monkeypatch):
         api_server.BalaReviewExportVideoInputRequest(
             provider="qn_img2video",
             output_dir=str(tmp_path / "video"),
+            video_model="economy",
+            video_duration=5,
         ),
         token="token-test",
     )
@@ -99,6 +101,8 @@ def test_bala_review_decisions_and_export_video_input(tmp_path, monkeypatch):
     assert payload["next_task"]["adapter_id"] == "bala-ai-video-assistant"
     assert payload["next_task"]["task_id"] == "qn_img2video_batch"
     assert payload["next_task"]["params"]["material_images"]["paths"]
+    assert payload["next_task"]["params"]["video_model"] == "economy"
+    assert payload["next_task"]["params"]["video_duration"] == 5
 
 
 def test_bala_review_get_refreshes_late_ai_results(tmp_path, monkeypatch):
