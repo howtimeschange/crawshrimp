@@ -27,7 +27,7 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
           - value: new
             label: 全新页面（推荐）
