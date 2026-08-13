@@ -461,7 +461,7 @@ tasks:
           - 抓取时间
 
   - id: dress_collocation_material_publish
-    name: 搭配素材真实发布
+    name: 搭配素材发布
     description: 读取 Excel 中款号与商品 ID 的对应关系、标题和文案，从素材根目录按款号组合搜索 MOP 云盘下载文件夹，自动生成 3:4 安全图并调用千牛搭配素材发布接口真实发布内容。
     script: dress-collocation-material-draft.js
     entry_url: https://qn.taobao.com/home.htm/material-center/material-management?tab=recommend&subTab=SCU
@@ -510,16 +510,11 @@ tasks:
         include_file_listing: true
         placeholder: "例如：/Users/you/Downloads/MOP云盘模拍图包"
         hint: 选择“MOP云盘文件夹下载”脚本下载出来的本地素材包根目录；脚本会递归扫描图片，并用表格里的款号组合匹配本地文件夹名。
-      - id: draft_id
-        type: text
-        label: 草稿 ID
-        required: false
-        placeholder: 可选，例如 409527360556
-        hint: 留空时优先使用当前 URL 的 id；否则会在搭配素材列表中按标题和商品 ID 查找草稿。
       - id: submit_delay_ms
         type: number
         label: 每行提交间隔毫秒
         default: 2500
+        hidden: true
         min: 0
         max: 30000
         step: 500
