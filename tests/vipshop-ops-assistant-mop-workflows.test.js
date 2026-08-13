@@ -150,6 +150,10 @@ test('MOP online status statistics computes online/offline counts and ratios', a
     },
   })
   const summary = helpers.buildSummaryRows(counts, previous, { pages: 2 })[0]
+  const resultRows = helpers.buildResultRows(
+    [{ __sheet_name: '商品状态明细', 商品ID: '1', 商品状态: '上架中' }],
+    [summary],
+  )
   const numericCounts = helpers.countStatus([
     { skuStatus: 0 },
     { skuStatus: 1 },
@@ -163,6 +167,8 @@ test('MOP online status statistics computes online/offline counts and ratios', a
   assert.equal(helpers.formatRatio(2, 1), '100.00%')
   assert.equal(summary.上线数量环比, '100.00%')
   assert.match(summary.__notify_body, /本次商品上线数量：2/)
+  assert.equal(resultRows[0].__sheet_name, '商品状态明细')
+  assert.equal(resultRows.at(-1).__sheet_name, '执行摘要')
 })
 
 test('MOP info-table workflow builds CSV download item and validates Semir target path', async () => {
@@ -583,9 +589,10 @@ test('MOP new-arrival main phase queries Vipshop and PDC then summarizes issues'
 
   assert.equal(result.success, true)
   assert.equal(result.meta.action, 'complete')
-  assert.equal(result.data[0].__sheet_name, '执行摘要')
-  assert.equal(result.data[0].问题行数, 1)
-  assert.match(result.data[0].__notify_body, /第2行 201326108015\/20132610801500311：市场价与运营表吊牌价不一致/)
-  assert.match(result.data[1].问题说明, /市场价与运营表吊牌价不一致/)
-  assert.match(result.data[1].问题说明, /商品展示图不是方图/)
+  assert.equal(result.data[0].__sheet_name, '上新资料检查明细')
+  assert.match(result.data[0].问题说明, /市场价与运营表吊牌价不一致/)
+  assert.match(result.data[0].问题说明, /商品展示图不是方图/)
+  assert.equal(result.data.at(-1).__sheet_name, '执行摘要')
+  assert.equal(result.data.at(-1).问题行数, 1)
+  assert.match(result.data.at(-1).__notify_body, /第2行 201326108015\/20132610801500311：市场价与运营表吊牌价不一致/)
 })

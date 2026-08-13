@@ -206,6 +206,8 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertEqual(online["output"][1]["channel"], "dingtalk")
         self.assertIn("上线数量环比", online["output"][0]["columns"])
         self.assertIn("下线数量环比", online["output"][0]["columns"])
+        self.assertEqual(online["output"][0]["sheets"][0]["name"], "商品状态明细")
+        self.assertEqual(online["output"][0]["sheets"][1]["name"], "执行摘要")
 
         self.assertEqual(info["name"], "MOP-唯品商品信息表下载并上传云盘")
         self.assertEqual(info["script"], "MOP-vipshop-info-table-download-upload.js")
@@ -223,6 +225,8 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertTrue(new_params["input_file"]["required"])
         self.assertIn("禁售", new_params["forbidden_keywords"]["default"])
         self.assertIn("问题说明", new_arrival["output"][0]["columns"])
+        self.assertEqual(new_arrival["output"][0]["sheets"][0]["name"], "上新资料检查明细")
+        self.assertEqual(new_arrival["output"][0]["sheets"][1]["name"], "执行摘要")
         self.assertEqual(new_arrival["output"][1]["channel"], "dingtalk")
 
 

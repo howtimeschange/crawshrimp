@@ -386,6 +386,11 @@
     }
   }
 
+  function buildResultRows(detailRows, parsed) {
+    const rows = Array.isArray(detailRows) ? detailRows : []
+    return [...rows, summarizeRows(rows, parsed)]
+  }
+
   function buildIssueNotifyLines(issueRows, limit = 12) {
     const lines = []
     const seen = new Set()
@@ -450,6 +455,7 @@
       forbiddenIssue,
       buildCheckRow,
       summarizeRows,
+      buildResultRows,
       buildIssueNotifyLines,
     })
   }
@@ -460,8 +466,8 @@
   try {
     if (!/^https:\/\/nov-admin\.vip\.com\//i.test(String(location.href || ''))) return navigateTo(VIPSHOP_ENTRY_URL, 'main')
     const parsed = parseJobs(params)
-    if (!parsed.totalRows) return complete([summarizeRows(parsed.invalidRows, parsed), ...parsed.invalidRows], shared)
-    if (!parsed.jobs.length) return complete([summarizeRows(parsed.invalidRows, parsed), ...parsed.invalidRows], shared)
+    if (!parsed.totalRows) return complete(buildResultRows(parsed.invalidRows, parsed), shared)
+    if (!parsed.jobs.length) return complete(buildResultRows(parsed.invalidRows, parsed), shared)
     const merchandiseRows = await queryMerchandiseRows(parsed.jobs, params)
     const indexed = indexMerchandiseRows(merchandiseRows)
     const outputRows = [...parsed.invalidRows]
@@ -469,8 +475,7 @@
       const rows = await checkJob(job, indexed)
       outputRows.push(...rows)
     }
-    const summary = summarizeRows(outputRows, parsed)
-    return complete([summary, ...outputRows], {
+    return complete(buildResultRows(outputRows, parsed), {
       ...shared,
       total_rows: parsed.jobs.length,
       issue_rows: outputRows.filter(row => row.执行结果 !== '通过').length,

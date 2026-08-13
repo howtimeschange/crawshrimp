@@ -259,6 +259,13 @@
     }]
   }
 
+  function buildResultRows(detailRows, summaryRows) {
+    return [
+      ...(Array.isArray(detailRows) ? detailRows : []),
+      ...(Array.isArray(summaryRows) ? summaryRows : []),
+    ]
+  }
+
   function isNovPage() {
     return /^https:\/\/nov-admin\.vip\.com\//i.test(String(location.href || ''))
   }
@@ -299,6 +306,7 @@
       formatRatio,
       normalizeDetailRow,
       buildSummaryRows,
+      buildResultRows,
     })
   }
 
@@ -312,7 +320,7 @@
     const counts = countStatus(detailRows)
     const previous = parsePreviousCounts(params)
     const summaryRows = buildSummaryRows(counts, previous, { pages: result.pages })
-    return complete([...summaryRows, ...detailRows], {
+    return complete(buildResultRows(detailRows, summaryRows), {
       ...shared,
       total_rows: counts.total,
       online_count: counts.online,
