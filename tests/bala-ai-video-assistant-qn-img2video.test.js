@@ -294,7 +294,7 @@ test('builds direct software-manager jobs without silently selecting a template'
   assert.equal(jobs[0].styleCode, '208326102205')
 })
 
-test('builds direct software-manager payload for jobs without a template', async () => {
+test('builds upgraded batch software-manager payload when no itemId is available', async () => {
   const helpers = await loadExports()
   const job = {
     template: null,
@@ -310,10 +310,16 @@ test('builds direct software-manager payload for jobs without a template', async
     { ref: '/tmp/b.png', url: 'https://img.example/uploaded-b.png' },
   ])
 
-  assert.equal(payload.api, 'mtop.taobao.qn.copilot.image.generate.video.submit')
-  assert.equal(payload.data.funcType, 'model_img2video')
-  assert.equal(payload.data.ratio, '3:4')
-  assert.deepEqual(JSON.parse(payload.data.clips), [
+  assert.equal(payload.api, 'mtop.taobao.qn.copilot.video.batch.generate')
+  const batchParam = JSON.parse(payload.data.batchParam)
+  assert.equal(batchParam.length, 1)
+  const item = JSON.parse(batchParam[0])
+  assert.equal(item.funcType, 'model_img2video')
+  assert.equal(item.ratio, '3:4')
+  assert.equal(item.videoQualityLevel, 'standard')
+  assert.equal(item.targetDuration, 15)
+  assert.equal(item.globalPrompt, '儿童模特自然展示上衣细节')
+  assert.deepEqual(JSON.parse(item.clips), [
     {
       modelUrl: 'https://img.example/uploaded-a.png',
       prompt: '儿童模特自然展示上衣细节',
@@ -323,7 +329,103 @@ test('builds direct software-manager payload for jobs without a template', async
       prompt: '儿童模特自然展示上衣细节',
     },
   ])
-  assert.equal(payload.data.itemVO, '{}')
+  assert.equal(item.itemVO, '{}')
+  assert.equal(payload.fallback.api, 'mtop.taobao.qn.copilot.image.generate.video.submit')
+  assert.equal(payload.fallback.data.itemVO, '{}')
+})
+
+test('builds upgraded batch payload without binding itemId even when provided', async () => {
+  const helpers = await loadExports()
+  const job = {
+    template: null,
+    templateId: '',
+    generationMode: 'img2video',
+    styleCode: '208326102205',
+    prompt: '儿童模特自然展示上衣细节',
+    ratio: '3:4',
+    itemId: '1075843020447',
+    productId: '1075843020448',
+  }
+
+  const payload = helpers.buildGenerationPayload(job, [
+    { ref: '/tmp/a.png', url: 'https://img.example/uploaded-a.png', itemId: '1075843020449' },
+  ])
+
+  assert.equal(payload.api, 'mtop.taobao.qn.copilot.video.batch.generate')
+  const batchParam = JSON.parse(payload.data.batchParam)
+  assert.equal(batchParam.length, 1)
+  const item = JSON.parse(batchParam[0])
+  assert.equal(item.funcType, 'model_img2video')
+  assert.equal(item.ratio, '3:4')
+  assert.equal(item.videoQualityLevel, 'standard')
+  assert.equal(item.targetDuration, 15)
+  assert.equal(item.globalPrompt, '儿童模特自然展示上衣细节')
+  assert.deepEqual(JSON.parse(item.clips), [
+    {
+      modelUrl: 'https://img.example/uploaded-a.png',
+      prompt: '儿童模特自然展示上衣细节',
+    },
+  ])
+  assert.equal(item.itemVO, '{}')
+  assert.equal(payload.fallback.api, 'mtop.taobao.qn.copilot.image.generate.video.submit')
+  assert.deepEqual(JSON.parse(payload.fallback.data.clips), [
+    {
+      modelUrl: 'https://img.example/uploaded-a.png',
+      prompt: '儿童模特自然展示上衣细节',
+    },
+  ])
+  assert.equal(payload.fallback.data.itemVO, '{}')
+})
+
+test('extracts task IDs from upgraded batch generate responses', async () => {
+  const helpers = await loadExports()
+  const batchItem = JSON.stringify({
+    success: true,
+    task: {
+      id: 164365688266,
+      submitTaskId: 'submit-164365688266',
+      status: 0,
+    },
+  })
+  const response = {
+    result: {
+      batchTask: [batchItem],
+    },
+  }
+
+  assert.equal(helpers.extractTaskId(response), '164365688266')
+  assert.equal(helpers.extractSubmitTaskId(response), 'submit-164365688266')
+})
+
+test('treats the upgraded software-manager page as upload-ready without legacy helper', async () => {
+  const result = await runScript({
+    params: {
+      execute_mode: 'live',
+      material_images: ['/tmp/208326102205-ai-1.png'],
+    },
+    windowOverrides: {
+      Blob: function Blob() {},
+      FormData: function FormData() {},
+      fetch: async () => ({ blob: async () => ({}) }),
+      lib: {
+        mtop: {
+          request: async request => {
+            if (request.api === 'mtop.taobao.qn.copilot.node.aigc.seller.category.get') {
+              return { data: { result: { mainCateName: '童装/婴儿装/亲子装' } } }
+            }
+            if (request.api === 'mtop.taobao.qn.copilot.video.template.list') {
+              return { data: { result: [] } }
+            }
+            return { data: {} }
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'process_row')
+  assert.equal(result.meta.shared.jobs.length, 1)
 })
 
 test('extracts visible software-manager task IDs and finds the new one', async () => {
@@ -430,10 +532,12 @@ test('recovers a submit timeout when a new task ID appears immediately on the pa
       lib: {
         mtop: {
           request: async request => {
-            submitCalls += 1
-            assert.equal(request.api, 'mtop.taobao.qn.copilot.image.generate.video.submit')
-            document.body.innerText = '最新任务\n任务ID 162085738211\n历史任务\n任务ID 159228616426'
-            throw { ret: ['FAIL_SYS_SERVICE_TIMEOUT::请求服务超时'], traceId: 'trace-timeout' }
+            if (request.api === 'mtop.taobao.qn.copilot.video.batch.generate') {
+              submitCalls += 1
+              document.body.innerText = '最新任务\n任务ID 162085738211\n历史任务\n任务ID 159228616426'
+              throw { ret: ['FAIL_SYS_SERVICE_TIMEOUT::请求服务超时'], traceId: 'trace-timeout' }
+            }
+            throw new Error(`unexpected api ${request.api}`)
           },
         },
       },
@@ -448,6 +552,56 @@ test('recovers a submit timeout when a new task ID appears immediately on the pa
   assert.deepEqual(Array.from(result.meta.shared.active_job.preSubmitTaskIds), ['159228616426'])
   assert.match(result.meta.shared.active_job.submitError, /FAIL_SYS_SERVICE_TIMEOUT|请求服务超时/)
   assert.match(result.meta.shared.active_job.submitWarning, /找回任务ID/)
+})
+
+test('falls back to legacy direct submit only when the upgraded batch API is unavailable', async () => {
+  const job = directVideoJob({ itemId: '1075843020447' })
+  const calls = []
+
+  const result = await runScript({
+    phase: 'process_row',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      poll_timeout_ms: 600000,
+      poll_interval_ms: 5000,
+      submit_recovery_timeout_ms: 60000,
+      submit_recovery_interval_ms: 3000,
+      download_videos: false,
+    },
+    windowOverrides: {
+      document: {
+        body: {
+          innerText: '',
+          textContent: '',
+        },
+      },
+      lib: {
+        mtop: {
+          request: async request => {
+            calls.push(request.api)
+            if (request.api === 'mtop.taobao.qn.copilot.video.batch.generate') {
+              throw { data: { errorMsg: '接口不存在' }, ret: ['FAIL_SYS_API_NOT_FOUND::接口不存在'] }
+            }
+            if (request.api === 'mtop.taobao.qn.copilot.image.generate.video.submit') {
+              return { data: { result: { task: { id: '162085738211', status: 0 } } } }
+            }
+            throw new Error(`unexpected api ${request.api}`)
+          },
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(calls, [
+    'mtop.taobao.qn.copilot.video.batch.generate',
+    'mtop.taobao.qn.copilot.image.generate.video.submit',
+  ])
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'poll_job')
+  assert.equal(result.meta.shared.active_job.taskId, '162085738211')
+  assert.equal(result.meta.shared.active_job.submitApi, 'mtop.taobao.qn.copilot.image.generate.video.submit')
 })
 
 test('recover_submit_task phase continues polling once the page exposes a new task ID', async () => {

@@ -8,6 +8,7 @@
   const UPLOAD_INPUT_SELECTOR = `#${UPLOAD_INPUT_ID}`
   const DEFAULT_CATEGORY = '童装/婴儿装/亲子装'
   const DEFAULT_OUTPUT_DIR = ''
+  const PICTURE_CENTER_UPLOAD_ENDPOINT = 'https://stream-upload.taobao.com/api/upload.api'
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp'])
   const STATUS_TEXT = Object.freeze({
     '-1': '初始化',
@@ -214,7 +215,11 @@
     const mtopReady = typeof client?.request === 'function'
     const needsLocalUpload = normalizeExecutionMode(rawParams.execute_mode) === 'live'
       && normalizeImageRefs(rawParams).some(item => item.source === 'local')
-    const uploadReady = !needsLocalUpload || typeof window.$startFileUpload === 'function'
+    const hasLegacyUpload = typeof window.$startFileUpload === 'function'
+    const hasPictureCenterUpload = typeof pageFetch() === 'function'
+      && typeof pageFormData() === 'function'
+      && typeof pageBlob() === 'function'
+    const uploadReady = !needsLocalUpload || hasLegacyUpload || hasPictureCenterUpload
     return { ready: mtopReady && uploadReady, needsLocalUpload }
   }
 
@@ -500,16 +505,115 @@
     })
   }
 
-  async function uploadDataUrlWithPageHelper(dataUrl, name) {
-    if (typeof window.$startFileUpload !== 'function') {
-      throw new Error('当前页面未暴露图片上传工具 $startFileUpload，请打开生意管家图生视频页后重试')
+  function getCookieValue(name) {
+    if (typeof document === 'undefined') return ''
+    const key = `${String(name || '')}=`
+    const cookies = String(document?.cookie || '').split(';')
+    for (const item of cookies) {
+      const trimmed = item.trim()
+      if (trimmed.startsWith(key)) return decodeURIComponent(trimmed.slice(key.length))
     }
-    const uploaded = await window.$startFileUpload(dataUrl)
-    if (!uploaded || typeof uploaded !== 'object') throw new Error(`图片上传未返回结果：${name}`)
-    if (uploaded.success === false) throw new Error(uploaded.message || `图片上传失败：${name}`)
-    const url = findFirstRemoteUrl(uploaded)
-    if (!url) throw new Error(`图片上传未返回 URL：${name}`)
-    return { url, name, uploadResult: uploaded }
+    return ''
+  }
+
+  function pageFetch() {
+    return window.fetch || globalThis.fetch
+  }
+
+  function pageFormData() {
+    return window.FormData || globalThis.FormData
+  }
+
+  function pageBlob() {
+    return window.Blob || globalThis.Blob
+  }
+
+  async function dataUrlToBlob(dataUrl) {
+    const raw = String(dataUrl || '')
+    if (!raw.startsWith('data:')) throw new Error('图片上传需要 data: URL')
+    const fetchFn = pageFetch()
+    if (typeof fetchFn !== 'function') throw new Error('当前页面不支持 data URL 转 Blob')
+    const response = await fetchFn(raw)
+    return response.blob()
+  }
+
+  function truncateUploadFileName(fileName, maxLength = 100) {
+    const raw = cleanText(fileName || 'image.jpg')
+    const index = raw.lastIndexOf('.')
+    const ext = index > -1 ? raw.slice(index) : ''
+    const base = index > -1 ? raw.slice(0, index) : raw
+    const limit = Math.max(1, Number(maxLength || 100) - ext.length)
+    return `${base.length > limit ? base.slice(0, limit) : base}${ext}`
+  }
+
+  async function uploadDataUrlToPictureCenter(dataUrl, name, options = {}) {
+    const FormDataCtor = pageFormData()
+    const fetchFn = pageFetch()
+    if (typeof FormDataCtor !== 'function') throw new Error('当前页面不支持 FormData 上传')
+    if (typeof fetchFn !== 'function') throw new Error('当前页面不支持 fetch 上传')
+    const fileName = truncateUploadFileName(name || options.fileName || 'qn-img2video.jpg')
+    const query = new URLSearchParams()
+    query.append('appkey', cleanText(options.appkey || params.picture_center_appkey || 'tu'))
+    query.append('folderId', cleanText(options.folderId || options.dirId || params.picture_center_folder_id || '0'))
+    query.append('watermark', String(checkboxEnabled(options.watermark ?? params.picture_center_watermark, false)))
+    query.append('picCompress', String(!checkboxEnabled(options.originSize ?? params.picture_center_origin_size, false)))
+    query.append('_input_charset', 'utf-8')
+
+    const form = new FormDataCtor()
+    form.append('water', query.get('watermark') || 'false')
+    form.append('name', fileName)
+    form.append('_tb_token_', cleanText(options.tbToken || getCookieValue('_tb_token_')))
+    form.append('file', await dataUrlToBlob(dataUrl), fileName)
+
+    const response = await fetchFn(`${PICTURE_CENTER_UPLOAD_ENDPOINT}?${query.toString()}`, {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : {}
+    } catch {
+      payload = null
+    }
+    if (!response.ok) throw new Error(`图片空间上传 HTTP ${response.status}: ${text.slice(0, 240)}`)
+    if (!payload || payload.success === false) throw new Error(payload?.message || payload?.msg || `图片空间上传失败：${fileName}`)
+    const url = normalizeRemoteUrl(payload?.object?.url || findFirstRemoteUrl(payload))
+    if (!url) throw new Error(`图片空间上传未返回 URL：${fileName}`)
+    return {
+      url,
+      name: fileName,
+      fileId: cleanText(payload?.object?.fileId),
+      folderId: cleanText(payload?.object?.folderId),
+      pixel: cleanText(payload?.object?.pix),
+      size: payload?.object?.size,
+      quality: payload?.object?.quality,
+      uploadSource: 'picture-center',
+      uploadResult: payload,
+    }
+  }
+
+  async function uploadDataUrlWithPageHelper(dataUrl, name) {
+    let legacyError = null
+    if (typeof window.$startFileUpload === 'function') {
+      try {
+        const uploaded = await window.$startFileUpload(dataUrl)
+        if (!uploaded || typeof uploaded !== 'object') throw new Error(`图片上传未返回结果：${name}`)
+        if (uploaded.success === false) throw new Error(uploaded.message || `图片上传失败：${name}`)
+        const url = findFirstRemoteUrl(uploaded)
+        if (!url) throw new Error(`图片上传未返回 URL：${name}`)
+        return { url, name, uploadSource: 'legacy-page-helper', uploadResult: uploaded }
+      } catch (error) {
+        legacyError = error
+      }
+    }
+    try {
+      return await uploadDataUrlToPictureCenter(dataUrl, name)
+    } catch (error) {
+      const legacyText = legacyError ? `；旧上传 helper 失败：${describeError(legacyError)}` : ''
+      throw new Error(`${error?.message || error}${legacyText}`)
+    }
   }
 
   async function resolveMaterialUrls(job) {
@@ -532,7 +636,7 @@
       const dataUrl = await fileToDataUrl(file)
       const uploaded = await uploadDataUrlWithPageHelper(dataUrl, file.name)
       cache[ref] = uploaded.url
-      materials.push({ ...material, url: uploaded.url, uploadSource: 'local-upload' })
+      materials.push({ ...material, url: uploaded.url, uploadSource: uploaded.uploadSource || 'local-upload', uploadResult: uploaded.uploadResult })
     }
     return materials
   }
@@ -595,37 +699,100 @@
 
   function buildDirectVideoPayload(job, materials) {
     if (!materials.length) throw new Error('没有可用图片素材')
-    const itemId = cleanText(job.productId || job.itemId)
+    const prompt = cleanText(job.prompt)
     return {
       api: 'mtop.taobao.qn.copilot.image.generate.video.submit',
+      data: buildDirectVideoParam(job, materials, { prompt }),
+    }
+  }
+
+  function normalizeVideoModel(value) {
+    const text = compact(value || params.video_model || params.videoQualityLevel || 'standard').toLowerCase()
+    if (['economy', '经济'].includes(text)) return 'economy'
+    if (['advanced', '进阶'].includes(text)) return 'advanced'
+    if (['premium', 'ultimate', '极致'].includes(text)) return 'premium'
+    return 'standard'
+  }
+
+  function normalizeVideoDuration(job, materials) {
+    const explicit = parseInteger(params.video_duration || params.videoDuration || job.duration, 0, 0, 60)
+    if (explicit) return Math.max(4, Math.min(15, explicit))
+    return normalizeVideoModel(job.videoModel) === 'economy' ? Math.max(5, materials.length * 5) : 15
+  }
+
+  function directVideoClips(job, materials, prompt = cleanText(job.prompt)) {
+    return materials.map(item => {
+      const clip = {
+        modelUrl: item.url,
+        prompt: cleanText(item.prompt || prompt),
+      }
+      const lastFrame = cleanText(item.lastFrame)
+      if (lastFrame && lastFrame !== 'img2video-no-frame') clip.modelUrlLast = lastFrame
+      return clip
+    })
+  }
+
+  function buildDirectVideoParam(job, materials, options = {}) {
+    if (!materials.length) throw new Error('没有可用图片素材')
+    const prompt = cleanText(options.prompt || job.prompt)
+    const clips = directVideoClips(job, materials, prompt)
+    const hasLastFrame = clips.some(item => cleanText(item.modelUrlLast))
+    return {
+      clips: JSON.stringify(clips),
+      qualityMode: 'highQuality',
+      ratio: normalizeRatio(job.ratio),
+      selectFirstLastFrame: hasLastFrame,
+      itemVO: '{}',
+      funcType: 'model_img2video',
+      globalPrompt: prompt || undefined,
+      videoQualityLevel: normalizeVideoModel(job.videoModel),
+      targetDuration: normalizeVideoDuration(job, materials),
+    }
+  }
+
+  function buildBatchVideoPayload(job, materials) {
+    const data = buildDirectVideoParam(job, materials)
+    return {
+      api: 'mtop.taobao.qn.copilot.video.batch.generate',
       data: {
-        clips: JSON.stringify(materials.map(item => ({
-          modelUrl: item.url,
-          prompt: cleanText(job.prompt),
-          ...(itemId ? { itemId } : {}),
-        }))),
-        qualityMode: 'highQuality',
-        ratio: normalizeRatio(job.ratio),
-        selectFirstLastFrame: 'false',
-        itemVO: JSON.stringify(job.item || (itemId ? { itemId } : {})),
-        funcType: 'model_img2video',
+        batchParam: JSON.stringify([JSON.stringify(data)]),
+      },
+      fallback: {
+        api: 'mtop.taobao.qn.copilot.image.generate.video.submit',
+        data,
       },
     }
   }
 
   function buildGenerationPayload(job, materials) {
-    return job?.template || cleanText(job?.templateId)
-      ? buildTemplatePayload(job, materials)
-      : buildDirectVideoPayload(job, materials)
+    if (job?.template || cleanText(job?.templateId)) return buildTemplatePayload(job, materials)
+    return buildBatchVideoPayload(job, materials)
+  }
+
+  function firstSuccessfulBatchTask(payload) {
+    const result = payload?.result || payload?.data?.result || payload?.data || payload
+    const batchTask = result?.batchTask || result?.result?.batchTask
+    const items = Array.isArray(batchTask) ? batchTask : []
+    for (const item of items) {
+      const parsed = safeParseJson(item, item)
+      if (parsed?.success === false) continue
+      const task = parsed?.task || parsed?.result?.task
+      if (task) return { task, item: parsed }
+    }
+    return null
   }
 
   function extractTaskId(result) {
+    const batch = firstSuccessfulBatchTask(result)
+    if (batch?.task) return cleanText(batch.task.id || batch.task.taskId || batch.task.videoTaskId)
     const payload = result?.result || result
     const task = payload?.task || payload?.data?.task || payload?.videoTask || payload
     return cleanText(task?.id || task?.taskId || task?.videoTaskId || payload?.id || payload?.taskId)
   }
 
   function extractSubmitTaskId(result) {
+    const batch = firstSuccessfulBatchTask(result)
+    if (batch?.task) return cleanText(batch.task.submitTaskId)
     const payload = result?.result || result
     const task = payload?.task || payload?.data?.task || payload?.videoTask || payload
     return cleanText(task?.submitTaskId || payload?.submitTaskId)
@@ -990,6 +1157,11 @@
 
   function isSubmitServiceTimeoutError(error) {
     return /FAIL_SYS_SERVICE_TIMEOUT|SERVICE_TIMEOUT|请求服务超时|服务超时|超时|timeout/i.test(describeError(error, error?.message || ''))
+  }
+
+  function isFallbackableQuickSubmitError(error) {
+    return /API_NOT_FOUND|SERVICE_NOT_FOUND|METHOD_NOT_ALLOWED|INVALID_API|接口不存在|未找到接口|not\s*found|404/i
+      .test(describeError(error, error?.message || ''))
   }
 
   function normalizeTaskState(payload) {
@@ -1442,7 +1614,14 @@
       materials = await resolveMaterialUrls(job)
       payload = buildGenerationPayload(job, materials)
       preSubmitTaskIds = collectVisibleTaskIds()
-      const submit = await callMtop(payload.api, payload.data)
+      let submit = null
+      try {
+        submit = await callMtop(payload.api, payload.data)
+      } catch (error) {
+        if (!payload.fallback || !isFallbackableQuickSubmitError(error)) throw error
+        payload = payload.fallback
+        submit = await callMtop(payload.api, payload.data)
+      }
       const taskId = extractTaskId(submit)
       const submitTaskId = extractSubmitTaskId(submit)
       if (!taskId) throw new Error('提交成功但未识别到任务ID')
@@ -1699,6 +1878,7 @@
       normalizeDirectoryListingFiles,
       normalizeImageRefs,
       groupInjectedFilesByName,
+      getCookieValue,
       normalizeTemplateRequests,
       getTemplateSlots,
       chooseTemplate,
@@ -1708,8 +1888,11 @@
       mapMaterialsToTemplateSlots,
       buildFallbackModelImages,
       buildTemplatePayload,
+      buildDirectVideoParam,
       buildDirectVideoPayload,
+      buildBatchVideoPayload,
       buildGenerationPayload,
+      firstSuccessfulBatchTask,
       extractTaskId,
       extractSubmitTaskId,
       taskIdsFromText,
@@ -1720,6 +1903,7 @@
       visibleTaskStateFromPage,
       findNewTaskId,
       isSubmitServiceTimeoutError,
+      isFallbackableQuickSubmitError,
       normalizeTaskState,
       buildRunShared,
       buildOutputRow,
