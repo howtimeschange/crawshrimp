@@ -34,13 +34,9 @@
 
   function collectFileRows(file) {
     const rows = []
-    const seen = new Set()
     const pushRows = items => {
       for (const row of Array.isArray(items) ? items : []) {
         if (!row || typeof row !== 'object') continue
-        const key = JSON.stringify(row)
-        if (seen.has(key)) continue
-        seen.add(key)
         rows.push(row)
       }
     }
@@ -97,14 +93,22 @@
       const rowNo = Number(row.__row_number || row.row_number || row.行号 || index + 2)
       const styleCode = normalizeCode(rowValue(row, ['款号', '商品款号', '大货款号', 'styleCode', 'style_code', 'osn', 'sn']))
       const goodsCode = normalizeCode(rowValue(row, ['货号', '商品货号', '款色号', '色号', 'goodsCode', 'goods_code', 'msn', 'colourGSN']))
-      const tagPrice = parseMoney(rowValue(row, ['吊牌价', '市场价', '牌价', '建议零售价', 'tagPrice', 'marketPrice']))
+      const tagPrice = parseMoney(rowValue(row, [
+        '吊牌价',
+        '市场价',
+        '市场价/吊牌价',
+        '吊牌价/市场价',
+        '牌价',
+        '建议零售价',
+        'tagPrice',
+        'marketPrice',
+      ]))
       if (!styleCode && !goodsCode) {
         invalidRows.push(buildCheckRow({ rowNo }, null, null, '输入校验', '失败', '缺少款号或货号'))
         return
       }
       const key = `${styleCode || '*'}|${goodsCode || '*'}`
       if (seen.has(key)) {
-        invalidRows.push(buildCheckRow({ rowNo, styleCode, goodsCode, expectedPrice: tagPrice }, null, null, '输入校验', '失败', '输入表重复'))
         return
       }
       seen.add(key)

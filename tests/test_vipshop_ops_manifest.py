@@ -214,6 +214,7 @@ class VipshopOpsManifestTests(unittest.TestCase):
         self.assertIn("MOP品牌/4.运营/02-唯品", info_params["semir_cloud_path"]["default"])
         self.assertIn("网页上传状态", info["output"][0]["columns"])
         self.assertEqual(info["output"][1]["type"], "notify")
+        self.assertIn("网页 API 上传完成接口读回", info["output"][1]["condition"])
 
         self.assertEqual(new_arrival["name"], "MOP-唯品商品上新资料检查")
         self.assertEqual(new_arrival["script"], "MOP-vipshop-new-arrival-material-check.js")

@@ -784,7 +784,7 @@ tasks:
               - 备注
       - type: notify
         channel: dingtalk
-        condition: "data.length > 0"
+        condition: "data.length > 0 && data[0].网页上传状态 == '网页 API 上传完成接口读回'"
 
   - id: mop_new_arrival_material_check
     name: MOP-唯品商品上新资料检查

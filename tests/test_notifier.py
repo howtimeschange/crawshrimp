@@ -14,6 +14,13 @@ class NotifierConditionTests(unittest.TestCase):
         self.assertTrue(notifier.should_notify("data.length > 1 || data.length == 1", [{"id": 1}]))
         self.assertFalse(notifier.should_notify("data.length > 1 && data.length < 3 || data.length == 1", [{}, {}, {}, {}]))
 
+    def test_should_notify_supports_safe_data_field_condition(self):
+        condition = "data.length > 0 && data[0].网页上传状态 == '网页 API 上传完成接口读回'"
+
+        self.assertTrue(notifier.should_notify(condition, [{"网页上传状态": "网页 API 上传完成接口读回"}]))
+        self.assertFalse(notifier.should_notify(condition, [{"网页上传状态": "未上传"}]))
+        self.assertFalse(notifier.should_notify(condition, []))
+
     def test_should_notify_does_not_execute_python_expressions(self):
         class Trap:
             touched = False

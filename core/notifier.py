@@ -23,6 +23,9 @@ from core.config import get as cfg_get
 logger = logging.getLogger(__name__)
 
 _DATA_LENGTH_COMPARISON_RE = re.compile(r"^\s*data\.length\s*(==|!=|>=|<=|>|<)\s*(\d+)\s*$")
+_DATA_FIELD_COMPARISON_RE = re.compile(
+    r"^\s*data\[(\d+)\]\.([A-Za-z0-9_\-\u4e00-\u9fff]+)\s*(==|!=)\s*(['\"])(.*?)\4\s*$"
+)
 _COMPARISON_OPERATORS = {
     "==": operator.eq,
     "!=": operator.ne,
@@ -168,7 +171,7 @@ def should_notify(condition: Optional[str], data: list) -> bool:
     if not condition:
         return True
     try:
-        result = _evaluate_condition(condition, len(data))
+        result = _evaluate_condition(condition, data)
         if result is None:
             logger.warning("Unsupported notification condition '%s', defaulting to True", condition)
             return True
@@ -178,26 +181,34 @@ def should_notify(condition: Optional[str], data: list) -> bool:
         return True
 
 
-def _evaluate_condition(condition: str, data_length: int) -> Optional[bool]:
+def _evaluate_condition(condition: str, data: list) -> Optional[bool]:
     expression = str(condition or "").strip()
     if not expression:
         return True
     if "||" in expression:
         parts = expression.split("||")
-        values = [_evaluate_condition(part, data_length) for part in parts]
+        values = [_evaluate_condition(part, data) for part in parts]
         if any(value is None for value in values):
             return None
         return any(values)
     parts = expression.split("&&")
-    values = [_evaluate_condition_part(part, data_length) for part in parts]
+    values = [_evaluate_condition_part(part, data) for part in parts]
     if any(value is None for value in values):
         return None
     return all(values)
 
 
-def _evaluate_condition_part(condition: str, data_length: int) -> Optional[bool]:
+def _evaluate_condition_part(condition: str, data: list) -> Optional[bool]:
     matched = _DATA_LENGTH_COMPARISON_RE.match(condition)
     if not matched:
-        return None
+        field_match = _DATA_FIELD_COMPARISON_RE.match(condition)
+        if not field_match:
+            return None
+        index_raw, field, op, _quote, expected = field_match.groups()
+        index = int(index_raw)
+        actual = ""
+        if 0 <= index < len(data) and isinstance(data[index], dict):
+            actual = str(data[index].get(field) or "")
+        return actual == expected if op == "==" else actual != expected
     op, expected_raw = matched.groups()
-    return bool(_COMPARISON_OPERATORS[op](data_length, int(expected_raw)))
+    return bool(_COMPARISON_OPERATORS[op](len(data), int(expected_raw)))

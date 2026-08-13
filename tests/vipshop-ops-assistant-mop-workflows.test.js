@@ -469,6 +469,8 @@ test('MOP new-arrival helpers detect price, forbidden and image-ratio issues', a
       rows: [
         { __row_number: 2, 款号: '201326108015', 货号: '20132610801500311', 吊牌价: '199' },
         { __row_number: 3, 款号: '201326108015', 货号: '20132610801500311', 吊牌价: '199' },
+        { __row_number: 3, 款号: '201326108015', 货号: '20132610801500311', 吊牌价: '199' },
+        { __row_number: 4, 款号: '653514A6602Z', '市场价/吊牌价': '890' },
       ],
     },
   })
@@ -481,9 +483,9 @@ test('MOP new-arrival helpers detect price, forbidden and image-ratio issues', a
     listImages: [{ imageIndex: 50, imageUrl: 'list', imageSize: '1200x950' }],
   })
 
-  assert.equal(parsed.jobs.length, 1)
-  assert.equal(parsed.invalidRows[0].问题说明, '输入表重复')
-  assert.equal(parsed.invalidRows[0].唯品市场价, '')
+  assert.equal(parsed.jobs.length, 2)
+  assert.equal(parsed.jobs[1].expectedPrice, 890)
+  assert.equal(parsed.invalidRows.length, 0)
   assert.match(price, /市场价与运营表吊牌价不一致/)
   assert.match(forbidden, /疑似涉及禁售/)
   assert.equal(main, '商品展示图不是方图：1200x900')
