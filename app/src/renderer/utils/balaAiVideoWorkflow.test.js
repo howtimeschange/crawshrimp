@@ -474,6 +474,20 @@ test('video task dialog exposes model and detail image kind filters', async () =
   assert.match(workflowSource, /videoTaskAssetSourceType\(asset\) === 'detail'/)
 })
 
+test('video task dialog can select or clear only the currently filtered assets', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /class="aiv-video-task-filter-actions"/)
+  assert.match(workflowSource, /当前筛选 \{\{ filteredVideoTaskSelectableAssets\.length \}\} 张 · 已选 \{\{ filteredVideoTaskSelectedAssets\.length \}\}/)
+  assert.match(workflowSource, /@click="selectFilteredVideoTaskAssets"/)
+  assert.match(workflowSource, /@click="clearFilteredVideoTaskAssets"/)
+  assert.match(workflowSource, /const filteredVideoTaskSelectableAssets = computed\(\(\) => \([\s\S]*?filteredVideoTaskAssets\.value\.filter\(asset => asset\.selectable\)/)
+  assert.match(workflowSource, /const filteredVideoTaskSelectedAssets = computed\(\(\) => \([\s\S]*?filteredVideoTaskSelectableAssets\.value\.filter\(asset => videoTaskDraft\.assetIds\.includes\(asset\.id\)\)/)
+  assert.match(workflowSource, /function selectFilteredVideoTaskAssets\(\)[\s\S]*?for \(const asset of filteredVideoTaskSelectableAssets\.value\)/)
+  assert.match(workflowSource, /function clearFilteredVideoTaskAssets\(\)[\s\S]*?videoTaskDraft\.assetIds = videoTaskDraft\.assetIds\.filter\(id => !filteredIds\.has\(id\)\)/)
+  assert.match(workflowSource, /function videoTaskAssetLimitForProvider\(provider = videoTaskDraft\.provider\)/)
+})
+
 test('AI edit hover tools do not steal card selection clicks', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
   const hoverRule = workflowSource.match(/\.aiv-media-card:hover \.aiv-media-hover-tools,[^{]+\{([^}]*)\}/)?.[1] || ''

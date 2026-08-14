@@ -1741,6 +1741,15 @@
               </div>
             </div>
 
+            <div v-if="videoTaskProviderConfigMissing" class="aiv-provider-config-banner" role="note">
+              <div>
+                <strong>{{ providerLabel(videoTaskDraft.provider) }} 未配置</strong>
+                <span>{{ videoTaskProviderConfigText }}</span>
+                <small>{{ videoTaskProviderUsageText }}</small>
+              </div>
+              <button type="button" class="aiv-ghost small" @click="openAiCapabilitySettings(videoTaskDraft.provider)">去配置</button>
+            </div>
+
             <!-- HappyHorse 模式按已选图片数自动：0=文生 / 1=图生 / 2–9=参考生（与 AI 生视频一致） -->
             <div v-if="videoTaskDraft.provider === 'happyhorse'" class="aiv-hh-mode-auto">
               <span>HappyHorse 模式</span>
@@ -1898,16 +1907,6 @@
               <button type="button" class="aiv-ghost small" @click="openTemplateLibrary(videoTaskDraft.styleCode)">选择生意管家模板</button>
               <button type="button" class="aiv-ghost small" @click="videoTaskDraft.templateId = ''">不选模板</button>
             </div>
-            <div v-else class="aiv-seedance-callout">
-              <strong>{{ providerLabel(videoTaskDraft.provider) }}</strong>
-              <span>凭据状态：{{ providerStatusLabel(videoTaskDraft.provider) }}；预检通过后仍需明确授权才会生成。</span>
-              <small v-if="videoTaskDraft.provider === 'seedance'">如触发隐私保护，改用服装、场景和动作文字描述生成原创人物版本。</small>
-              <small v-else-if="videoTaskDraft.provider === 'kling-v3' || videoTaskDraft.provider === 'kling-omni'">Kling 可直接选择本地图片；提交时自动上传百炼临时 OSS。</small>
-              <small v-else-if="videoTaskDraft.provider === 'pixverse-motioncontrol'">PixVerse 需要 1 张角色图和 1 条动作视频；优先本地选择，提交时自动上传临时 OSS。</small>
-              <small v-else-if="videoTaskDraft.happyhorseMode === 't2v'">文生视频不需要图片，使用原创人物和场景描述。</small>
-              <small v-else-if="videoTaskDraft.happyhorseMode === 'i2v'">图生视频只允许选择 1 张首帧图，画幅跟随图片。</small>
-              <small v-else>参考生视频支持 1-9 张图片，可组合模拍图和细节图。</small>
-            </div>
           </aside>
 
           <!-- 右：图片内容区 -->
@@ -1951,6 +1950,13 @@
                 >
                   {{ tab.label }} <strong>{{ tab.count }}</strong>
                 </button>
+              </div>
+              <div class="aiv-video-task-filter-actions" aria-label="当前筛选素材批量选择">
+                <span>当前筛选 {{ filteredVideoTaskSelectableAssets.length }} 张 · 已选 {{ filteredVideoTaskSelectedAssets.length }}</span>
+                <div>
+                  <button type="button" class="aiv-ghost small" :disabled="!canSelectFilteredVideoTaskAssets" @click="selectFilteredVideoTaskAssets">全选当前筛选</button>
+                  <button type="button" class="aiv-ghost small" :disabled="!canClearFilteredVideoTaskAssets" @click="clearFilteredVideoTaskAssets">取消全选</button>
+                </div>
               </div>
               <div
                 :id="`video-task-asset-panel-${videoTaskAssetFilter}`"
@@ -3058,6 +3064,18 @@ const filteredVideoTaskAssets = computed(() => {
     return true
   })
 })
+const filteredVideoTaskSelectableAssets = computed(() => (
+  filteredVideoTaskAssets.value.filter(asset => asset.selectable)
+))
+const filteredVideoTaskSelectedAssets = computed(() => (
+  filteredVideoTaskSelectableAssets.value.filter(asset => videoTaskDraft.assetIds.includes(asset.id))
+))
+const canSelectFilteredVideoTaskAssets = computed(() => (
+  providerUsesLocalImages(videoTaskDraft.provider, videoTaskDraft.happyhorseMode)
+  && filteredVideoTaskSelectableAssets.value.length > 0
+  && filteredVideoTaskSelectedAssets.value.length < filteredVideoTaskSelectableAssets.value.length
+))
+const canClearFilteredVideoTaskAssets = computed(() => filteredVideoTaskSelectedAssets.value.length > 0)
 /** 多图分页 + 缩略图队列：首屏少挂载，禁止全量原图 base64 */
 const VIDEO_TASK_ASSET_CHUNK = 20
 const VIDEO_TASK_THUMB_CONCURRENCY = 3
@@ -8226,6 +8244,30 @@ function providerStatusLabel(provider) {
   return status.configured ? `已配置（${status.source || '本机'}）` : '未配置'
 }
 
+function videoTaskProviderStatus(provider = videoTaskDraft.provider) {
+  const statusKey = isBailianVideoProvider(provider) ? 'happyhorse' : provider
+  return videoProviderStatus[statusKey] || null
+}
+
+const videoTaskProviderConfigMissing = computed(() => {
+  const provider = videoTaskDraft.provider
+  const status = videoTaskProviderStatus(provider)
+  return isApiVideoProvider(provider) && Boolean(status) && !status.configured
+})
+
+const videoTaskProviderConfigText = computed(() => {
+  const status = videoTaskProviderStatus(videoTaskDraft.provider)
+  const source = String(status?.source || '未配置').trim()
+  return `凭据状态：${source}；预检通过后仍需明确授权才会生成。`
+})
+
+const videoTaskProviderUsageText = computed(() => {
+  if (videoTaskDraft.provider === 'seedance') return 'Seedance 需要配置视频模型 API Key；如触发隐私保护，会改用原创人物文字描述。'
+  if (isKlingVideoProvider(videoTaskDraft.provider)) return 'Kling 需要百炼 API Key 和临时 OSS 上传配置；本地图片会在提交时自动上传。'
+  if (isPixVerseVideoProvider(videoTaskDraft.provider)) return 'PixVerse 需要百炼 API Key 和临时 OSS 上传配置；角色图和动作视频会在提交时自动上传。'
+  return 'HappyHorse 需要百炼 API Key；按已选图片数自动切换文生、图生或参考生视频。'
+})
+
 function openTemplateLibrary(styleCode = '') {
   lastFocusedElement.value = document.activeElement
   activeTemplateStyle.value = styleCode
@@ -8422,6 +8464,48 @@ function toggleVideoTaskDraftAsset(asset) {
     return
   }
   videoTaskDraft.assetIds.push(assetId)
+  syncHappyHorseModeFromAssetCount()
+}
+
+function videoTaskAssetLimitForProvider(provider = videoTaskDraft.provider) {
+  if (provider === 'seedance') return 4
+  if (provider === 'happyhorse') return 9
+  if (isKlingVideoProvider(provider)) return 2
+  if (isPixVerseVideoProvider(provider)) return 1
+  return Number.POSITIVE_INFINITY
+}
+
+function selectFilteredVideoTaskAssets() {
+  videoTaskDraftError.value = ''
+  if (!providerUsesLocalImages(videoTaskDraft.provider, videoTaskDraft.happyhorseMode)) {
+    videoTaskDraftError.value = `${providerLabel(videoTaskDraft.provider)} 当前不使用本地图片素材`
+    return
+  }
+  const nextIds = [...videoTaskDraft.assetIds]
+  const selected = new Set(nextIds)
+  const limit = videoTaskAssetLimitForProvider(videoTaskDraft.provider)
+  let skipped = 0
+  for (const asset of filteredVideoTaskSelectableAssets.value) {
+    if (!asset?.id || selected.has(asset.id)) continue
+    if (nextIds.length >= limit) {
+      skipped += 1
+      continue
+    }
+    selected.add(asset.id)
+    nextIds.push(asset.id)
+  }
+  videoTaskDraft.assetIds = nextIds
+  if (skipped > 0) {
+    videoTaskDraftError.value = `${providerLabel(videoTaskDraft.provider)} 最多选择 ${limit} 张图片，已按当前筛选补齐到上限`
+  }
+  syncHappyHorseModeFromAssetCount()
+}
+
+function clearFilteredVideoTaskAssets() {
+  videoTaskDraftError.value = ''
+  const filteredIds = new Set(filteredVideoTaskSelectableAssets.value.map(asset => asset.id).filter(Boolean))
+  if (!filteredIds.size) return
+  videoTaskDraft.assetIds = videoTaskDraft.assetIds.filter(id => !filteredIds.has(id))
   syncHappyHorseModeFromAssetCount()
 }
 
@@ -12605,6 +12689,41 @@ function localFileUrl(path) {
   line-height: 1.5;
 }
 
+.aiv-provider-config-banner {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--orange-rgb), 0.35);
+  border-radius: 8px;
+  background: var(--orange-bg);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aiv-provider-config-banner > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.aiv-provider-config-banner strong,
+.aiv-provider-config-banner span,
+.aiv-provider-config-banner small {
+  display: block;
+}
+
+.aiv-provider-config-banner span,
+.aiv-provider-config-banner small {
+  color: var(--text2);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.aiv-provider-config-banner .aiv-ghost {
+  flex: 0 0 auto;
+}
+
 .aiv-video-task-assets {
   display: grid;
   grid-template-columns: repeat(6, minmax(104px, 1fr));
@@ -14306,8 +14425,8 @@ function localFileUrl(path) {
   min-width: 0;
   min-height: 0;
   display: grid;
-  /* head + status tabs + kind tabs + asset grid */
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  /* head + status tabs + kind tabs + bulk actions + asset grid */
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   gap: 8px;
   overflow: hidden;
 }
@@ -14377,6 +14496,31 @@ function localFileUrl(path) {
   border-color: var(--orange);
   color: var(--orange-text);
   background: var(--orange-bg);
+}
+
+.aiv-video-task-filter-actions {
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aiv-video-task-filter-actions > span {
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-video-task-filter-actions > div {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 /* 独立缩略图网格：不复用 .aiv-video-asset-card，避免全局 grid/absolute 冲突导致条状堆叠 */

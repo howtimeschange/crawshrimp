@@ -1361,9 +1361,9 @@ test('AI video workflow exposes HappyHorse as an explicit video task provider', 
 
   assert.match(source, /title: '百炼 HappyHorse 1\.1 · 阿里云'/)
   assert.match(templateSource, /v-for="option in videoTaskProviderOptions"/)
-  assert.match(templateSource, /文生视频/)
-  assert.match(templateSource, /图生视频/)
-  assert.match(templateSource, /参考生视频/)
+  assert.match(source, /文生视频/)
+  assert.match(source, /图生视频/)
+  assert.match(source, /参考生视频/)
   assert.match(source, /runBalaHappyHorseVideo/)
   assert.match(source, /getBalaVideoProviderStatus/)
   assert.doesNotMatch(templateSource, /semir_video_material_prepare/)
@@ -1576,6 +1576,24 @@ test('AI capability settings provide local secret fields for video providers', (
   assert.match(settings, /ai\.video\.seedance_api_key/)
   assert.match(settings, /ai\.video\.bailian_api_key/)
   assert.match(settings, /type="password"/)
+})
+
+test('API video task provider configuration hint sits directly below model selection', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+  const providerSwitcherIndex = templateSource.indexOf('class="aiv-provider-switcher"')
+  const configBannerIndex = templateSource.indexOf('class="aiv-provider-config-banner"', providerSwitcherIndex)
+  const generationParamsIndex = templateSource.indexOf('class="aiv-video-gen-params"', providerSwitcherIndex)
+  const outputPickerIndex = templateSource.indexOf('pickVideoTaskOutputDirectory', providerSwitcherIndex)
+
+  assert.ok(providerSwitcherIndex >= 0)
+  assert.ok(configBannerIndex > providerSwitcherIndex)
+  assert.ok(configBannerIndex < generationParamsIndex)
+  assert.ok(configBannerIndex < outputPickerIndex)
+  assert.match(templateSource, /v-if="videoTaskProviderConfigMissing" class="aiv-provider-config-banner"/)
+  assert.match(templateSource, /@click="openAiCapabilitySettings\(videoTaskDraft\.provider\)">去配置/)
+  assert.match(source, /const videoTaskProviderConfigMissing = computed\(\(\) => \{[\s\S]*?isApiVideoProvider\(provider\)[\s\S]*?!status\.configured/)
+  assert.doesNotMatch(templateSource, /<div v-else class="aiv-seedance-callout">/)
 })
 
 test('material thumbnails prioritize the currently rendered 20 cards without personal-path defaults', () => {

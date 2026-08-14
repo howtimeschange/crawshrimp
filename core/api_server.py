@@ -245,14 +245,14 @@ async def _await_cleanup_after_cancel(awaitable):
 
 def _resolve_allowed_file_delete_path(raw_path: str) -> Path:
     try:
-        data_root = runtime_paths.data_root().resolve(strict=False)
         path = Path(raw_path).expanduser().resolve(strict=False)
-        if path == data_root:
-            raise HTTPException(400, f"Refusing to delete crawshrimp data directory: {raw_path}")
-        path.relative_to(data_root)
+        data_root = runtime_paths.data_root().resolve(strict=False)
+        home_root = Path.home().resolve(strict=False)
+        if path in {data_root, home_root} or path == Path(path.anchor):
+            raise HTTPException(400, f"Refusing to delete protected directory: {raw_path}")
+        if path.exists() and path.is_dir():
+            raise HTTPException(400, f"Refusing to delete directory: {raw_path}")
         return path
-    except ValueError:
-        raise HTTPException(400, f"File delete is limited to crawshrimp data directory: {raw_path}")
     except HTTPException:
         raise
     except Exception as exc:

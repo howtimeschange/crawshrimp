@@ -9,18 +9,34 @@ from core import api_server
 
 
 class FileDeleteSecurityTests(unittest.TestCase):
-    def test_delete_files_rejects_paths_outside_runtime_data_root(self):
+    def test_delete_files_rejects_unregistered_paths_outside_runtime_data_root(self):
         with tempfile.TemporaryDirectory() as data_dir:
             with tempfile.TemporaryDirectory() as outside_dir:
                 outside_file = Path(outside_dir) / "keep.txt"
                 outside_file.write_text("important", encoding="utf-8")
 
                 with patch("core.api_server.runtime_paths.data_root", return_value=Path(data_dir)):
-                    with self.assertRaises(HTTPException) as ctx:
-                        api_server.delete_files(api_server.DeleteFilesRequest(paths=[str(outside_file)]))
+                    with patch("core.api_server.data_sink.is_output_file_path", return_value=False):
+                        with self.assertRaises(HTTPException) as ctx:
+                            api_server.delete_files(api_server.DeleteFilesRequest(paths=[str(outside_file)]))
 
                 self.assertEqual(ctx.exception.status_code, 400)
                 self.assertTrue(outside_file.exists())
+
+    def test_delete_files_allows_registered_output_file_outside_runtime_data_root(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            with tempfile.TemporaryDirectory() as outside_dir:
+                target = Path(outside_dir) / "video.mp4"
+                target.write_bytes(b"video")
+
+                with patch("core.api_server.runtime_paths.data_root", return_value=Path(data_dir)):
+                    with patch("core.api_server.data_sink.is_output_file_path", return_value=True):
+                        with patch("core.api_server.data_sink.remove_output_files", return_value={"updated_runs": 1, "removed_refs": 1}):
+                            result = api_server.delete_files(api_server.DeleteFilesRequest(paths=[str(target)]))
+
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["deleted_count"], 1)
+                self.assertFalse(target.exists())
 
     def test_delete_files_allows_paths_inside_runtime_data_root(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -48,6 +64,21 @@ class FileDeleteSecurityTests(unittest.TestCase):
 
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertTrue(target.exists())
+
+    def test_delete_files_rejects_registered_directory_target(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            target = Path(data_dir) / "exports"
+            target.mkdir()
+            marker = target / "keep.txt"
+            marker.write_text("important", encoding="utf-8")
+
+            with patch("core.api_server.runtime_paths.data_root", return_value=Path(data_dir)):
+                with patch("core.api_server.data_sink.is_output_file_path", return_value=True):
+                    with self.assertRaises(HTTPException) as ctx:
+                        api_server.delete_files(api_server.DeleteFilesRequest(paths=[str(target)]))
+
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertTrue(marker.exists())
 
     def test_delete_files_rejects_runtime_data_root_itself(self):
         with tempfile.TemporaryDirectory() as data_dir:
