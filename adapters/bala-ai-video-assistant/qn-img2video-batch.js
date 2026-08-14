@@ -927,6 +927,25 @@
     return taskIdsFromText(taskSearchValuesFromElement(element, includeText).join('\n'))
   }
 
+  function distinctTaskIdsFromElement(element, includeText = true) {
+    const result = []
+    const seen = new Set()
+    for (const id of taskIdsFromElement(element, includeText)) {
+      const value = cleanText(id)
+      if (!value || seen.has(value)) continue
+      seen.add(value)
+      result.push(value)
+    }
+    return result
+  }
+
+  function elementOnlyReferencesTaskId(element, taskId) {
+    const expected = cleanText(taskId)
+    if (!expected) return false
+    const ids = distinctTaskIdsFromElement(element, true)
+    return ids.length > 0 && ids.every(id => id === expected)
+  }
+
   function documentElementsForTaskSearch(doc) {
     const elements = []
     try {
@@ -1072,6 +1091,7 @@
     const id = cleanText(taskId)
     if (!id) return null
     for (const element of taskCandidateElements(id)) {
+      if (!elementOnlyReferencesTaskId(element, id)) continue
       const videoUrl = firstVideoUrlInElement(element)
       if (!videoUrl) continue
       return {
@@ -1143,7 +1163,11 @@
         let current = node
         let addedWithId = false
         for (let depth = 0; current && depth < 8; depth += 1) {
-          const ids = taskIdsFromElement(current, true)
+          const ids = distinctTaskIdsFromElement(current, true)
+          if (ids.length > 1) {
+            current = current.parentElement || current.parentNode
+            continue
+          }
           for (const id of ids) {
             addState(id, videoUrl, current)
             addedWithId = true

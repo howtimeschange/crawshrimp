@@ -926,6 +926,18 @@ export function qnTerminalRunFailure(snapshot = {}) {
   return '生意管家视频任务失败'
 }
 
+export function qnVideoHistoryResultMatchesTask(item = {}, task = {}) {
+  const rawTaskId = compact(item?.raw?.提交任务ID || item?.raw?.视频任务ID || item?.raw?.任务ID || item?.taskId)
+  const knownIds = new Set([task?.providerTaskId, task?.runId, task?.queuedRequestId]
+    .map(value => compact(value))
+    .filter(Boolean))
+  if (knownIds.size) return Boolean(rawTaskId && knownIds.has(rawTaskId))
+
+  const taskStyle = compact(task?.styleCode)
+  const rawStyle = compact(item?.raw?.款号 || item?.raw?.style_code || item?.raw?.styleCode)
+  return Boolean(taskStyle && rawStyle && rawStyle === taskStyle)
+}
+
 export function isSeedancePrivacyProtectionError(error) {
   const message = String(error?.message || error?.error || error || '')
   return message.includes('InputImageSensitiveContentDetected.PrivacyInformation')

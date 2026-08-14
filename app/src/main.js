@@ -1484,6 +1484,11 @@ function apiCall(method, urlPath, body = null, options = {}) {
   })
 }
 
+const BACKEND_STARTUP_RETRY_OPTIONS = {
+  retries: 20,
+  retryDelayMs: 500,
+}
+
 function canonicalAiVideoSelection(rawPath = '', expectedKind = 'file') {
   const value = String(rawPath || '').trim()
   if (!value || !path.isAbsolute(value)) throw new Error('AI 视频选择路径无效')
@@ -2694,9 +2699,9 @@ secureHandle('get-adapters',     async () => apiCall('GET',    '/adapters'))
 secureHandle('uninstall-adapter',async (_, id) => apiCall('DELETE', `/adapters/${id}`))
 secureHandle('enable-adapter',   async (_, id, enabled) =>
   apiCall('PATCH', `/adapters/${id}/enable`, { enabled }))
-secureHandle('get-script-favorites', async () => apiCall('GET', '/script-favorites'))
-secureHandle('favorite-script', async (_, id) => apiCall('PUT', `/script-favorites/${id}`))
-secureHandle('unfavorite-script', async (_, id) => apiCall('DELETE', `/script-favorites/${id}`))
+secureHandle('get-script-favorites', async () => apiCall('GET', '/script-favorites', null, BACKEND_STARTUP_RETRY_OPTIONS))
+secureHandle('favorite-script', async (_, id) => apiCall('PUT', `/script-favorites/${id}`, null, BACKEND_STARTUP_RETRY_OPTIONS))
+secureHandle('unfavorite-script', async (_, id) => apiCall('DELETE', `/script-favorites/${id}`, null, BACKEND_STARTUP_RETRY_OPTIONS))
 
 secureHandle('install-adapter', async (_, payload) => {
   const installMode = payload?.install_mode || 'copy'
@@ -2710,10 +2715,7 @@ secureHandle('install-adapter', async (_, payload) => {
   return { ok: false, error: 'No path or file provided' }
 })
 
-secureHandle('get-tasks',       async () => apiCall('GET', '/tasks', null, {
-  retries: 20,
-  retryDelayMs: 500,
-}))
+secureHandle('get-tasks',       async () => apiCall('GET', '/tasks', null, BACKEND_STARTUP_RETRY_OPTIONS))
 secureHandle('list-task-instances', async (_, query = {}) =>
   apiCall('GET', `/task-instances?${new URLSearchParams(query || {})}`))
 secureHandle('create-task-instance', async (_, payload) =>

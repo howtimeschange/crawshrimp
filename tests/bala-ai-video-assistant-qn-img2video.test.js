@@ -525,6 +525,81 @@ test('polls visible completed software-manager card before waiting for stale MTo
   assert.equal(result.meta.shared.active_job.taskState.source, 'page')
 })
 
+test('does not treat an old completed sibling video as the active task result', async () => {
+  const job = directVideoJob({ outputDir: '/tmp/qn-video' })
+  const currentStatus = makeDomElement({
+    text: '任务ID 164441692659 展示视频 详细信息 正在生成所需片段素材...',
+  })
+  const oldVideo = makeDomElement({
+    tagName: 'video',
+    attrs: { src: 'https://cdn.example/video/164381738865.mp4' },
+  })
+  const oldCard = makeDomElement({
+    text: '任务ID 164381738865 展示视频 详细信息 已完成',
+    children: [oldVideo],
+  })
+  const grid = makeDomElement({
+    text: '任务ID 164441692659 展示视频 详细信息 正在生成所需片段素材... 任务ID 164381738865 展示视频 详细信息 已完成',
+    children: [currentStatus, oldCard],
+  })
+  const body = makeDomElement({
+    text: grid.textContent,
+    children: [grid],
+  })
+
+  const result = await runScript({
+    phase: 'poll_job',
+    shared: {
+      jobs: [job],
+      job_index: 0,
+      results: [],
+      active_job: {
+        ...job,
+        resolvedMaterials: job.materialRefs,
+        submitApi: 'mtop.taobao.qn.copilot.image.generate.video.submit',
+        taskId: '164441692659',
+      },
+      active_poll_started_at: Date.now(),
+      active_poll_attempts: 0,
+      poll_timeout_ms: 60000,
+      poll_interval_ms: 5000,
+      download_videos: true,
+      download_concurrency: 2,
+      output_dir: '/tmp/qn-video',
+    },
+    windowOverrides: {
+      document: {
+        body,
+        querySelectorAll() {
+          return [body, grid, currentStatus, oldCard, oldVideo]
+        },
+      },
+      lib: {
+        mtop: {
+          request: async request => {
+            assert.equal(request.api, 'mtop.taobao.qn.copilot.quick.task.get')
+            return {
+              result: {
+                task: {
+                  id: '164441692659',
+                  status: 0,
+                  result: '{}',
+                },
+              },
+            }
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'poll_job')
+  assert.equal(result.meta.shared.active_poll_attempts, 1)
+  assert.deepEqual(result.meta.shared.results, [])
+})
+
 test('recovers a submit timeout when a new task ID appears immediately on the page', async () => {
   const document = {
     body: {

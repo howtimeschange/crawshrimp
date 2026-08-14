@@ -71,3 +71,10 @@ test('script favorites skip polling during mutations and discard stale responses
   assert.match(source, /favoriteMutationVersion \+= 1/)
   assert.match(source, /await loadFavorites\(\{ quiet: true, force: true \}\)/)
 })
+
+test('script favorites hide transient startup errors and clear stale warnings on quiet recovery', () => {
+  const source = readFileSync(new URL('../views/ScriptList.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /favoriteError\.value = ''/)
+  assert.match(source, /if \(isCoreStartupConnectionError\(error\)\) return/)
+})

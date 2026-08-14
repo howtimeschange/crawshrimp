@@ -2128,6 +2128,7 @@ import {
   parseBalaReviewBoardUrl,
   parseRunOutputFiles,
   qnTerminalRunFailure,
+  qnVideoHistoryResultMatchesTask,
   qnVideoModelOption,
   qnVideoResultFailure,
   rebaseBalaMaterialRowsToWorkspace,
@@ -6997,17 +6998,6 @@ async function refreshProviderVideoResult(item, { download = false } = {}) {
   }
   upsertVideoResults([next])
   return { result, item: next }
-}
-
-function qnVideoHistoryResultMatchesTask(item = {}, task = {}) {
-  const taskStyle = String(task?.styleCode || '').trim()
-  const rawStyle = String(item?.raw?.款号 || item?.raw?.style_code || item?.raw?.styleCode || '').trim()
-  if (taskStyle && rawStyle) return rawStyle === taskStyle
-  const rawTaskId = String(item?.raw?.提交任务ID || item?.raw?.视频任务ID || item?.raw?.任务ID || item?.taskId || '').trim()
-  const knownIds = new Set([task?.providerTaskId, task?.runId, task?.queuedRequestId]
-    .map(value => String(value || '').trim())
-    .filter(Boolean))
-  return Boolean(rawTaskId && knownIds.has(rawTaskId))
 }
 
 async function restoreQnVideoTaskFromRunHistory(task, preferredRunId = '') {

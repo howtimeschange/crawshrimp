@@ -18,6 +18,7 @@ import {
   normalizeWorkflowStageStatus,
   parseRunOutputFiles,
   parseBalaReviewBoardUrl,
+  qnVideoHistoryResultMatchesTask,
   summarizeBalaMaterialGroups,
   summarizeBalaReviewBatch,
 } from '../app/src/renderer/utils/balaAiVideoWorkflow.js'
@@ -1087,6 +1088,39 @@ test('failed business-manager result replaces the same task loading placeholder'
     videoUrl: '',
     error: '文件过大，不能超过10M',
   }])
+})
+
+test('business-manager history matching does not restore stale same-style results for a tracked run', () => {
+  const task = {
+    styleCode: '208326105009',
+    runId: '205',
+    providerTaskId: '205',
+  }
+
+  assert.equal(qnVideoHistoryResultMatchesTask({
+    raw: {
+      款号: '208326105009',
+      提交任务ID: '163496606139',
+    },
+    taskId: '163496606139',
+  }, task), false)
+  assert.equal(qnVideoHistoryResultMatchesTask({
+    raw: {
+      款号: '208326105009',
+      提交任务ID: '205',
+    },
+    taskId: '205',
+  }, task), true)
+  assert.equal(qnVideoHistoryResultMatchesTask({
+    raw: {
+      款号: '208326105009',
+    },
+  }, task), false)
+  assert.equal(qnVideoHistoryResultMatchesTask({
+    raw: {
+      款号: '208326105009',
+    },
+  }, { styleCode: '208326105009' }), true)
 })
 
 test('Bala image review drawer exposes approval, retry, refresh, and video handoff actions', () => {

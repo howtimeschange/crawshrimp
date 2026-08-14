@@ -179,6 +179,7 @@ import { IconBookmark } from '@tabler/icons-vue'
 import { getScriptCardTaskPreviewMeta } from '../utils/scriptCardPreview'
 import { partitionScriptGroups, shouldApplyScriptFavoritesSnapshot } from '../utils/scriptFavorites'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from '../utils/taskProgress'
+import { formatScriptListLoadError, isCoreStartupConnectionError } from '../utils/coreStartupErrors'
 
 const emit = defineEmits(['open-script', 'reload'])
 const scriptGroups = inject('scriptGroups')
@@ -248,8 +249,9 @@ async function loadFavorites({ quiet = false, force = false } = {}) {
     const response = await window.cs.getScriptFavorites()
     if (!shouldApplyScriptFavoritesSnapshot(favoriteReadVersion, favoriteMutationVersion)) return
     favorites.value = response?.favorites && typeof response.favorites === 'object' ? response.favorites : {}
-    if (!quiet) favoriteError.value = ''
+    favoriteError.value = ''
   } catch (error) {
+    if (isCoreStartupConnectionError(error)) return
     if (!quiet) favoriteError.value = error?.message || '收藏列表加载失败，请稍后重试'
   }
 }
@@ -291,10 +293,10 @@ async function loadGroups(options = {}) {
     await loadScriptGroups({ preserveOnShrink: quiet })
   } catch (error) {
     if (!quiet) {
-      console.error('Failed to load script groups', error)
+      if (!isCoreStartupConnectionError(error)) console.error('Failed to load script groups', error)
     }
     if (!quiet) {
-      loadError.value = error?.message || '脚本列表加载失败，请稍后重试'
+      loadError.value = formatScriptListLoadError(error)
     }
   } finally {
     if (!quiet) {
