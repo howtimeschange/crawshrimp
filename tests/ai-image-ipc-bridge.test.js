@@ -93,3 +93,21 @@ test('local video previews use an authorized Electron streaming bridge instead o
   assert.match(devBridge, /getBalaWorkspaceVideoMedia: async \(\) => \{/)
   assert.doesNotMatch(devBridge, /files\/local-video-preview/)
 })
+
+test('local file deletion bridges sanitize arrays before crossing IPC or HTTP boundaries', () => {
+  assert.match(preload, /function toPlainFilePathArray\(value = \[\]\)/)
+  assert.match(preload, /deleteFile:\s*\(path\) => ipcRenderer\.invoke\('delete-file', plainFilePathString\(path\)\)/)
+  assert.match(preload, /deleteFiles:\s*\(paths\) => ipcRenderer\.invoke\('delete-files', toPlainFilePathArray\(paths\)\)/)
+
+  const deleteHandler = main.slice(
+    main.indexOf("secureHandle('delete-file'"),
+    main.indexOf("secureHandle('sync-odps-files'"),
+  )
+  assert.match(main, /function toPlainFilePathArray\(value = \[\]\)/)
+  assert.match(deleteHandler, /paths: toPlainFilePathArray\(filePath\)/)
+  assert.match(deleteHandler, /paths: toPlainFilePathArray\(filePaths\)/)
+
+  assert.match(devBridge, /function toPlainFilePathArray\(value = \[\]\)/)
+  assert.match(devBridge, /deleteFile: async \(path\) => apiCall\('POST', '\/files\/delete', \{ paths: toPlainFilePathArray\(path\) \}\)/)
+  assert.match(devBridge, /deleteFiles: \(paths\) => apiCall\('POST', '\/files\/delete', \{ paths: toPlainFilePathArray\(paths\) \}\)/)
+})

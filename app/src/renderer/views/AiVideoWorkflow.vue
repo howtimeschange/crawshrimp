@@ -8535,6 +8535,37 @@ function videoResultLocalPath(item = {}) {
   return String(localVideoPathFor(item) || '').trim()
 }
 
+function isBridgeCloneError(error) {
+  return /object could not be cloned|could not be cloned|DataCloneError/i.test(String(error?.message || error || ''))
+}
+
+async function deleteVideoHistoryLocalFiles(paths = []) {
+  const localPaths = toBalaBridgeStringArray(paths)
+  if (!localPaths.length) return { ok: true, failed_count: 0 }
+  try {
+    return await window.cs.deleteFiles(localPaths)
+  } catch (error) {
+    if (!isBridgeCloneError(error) || typeof window.cs?.deleteFile !== 'function') throw error
+    const failed = []
+    for (const path of localPaths) {
+      try {
+        const result = await window.cs.deleteFile(path)
+        if (!result?.ok || Number(result.failed_count || 0) > 0) {
+          failed.push({ path, error: result?.error || '本地视频删除失败' })
+        }
+      } catch (itemError) {
+        failed.push({ path, error: itemError?.message || String(itemError) })
+      }
+    }
+    return {
+      ok: failed.length === 0,
+      failed_count: failed.length,
+      failed_paths: failed,
+      clone_fallback: true,
+    }
+  }
+}
+
 function requestClearVideoResult(item = {}) {
   if (!isClearableVideoResult(item)) return
   if (videoResultStage(item).id === 'failed') {
@@ -8603,7 +8634,7 @@ async function confirmVideoHistoryCleanup(deleteFiles = false) {
   videoHistoryCleanupError.value = ''
   try {
     if (localPaths.length) {
-      const result = await window.cs.deleteFiles(localPaths)
+      const result = await deleteVideoHistoryLocalFiles(localPaths)
       if (!result?.ok || Number(result.failed_count || 0) > 0) {
         throw new Error(result?.error || '本地视频删除失败，历史记录未清除')
       }

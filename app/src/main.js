@@ -1484,6 +1484,24 @@ function apiCall(method, urlPath, body = null, options = {}) {
   })
 }
 
+function plainFilePathString(value) {
+  try {
+    const text = String(value || '').trim()
+    return /^\[object\s.+\]$/.test(text) ? '' : text
+  } catch {
+    return ''
+  }
+}
+
+function toPlainFilePathArray(value = []) {
+  const source = typeof value === 'string'
+    ? [value]
+    : (Array.isArray(value) || (value && typeof value[Symbol.iterator] === 'function'))
+      ? Array.from(value)
+      : [value]
+  return source.map(plainFilePathString).filter(Boolean)
+}
+
 const BACKEND_STARTUP_RETRY_OPTIONS = {
   retries: 20,
   retryDelayMs: 500,
@@ -3186,13 +3204,12 @@ secureHandle('reveal-file', async (_, filePath) => {
 })
 
 secureHandle('delete-file', async (_, filePath) => {
-  return apiCall('POST', '/files/delete', { paths: [filePath] })
+  return apiCall('POST', '/files/delete', { paths: toPlainFilePathArray(filePath) })
 })
 
 secureHandle('delete-files', async (_, filePaths) => {
-  const paths = Array.isArray(filePaths) ? filePaths : [filePaths]
   return apiCall('POST', '/files/delete', {
-    paths: paths.filter(Boolean),
+    paths: toPlainFilePathArray(filePaths),
   })
 })
 

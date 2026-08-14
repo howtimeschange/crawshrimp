@@ -109,6 +109,24 @@ function encodePathPart(value) {
   return encodeURIComponent(String(value || ''))
 }
 
+function plainFilePathString(value) {
+  try {
+    const text = String(value || '').trim()
+    return /^\[object\s.+\]$/.test(text) ? '' : text
+  } catch {
+    return ''
+  }
+}
+
+function toPlainFilePathArray(value = []) {
+  const source = typeof value === 'string'
+    ? [value]
+    : (Array.isArray(value) || (value && typeof value[Symbol.iterator] === 'function'))
+      ? Array.from(value)
+      : [value]
+  return source.map(plainFilePathString).filter(Boolean)
+}
+
 function isMissingHandlerError(error) {
   return String(error?.message || error || '').includes('No handler registered')
 }
@@ -459,8 +477,8 @@ contextBridge.exposeInMainWorld('cs', {
 
   statFile:        (path) => ipcRenderer.invoke('stat-file', path),
   revealFile:      (path) => ipcRenderer.invoke('reveal-file', path),
-  deleteFile:      (path) => ipcRenderer.invoke('delete-file', path),
-  deleteFiles:     (paths) => ipcRenderer.invoke('delete-files', paths),
+  deleteFile:      (path) => ipcRenderer.invoke('delete-file', plainFilePathString(path)),
+  deleteFiles:     (paths) => ipcRenderer.invoke('delete-files', toPlainFilePathArray(paths)),
   syncOdpsFiles:   (payload) => ipcRenderer.invoke('sync-odps-files', payload),
   saveAsFile:      (path) => ipcRenderer.invoke('save-as-file', path),
   saveAdapterTemplate: (adapterId, templateFile, templatePath) => ipcRenderer.invoke('save-adapter-template', adapterId, templateFile, templatePath),

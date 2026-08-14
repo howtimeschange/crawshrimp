@@ -158,6 +158,24 @@ async function apiCall(method, path, body) {
   return payload
 }
 
+function plainFilePathString(value) {
+  try {
+    const text = String(value || '').trim()
+    return /^\[object\s.+\]$/.test(text) ? '' : text
+  } catch {
+    return ''
+  }
+}
+
+function toPlainFilePathArray(value = []) {
+  const source = typeof value === 'string'
+    ? [value]
+    : (Array.isArray(value) || (value && typeof value[Symbol.iterator] === 'function'))
+      ? Array.from(value)
+      : [value]
+  return source.map(plainFilePathString).filter(Boolean)
+}
+
 function queryString(query = {}) {
   return new URLSearchParams(
     Object.entries(query || {})
@@ -506,8 +524,8 @@ export function createDevCsBridge() {
 
     statFile: async () => ({ exists: false }),
     revealFile: openExternalLike,
-    deleteFile: async (path) => apiCall('POST', '/files/delete', { paths: [path] }),
-    deleteFiles: (paths) => apiCall('POST', '/files/delete', { paths: paths || [] }),
+    deleteFile: async (path) => apiCall('POST', '/files/delete', { paths: toPlainFilePathArray(path) }),
+    deleteFiles: (paths) => apiCall('POST', '/files/delete', { paths: toPlainFilePathArray(paths) }),
     syncOdpsFiles: (payload) => apiCall('POST', '/data-sync/odps', payload || {}),
     saveAsFile: openExternalLike,
     saveAdapterTemplate: async () => ({ ok: false, error: '浏览器开发模式不支持保存内置模板' }),
