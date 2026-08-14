@@ -3880,6 +3880,32 @@ function localVideoPathFor(item = {}) {
     .find(value => value && !/^(https?:|data:|blob:)/i.test(value) && isBalaVideoFilePath(value)) || ''
 }
 
+function localVideoPreviewCacheTag(item = {}, path = '') {
+  return [
+    item?.id,
+    item?.taskRefId,
+    item?.taskId,
+    item?.providerTaskId,
+    item?.providerStatus,
+    item?.status,
+    path,
+  ].map(value => String(value || '').trim()).filter(Boolean).join('|')
+}
+
+function localVideoPlaybackUrl(mediaUrl = '', item = {}, path = '') {
+  const value = String(mediaUrl || '').trim()
+  const tag = localVideoPreviewCacheTag(item, path)
+  if (!value || !tag) return value
+  try {
+    const url = new URL(value)
+    url.searchParams.set('v', tag)
+    return url.toString()
+  } catch {
+    const separator = value.includes('?') ? '&' : '?'
+    return `${value}${separator}v=${encodeURIComponent(tag)}`
+  }
+}
+
 function resolveRemoteVideoUrl(value = '') {
   const url = String(value || '').trim()
   if (!url || /^file:/i.test(url)) return ''
@@ -3907,14 +3933,18 @@ async function loadLocalVideoPreview(path = '') {
 
 function mediaPlaybackSource(item = {}) {
   const localPath = localVideoPathFor(item)
+  const localPreview = localPath ? localVideoPreviews[localPath] : ''
+  const localPlayback = localVideoPlaybackUrl(localPreview, item, localPath)
+  if (localPlayback && !brokenPreviews[localPreview] && !brokenPreviews[localPlayback]) return localPlayback
+  if (localPath && !brokenPreviews[localPath]) {
+    if (!localPreview) void loadLocalVideoPreview(localPath)
+    return ''
+  }
   const remote = resolveBalaVideoPlaybackSource(
     { ...item, path: '', local_video_path: '' },
     { resolveRemote: resolveRemoteVideoUrl },
   )
-  if (remote) return remote
-  const localPreview = localVideoPreviews[localPath]
-  if (!localPreview && localPath) void loadLocalVideoPreview(localPath)
-  return localPreview || ''
+  return remote || ''
 }
 
 function videoPlaybackSource(item = {}) {
@@ -4051,6 +4081,23 @@ function releaseWorkspacePreviews() {
   for (const key of Object.keys(localVideoPreviews)) delete localVideoPreviews[key]
   for (const key of Object.keys(localImagePreviews)) delete localImagePreviews[key]
   for (const key of Object.keys(brokenPreviews)) delete brokenPreviews[key]
+}
+
+function releaseWorkspaceVideoPreviews(paths = []) {
+  for (const path of paths) {
+    const key = String(path || '').trim()
+    if (!key) continue
+    const mediaUrl = localVideoPreviews[key]
+    delete localVideoPreviews[key]
+    delete brokenPreviews[key]
+    if (mediaUrl) delete brokenPreviews[mediaUrl]
+    if (mediaUrl) {
+      for (const brokenKey of Object.keys(brokenPreviews)) {
+        if (brokenKey.startsWith(`${mediaUrl}?`) || brokenKey.startsWith(`${mediaUrl}&`)) delete brokenPreviews[brokenKey]
+      }
+    }
+    localVideoPreviewLoading.delete(key)
+  }
 }
 
 function releaseWorkspaceImagePreviews(paths = []) {
@@ -7295,6 +7342,7 @@ function upsertVideoResults(results = []) {
     return !taskRefId || trackedTaskIds.has(taskRefId)
   })
   if (!trackedResults.length) return
+  releaseWorkspaceVideoPreviews(trackedResults.map(videoResultLocalPath))
   videoResults.splice(0, videoResults.length, ...mergeBalaVideoResults(videoResults, trackedResults))
 }
 
@@ -8508,8 +8556,8 @@ function requestClearVideoHistory() {
 }
 
 function openVideoHistoryCleanup(items = []) {
-  const localPaths = [...new Set(items.map(videoResultLocalPath).filter(Boolean))]
-  pendingVideoHistoryCleanup.value = { items: [...items], localPaths }
+  const localPaths = toBalaBridgeStringArray([...new Set(items.map(videoResultLocalPath).filter(Boolean))])
+  pendingVideoHistoryCleanup.value = { items: items.map(persistedVideoResult), localPaths }
   videoHistoryCleanupBusy.value = false
   videoHistoryCleanupError.value = ''
 }
@@ -8533,6 +8581,7 @@ async function clearVideoHistoryRecords(items = []) {
   const cleared = clearBalaVideoTaskHistory(videoResults, items)
   if (!cleared.taskRefIds.length) return
   const removed = videoResults.filter(item => !cleared.results.includes(item))
+  releaseWorkspaceVideoPreviews(removed.map(videoResultLocalPath))
   videoResults.splice(0, videoResults.length, ...cleared.results)
   removeClearedVideoTasks(cleared.taskRefIds)
   resetVideoResultPoll()
@@ -8549,7 +8598,7 @@ async function clearVideoHistoryRecords(items = []) {
 async function confirmVideoHistoryCleanup(deleteFiles = false) {
   const target = pendingVideoHistoryCleanup.value
   if (!target || videoHistoryCleanupBusy.value) return
-  const localPaths = deleteFiles ? target.localPaths : []
+  const localPaths = toBalaBridgeStringArray(deleteFiles ? target.localPaths : [])
   videoHistoryCleanupBusy.value = true
   videoHistoryCleanupError.value = ''
   try {

@@ -1255,8 +1255,28 @@ test('video results support safe history cleanup in a 9:16 feed layout', () => {
   assert.match(source, /async function confirmVideoHistoryCleanup\(deleteFiles = false\)/)
   assert.match(source, /await window\.cs\.deleteFiles\(localPaths\)/)
   assert.match(source, /function isClearableVideoResult\(item = \{\}\)/)
+  assert.match(source, /pendingVideoHistoryCleanup\.value = \{ items: items\.map\(persistedVideoResult\), localPaths \}/)
+  assert.match(source, /const localPaths = toBalaBridgeStringArray\(deleteFiles \? target\.localPaths : \[\]\)/)
   assert.match(source, /\.aiv-result-card\s*\{[\s\S]*?aspect-ratio:\s*9\s*\/\s*16;/)
   assert.match(source, /\.aiv-result-preview\s*\{[\s\S]*?aspect-ratio:\s*9\s*\/\s*16;/)
+})
+
+test('downloaded video results prefer local playback and refresh stale path previews', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const start = source.indexOf('function mediaPlaybackSource')
+  const end = source.indexOf('function videoPlaybackSource', start)
+  const mediaSource = source.slice(start, end)
+
+  assert.match(source, /function releaseWorkspaceVideoPreviews\(paths = \[\]\)/)
+  assert.match(source, /releaseWorkspaceVideoPreviews\(trackedResults\.map\(videoResultLocalPath\)\)/)
+  assert.match(source, /releaseWorkspaceVideoPreviews\(removed\.map\(videoResultLocalPath\)\)/)
+  assert.match(source, /function localVideoPlaybackUrl\(mediaUrl = '', item = \{\}, path = ''\)/)
+  assert.match(source, /url\.searchParams\.set\('v', tag\)/)
+  assert.match(mediaSource, /const localPreview = localPath \? localVideoPreviews\[localPath\] : ''/)
+  assert.match(mediaSource, /const localPlayback = localVideoPlaybackUrl\(localPreview, item, localPath\)/)
+  assert.match(mediaSource, /if \(localPlayback && !brokenPreviews\[localPreview\] && !brokenPreviews\[localPlayback\]\) return localPlayback/)
+  assert.match(mediaSource, /if \(localPath && !brokenPreviews\[localPath\]\)[\s\S]*?void loadLocalVideoPreview\(localPath\)[\s\S]*?return ''/)
+  assert.match(mediaSource, /return remote \|\| ''/)
 })
 
 test('video result cards show a bounded loading state for submitted async tasks', () => {
