@@ -221,6 +221,92 @@ tasks:
           - 本地文件
           - 备注
 
+  - id: batch_label_tile_download
+    name: 批量下载吊牌/洗唛/平铺图
+    description: 按款号从森马云盘默认平拍/模拍路径定位素材，优先下载 yq1/yq2 吊牌洗唛，并优先从模拍路径下载平铺图，按款号整理到本地目录
+    script: batch-label-tile-download.js
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: current
+            label: 当前页面
+          - value: new
+            label: 全新页面（推荐）
+      - id: still_cloud_path
+        type: text
+        label: 平拍/吊牌洗唛云盘路径
+        required: true
+        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/平拍原图/2P/婴幼童/幼童-2.5已写/"
+        hint: 默认沿用“整理深绘上新图包”的平拍原图路径；洗唛、吊牌优先在这里查找
+        quick_fill_options:
+          - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/平拍原图/2P/婴幼童/幼童-2.5已写/
+      - id: model_cloud_path
+        type: text
+        label: 模特图云盘路径
+        required: false
+        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/模拍原图/期货/1P/幼童服装/"
+        hint: 平铺图优先从这里查找；若款号命中模拍路径，平铺图文件名会追加“有模拍”
+        quick_fill_options:
+          - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/模拍原图/期货/1P/幼童服装/
+      - id: item_codes
+        type: textarea
+        label: 款号或款色编码
+        rows: 8
+        required: true
+        placeholder: "一行一个，例如：\n208426108223\n208426108013"
+        hint: 支持款号和款色编码；会自动去重
+      - id: folder_scan_depth
+        type: number
+        label: 款号文件夹扫描层级
+        default: 3
+        min: 0
+        max: 8
+        step: 1
+        ui_span: third
+        hint: 搜索只用于定位款号文件夹；命中文件夹后会按该层级递归查找吊牌、洗唛和平铺图
+      - id: download_concurrency
+        type: number
+        label: 下载并发数
+        default: 8
+        min: 1
+        max: 32
+        step: 1
+        ui_span: third
+        hint: 默认 8；图片较大或云盘限流时可降到 4-6
+      - id: package_name
+        type: text
+        label: 导出文件夹名
+        ui_span: third
+        placeholder: "例如：深绘吊牌洗唛平铺图_幼童2P"
+        hint: 可选。留空则按任务时间自动命名
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。点击选择本地目录；留空则使用任务默认输出目录
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "深绘吊牌洗唛平铺图下载结果_{timestamp}.xlsx"
+        columns:
+          - 输入款号
+          - 输入编码
+          - 素材类型
+          - 素材来源
+          - 文件名
+          - 云盘路径
+          - 匹配策略
+          - 模拍路径命中
+          - 下载结果
+          - 本地文件
+          - 备注
+
   - id: prepare_shoe_upload_package
     name: 【鞋品】整理深绘上新图包
     description: 按鞋品品类与颜色选取天猫、唯品会、颜色图、海报、实物展示、细节和功能图，保留网盘全部原图并生成保持原尺寸的 jdt、wpt30、tmt 及 tmq 渠道素材

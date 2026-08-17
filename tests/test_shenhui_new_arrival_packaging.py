@@ -142,6 +142,28 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         self.assertEqual(prepare_params["auto_zip_package"]["default"], [])
         self.assertEqual(prepare_params["auto_zip_package"]["options"][0]["value"], "yes")
 
+    def test_manifest_declares_batch_label_tile_download_task(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["id"] == "batch_label_tile_download")
+
+        self.assertEqual(task["name"], "批量下载吊牌/洗唛/平铺图")
+        self.assertEqual(task["script"], "batch-label-tile-download.js")
+        self.assertFalse(task["skip_auth"])
+        params = {item["id"]: item for item in task["params"]}
+        self.assertEqual(params["mode"]["default"], "new")
+        self.assertEqual(params["still_cloud_path"]["type"], "text")
+        self.assertTrue(params["still_cloud_path"]["required"])
+        self.assertEqual(params["model_cloud_path"]["type"], "text")
+        self.assertFalse(params["model_cloud_path"]["required"])
+        self.assertEqual(params["item_codes"]["type"], "textarea")
+        self.assertTrue(params["item_codes"]["required"])
+        self.assertEqual(params["export_folder"]["type"], "directory")
+
+        output_columns = task["output"][0]["columns"]
+        self.assertIn("素材类型", output_columns)
+        self.assertIn("匹配策略", output_columns)
+        self.assertIn("模拍路径命中", output_columns)
+
     def test_finalize_outputs_groups_images_by_style_code_without_zip_by_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
@@ -200,6 +222,105 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             self.assertFalse(model_file.exists())
             self.assertFalse(yq_file.exists())
             self.assertFalse((runtime_dir / "深绘测试图包").exists())
+
+    def test_finalize_batch_label_tile_download_moves_files_under_style_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+            export_dir.mkdir()
+
+            tile_file = runtime_dir / "runtime-tile.jpg"
+            tag_file = runtime_dir / "runtime-tag.jpg"
+            tile_file.write_bytes(b"tile")
+            tag_file.write_bytes(b"tag")
+
+            exported = base / "summary.xlsx"
+            data_rows = [
+                {
+                    "输入款号": "208426108223",
+                    "输入编码": "208426108223",
+                    "素材类型": "平铺图",
+                    "素材来源": "模拍路径",
+                    "文件名": "208426108223-00316_有模拍.jpg",
+                    "云盘路径": "模拍原图/208426108223/208426108223-00316.jpg",
+                    "匹配策略": "优先从模拍路径查找平铺图",
+                    "模拍路径命中": "是",
+                    "下载结果": "已下载",
+                    "本地文件": str(tile_file),
+                    "备注": "",
+                    "__shenhui_group_code": "208426108223",
+                    "__package_filename": "208426108223-00316_有模拍.jpg",
+                },
+                {
+                    "输入款号": "208426108223",
+                    "输入编码": "208426108223",
+                    "素材类型": "吊牌",
+                    "素材来源": "平拍路径",
+                    "文件名": "208426108223_吊牌_yq1.jpg",
+                    "云盘路径": "平拍原图/208426108223/yq1.jpg",
+                    "匹配策略": "优先命中 yq1",
+                    "模拍路径命中": "是",
+                    "下载结果": "已下载",
+                    "本地文件": str(tag_file),
+                    "备注": "",
+                    "__shenhui_group_code": "208426108223",
+                    "__package_filename": "208426108223_吊牌_yq1.jpg",
+                },
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            columns = [
+                "输入款号",
+                "输入编码",
+                "素材类型",
+                "素材来源",
+                "文件名",
+                "云盘路径",
+                "匹配策略",
+                "模拍路径命中",
+                "下载结果",
+                "本地文件",
+                "备注",
+            ]
+            sheet.append(columns)
+            for row in data_rows:
+                sheet.append([row.get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="batch_label_tile_download",
+                data_rows=data_rows,
+                runtime_files=[str(tile_file), str(tag_file)],
+                exported_files=[str(exported)],
+                run_params={
+                    "package_name": "测试吊牌洗唛平铺图",
+                    "export_folder": str(export_dir),
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            package_dir = export_dir / "测试吊牌洗唛平铺图"
+            copied_excel = package_dir / "summary.xlsx"
+            self.assertEqual({Path(path) for path in result}, {package_dir, copied_excel})
+            self.assertTrue((package_dir / "208426108223" / "208426108223-00316_有模拍.jpg").is_file())
+            self.assertTrue((package_dir / "208426108223" / "208426108223_吊牌_yq1.jpg").is_file())
+            self.assertFalse(tile_file.exists())
+            self.assertFalse(tag_file.exists())
+            self.assertEqual(
+                data_rows[0]["本地文件"],
+                str(package_dir / "208426108223" / "208426108223-00316_有模拍.jpg"),
+            )
+
+            workbook = load_workbook(copied_excel, read_only=True, data_only=True)
+            self.assertEqual(
+                workbook.active["J2"].value,
+                str(package_dir / "208426108223" / "208426108223-00316_有模拍.jpg"),
+            )
+            workbook.close()
 
     def test_finalize_shoe_outputs_copies_finished_style_folder_and_result_excel(self):
         with tempfile.TemporaryDirectory() as tmpdir:

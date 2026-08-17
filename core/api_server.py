@@ -3424,6 +3424,93 @@ def _prepare_shenhui_shoe_package_rows(
     return report_rows
 
 
+def _finalize_shenhui_label_tile_download_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    fallback_refs = [
+        str(path)
+        for path in [*(runtime_files or []), *(exported_files or [])]
+        if str(path or "").strip()
+    ]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"深绘吊牌洗唛平铺图_{timestamp}",
+        f"深绘吊牌洗唛平铺图_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+
+    successful_rows: list[tuple[dict, Path]] = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    if successful_rows:
+        for row, local_path in successful_rows:
+            group_code = _safe_local_name(
+                row.get("__shenhui_group_code") or row.get("输入款号") or row.get("输入编码") or "未分类",
+                "未分类",
+            )
+            clean_filename = _safe_local_name(
+                row.get("__package_filename") or row.get("文件名") or local_path.name,
+                local_path.name,
+            )
+            target = package_root / group_code / clean_filename
+            relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+            row["本地文件"] = str(relocated)
+
+    export_folder = str(run_params.get("export_folder") or "").strip()
+    target_root = (
+        _expand_user_configured_local_path(export_folder)
+        if export_folder
+        else _default_output_root_for_runtime(runtime_dir, exported_files)
+    )
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    final_refs: list[str] = []
+    if successful_rows and package_root.exists():
+        external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
+        _rewrite_rows_under_moved_directory(data_rows, package_root, external_dir)
+        _rewrite_summary_excel_local_paths(
+            exported_files,
+            data_rows,
+            log,
+            context="Shenhui label tile download",
+        )
+        final_refs.append(str(external_dir))
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, external_dir / source.name)
+            final_refs.append(str(copied))
+        log(f"Shenhui label/tile download folder moved to output folder: {external_dir}")
+    else:
+        if package_root.exists():
+            shutil.rmtree(package_root, ignore_errors=True)
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            final_refs.append(str(copied))
+
+    _cleanup_shenhui_runtime_artifacts(runtime_files, package_root, None)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+    return final_refs or fallback_refs
+
+
 def _finalize_shenhui_new_arrival_outputs(
     task_id: str,
     data_rows: list,
@@ -3487,6 +3574,16 @@ def _finalize_shenhui_new_arrival_outputs(
         _cleanup_shenhui_runtime_artifacts(runtime_files, None, None)
         _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
         return final_refs
+
+    if task_id == "batch_label_tile_download":
+        return _finalize_shenhui_label_tile_download_outputs(
+            data_rows=data_rows,
+            runtime_files=runtime_files,
+            exported_files=exported_files,
+            run_params=run_params,
+            runtime_artifact_dir=runtime_artifact_dir,
+            log=log,
+        )
 
     if task_id != "prepare_upload_package":
         return [str(path) for path in (runtime_files or []) + (exported_files or []) if str(path or "").strip()]
