@@ -250,6 +250,219 @@ test('short video upload blocks stale Guang content ids from being reused as suc
   )
 })
 
+test('short video upload stops the batch when the publisher shows Session expired', async () => {
+  const helpers = await loadExports()
+  const parsed = helpers.normalizeJobs({
+    input_file: {
+      rows: [
+        inputRow(),
+        inputRow({ 款号: '208326133202', ID: '1027640116165' }),
+      ],
+    },
+    video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+    publish_targets: ['guang', 'recommend', 'product'],
+  })
+  const result = await runAdapter({
+    phase: 'wait_guang_page',
+    shared: {
+      jobs: parsed.jobs,
+      job_index: 0,
+      invalid_rows: [],
+      results: [],
+      current_work: {},
+      total_rows: 2,
+    },
+    contextExtra: {
+      document: {
+        body: { innerText: 'Session过期 我知道了' },
+        querySelectorAll() { return [] },
+        querySelector() { return null },
+      },
+      location: {
+        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
+      },
+    },
+  })
+
+  assert.equal(result.success, true, JSON.stringify(result))
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data.length, 2)
+  assert.equal(result.meta.shared.current_store, '淘宝登录/会话已失效，批次已停止')
+  assert.equal(result.data[0].光合发布状态, '失败')
+  assert.equal(result.data[0].搜推素材状态, '未执行')
+  assert.equal(result.data[0].商品视频绑定状态, '未执行')
+  assert.match(result.data[0].备注, /光合发布器会话已失效：Session过期/)
+  assert.equal(result.data[1].上传情况, '发布失败')
+  assert.equal(result.data[1].光合发布状态, '未执行')
+  assert.match(result.data[1].备注, /请在 9222 浏览器重新登录后重试/)
+})
+
+test('short video upload preserves completed Guang work when a later surface expires', async () => {
+  const helpers = await loadExports()
+  const parsed = helpers.normalizeJobs({
+    input_file: {
+      rows: [
+        inputRow(),
+        inputRow({ 款号: '208326133202', ID: '1027640116165' }),
+      ],
+    },
+    video_override_path: '/Users/test/6ec7e3d213229297.mp4',
+    publish_targets: ['guang', 'recommend', 'product'],
+  })
+  const result = await runAdapter({
+    phase: 'wait_recommend_page',
+    shared: {
+      jobs: parsed.jobs,
+      job_index: 0,
+      invalid_rows: [],
+      results: [],
+      current_work: {
+        guang_status: '发布成功',
+        guang_content_id: '582345678901',
+        guang_receipt: 'mtop.taobao.media.guang.pcPublish.publish SUCCESS contentId=582345678901',
+      },
+      total_rows: 2,
+    },
+    contextExtra: {
+      document: {
+        body: { innerText: '登录状态已过期，请重新登录' },
+        querySelectorAll() { return [] },
+        querySelector() { return null },
+      },
+      location: {
+        href: 'https://huodong.taobao.com/wow/z/guang/publish-feeds/videoPreview?ugc_scene=qn_material_manager&pageType=video',
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0].内容ID, '582345678901')
+  assert.equal(result.data[0].光合发布状态, '发布成功')
+  assert.equal(result.data[0].搜推素材状态, '失败')
+  assert.equal(result.data[0].商品视频绑定状态, '未执行')
+  assert.match(result.data[0].备注, /千牛搜推素材发布器会话已失效/)
+  assert.equal(result.data[1].上传情况, '发布失败')
+  assert.equal(result.data[1].光合内容ID, '')
+})
+
+test('short video upload regression covers all three publish target surfaces', async () => {
+  const helpers = await loadExports()
+  const job = helpers.normalizeJobs({
+    input_file: { rows: [inputRow()] },
+    video_override_path: '/Users/test/208426107213.mp4',
+    publish_targets: ['guang', 'recommend', 'product'],
+  }).jobs[0]
+  const baseShared = {
+    jobs: [job],
+    job_index: 0,
+    invalid_rows: [],
+    results: [],
+    current_work: {},
+    total_rows: 1,
+  }
+
+  const guangUpload = await runAdapter({
+    phase: 'prepare_guang_upload',
+    shared: {
+      ...baseShared,
+      current_store: '进入光合视频发布器',
+    },
+    contextExtra: {
+      location: {
+        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
+      },
+    },
+  })
+  assert.equal(guangUpload.meta.action, 'inject_files')
+  assert.equal(guangUpload.meta.next_phase, 'wait_guang_upload')
+  assert.equal(guangUpload.meta.items[0].selector, 'input[type=file][name=file]')
+  assert.deepEqual(plain(guangUpload.meta.items[0].files), ['/Users/test/208426107213.mp4'])
+
+  const recommendUpload = await runAdapter({
+    phase: 'prepare_recommend_upload',
+    shared: {
+      ...baseShared,
+      current_store: '进入千牛搜推素材视频发布器',
+    },
+    contextExtra: {
+      location: {
+        href: 'https://huodong.taobao.com/wow/z/guang/publish-feeds/videoPreview?ugc_scene=qn_material_manager&pageType=video&from=sucaizhongxin&hidePageTitleText=true',
+      },
+    },
+  })
+  assert.equal(recommendUpload.meta.action, 'inject_files')
+  assert.equal(recommendUpload.meta.next_phase, 'wait_recommend_upload')
+  assert.equal(recommendUpload.meta.items[0].selector, 'input[type=file][name=file]')
+  assert.deepEqual(plain(recommendUpload.meta.items[0].files), ['/Users/test/208426107213.mp4'])
+
+  const selectorLocation = { href: 'about:blank' }
+  const selectorRoute = await runAdapter({
+    phase: 'navigate_selector',
+    shared: {
+      ...baseShared,
+      current_work: {
+        guang_status: '发布成功',
+        guang_content_id: '582345678901',
+      },
+    },
+    contextExtra: {
+      location: selectorLocation,
+    },
+  })
+  assert.equal(selectorRoute.meta.next_phase, 'wait_selector_page')
+  assert.match(selectorLocation.href, /^https:\/\/sucai\.wangpu\.taobao\.com\/videoSelector\.htm/)
+  assert.match(selectorLocation.href, /scene=seller_publish_setmainpic/)
+
+  const sellLocation = { href: 'about:blank' }
+  const sellRoute = await runAdapter({
+    phase: 'navigate_sell',
+    shared: {
+      ...baseShared,
+      current_work: {
+        product_video_record: { contentId: '582345678901', snapshot: 'https://img.example.com/cover.jpg' },
+      },
+    },
+    contextExtra: {
+      location: sellLocation,
+    },
+  })
+  assert.equal(sellRoute.meta.next_phase, 'wait_sell_page')
+  assert.equal(sellLocation.href, 'https://sell.publish.tmall.com/tmall/publish.htm?id=1027640116164')
+})
+
+test('short video upload classifies MTop auth-expiry errors', async () => {
+  const helpers = await loadExports({
+    document: { body: { innerText: '' } },
+    location: { href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video' },
+  })
+
+  assert.equal(helpers.authExpiredSignal('mtop 返回失败：SESSION_EXPIRED::Session过期'), 'SESSION_EXPIRED')
+  assert.match(
+    helpers.authExpiredReason('光合发布接口', new Error('mtop.taobao.media.guang.pcPublish.publish 返回失败：SESSION_EXPIRED::Session过期')),
+    /光合发布接口会话已失效：SESSION_EXPIRED/,
+  )
+})
+
+test('short video upload marks disabled targets as closed in live result rows', async () => {
+  const helpers = await loadExports()
+  const parsed = helpers.normalizeJobs({
+    input_file: { rows: [inputRow({ 逛逛标题: '' })] },
+    video_override_path: '/Users/test/208426107213.mp4',
+    publish_targets: ['recommend'],
+  })
+  const row = helpers.resultRow(parsed.jobs[0], {
+    guang_status: '已关闭',
+    recommend_status: '发布成功',
+    recommend_content_id: '2602759179066597',
+    recommend_receipt: 'mtop.taobao.spongebob.item.material.publish SUCCESS contentId=2602759179066597',
+  })
+
+  assert.equal(row.光合发布状态, '已关闭')
+  assert.equal(row.搜推素材状态, '发布成功')
+  assert.equal(row.商品视频绑定状态, '已关闭')
+  assert.equal(row.搜推内容ID, '2602759179066597')
+})
+
 test('short video upload reopens the Guang publisher for each live job', async () => {
   const helpers = await loadExports()
   const job = helpers.normalizeJobs({

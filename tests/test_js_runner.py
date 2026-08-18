@@ -2291,6 +2291,94 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("input.files.length !== dt.files.length", expression)
         self.assertIn("文件注入后页面只识别到", expression)
 
+    async def test_inject_files_prefers_native_cdp_file_input_paths(self):
+        runner = JSRunner("ws://example.invalid")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample = Path(tmpdir) / "208426107213.mp4"
+            sample.write_bytes(b"video-bytes")
+            fake_ws = FakeCDPWebSocket([
+                {"id": 1, "result": {}},
+                {"id": 2, "result": {}},
+                {"id": 3, "result": {}},
+                {"id": 4, "result": {}},
+                {"id": 5, "result": {"root": {"nodeId": 101}}},
+                {"id": 6, "result": {"nodeId": 202}},
+                {"id": 7, "result": {}},
+                {
+                    "id": 8,
+                    "result": {
+                        "result": {
+                            "type": "object",
+                            "value": {
+                                "success": True,
+                                "data": [{
+                                    "selector": "input[type=file][name=file]",
+                                    "count": 1,
+                                    "method": "DOM.setFileInputFiles",
+                                }],
+                                "meta": {"has_more": False},
+                            },
+                        },
+                    },
+                },
+            ])
+
+            with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+                result = await runner.inject_files([{
+                    "selector": "input[type=file][name=file]",
+                    "files": [str(sample)],
+                }])
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data[0]["method"], "DOM.setFileInputFiles")
+        self.assertEqual(
+            [item["method"] for item in fake_ws.sent],
+            [
+                "Page.enable",
+                "DOM.enable",
+                "Runtime.enable",
+                "Page.bringToFront",
+                "DOM.getDocument",
+                "DOM.querySelector",
+                "DOM.setFileInputFiles",
+                "Runtime.evaluate",
+            ],
+        )
+        self.assertEqual(fake_ws.sent[6]["params"]["files"], [str(sample)])
+        self.assertEqual(runner._file_payload_cache, {})
+        self.assertNotIn("video-bytes", json.dumps(fake_ws.sent, ensure_ascii=False))
+
+    async def test_inject_files_falls_back_to_datatransfer_when_cdp_native_fails(self):
+        class NativeFailRunner(JSRunner):
+            def __init__(self):
+                super().__init__("ws://example.invalid")
+                self.expressions = []
+
+            async def _inject_files_via_cdp(self, items):
+                return JSResult(success=False, error="native unavailable")
+
+            async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+                self.expressions.append(expression)
+                return JSResult(
+                    success=True,
+                    data=[{"selector": "#upload", "count": 1}],
+                    meta={"has_more": False},
+                )
+
+        runner = NativeFailRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample = Path(tmpdir) / "demo.png"
+            sample.write_bytes(b"png")
+            result = await runner.inject_files([{
+                "selector": "#upload",
+                "files": [str(sample)],
+            }])
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data[0]["count"], 1)
+        self.assertIn(base64.b64encode(b"png").decode("ascii"), runner.expressions[0])
+
     async def test_upload_via_file_chooser_sets_files_after_native_chooser_event(self):
         runner = JSRunner("ws://example.invalid")
 

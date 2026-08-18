@@ -361,10 +361,38 @@
     })
   }
 
-  function loginExpired() {
+  const AUTH_EXPIRED_PATTERN = /SESSION_EXPIRED|Session\s*过期|session\s*(?:expired|timeout)|会话(?:已)?(?:过期|失效)|登录(?:状态)?(?:已)?(?:过期|失效|超时)|请重新登录/i
+  const LOGIN_PAGE_TEXT_PATTERN = /亲，请登录|扫码登录|密码登录|账号登录|验证码|请先登录|请登录后继续/i
+
+  function authExpiredSignal(value) {
+    const text = compact(value)
+    const match = text.match(AUTH_EXPIRED_PATTERN)
+    return match ? match[0] : ''
+  }
+
+  function loginPageSignal(value) {
+    const text = compact(value)
+    const match = text.match(LOGIN_PAGE_TEXT_PATTERN)
+    return match ? match[0] : ''
+  }
+
+  function authExpiredReason(surface = '当前页面', detail = '') {
     const href = compact(location.href)
-    const text = compact(document.body?.innerText)
-    return /login\.(taobao|tmall)\.com/i.test(href) || /亲，请登录|扫码登录|密码登录/.test(text)
+    const pageText = compact(document.body?.innerText)
+    const detailText = compact(typeof detail === 'string' ? detail : detail?.message || detail)
+    const detailSignal = authExpiredSignal(detailText)
+    if (detailSignal) return `${surface}会话已失效：${detailSignal}；请在 9222 浏览器重新登录后重试`
+    const pageSignal = authExpiredSignal(pageText)
+    if (pageSignal) return `${surface}会话已失效：${pageSignal}；请在 9222 浏览器重新登录后重试`
+    const loginSignal = loginPageSignal(`${detailText} ${pageText}`)
+    if (/login\.(taobao|tmall)\.com/i.test(href) || loginSignal) {
+      return `${surface}登录已失效${loginSignal ? `：${loginSignal}` : ''}；请在 9222 浏览器重新登录后重试`
+    }
+    return ''
+  }
+
+  function loginExpired() {
+    return Boolean(authExpiredReason())
   }
 
   function findReactFiber(element) {
@@ -990,28 +1018,7 @@
   function finishJob(state, patch = {}) {
     const { job, jobs, index } = currentJob(state)
     const work = { ...currentWork(state), ...patch }
-    const guangContentId = effectiveGuangContentId(job, work)
-    const statuses = [
-      work.guang_status && `光合：${work.guang_status}`,
-      work.recommend_status && `搜推：${work.recommend_status}`,
-      work.product_status && `商品：${work.product_status}`,
-    ].filter(Boolean)
-    const row = {
-      ...outputBase(job),
-      '上传情况': statuses.join('；') || '已完成',
-      '内容ID': guangContentId,
-      '光合发布状态': compact(work.guang_status),
-      '光合内容ID': guangContentId,
-      '光合接口回执': compact(work.guang_receipt),
-      '搜推素材状态': compact(work.recommend_status),
-      '搜推内容ID': compact(work.recommend_content_id),
-      '搜推接口回执': compact(work.recommend_receipt),
-      '商品视频绑定状态': compact(work.product_status),
-      '宝贝展示视频ID': compact(work.product_video_id),
-      '商品提交回执': compact(work.product_receipt),
-      '刷新读回': compact(work.refresh_readback),
-      '备注': [...new Set((work.notes || []).map(compact).filter(Boolean))].join('；'),
-    }
+    const row = resultRow(job, work)
     const results = [...(state.results || []), row]
     const nextIndex = index + 1
     if (nextIndex >= jobs.length) {
@@ -1035,9 +1042,78 @@
     })
   }
 
+  function resultRow(job, work = {}) {
+    const normalizedWork = markUnstartedTargetStatuses(job, work)
+    const guangContentId = effectiveGuangContentId(job, normalizedWork)
+    const statuses = [
+      normalizedWork.guang_status && `光合：${normalizedWork.guang_status}`,
+      normalizedWork.recommend_status && `搜推：${normalizedWork.recommend_status}`,
+      normalizedWork.product_status && `商品：${normalizedWork.product_status}`,
+    ].filter(Boolean)
+    const row = {
+      ...outputBase(job),
+      '上传情况': statuses.join('；') || '已完成',
+      '内容ID': guangContentId,
+      '光合发布状态': compact(normalizedWork.guang_status),
+      '光合内容ID': guangContentId,
+      '光合接口回执': compact(normalizedWork.guang_receipt),
+      '搜推素材状态': compact(normalizedWork.recommend_status),
+      '搜推内容ID': compact(normalizedWork.recommend_content_id),
+      '搜推接口回执': compact(normalizedWork.recommend_receipt),
+      '商品视频绑定状态': compact(normalizedWork.product_status),
+      '宝贝展示视频ID': compact(normalizedWork.product_video_id),
+      '商品提交回执': compact(normalizedWork.product_receipt),
+      '刷新读回': compact(normalizedWork.refresh_readback),
+      '备注': [...new Set((normalizedWork.notes || []).map(compact).filter(Boolean))].join('；'),
+    }
+    return row
+  }
+
   function appendNote(state, note) {
     const work = currentWork(state)
     return mergeWork(state, { notes: [...(work.notes || []), compact(note)].filter(Boolean) })
+  }
+
+  function markUnstartedTargetStatuses(job, work = {}, failedTarget = '') {
+    const next = { ...work }
+    if (job?.publish_guang && !next.guang_status) next.guang_status = failedTarget === 'guang' ? '失败' : '未执行'
+    if (job?.publish_recommend && !next.recommend_status) next.recommend_status = failedTarget === 'recommend' ? '失败' : '未执行'
+    if (job?.bind_product && !next.product_status) next.product_status = failedTarget === 'product' ? '失败' : '未执行'
+    if (!job?.publish_guang && !next.guang_status) next.guang_status = job?.existing_content_id ? '使用模板已有内容ID' : '已关闭'
+    if (!job?.publish_recommend && !next.recommend_status) next.recommend_status = '已关闭'
+    if (!job?.bind_product && !next.product_status) next.product_status = '已关闭'
+    return next
+  }
+
+  function authExpiredPendingRow(job, reason) {
+    const work = markUnstartedTargetStatuses(job, {
+      guang_content_id: !job?.publish_guang ? job?.existing_content_id : '',
+      notes: [reason],
+    })
+    const row = resultRow(job, work)
+    return { ...row, '上传情况': '发布失败' }
+  }
+
+  function finishBatchOnAuthExpired(state, failedTarget, reason) {
+    const { job, jobs, index } = currentJob(state)
+    const finalReason = compact(reason) || '淘宝登录/会话已失效；请在 9222 浏览器重新登录后重试'
+    const rows = [...(state.invalid_rows || []), ...(state.results || [])]
+    if (job) {
+      const existingNotes = Array.isArray(currentWork(state).notes) ? currentWork(state).notes : []
+      const work = markUnstartedTargetStatuses(job, {
+        ...currentWork(state),
+        notes: [...existingNotes, finalReason],
+      }, failedTarget)
+      rows.push(resultRow(job, work))
+    }
+    for (const remaining of jobs.slice(index + 1)) rows.push(authExpiredPendingRow(remaining, finalReason))
+    return complete(rows, {
+      ...state,
+      results: rows.slice((state.invalid_rows || []).length),
+      job_index: jobs.length,
+      current_work: {},
+      current_store: '淘宝登录/会话已失效，批次已停止',
+    })
   }
 
   function routeAfterGuang(state) {
@@ -1355,6 +1431,10 @@
       effectiveGuangContentId,
       contentIdAlreadyInResults,
       assertUnusedContentId,
+      authExpiredSignal,
+      authExpiredReason,
+      markUnstartedTargetStatuses,
+      resultRow,
     })
   }
   if (phase === '__exports__') return complete([])
@@ -1416,7 +1496,8 @@
   }
 
   if (phase === 'wait_guang_page') {
-    if (loginExpired()) return finishJob(mergeWork(shared, { guang_status: '失败' }), { notes: ['光合登录已失效'] })
+    const expiredReason = authExpiredReason('光合发布器')
+    if (expiredReason) return finishBatchOnAuthExpired(shared, 'guang', expiredReason)
     if (publishPageReady('https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video')) {
       return nextPhase('prepare_guang_upload', 0, shared)
     }
@@ -1473,6 +1554,8 @@
       }
       return nextPhase('publish_guang_api', 200, state)
     } catch (error) {
+      const expiredReason = authExpiredReason('光合发布器', error)
+      if (expiredReason) return finishBatchOnAuthExpired(shared, 'guang', expiredReason)
       const state = appendNote(mergeWork(shared, { guang_status: '失败' }), compact(error?.message || error))
       return routeAfterGuang(state)
     }
@@ -1490,6 +1573,8 @@
         guang_receipt: result.receipt,
       }))
     } catch (error) {
+      const expiredReason = authExpiredReason('光合发布接口', error)
+      if (expiredReason) return finishBatchOnAuthExpired(shared, 'guang', expiredReason)
       return routeAfterGuang(appendNote(mergeWork(shared, { guang_status: '失败' }), compact(error?.message || error)))
     }
   }
@@ -1504,7 +1589,8 @@
   }
 
   if (phase === 'wait_recommend_page') {
-    if (loginExpired()) return routeAfterRecommend(appendNote(mergeWork(shared, { recommend_status: '失败' }), '千牛搜推素材登录已失效'))
+    const expiredReason = authExpiredReason('千牛搜推素材发布器')
+    if (expiredReason) return finishBatchOnAuthExpired(shared, 'recommend', expiredReason)
     if (publishPageReady('https://huodong.taobao.com/wow/z/guang/publish-feeds/videoPreview')) {
       return nextPhase('prepare_recommend_upload', 0, shared)
     }
@@ -1551,6 +1637,8 @@
         recommend_form_readback: prepared.readback,
       }))
     } catch (error) {
+      const expiredReason = authExpiredReason('千牛搜推素材发布器', error)
+      if (expiredReason) return finishBatchOnAuthExpired(shared, 'recommend', expiredReason)
       return routeAfterRecommend(appendNote(mergeWork(shared, { recommend_status: '失败' }), compact(error?.message || error)))
     }
   }
@@ -1567,6 +1655,8 @@
         recommend_receipt: result.receipt,
       }))
     } catch (error) {
+      const expiredReason = authExpiredReason('千牛搜推素材发布接口', error)
+      if (expiredReason) return finishBatchOnAuthExpired(shared, 'recommend', expiredReason)
       return routeAfterRecommend(appendNote(mergeWork(shared, { recommend_status: '失败' }), compact(error?.message || error)))
     }
   }
@@ -1582,7 +1672,8 @@
   }
 
   if (phase === 'wait_selector_page') {
-    if (loginExpired()) return finishJob(appendNote(mergeWork(shared, { product_status: '失败' }), '视频选择器登录已失效'))
+    const expiredReason = authExpiredReason('视频选择器')
+    if (expiredReason) return finishBatchOnAuthExpired(shared, 'product', expiredReason)
     if (selectorPageReady()) return nextPhase('query_video_record', 0, { ...shared, selector_attempts: 0 })
     const attempts = Number(shared.page_ready_attempts || 0) + 1
     if (attempts > READY_RETRY_LIMIT) return finishJob(appendNote(mergeWork(shared, { product_status: '失败' }), '等待视频选择器超时'))
@@ -1603,6 +1694,8 @@
     } catch (error) {
       const attempts = Number(shared.selector_attempts || 0)
       if (attempts >= SELECTOR_RETRY_LIMIT) {
+        const expiredReason = authExpiredReason('视频选择器', error)
+        if (expiredReason) return finishBatchOnAuthExpired(shared, 'product', expiredReason)
         return finishJob(appendNote(mergeWork(shared, { product_status: '失败' }), compact(error?.message || error)))
       }
     }
@@ -1621,7 +1714,8 @@
 
   if (phase === 'wait_sell_page') {
     const { job } = currentJob(shared)
-    if (loginExpired()) return finishJob(appendNote(mergeWork(shared, { product_status: '失败' }), '商品编辑页登录已失效'))
+    const expiredReason = authExpiredReason('商品编辑页')
+    if (expiredReason) return finishBatchOnAuthExpired(shared, 'product', expiredReason)
     if (sellPageReady(job.item_id)) return nextPhase('bind_product_video', 0, shared)
     const attempts = Number(shared.page_ready_attempts || 0) + 1
     if (attempts > READY_RETRY_LIMIT) return finishJob(appendNote(mergeWork(shared, { product_status: '失败' }), '等待商品编辑页超时'))
@@ -1642,6 +1736,8 @@
         product_pre_submit_readback: bound.readback,
       }))
     } catch (error) {
+      const expiredReason = authExpiredReason('商品编辑页', error)
+      if (expiredReason) return finishBatchOnAuthExpired(shared, 'product', expiredReason)
       return finishJob(appendNote(mergeWork(shared, { product_status: '失败' }), compact(error?.message || error)))
     }
   }
@@ -1654,6 +1750,8 @@
         product_receipt: result.receipt,
       }))
     } catch (error) {
+      const expiredReason = authExpiredReason('商品提交接口', error)
+      if (expiredReason) return finishBatchOnAuthExpired(shared, 'product', expiredReason)
       return finishJob(appendNote(mergeWork(shared, { product_status: '失败' }), compact(error?.message || error)))
     }
   }
@@ -1668,6 +1766,8 @@
 
   if (phase === 'wait_sell_readback') {
     const { job } = currentJob(shared)
+    const expiredReason = authExpiredReason('商品编辑页刷新读回')
+    if (expiredReason) return finishBatchOnAuthExpired(shared, 'product', expiredReason)
     if (!sellPageReady(job.item_id)) {
       const attempts = Number(shared.page_ready_attempts || 0) + 1
       if (attempts > READY_RETRY_LIMIT) {

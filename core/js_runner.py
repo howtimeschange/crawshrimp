@@ -1228,11 +1228,150 @@ class JSRunner:
             "})()\n"
         )
 
+    async def _inject_files_via_cdp(self, items: list[dict]) -> JSResult:
+        normalized_items: list[dict] = []
+        for item in items or []:
+            selector = str(item.get("selector") or "").strip()
+            raw_files = item.get("files") or []
+            if not selector:
+                return JSResult(success=False, error="inject_files 缺少 selector")
+            if not isinstance(raw_files, list) or not raw_files:
+                return JSResult(success=False, error=f"inject_files 缺少文件列表: {selector}")
+            try:
+                file_paths = [str(self._resolve_local_file(str(raw_path))) for raw_path in raw_files]
+            except Exception as e:
+                return JSResult(success=False, error=str(e))
+            normalized_items.append({
+                "selector": selector,
+                "files": file_paths,
+            })
+
+        if not normalized_items:
+            return JSResult(success=True, data=[], meta={"has_more": False})
+
+        try:
+            async with websockets.connect(
+                self.ws_url,
+                max_size=50 * 1024 * 1024,
+                proxy=None,
+                ping_interval=None,
+            ) as ws:
+                for method, params in (
+                    ("Page.enable", {}),
+                    ("DOM.enable", {}),
+                    ("Runtime.enable", {}),
+                    ("Page.bringToFront", {}),
+                ):
+                    response = await self._cdp_send_on_ws(method, params, ws=ws, timeout=10)
+                    if response.get("error"):
+                        return JSResult(success=False, error=json.dumps(response.get("error"), ensure_ascii=False))
+
+                document_response = await self._cdp_send_on_ws(
+                    "DOM.getDocument",
+                    {"depth": -1, "pierce": True},
+                    ws=ws,
+                    timeout=10,
+                )
+                if document_response.get("error"):
+                    return JSResult(success=False, error=json.dumps(document_response.get("error"), ensure_ascii=False))
+                root_id = ((document_response.get("result") or {}).get("root") or {}).get("nodeId")
+                if not root_id:
+                    return JSResult(success=False, error="DOM.getDocument 未返回 root nodeId")
+
+                results: list[dict] = []
+                for item in normalized_items:
+                    selector = item["selector"]
+                    query_response = await self._cdp_send_on_ws(
+                        "DOM.querySelector",
+                        {"nodeId": root_id, "selector": selector},
+                        ws=ws,
+                        timeout=10,
+                    )
+                    if query_response.get("error"):
+                        return JSResult(success=False, error=json.dumps(query_response.get("error"), ensure_ascii=False))
+                    node_id = (query_response.get("result") or {}).get("nodeId")
+                    if not node_id:
+                        return JSResult(success=False, error=f"文件输入不存在: {selector}")
+
+                    set_response = await self._cdp_send_on_ws(
+                        "DOM.setFileInputFiles",
+                        {"nodeId": node_id, "files": item["files"]},
+                        ws=ws,
+                        timeout=30,
+                    )
+                    if set_response.get("error"):
+                        return JSResult(success=False, error=json.dumps(set_response.get("error"), ensure_ascii=False))
+                    results.append({
+                        "selector": selector,
+                        "count": len(item["files"]),
+                        "method": "DOM.setFileInputFiles",
+                    })
+
+                dispatch_expression = (
+                    "(() => {\n"
+                    "  try {\n"
+                    f"    const items = {json.dumps(normalized_items, ensure_ascii=False)};\n"
+                    "    const results = [];\n"
+                    "    for (const item of items) {\n"
+                    "      const input = document.querySelector(item.selector);\n"
+                    "      if (!input) {\n"
+                    "        return { success: false, error: `文件输入不存在: ${item.selector}` };\n"
+                    "      }\n"
+                    "      input.dispatchEvent(new Event('input', { bubbles: true }));\n"
+                    "      input.dispatchEvent(new Event('change', { bubbles: true }));\n"
+                    "      results.push({ selector: item.selector, count: item.files.length, method: 'DOM.setFileInputFiles' });\n"
+                    "    }\n"
+                    "    return { success: true, data: results, meta: { has_more: false } };\n"
+                    "  } catch (error) {\n"
+                    "    return { success: false, error: String(error?.message || error) };\n"
+                    "  }\n"
+                    "})()\n"
+                )
+                dispatch_response = await self._cdp_send_on_ws(
+                    "Runtime.evaluate",
+                    {
+                        "expression": dispatch_expression,
+                        "awaitPromise": True,
+                        "returnByValue": True,
+                        "timeout": min(self.timeout, 30) * 1000,
+                    },
+                    ws=ws,
+                    timeout=min(self.timeout, 30) + 5,
+                )
+                if dispatch_response.get("error"):
+                    return JSResult(success=False, error=json.dumps(dispatch_response.get("error"), ensure_ascii=False))
+                payload = dispatch_response.get("result", {})
+                exception = payload.get("exceptionDetails") or {}
+                if exception:
+                    description = (
+                        str((exception.get("exception") or {}).get("description") or "").strip()
+                        or str(exception.get("text") or "").strip()
+                        or "文件输入事件派发失败"
+                    )
+                    return JSResult(success=False, error=description)
+                value = (payload.get("result") or {}).get("value")
+                if isinstance(value, dict):
+                    return JSResult(
+                        success=bool(value.get("success")),
+                        data=value.get("data") if value.get("data") is not None else results,
+                        meta=value.get("meta") or {"has_more": False},
+                        error=value.get("error"),
+                    )
+                return JSResult(success=True, data=results, meta={"has_more": False})
+        except Exception as e:
+            return JSResult(success=False, error=str(e))
+
     async def inject_files(
         self,
         items: list[dict],
         retry_with_full_seed: bool = True,
     ) -> JSResult:
+        cdp_result = await self._inject_files_via_cdp(items)
+        if cdp_result.success:
+            return cdp_result
+
+        logger.info("CDP 原生文件注入失败，回退 DataTransfer 注入: %s", cdp_result.error or "unknown")
+
         normalized_items: list[dict] = []
         seed_payloads: list[dict] = []
 
