@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import yaml
 from openpyxl import Workbook, load_workbook
+from PIL import Image
 
 from core.api_server import (
     _cleanup_orphaned_runtime_artifacts,
@@ -100,8 +101,14 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
     def test_manifest_declares_separate_pdf_batch_screenshot_task(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
         self.assertEqual(
-            [item["id"] for item in manifest["tasks"][:2]],
-            ["pdf_batch_screenshot", "prepare_upload_package"],
+            [item["id"] for item in manifest["tasks"]],
+            [
+                "batch_label_tile_download",
+                "prepare_upload_package",
+                "prepare_shoe_upload_package",
+                "upload_to_deepdraw",
+                "pdf_batch_screenshot",
+            ],
         )
         task = next(item for item in manifest["tasks"] if item["id"] == "pdf_batch_screenshot")
 
@@ -122,6 +129,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         self.assertNotIn("style_color_overrides", params)
 
         prepare_task = next(item for item in manifest["tasks"] if item["id"] == "prepare_upload_package")
+        self.assertEqual(prepare_task["name"], "【服饰】整理深绘上新图包")
         prepare_params = {item["id"]: item for item in prepare_task["params"]}
         self.assertEqual(prepare_params["mode"]["default"], "new")
         prepare_mode_options = {
@@ -320,6 +328,169 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 workbook.active["J2"].value,
                 str(package_dir / "208426108223" / "208426108223-00316_有模拍.jpg"),
             )
+            workbook.close()
+
+    def test_finalize_batch_label_tile_download_compresses_images_and_updates_summary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+            export_dir.mkdir()
+
+            image_file = runtime_dir / "runtime-large.jpg"
+            Image.effect_noise((256, 256), 90).convert("RGB").save(
+                image_file,
+                format="JPEG",
+                quality=100,
+            )
+            before_size = image_file.stat().st_size
+
+            exported = base / "summary.xlsx"
+            data_rows = [
+                {
+                    "输入款号": "208426108223",
+                    "输入编码": "208426108223",
+                    "素材类型": "吊牌",
+                    "素材来源": "平拍路径",
+                    "文件名": "208426108223_吊牌_yq1.jpg",
+                    "云盘路径": "平拍原图/208426108223/yq1.jpg",
+                    "匹配策略": "优先命中 yq1",
+                    "模拍路径命中": "否",
+                    "下载结果": "已下载",
+                    "本地文件": str(image_file),
+                    "备注": "",
+                    "__shenhui_group_code": "208426108223",
+                    "__package_filename": "208426108223_吊牌_yq1.jpg",
+                },
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            columns = [
+                "输入款号",
+                "输入编码",
+                "素材类型",
+                "素材来源",
+                "文件名",
+                "云盘路径",
+                "匹配策略",
+                "模拍路径命中",
+                "下载结果",
+                "本地文件",
+                "备注",
+            ]
+            sheet.append(columns)
+            for row in data_rows:
+                sheet.append([row.get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            _finalize_shenhui_new_arrival_outputs(
+                task_id="batch_label_tile_download",
+                data_rows=data_rows,
+                runtime_files=[str(image_file)],
+                exported_files=[str(exported)],
+                run_params={
+                    "package_name": "测试压缩",
+                    "export_folder": str(export_dir),
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            package_dir = export_dir / "测试压缩"
+            final_image = package_dir / "208426108223" / "208426108223_吊牌_yq1.jpg"
+            copied_excel = package_dir / "summary.xlsx"
+            self.assertTrue(final_image.is_file())
+            self.assertLess(final_image.stat().st_size, before_size)
+            with Image.open(final_image) as compressed:
+                self.assertEqual(compressed.size, (256, 256))
+            self.assertIn("已压缩", data_rows[0]["备注"])
+
+            workbook = load_workbook(copied_excel, read_only=True, data_only=True)
+            self.assertIn("已压缩", workbook.active["K2"].value)
+            workbook.close()
+
+    def test_finalize_batch_label_tile_download_compresses_pdfs_and_updates_summary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            import fitz
+
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+            export_dir.mkdir()
+
+            pdf_file = runtime_dir / "runtime-label.pdf"
+            document = fitz.open()
+            page = document.new_page()
+            for index in range(200):
+                page.insert_text((72, 72 + (index % 50) * 10), "深绘PDF压缩验证 " * 20)
+            document.save(str(pdf_file), garbage=0, deflate=False)
+            document.close()
+            before_size = pdf_file.stat().st_size
+
+            exported = base / "summary.xlsx"
+            data_rows = [
+                {
+                    "输入款号": "208426108223",
+                    "输入编码": "208426108223",
+                    "素材类型": "洗唛",
+                    "素材来源": "平拍路径",
+                    "文件名": "208426108223_洗唛.pdf",
+                    "云盘路径": "平拍原图/208426108223/208426108223.pdf",
+                    "匹配策略": "按纯款号 PDF 兜底识别洗唛",
+                    "模拍路径命中": "否",
+                    "下载结果": "已下载",
+                    "本地文件": str(pdf_file),
+                    "备注": "",
+                    "__shenhui_group_code": "208426108223",
+                    "__package_filename": "208426108223_洗唛.pdf",
+                },
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            columns = [
+                "输入款号",
+                "输入编码",
+                "素材类型",
+                "素材来源",
+                "文件名",
+                "云盘路径",
+                "匹配策略",
+                "模拍路径命中",
+                "下载结果",
+                "本地文件",
+                "备注",
+            ]
+            sheet.append(columns)
+            for row in data_rows:
+                sheet.append([row.get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            _finalize_shenhui_new_arrival_outputs(
+                task_id="batch_label_tile_download",
+                data_rows=data_rows,
+                runtime_files=[str(pdf_file)],
+                exported_files=[str(exported)],
+                run_params={
+                    "package_name": "测试PDF压缩",
+                    "export_folder": str(export_dir),
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            package_dir = export_dir / "测试PDF压缩"
+            final_pdf = package_dir / "208426108223" / "208426108223_洗唛.pdf"
+            copied_excel = package_dir / "summary.xlsx"
+            self.assertTrue(final_pdf.is_file())
+            self.assertLess(final_pdf.stat().st_size, before_size)
+            self.assertIn("已压缩PDF", data_rows[0]["备注"])
+
+            workbook = load_workbook(copied_excel, read_only=True, data_only=True)
+            self.assertIn("已压缩PDF", workbook.active["K2"].value)
             workbook.close()
 
     def test_finalize_shoe_outputs_copies_finished_style_folder_and_result_excel(self):

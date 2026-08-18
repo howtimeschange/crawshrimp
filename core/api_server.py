@@ -2239,6 +2239,63 @@ def _rewrite_summary_excel_local_paths(
                 workbook.close()
 
 
+def _rewrite_summary_excel_row_columns(
+    exported_files: list,
+    data_rows: list,
+    log,
+    *,
+    context: str,
+    columns: tuple[str, ...],
+) -> None:
+    rows = [row for row in (data_rows or []) if isinstance(row, dict)]
+    if not rows or not columns:
+        return
+    wanted = {str(column or "").strip() for column in columns if str(column or "").strip()}
+    if not wanted:
+        return
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:
+        raise RuntimeError(f"openpyxl 不可用，无法刷新{context}结果表字段") from exc
+
+    for raw_path in exported_files or []:
+        path = Path(str(raw_path or "")).expanduser()
+        if path.suffix.lower() != ".xlsx" or not path.is_file():
+            continue
+        workbook = None
+        try:
+            workbook = load_workbook(path)
+            changed = False
+            for sheet in workbook.worksheets:
+                header_row = 0
+                column_map: dict[str, int] = {}
+                for row_index in range(1, min(sheet.max_row, 3) + 1):
+                    current_map: dict[str, int] = {}
+                    for column_index in range(1, sheet.max_column + 1):
+                        header = str(sheet.cell(row=row_index, column=column_index).value or "").strip()
+                        if header in wanted:
+                            current_map[header] = column_index
+                    if current_map:
+                        header_row = row_index
+                        column_map = current_map
+                        break
+                if not header_row or not column_map:
+                    continue
+                for offset, row in enumerate(rows, start=1):
+                    for column_name, column_index in column_map.items():
+                        if column_name in row:
+                            sheet.cell(row=header_row + offset, column=column_index).value = str(row.get(column_name) or "")
+                changed = True
+            if changed:
+                workbook.save(path)
+                log(f"{context} Excel columns refreshed: {path}")
+        except Exception as exc:
+            raise RuntimeError(f"{context}结果表字段刷新失败: {path}: {exc}") from exc
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+
 def _rewrite_bala_material_summary_excels(exported_files: list, data_rows: list, log) -> None:
     _rewrite_summary_excel_local_paths(
         exported_files,
@@ -3424,6 +3481,179 @@ def _prepare_shenhui_shoe_package_rows(
     return report_rows
 
 
+_SHENHUI_LABEL_TILE_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+_SHENHUI_LABEL_TILE_PDF_SUFFIXES = {".pdf"}
+
+
+def _append_shenhui_label_tile_note(row: dict, note: str) -> None:
+    clean_note = str(note or "").strip()
+    if not clean_note:
+        return
+    existing = str(row.get("备注") or "").strip()
+    row["备注"] = f"{existing}；{clean_note}" if existing else clean_note
+
+
+def _shenhui_label_tile_temp_path(path: Path, marker: str) -> Path:
+    suffix = path.suffix or ".tmp"
+    return _ensure_unique_local_path(path.with_name(f".{path.stem}.{marker}{suffix}"))
+
+
+def _replace_with_temp_if_smaller(path: Path, temp_path: Path, before_size: int) -> int:
+    if not temp_path.is_file():
+        return before_size
+    after_size = temp_path.stat().st_size
+    if after_size <= 0 or after_size >= before_size:
+        temp_path.unlink(missing_ok=True)
+        return before_size
+    try:
+        shutil.copystat(path, temp_path, follow_symlinks=True)
+    except Exception:
+        logger.debug("Failed to copy file stat before compression replace %s", path, exc_info=True)
+    temp_path.replace(path)
+    return after_size
+
+
+def _jpeg_image_for_high_quality_save(image):
+    from PIL import Image
+
+    if image.mode in {"RGB", "L", "CMYK"}:
+        return image
+    if image.mode in {"RGBA", "LA"} or "transparency" in getattr(image, "info", {}):
+        rgba = image.convert("RGBA")
+        background = Image.new("RGB", rgba.size, "white")
+        background.paste(rgba, mask=rgba.split()[-1])
+        return background
+    return image.convert("RGB")
+
+
+def _compress_shenhui_label_tile_image_if_beneficial(path: Path, log) -> tuple[str, int, int]:
+    before_size = path.stat().st_size
+    suffix = path.suffix.lower()
+    temp_paths: list[Path] = []
+
+    try:
+        from PIL import Image
+    except Exception as exc:
+        if log:
+            log(f"[warn] 深绘下载图片压缩跳过，Pillow 不可用：{exc}")
+        return "", before_size, before_size
+
+    try:
+        with Image.open(path) as source:
+            source.load()
+            icc_profile = source.info.get("icc_profile")
+            exif = source.info.get("exif")
+
+            def save_candidate(marker: str, image, format_name: str, **save_kwargs) -> None:
+                temp_path = _shenhui_label_tile_temp_path(path, marker)
+                kwargs = {"optimize": True, **save_kwargs}
+                if icc_profile:
+                    kwargs["icc_profile"] = icc_profile
+                if exif and format_name.upper() == "JPEG":
+                    kwargs["exif"] = exif
+                image.save(temp_path, format=format_name, **kwargs)
+                temp_paths.append(temp_path)
+
+            if suffix in {".jpg", ".jpeg"}:
+                jpeg_image = _jpeg_image_for_high_quality_save(source)
+                if source.format == "JPEG" and jpeg_image is source:
+                    try:
+                        save_candidate("keep", jpeg_image, "JPEG", quality="keep", subsampling="keep")
+                    except Exception:
+                        logger.debug("Failed to optimize JPEG with kept quantization %s", path, exc_info=True)
+                save_candidate("q95", jpeg_image, "JPEG", quality=95)
+            elif suffix == ".png":
+                save_candidate("png", source, "PNG", compress_level=9)
+            elif suffix == ".webp":
+                webp_image = source if source.mode in {"RGB", "RGBA"} else source.convert("RGB")
+                save_candidate("webp", webp_image, "WEBP", quality=95, method=6)
+    except Exception:
+        for temp_path in temp_paths:
+            temp_path.unlink(missing_ok=True)
+        logger.debug("Failed to compress shenhui label tile image %s", path, exc_info=True)
+        return "", before_size, before_size
+
+    best_temp = None
+    best_size = before_size
+    for temp_path in temp_paths:
+        if not temp_path.is_file():
+            continue
+        size = temp_path.stat().st_size
+        if 0 < size < best_size:
+            if best_temp and best_temp != temp_path:
+                best_temp.unlink(missing_ok=True)
+            best_temp = temp_path
+            best_size = size
+        else:
+            temp_path.unlink(missing_ok=True)
+
+    if not best_temp:
+        return "", before_size, before_size
+
+    after_size = _replace_with_temp_if_smaller(path, best_temp, before_size)
+    if after_size >= before_size:
+        return "", before_size, before_size
+    note = f"已压缩：{_format_mb(before_size)} -> {_format_mb(after_size)}"
+    if log:
+        log(f"Shenhui label/tile image compressed: {path} ({note})")
+    return note, before_size, after_size
+
+
+def _compress_shenhui_label_tile_pdf_if_beneficial(path: Path, log) -> tuple[str, int, int]:
+    before_size = path.stat().st_size
+    temp_path = _shenhui_label_tile_temp_path(path, "pdf")
+    doc = None
+    try:
+        import fitz
+
+        doc = fitz.open(str(path))
+        if getattr(doc, "needs_pass", False):
+            doc.close()
+            return "", before_size, before_size
+        try:
+            doc.save(
+                str(temp_path),
+                garbage=4,
+                clean=True,
+                deflate=True,
+                deflate_images=True,
+                deflate_fonts=True,
+                use_objstms=1,
+            )
+        except TypeError:
+            doc.save(str(temp_path), garbage=4, clean=True, deflate=True)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        logger.debug("Failed to compress shenhui label tile PDF %s", path, exc_info=True)
+        return "", before_size, before_size
+    finally:
+        try:
+            if doc is not None:
+                doc.close()
+        except Exception:
+            logger.debug("Failed to close PDF after compression %s", path, exc_info=True)
+
+    after_size = _replace_with_temp_if_smaller(path, temp_path, before_size)
+    if after_size >= before_size:
+        return "", before_size, before_size
+    note = f"已压缩PDF：{_format_mb(before_size)} -> {_format_mb(after_size)}"
+    if log:
+        log(f"Shenhui label/tile PDF compressed: {path} ({note})")
+    return note, before_size, after_size
+
+
+def _compress_shenhui_label_tile_file_if_beneficial(path: Path, log) -> tuple[str, int, int]:
+    if not path.is_file():
+        return "", 0, 0
+    suffix = path.suffix.lower()
+    if suffix in _SHENHUI_LABEL_TILE_IMAGE_SUFFIXES:
+        return _compress_shenhui_label_tile_image_if_beneficial(path, log)
+    if suffix in _SHENHUI_LABEL_TILE_PDF_SUFFIXES:
+        return _compress_shenhui_label_tile_pdf_if_beneficial(path, log)
+    size = path.stat().st_size
+    return "", size, size
+
+
 def _finalize_shenhui_label_tile_download_outputs(
     data_rows: list,
     runtime_files: list,
@@ -3457,6 +3687,8 @@ def _finalize_shenhui_label_tile_download_outputs(
         successful_rows.append((row, local_path))
 
     if successful_rows:
+        compressed_count = 0
+        saved_bytes = 0
         for row, local_path in successful_rows:
             group_code = _safe_local_name(
                 row.get("__shenhui_group_code") or row.get("输入款号") or row.get("输入编码") or "未分类",
@@ -3468,7 +3700,14 @@ def _finalize_shenhui_label_tile_download_outputs(
             )
             target = package_root / group_code / clean_filename
             relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+            compression_note, before_size, after_size = _compress_shenhui_label_tile_file_if_beneficial(relocated, log)
+            if compression_note:
+                _append_shenhui_label_tile_note(row, compression_note)
+                compressed_count += 1
+                saved_bytes += max(0, before_size - after_size)
             row["本地文件"] = str(relocated)
+        if compressed_count:
+            log(f"Shenhui label/tile files compressed: {compressed_count}, saved {_format_mb(saved_bytes)}")
 
     export_folder = str(run_params.get("export_folder") or "").strip()
     target_root = (
@@ -3487,6 +3726,13 @@ def _finalize_shenhui_label_tile_download_outputs(
             data_rows,
             log,
             context="Shenhui label tile download",
+        )
+        _rewrite_summary_excel_row_columns(
+            exported_files,
+            data_rows,
+            log,
+            context="Shenhui label tile download",
+            columns=("备注",),
         )
         final_refs.append(str(external_dir))
         for file_path in exported_files or []:
