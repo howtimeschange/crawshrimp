@@ -1643,7 +1643,7 @@ tasks:
         label: AI识别 SCM 洗唛附件
         default: true
         hidden: true
-        hint: SCM 备注没有可映射洗护说明时，下载洗唛附件到本地 artifacts，并调用项目已有多模态识别能力提取一组洗涤说明；失败时继续使用固定兜底。
+        hint: SCM 备注没有可映射洗护说明时，优先下载列表洗唛文件；列表为空时会点进申请单详情的「附件信息」读取「洗唛附件」作为兜底，并调用项目已有多模态识别能力提取一组洗涤说明；失败时继续使用固定兜底。
       - id: ai_wash_instruction_model_id
         type: text
         label: 洗护说明识别模型

@@ -210,6 +210,7 @@ const SCM_ROWS = [
     BRAND_DISPLAY: '巴拉巴拉',
     P_MAT_CODE: '209225117208',
     P_MAT_NAME: '测试童装',
+    H_ID: 'SCM-DETAIL-209225117208',
     SKC_CODE: '20922511720810101',
     F1: '10101',
     F1_DISPLAY: '本白10101',
@@ -229,6 +230,7 @@ const SCM_ROWS = [
     BRAND_DISPLAY: '巴拉巴拉',
     P_MAT_CODE: '209225117208',
     P_MAT_NAME: '测试童装',
+    H_ID: 'SCM-DETAIL-209225117208',
     SKC_CODE: '20922511720860904',
     F1: '60904',
     F1_DISPLAY: '酒红60904',
@@ -641,6 +643,8 @@ test('SCM lookup phase evaluates the logged-in SCM tab without copying credentia
   assert.match(result.meta.expression, /scm-qc-wash-appr-index/)
   assert.match(result.meta.expression, /input_0_P_MAT_CODE/)
   assert.match(result.meta.expression, /innerText \|\| value\.textContent/)
+  assert.match(result.meta.expression, /detailWashAttachmentsForRows/)
+  assert.match(result.meta.expression, /洗唛附件/)
   assert.doesNotMatch(result.meta.expression, /cookie|localStorage|sf-token|Anti-Content/i)
 })
 
@@ -822,6 +826,57 @@ test('SCM evidence without mappable remark downloads wash attachment for AI reco
   assert.equal(result.meta.shared.apiTarget.scmCareInstructionSource, 'missing_structured_wash_instruction')
 })
 
+test('SCM detail wash attachment is used when list row wash file is blank', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    ...ENTERPRISE_TARGET,
+    excelStyle: '209225117208',
+    excelSkc: '20922511720860904',
+  }
+  const rows = SCM_ROWS.map(row => ({
+    ...row,
+    SKC_REMARK: '',
+    SKC_FILE_URL1: '',
+    SCM_WASH_ATTACHMENTS: row.SKC_CODE === '20922511720860904'
+      ? [{
+          FILE_NAME: '6ca836fc5ee5eeee85c72c3083f2c32',
+          DOC_TYPE: 'jpg',
+          FILE_SIZE: '276.59KB',
+          FILE_URL: 'https://supplyforce0001.oss-cn-hangzhou.aliyuncs.com/sfpublicfiles/client92280238/SCM/%E6%B4%97%E5%94%9B%E9%99%84%E4%BB%B6/6ca836fc5ee5eeee85c72c3083f2c32.jpg',
+          RELATED_TYPE: '洗唛附件',
+        }]
+      : [],
+  }))
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    params: {
+      ai_wash_instruction_recognition: true,
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: true,
+          source: 'scm_qc_wash_appr_page_component',
+          rows,
+          recordsTotal: 2,
+          detailAttachmentKeys: ['SCM-DETAIL-209225117208'],
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'download_urls')
+  assert.equal(result.meta.next_phase, 'verify_scm_attachment_download')
+  assert.equal(result.meta.items[0].url, 'https://supplyforce0001.oss-cn-hangzhou.aliyuncs.com/sfpublicfiles/client92280238/SCM/%E6%B4%97%E5%94%9B%E9%99%84%E4%BB%B6/6ca836fc5ee5eeee85c72c3083f2c32.jpg')
+  assert.equal(result.meta.shared.apiTarget.scmWashFileSource, 'scm_detail_wash_attachment')
+  assert.equal(result.meta.shared.apiTarget.scmWashFileName, '6ca836fc5ee5eeee85c72c3083f2c32')
+  assert.match(result.meta.items[0].target_relative_path, /scm-wash-attachments\/209225117208-60904-XM241115000025-wash-attachment\.jpg/)
+})
+
 test('SCM attachment recognition downloads wash image instead of hangtag file', async () => {
   const apiTarget = {
     ...PENDING_TARGET,
@@ -904,6 +959,35 @@ test('downloaded SCM wash attachment requests backend AI/OCR recognition', async
   assert.equal(result.meta.model_id, 'qwen3.8-max-preview')
   assert.deepEqual(Array.from(result.meta.fallback_model_ids), ['gpt-5.6-terra', 'gemini-3.5-flash'])
   assert.equal(result.meta.shared.scmAttachmentRecognitionStatus, 'recognizing')
+})
+
+test('SCM wash attachment recognition uses manifest model default when omitted', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: '209225117208',
+    scmOrderNo: 'XM241115000025',
+    scmWashFile: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/label2.pdf',
+  }
+  const result = await runAdapter({
+    phase: 'verify_scm_attachment_download',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmAttachmentDownload: {
+        ok: true,
+        items: [{
+          success: true,
+          path: '/tmp/scm-label2.pdf',
+          filename: 'label2.pdf',
+          url: 'https://scmobsprd.semirapp.com/SF_DYNA/ATTACH/label2.pdf',
+        }],
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'recognize_wash_care_media')
+  assert.equal(result.meta.model_id, 'gpt-5.5')
 })
 
 test('AI-recognized SCM wash instruction is attached before TEMU care query', async () => {
@@ -1498,6 +1582,41 @@ test('AI-recognized TEMU care symbols drive save payload before text fallback', 
     ironing: 'I04',
     dryCleaning: 'P05',
   })
+})
+
+test('208226117203 SCM detail attachment flat drying stays drying enum 8', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    excelStyle: '208226117203',
+    excelSkc: '20822611720300419',
+    outputFilename: '43705392002-6900137777858.pdf',
+    scmWashFileSource: 'scm_detail_wash_attachment',
+    scmCareInstructionText: '手洗，不可漂白，平摊晾干，低温熨烫，不可干洗',
+    scmCareInstructionSource: 'scm_wash_attachment_multimodal',
+    scmCareSymbols: {
+      washing: 13,
+      bleaching: 3,
+      drying: 8,
+      ironing: 3,
+      dryCleaning: 5,
+    },
+  }
+  const result = await runAdapter({
+    phase: 'prepare_care_payload',
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      careInitial: careQueryResponse().res,
+      careLabel: { width: 45, len: 270, padding: 10, size: '160' },
+    },
+  })
+
+  assert.equal(result.meta.shared.carePayload.drying, 8)
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbols.drying, 8)
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsLabels.drying, 'Flat drying')
+  assert.equal(result.meta.shared.carePayloadSummary.careSymbolsSource, 'scm_attachment_ai_care_symbols')
+  assert.notEqual(result.meta.shared.carePayload.drying, 4)
 })
 
 test('partial AI care symbols are completed with latest SCM text mapping', async () => {

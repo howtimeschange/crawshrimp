@@ -26,7 +26,7 @@
   const scmOnlyCompleted = params.scm_only_completed !== false && String(params.scm_only_completed || '').toLowerCase() !== 'false'
   const scmBrandMode = compact(params.scm_brand || 'auto')
   const scmCompositionMode = compact(params.scm_composition_mode || 'evidence_only')
-  const aiWashInstructionModelId = textOf(params.ai_wash_instruction_model_id || '')
+  const aiWashInstructionModelId = textOf(params.ai_wash_instruction_model_id || 'gpt-5.5')
   const aiWashInstructionFallbackModels = textOf(params.ai_wash_instruction_fallback_models || '')
   const manufacturerNameParam = textOf(paramValue('manufacturer_name', ''))
   const manufacturerAddressParam = textOf(paramValue('manufacturer_address', ''))
@@ -1438,6 +1438,8 @@
       scmResult: textOf(target.scmResult),
       scmRemark: textOf(target.scmRemark),
       scmWashFile: textOf(target.scmWashFile),
+      scmWashFileName: textOf(target.scmWashFileName),
+      scmWashFileSource: textOf(target.scmWashFileSource),
       scmHangTagFile: textOf(target.scmHangTagFile),
       scmCareInstructionText: textOf(target.scmCareInstructionText),
       scmCareInstructionSource: textOf(target.scmCareInstructionSource),
@@ -1979,6 +1981,8 @@
       scmResult: Number.isFinite(Number(row.skcResult)) ? String(row.skcResult) : '',
       scmRemark: textOf(row.skcRemark),
       scmWashFile: textOf(row.washFileUrl),
+      scmWashFileName: textOf(row.washFileName),
+      scmWashFileSource: textOf(row.washFileSource),
       scmHangTagFile: textOf(row.hangTagFileUrl),
       scmCareInstructionText: textOf(evidence.careInstructionText),
       scmCareInstructionSource: textOf(evidence.careInstructionSource),
@@ -2791,9 +2795,41 @@
     return Number.isFinite(status) ? String(status) : textOf(value)
   }
 
+  function normalizeScmAttachment(item) {
+    const fileUrl = textOf(item?.FILE_URL || item?.fileUrl || item?.url).split('?')[0]
+    return {
+      fileName: textOf(item?.FILE_NAME || item?.fileName || item?.filename),
+      originalFileName: textOf(item?.ORIGINAL_FILE_NAME || item?.originalFileName),
+      docType: compact(item?.DOC_TYPE || item?.docType),
+      fileSize: textOf(item?.FILE_SIZE || item?.fileSize),
+      fileUrl,
+      relatedType: textOf(item?.RELATED_TYPE || item?.relatedType),
+      source: textOf(item?.source || ''),
+    }
+  }
+
+  function selectScmWashAttachment(attachments) {
+    const items = (Array.isArray(attachments) ? attachments : [])
+      .map(normalizeScmAttachment)
+      .filter(item => item.fileUrl)
+    if (!items.length) return null
+    return items.find(item => /洗唛|洗水|水洗|wash/i.test([
+      item.relatedType,
+      item.fileName,
+      item.originalFileName,
+      item.fileUrl,
+    ].join(' '))) || items[0]
+  }
+
   function normalizeScmRow(row) {
+    const detailWashAttachments = Array.isArray(row?.SCM_WASH_ATTACHMENTS)
+      ? row.SCM_WASH_ATTACHMENTS.map(normalizeScmAttachment).filter(item => item.fileUrl)
+      : []
     return {
       orderNo: textOf(row?.ORDER_NO),
+      hId: textOf(row?.H_ID),
+      id: textOf(row?.ID),
+      skcId: textOf(row?.SKC_ID),
       brand: compact(row?.BRAND),
       brandDisplay: textOf(row?.BRAND_DISPLAY),
       style: compact(row?.P_MAT_CODE),
@@ -2809,6 +2845,7 @@
       skcRemark: textOf(row?.SKC_REMARK),
       washFileUrl: textOf(row?.SKC_FILE_URL1),
       hangTagFileUrl: textOf(row?.SKC_FILE_URL2),
+      detailWashAttachments,
       lastModifiedTime: textOf(row?.LAST_MODIFIED_TIME),
       treeLevel: textOf(row?.TREE_LEVEL),
     }
@@ -2856,7 +2893,18 @@
     const compositions = uniqueNonblank(candidateRows.map(row => row.cComponent))
     const englishCompositions = uniqueNonblank(candidateRows.map(row => row.eComponent))
     const remarks = uniqueNonblank(candidateRows.map(row => row.skcRemark))
-    const selected = candidateRows[0]
+    const selectedBase = candidateRows[0]
+    const fallbackWashAttachment = selectScmWashAttachment(selectedBase?.detailWashAttachments)
+    const selected = selectedBase?.washFileUrl || !fallbackWashAttachment
+      ? selectedBase
+      : {
+          ...selectedBase,
+          washFileUrl: fallbackWashAttachment.fileUrl,
+          washFileName: fallbackWashAttachment.fileName,
+          washFileDocType: fallbackWashAttachment.docType,
+          washFileSize: fallbackWashAttachment.fileSize,
+          washFileSource: 'scm_detail_wash_attachment',
+        }
     return {
       rows,
       brandRows,
@@ -2966,6 +3014,109 @@
     return compact(input.value) === compact(value);
   }
 
+  function stripAttachmentPreviewQuery(url) {
+    return textOf(url).split('?')[0];
+  }
+
+  function filenameFromAttachmentUrl(url) {
+    try {
+      const clean = stripAttachmentPreviewQuery(url);
+      return decodeURIComponent(clean.split('/').pop() || '').replace(/^\\d+_\\d+/, '');
+    } catch (error) {
+      return stripAttachmentPreviewQuery(url).split('/').pop() || '';
+    }
+  }
+
+  function findVisibleTextElement(selector, exactText) {
+    return [...document.querySelectorAll(selector)]
+      .find(element => visible(element) && textOf(element) === exactText) || null;
+  }
+
+  async function ensureDetailDrawer(orderNo) {
+    if (textOf(document.body).includes('洗唛批复详情')) return true;
+    const link = findVisibleTextElement('a.sf-link,a', orderNo);
+    if (!link) return false;
+    link.click();
+    for (let i = 0; i < 40; i += 1) {
+      await sleep(250);
+      if (textOf(document.body).includes('洗唛批复详情')) return true;
+    }
+    return false;
+  }
+
+  async function ensureAttachmentTab() {
+    let tab = findVisibleTextElement('[role="tab"],.q-tab,div,span,button', '附件信息');
+    if (!tab) {
+      const candidates = [...document.querySelectorAll('[role="tab"],.q-tab,div,span,button')]
+        .filter(element => visible(element) && textOf(element).includes('附件信息'));
+      tab = candidates[candidates.length - 1] || null;
+    }
+    if (!tab) return false;
+    tab.click();
+    for (let i = 0; i < 24; i += 1) {
+      await sleep(250);
+      const body = textOf(document.body);
+      if (body.includes('洗唛附件') || body.includes('暂无数据')) return true;
+    }
+    return false;
+  }
+
+  function renderedWashAttachments() {
+    const sections = [...document.querySelectorAll('.attach-tab-item')]
+      .filter(section => visible(section) && textOf(section).includes('洗唛附件'));
+    const out = [];
+    for (const section of sections) {
+      const imageUrls = [...section.querySelectorAll('img')]
+        .map(image => stripAttachmentPreviewQuery(image.getAttribute('src') || image.src || ''))
+        .filter(Boolean);
+      for (const url of imageUrls) {
+        const scope = [...section.querySelectorAll('.q-item')]
+          .find(item => textOf(item).includes(filenameFromAttachmentUrl(url).replace(/\\.\\w+$/, ''))) || section;
+        const scopeText = textOf(scope);
+        const filenameMatch = scopeText.match(/([\\w.-]+\\.(?:jpg|jpeg|png|webp|pdf))/i);
+        const filename = filenameMatch ? filenameMatch[1] : filenameFromAttachmentUrl(url);
+        out.push({
+          FILE_NAME: filename.replace(/\\.(jpg|jpeg|png|webp|pdf)$/i, ''),
+          DOC_TYPE: (url.match(/\\.([A-Za-z0-9]{1,8})(?:$|[?#])/) || [])[1] || '',
+          FILE_SIZE: (scopeText.match(/\\d+(?:\\.\\d+)?\\s*(?:KB|MB|GB)/i) || [''])[0],
+          FILE_URL: url,
+          RELATED_TYPE: '洗唛附件',
+          source: 'scm_detail_rendered_attachment',
+        });
+      }
+    }
+    const seen = new Set();
+    return out.filter(item => {
+      const key = item.FILE_URL || item.FILE_NAME;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  async function detailWashAttachmentsForRows(rows) {
+    const groups = [];
+    const seen = new Set();
+    for (const row of rows) {
+      const hId = textOf(row.H_ID);
+      const orderNo = textOf(row.ORDER_NO);
+      if (!hId || !orderNo || textOf(row.SKC_FILE_URL1)) continue;
+      if (seen.has(hId)) continue;
+      seen.add(hId);
+      groups.push({ hId, orderNo });
+      if (groups.length >= 3) break;
+    }
+    const byKey = {};
+    for (const group of groups) {
+      const opened = await ensureDetailDrawer(group.orderNo);
+      if (!opened) continue;
+      const tabReady = await ensureAttachmentTab();
+      if (!tabReady) continue;
+      byKey[group.hId] = renderedWashAttachments();
+    }
+    return byKey;
+  }
+
   let dataset = null;
   for (let i = 0; i < 30; i += 1) {
     dataset = findDataset();
@@ -3003,25 +3154,35 @@
     rows = data.filter(row => compact(row && row.P_MAT_CODE) === style);
     if (rows.length || (table && Number(table.recordsTotal || 0) === 0 && !table.loading)) break;
   }
-  const safeRows = rows.map(row => ({
-    ORDER_NO: textOf(row.ORDER_NO),
-    BRAND: compact(row.BRAND),
-    BRAND_DISPLAY: textOf(row.BRAND_DISPLAY),
-    P_MAT_CODE: compact(row.P_MAT_CODE),
-    P_MAT_NAME: textOf(row.P_MAT_NAME),
-    SKC_CODE: compact(row.SKC_CODE),
-    F1: compact(row.F1),
-    F1_DISPLAY: textOf(row.F1_DISPLAY),
-    C_COMPONENT: textOf(row.C_COMPONENT),
-    E_COMPONENT: textOf(row.E_COMPONENT),
-    H_STATUS: Number(row.H_STATUS || 0),
-    SKC_RESULT: Number(row.SKC_RESULT || 0),
-    SKC_REMARK: textOf(row.SKC_REMARK),
-    SKC_FILE_URL1: textOf(row.SKC_FILE_URL1),
-    SKC_FILE_URL2: textOf(row.SKC_FILE_URL2),
-    LAST_MODIFIED_TIME: textOf(row.LAST_MODIFIED_TIME),
-    TREE_LEVEL: textOf(row.TREE_LEVEL),
-  }));
+  const detailAttachmentsByKey = rows.some(row => !textOf(row.SKC_FILE_URL1) && textOf(row.H_ID))
+    ? await detailWashAttachmentsForRows(rows)
+    : {};
+  const safeRows = rows.map(row => {
+    const hId = textOf(row.H_ID);
+    return {
+      ORDER_NO: textOf(row.ORDER_NO),
+      H_ID: hId,
+      ID: textOf(row.ID),
+      SKC_ID: textOf(row.SKC_ID),
+      BRAND: compact(row.BRAND),
+      BRAND_DISPLAY: textOf(row.BRAND_DISPLAY),
+      P_MAT_CODE: compact(row.P_MAT_CODE),
+      P_MAT_NAME: textOf(row.P_MAT_NAME),
+      SKC_CODE: compact(row.SKC_CODE),
+      F1: compact(row.F1),
+      F1_DISPLAY: textOf(row.F1_DISPLAY),
+      C_COMPONENT: textOf(row.C_COMPONENT),
+      E_COMPONENT: textOf(row.E_COMPONENT),
+      H_STATUS: Number(row.H_STATUS || 0),
+      SKC_RESULT: Number(row.SKC_RESULT || 0),
+      SKC_REMARK: textOf(row.SKC_REMARK),
+      SKC_FILE_URL1: textOf(row.SKC_FILE_URL1),
+      SKC_FILE_URL2: textOf(row.SKC_FILE_URL2),
+      SCM_WASH_ATTACHMENTS: detailAttachmentsByKey[hId] || [],
+      LAST_MODIFIED_TIME: textOf(row.LAST_MODIFIED_TIME),
+      TREE_LEVEL: textOf(row.TREE_LEVEL),
+    };
+  });
   return {
     ok: true,
     source: 'scm_qc_wash_appr_page_component',
@@ -3029,6 +3190,7 @@
     currentUrl: location.href || '',
     queryStyle: style,
     recordsTotal: Number(table && table.recordsTotal || 0),
+    detailAttachmentKeys: Object.keys(detailAttachmentsByKey),
     rows: safeRows,
   };
 })()
