@@ -53,7 +53,7 @@ class TemuManifestTests(unittest.TestCase):
         task = next(item for item in manifest["tasks"] if item["id"] == "wash_label_official_pdf_download")
         params = {item["id"]: item for item in task["params"]}
 
-        self.assertEqual(manifest["version"], "1.5.13")
+        self.assertEqual(manifest["version"], "1.5.14")
         self.assertTrue(task["hidden"])
         self.assertEqual(task["script"], "wash-label-official-pdf-download.js")
         self.assertEqual(task["entry_url"], "https://agentseller.temu.com/goods/label")

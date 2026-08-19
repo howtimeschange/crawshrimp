@@ -644,6 +644,9 @@ test('SCM lookup phase evaluates the logged-in SCM tab without copying credentia
   assert.match(result.meta.expression, /input_0_P_MAT_CODE/)
   assert.match(result.meta.expression, /innerText \|\| value\.textContent/)
   assert.match(result.meta.expression, /detailWashAttachmentsForRows/)
+  assert.match(result.meta.expression, /componentWashAttachments/)
+  assert.match(result.meta.expression, /myListData/)
+  assert.match(result.meta.expression, /scm_detail_component_attachment/)
   assert.match(result.meta.expression, /洗唛附件/)
   assert.doesNotMatch(result.meta.expression, /cookie|localStorage|sf-token|Anti-Content/i)
 })
@@ -875,6 +878,66 @@ test('SCM detail wash attachment is used when list row wash file is blank', asyn
   assert.equal(result.meta.shared.apiTarget.scmWashFileSource, 'scm_detail_wash_attachment')
   assert.equal(result.meta.shared.apiTarget.scmWashFileName, '6ca836fc5ee5eeee85c72c3083f2c32')
   assert.match(result.meta.items[0].target_relative_path, /scm-wash-attachments\/209225117208-60904-XM241115000025-wash-attachment\.jpg/)
+})
+
+test('SCM detail PDF wash attachment is used when rendered component provides the file URL', async () => {
+  const apiTarget = {
+    ...PENDING_TARGET,
+    ...ENTERPRISE_TARGET,
+    excelStyle: '208226117230',
+    excelSkc: '20822611723060354',
+  }
+  const rows = SCM_ROWS.map(row => ({
+    ...row,
+    ORDER_NO: 'XM260103000013',
+    P_MAT_CODE: '208226117230',
+    SKC_CODE: row.SKC_CODE.replace('209225117208', '208226117230'),
+    F1: row.F1 === '60904' ? '60354' : row.F1,
+    F1_DISPLAY: row.F1 === '60904' ? '梦幻粉60354' : row.F1_DISPLAY,
+    SKC_REMARK: '',
+    SKC_FILE_URL1: '',
+    SCM_WASH_ATTACHMENTS: row.F1 === '60904'
+      ? [{
+          FILE_NAME: '208226117230',
+          DOC_TYPE: 'pdf',
+          FILE_SIZE: '558.24KB',
+          FILE_URL: 'https://supplyforce0001.oss-cn-hangzhou.aliyuncs.com/sfpublicfiles/client82010225/SCM/%E6%B4%97%E5%94%9B%E9%99%84%E4%BB%B6/820102253004575S021767403798_910208226117230.pdf',
+          RELATED_TYPE: '洗唛附件',
+          source: 'scm_detail_component_attachment',
+        }]
+      : [],
+  }))
+  const result = await runAdapter({
+    phase: 'verify_scm_lookup',
+    params: {
+      ai_wash_instruction_recognition: true,
+    },
+    shared: {
+      apiTarget,
+      excelTargets: [ENTERPRISE_TARGET],
+      excelTarget: ENTERPRISE_TARGET,
+      scmLookupResult: {
+        ok: true,
+        value: {
+          ok: true,
+          source: 'scm_qc_wash_appr_page_component',
+          rows,
+          recordsTotal: 5,
+          detailAttachmentKeys: ['SCM-DETAIL-209225117208'],
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'download_urls')
+  assert.equal(result.meta.next_phase, 'verify_scm_attachment_download')
+  assert.equal(result.meta.items[0].url, 'https://supplyforce0001.oss-cn-hangzhou.aliyuncs.com/sfpublicfiles/client82010225/SCM/%E6%B4%97%E5%94%9B%E9%99%84%E4%BB%B6/820102253004575S021767403798_910208226117230.pdf')
+  assert.equal(result.meta.items[0].expected_magic, '%PDF-')
+  assert.equal(result.meta.items[0].validate_signature, true)
+  assert.equal(result.meta.shared.apiTarget.scmWashFileSource, 'scm_detail_wash_attachment')
+  assert.equal(result.meta.shared.apiTarget.scmWashFileName, '208226117230')
+  assert.equal(result.meta.shared.apiTarget.scmCareInstructionSource, 'missing_structured_wash_instruction')
+  assert.match(result.meta.items[0].target_relative_path, /scm-wash-attachments\/208226117230-60354-XM260103000013-wash-attachment\.pdf/)
 })
 
 test('SCM attachment recognition downloads wash image instead of hangtag file', async () => {

@@ -3061,10 +3061,64 @@
     return false;
   }
 
+  function isWashAttachmentGroup(value) {
+    return /洗唛|洗水|水洗|wash/i.test(textOf(value));
+  }
+
+  function detailAttachmentRecord(item, source, fallbackRelatedType) {
+    if (!item || typeof item !== 'object') return null;
+    const url = stripAttachmentPreviewQuery(item.FILE_URL || item.fileUrl || item.url || '');
+    if (!url) return null;
+    const rawName = textOf(item.FILE_NAME || item.fileName || item.filename || item.ORIGINAL_FILE_NAME || item.originalFileName)
+      || filenameFromAttachmentUrl(url).replace(/\.(jpg|jpeg|png|webp|pdf)$/i, '');
+    const docType = textOf(item.DOC_TYPE || item.docType)
+      || (url.match(/\.([A-Za-z0-9]{1,8})(?:$|[?#])/) || [])[1]
+      || '';
+    return {
+      FILE_NAME: rawName.replace(/\.(jpg|jpeg|png|webp|pdf)$/i, ''),
+      ORIGINAL_FILE_NAME: textOf(item.ORIGINAL_FILE_NAME || item.originalFileName),
+      DOC_TYPE: docType,
+      FILE_SIZE: textOf(item.FILE_SIZE || item.fileSize),
+      FILE_URL: url,
+      RELATED_TYPE: textOf(item.RELATED_TYPE || item.relatedType || fallbackRelatedType || '洗唛附件'),
+      source,
+    };
+  }
+
+  function renderedAttachmentComponentRoot() {
+    const pageEl = document.querySelector('.q-page');
+    return pageEl && pageEl.__vue__;
+  }
+
+  function componentWashAttachments() {
+    const root = renderedAttachmentComponentRoot();
+    const out = [];
+    const seen = new Set();
+    function collect(comp, depth) {
+      if (!comp || depth > 12 || seen.has(comp._uid)) return;
+      seen.add(comp._uid);
+      const group = textOf(comp.$props && comp.$props.group);
+      const listData = comp.$data && Array.isArray(comp.$data.myListData) ? comp.$data.myListData : [];
+      if (isWashAttachmentGroup(group) && listData.length) {
+        for (const groupItem of listData) {
+          const list = Array.isArray(groupItem && groupItem.list) ? groupItem.list : [];
+          for (const item of list) {
+            const record = detailAttachmentRecord(item, 'scm_detail_component_attachment', group);
+            if (record && isWashAttachmentGroup(record.RELATED_TYPE || group)) out.push(record);
+          }
+        }
+      }
+      const children = comp.$children || [];
+      for (let i = 0; i < children.length; i += 1) collect(children[i], depth + 1);
+    }
+    collect(root, 0);
+    return out;
+  }
+
   function renderedWashAttachments() {
+    const out = componentWashAttachments();
     const sections = [...document.querySelectorAll('.attach-tab-item')]
       .filter(section => visible(section) && textOf(section).includes('洗唛附件'));
-    const out = [];
     for (const section of sections) {
       const imageUrls = [...section.querySelectorAll('img')]
         .map(image => stripAttachmentPreviewQuery(image.getAttribute('src') || image.src || ''))
