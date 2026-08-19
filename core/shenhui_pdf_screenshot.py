@@ -740,6 +740,7 @@ def convert_pdf_rows_to_yq_output_root(
         )
         next_sequence = sequence_by_name_scope.get(sequence_key, 1)
         copied_count = 0
+        first_copied: Optional[Path] = None
         for converted_path in converted:
             target_name = build_pdf_yq_filename(
                 style_code or style_folder,
@@ -751,10 +752,14 @@ def convert_pdf_rows_to_yq_output_root(
             copied = copy_file_to_unique_target(converted_path, target_dir / target_name)
             converted_count += 1
             copied_count += 1
+            if first_copied is None:
+                first_copied = copied
             next_sequence += 1
             log(f"Shenhui PDF screenshot copied: {copied}")
         sequence_by_name_scope[sequence_key] = next_sequence
         item["row"]["处理动作"] = "截图完成"
+        if first_copied is not None:
+            item["row"]["本地文件"] = str(first_copied)
         item["row"]["备注"] = f"生成 {copied_count} 张截图；款号目录：{style_folder}"
 
     return converted_count

@@ -2312,6 +2312,45 @@ def _rewrite_shenhui_shoe_summary_excels(exported_files: list, data_rows: list, 
         log,
         context="Shenhui shoe package",
     )
+    _rewrite_summary_excel_row_columns(
+        exported_files,
+        data_rows,
+        log,
+        context="Shenhui shoe package",
+        columns=("压缩结果",),
+    )
+
+
+def _try_rewrite_shenhui_package_summary_excels(
+    exported_files: list,
+    data_rows: list,
+    log,
+    *,
+    include_compression: bool = False,
+) -> None:
+    try:
+        _rewrite_summary_excel_local_paths(
+            exported_files,
+            data_rows,
+            log,
+            context="Shenhui package",
+        )
+    except Exception as exc:
+        if log:
+            log(f"[warn] Shenhui package Excel paths refresh skipped: {exc}")
+    if not include_compression:
+        return
+    try:
+        _rewrite_summary_excel_row_columns(
+            exported_files,
+            data_rows,
+            log,
+            context="Shenhui package",
+            columns=("压缩结果",),
+        )
+    except Exception as exc:
+        if log:
+            log(f"[warn] Shenhui package Excel compression column refresh skipped: {exc}")
 
 
 def _rewrite_rows_under_moved_directory(
@@ -3483,6 +3522,11 @@ def _prepare_shenhui_shoe_package_rows(
 
 _SHENHUI_LABEL_TILE_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 _SHENHUI_LABEL_TILE_PDF_SUFFIXES = {".pdf"}
+_SHENHUI_NEW_ARRIVAL_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+_SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES = 30 * 1024 * 1024
+_SHENHUI_NEW_ARRIVAL_STYLE_PACKAGE_THRESHOLD_BYTES = 1024 * 1024 * 1024
+_SHENHUI_NEW_ARRIVAL_JPEG_QUALITIES = (95, 92, 90, 88)
+_SHENHUI_NEW_ARRIVAL_WEBP_QUALITIES = (95, 92, 90, 88)
 
 
 def _append_shenhui_label_tile_note(row: dict, note: str) -> None:
@@ -3654,6 +3698,254 @@ def _compress_shenhui_label_tile_file_if_beneficial(path: Path, log) -> tuple[st
     return "", size, size
 
 
+def _shenhui_new_arrival_path_key(path: Path) -> str:
+    return str(path.expanduser().resolve(strict=False))
+
+
+def _shenhui_new_arrival_rows_by_local_path(data_rows: list) -> dict[str, list[dict]]:
+    rows_by_path: dict[str, list[dict]] = {}
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        raw_path = str(row.get("本地文件") or "").strip()
+        if not raw_path:
+            continue
+        rows_by_path.setdefault(
+            _shenhui_new_arrival_path_key(Path(raw_path)),
+            [],
+        ).append(row)
+    return rows_by_path
+
+
+def _shenhui_new_arrival_style_total_bytes(style_dir: Path) -> int:
+    total = 0
+    for file_path in style_dir.rglob("*"):
+        if not file_path.is_file():
+            continue
+        try:
+            total += file_path.stat().st_size
+        except OSError:
+            logger.debug("Failed to stat Shenhui package file %s", file_path, exc_info=True)
+    return total
+
+
+def _save_shenhui_new_arrival_candidate(
+    *,
+    source_info: dict,
+    path: Path,
+    marker: str,
+    image,
+    format_name: str,
+    temp_paths: list[Path],
+    **save_kwargs,
+) -> None:
+    temp_path = _shenhui_label_tile_temp_path(path, marker)
+    kwargs = {"optimize": True, **save_kwargs}
+    icc_profile = source_info.get("icc_profile")
+    if icc_profile:
+        kwargs["icc_profile"] = icc_profile
+    image.save(temp_path, format=format_name, **kwargs)
+    temp_paths.append(temp_path)
+
+
+def _compress_shenhui_new_arrival_image(
+    path: Path,
+    log,
+    *,
+    target_bytes: Optional[int] = None,
+) -> tuple[bool, int, int, str]:
+    before_size = path.stat().st_size
+    suffix = path.suffix.lower()
+    temp_paths: list[Path] = []
+
+    try:
+        from PIL import Image, ImageOps
+    except Exception as exc:
+        return False, before_size, before_size, f"压缩失败：Pillow 不可用（{exc}）"
+
+    try:
+        with Image.open(path) as opened:
+            source_info = {
+                "format": str(opened.format or "").upper(),
+                "icc_profile": opened.info.get("icc_profile"),
+            }
+            image = ImageOps.exif_transpose(opened)
+            image.load()
+            if suffix in {".jpg", ".jpeg"}:
+                jpeg_image = _jpeg_image_for_high_quality_save(image)
+                for quality in _SHENHUI_NEW_ARRIVAL_JPEG_QUALITIES:
+                    _save_shenhui_new_arrival_candidate(
+                        source_info=source_info,
+                        path=path,
+                        marker=f"q{quality}",
+                        image=jpeg_image,
+                        format_name="JPEG",
+                        temp_paths=temp_paths,
+                        quality=quality,
+                        progressive=True,
+                    )
+            elif suffix == ".png":
+                _save_shenhui_new_arrival_candidate(
+                    source_info=source_info,
+                    path=path,
+                    marker="png",
+                    image=image,
+                    format_name="PNG",
+                    temp_paths=temp_paths,
+                    compress_level=9,
+                )
+            elif suffix == ".webp":
+                webp_image = image if image.mode in {"RGB", "RGBA"} else image.convert("RGB")
+                for quality in _SHENHUI_NEW_ARRIVAL_WEBP_QUALITIES:
+                    _save_shenhui_new_arrival_candidate(
+                        source_info=source_info,
+                        path=path,
+                        marker=f"webp{quality}",
+                        image=webp_image,
+                        format_name="WEBP",
+                        temp_paths=temp_paths,
+                        quality=quality,
+                        method=6,
+                    )
+            else:
+                return False, before_size, before_size, "压缩跳过：非支持图片格式"
+    except Exception as exc:
+        for temp_path in temp_paths:
+            temp_path.unlink(missing_ok=True)
+        logger.debug("Failed to compress Shenhui new-arrival image %s", path, exc_info=True)
+        return False, before_size, before_size, f"压缩失败：{exc}"
+
+    candidates: list[tuple[int, int, Path]] = []
+    for order, temp_path in enumerate(temp_paths):
+        if not temp_path.is_file():
+            continue
+        size = temp_path.stat().st_size
+        if 0 < size < before_size:
+            candidates.append((order, size, temp_path))
+        else:
+            temp_path.unlink(missing_ok=True)
+
+    if not candidates:
+        return False, before_size, before_size, f"已尝试高质量压缩，未生成更小文件（原始 {_format_mb(before_size)}）"
+
+    best_order, best_size, best_temp = min(candidates, key=lambda item: item[1])
+    if target_bytes:
+        under_target = [item for item in candidates if item[1] <= target_bytes]
+        if under_target:
+            best_order, best_size, best_temp = min(under_target, key=lambda item: item[0])
+    else:
+        best_order, best_size, best_temp = min(candidates, key=lambda item: item[0])
+
+    for order, _size, temp_path in candidates:
+        if order != best_order:
+            temp_path.unlink(missing_ok=True)
+
+    after_size = _replace_with_temp_if_smaller(path, best_temp, before_size)
+    if after_size >= before_size:
+        return False, before_size, before_size, f"已尝试高质量压缩，未生成更小文件（原始 {_format_mb(before_size)}）"
+    if log:
+        log(
+            "Shenhui new-arrival image compressed: "
+            f"{path} ({_format_mb(before_size)} -> {_format_mb(after_size)})"
+        )
+    return True, before_size, after_size, f"{_format_mb(before_size)} -> {_format_mb(after_size)}"
+
+
+def _compress_shenhui_new_arrival_style_dirs(
+    style_dirs: list[Path],
+    data_rows: list,
+    log,
+) -> dict[str, int]:
+    rows_by_path = _shenhui_new_arrival_rows_by_local_path(data_rows)
+    changed_rows = 0
+    compressed_count = 0
+    triggered_count = 0
+    saved_bytes = 0
+
+    for raw_style_dir in style_dirs or []:
+        style_dir = Path(raw_style_dir)
+        if not style_dir.is_dir():
+            continue
+        image_paths = [
+            path
+            for path in sorted(style_dir.rglob("*"))
+            if path.is_file() and path.suffix.lower() in _SHENHUI_NEW_ARRIVAL_IMAGE_SUFFIXES
+        ]
+        if not image_paths:
+            continue
+
+        try:
+            image_sizes = {path: path.stat().st_size for path in image_paths}
+        except OSError:
+            image_sizes = {}
+            for path in image_paths:
+                try:
+                    image_sizes[path] = path.stat().st_size
+                except OSError:
+                    logger.debug("Failed to stat Shenhui package image %s", path, exc_info=True)
+        style_total = _shenhui_new_arrival_style_total_bytes(style_dir)
+        package_over_limit = style_total > _SHENHUI_NEW_ARRIVAL_STYLE_PACKAGE_THRESHOLD_BYTES
+        single_over_limit = {
+            path
+            for path, size in image_sizes.items()
+            if size > _SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES
+        }
+        if not single_over_limit and not package_over_limit:
+            continue
+
+        remaining_package_excess = max(
+            0,
+            style_total - _SHENHUI_NEW_ARRIVAL_STYLE_PACKAGE_THRESHOLD_BYTES,
+        )
+        for path in sorted(image_paths, key=lambda item: image_sizes.get(item, 0), reverse=True):
+            if not path.is_file():
+                continue
+            reasons: list[str] = []
+            target_bytes = None
+            if path in single_over_limit:
+                reasons.append(f"单图超过{_format_mb(_SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES)}")
+                target_bytes = _SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES
+            if package_over_limit and remaining_package_excess > 0:
+                reasons.append(
+                    f"单款总图包超过{_format_mb(_SHENHUI_NEW_ARRIVAL_STYLE_PACKAGE_THRESHOLD_BYTES)}"
+                )
+                package_target = max(1, image_sizes.get(path, 0) - remaining_package_excess)
+                target_bytes = min(target_bytes, package_target) if target_bytes else package_target
+            if not reasons:
+                continue
+            triggered_count += 1
+            reason = "、".join(reasons)
+            compressed, before_size, after_size, detail = _compress_shenhui_new_arrival_image(
+                path,
+                log,
+                target_bytes=target_bytes,
+            )
+            if compressed:
+                compressed_count += 1
+                current_saved_bytes = max(0, before_size - after_size)
+                saved_bytes += current_saved_bytes
+                if package_over_limit and "单款总图包超过" in reason:
+                    remaining_package_excess = max(0, remaining_package_excess - current_saved_bytes)
+                status = f"已压缩（{reason}）：{detail}"
+            else:
+                status = f"已触发压缩（{reason}），{detail}"
+            for row in rows_by_path.get(_shenhui_new_arrival_path_key(path), []):
+                row["压缩结果"] = status
+                changed_rows += 1
+
+    if triggered_count and log:
+        log(
+            "Shenhui new-arrival package compression finished: "
+            f"triggered={triggered_count}, compressed={compressed_count}, saved={_format_mb(saved_bytes)}"
+        )
+    return {
+        "triggered": triggered_count,
+        "compressed": compressed_count,
+        "changed_rows": changed_rows,
+        "saved_bytes": saved_bytes,
+    }
+
+
 def _finalize_shenhui_label_tile_download_outputs(
     data_rows: list,
     runtime_files: list,
@@ -3803,6 +4095,11 @@ def _finalize_shenhui_new_arrival_outputs(
                 package_path,
                 relocated,
             )
+            _compress_shenhui_new_arrival_style_dirs(
+                [relocated],
+                data_rows,
+                log,
+            )
             final_refs.append(str(relocated))
             log(f"Shenhui shoe package moved to output folder: {relocated}")
 
@@ -3856,6 +4153,7 @@ def _finalize_shenhui_new_arrival_outputs(
         successful_rows.append((row, local_path))
 
     style_zip_paths = []
+    compression_changed_rows = 0
     if successful_rows:
         finalize_started_at = time.monotonic()
         pdf_rows = []
@@ -3923,6 +4221,26 @@ def _finalize_shenhui_new_arrival_outputs(
                 f"{time.monotonic() - pdf_started_at:.1f}s"
             )
 
+        style_dirs = [
+            path
+            for path in sorted(package_root.iterdir())
+            if path.is_dir() and not path.name.startswith("_")
+        ] if package_root.exists() else []
+        compression_summary = _compress_shenhui_new_arrival_style_dirs(
+            style_dirs,
+            data_rows,
+            log,
+        )
+        compression_changed_rows = compression_summary.get("changed_rows", 0)
+        if compression_changed_rows:
+            _rewrite_summary_excel_row_columns(
+                exported_files,
+                data_rows,
+                log,
+                context="Shenhui package",
+                columns=("压缩结果",),
+            )
+
         if auto_zip_package:
             zip_started_at = time.monotonic()
             style_zip_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_deepdraw_zips")
@@ -3966,6 +4284,13 @@ def _finalize_shenhui_new_arrival_outputs(
                 log(f"Shenhui style ZIPs copied to export folder: {target_root}")
         elif successful_rows and package_root.exists():
             external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
+            _rewrite_rows_under_moved_directory(data_rows, package_root, external_dir)
+            _try_rewrite_shenhui_package_summary_excels(
+                exported_files,
+                data_rows,
+                log,
+                include_compression=bool(compression_changed_rows),
+            )
             external_refs.append(str(external_dir))
             log(f"Shenhui package folder copied to export folder: {external_dir}")
 
@@ -3993,6 +4318,13 @@ def _finalize_shenhui_new_arrival_outputs(
         target_root = _default_output_root_for_runtime(runtime_dir, exported_files)
         target_root.mkdir(parents=True, exist_ok=True)
         external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
+        _rewrite_rows_under_moved_directory(data_rows, package_root, external_dir)
+        _try_rewrite_shenhui_package_summary_excels(
+            exported_files,
+            data_rows,
+            log,
+            include_compression=bool(compression_changed_rows),
+        )
         log(f"Shenhui package folder moved to default output folder: {external_dir}")
         final_refs = [str(external_dir), *exported_refs]
 

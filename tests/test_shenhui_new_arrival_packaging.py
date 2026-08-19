@@ -9,6 +9,7 @@ from openpyxl import Workbook, load_workbook
 from PIL import Image
 
 from core.api_server import (
+    _SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES,
     _cleanup_orphaned_runtime_artifacts,
     _finalize_shenhui_new_arrival_outputs,
     _prepare_shenhui_shoe_package_rows,
@@ -20,6 +21,12 @@ SHOE_PACKAGING_PATH = ROOT / "core" / "shenhui_shoe_packaging.py"
 
 
 class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
+    def test_new_arrival_compression_single_image_threshold_is_30mb(self):
+        self.assertEqual(
+            _SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES,
+            30 * 1024 * 1024,
+        )
+
     def test_shoe_packaging_core_is_separate_from_clothing_packaging(self):
         self.assertTrue(SHOE_PACKAGING_PATH.is_file())
 
@@ -79,6 +86,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         self.assertIn("品类来源", output_columns)
         self.assertIn("规则槽位", output_columns)
         self.assertIn("规则告警", output_columns)
+        self.assertIn("压缩结果", output_columns)
 
     def test_manifest_declares_deepdraw_upload_task_with_fail_closed_controls(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -149,6 +157,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         self.assertEqual(prepare_params["auto_zip_package"]["type"], "checkbox")
         self.assertEqual(prepare_params["auto_zip_package"]["default"], [])
         self.assertEqual(prepare_params["auto_zip_package"]["options"][0]["value"], "yes")
+        self.assertIn("压缩结果", prepare_task["output"][0]["columns"])
 
     def test_manifest_declares_batch_label_tile_download_task(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -230,6 +239,91 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             self.assertFalse(model_file.exists())
             self.assertFalse(yq_file.exists())
             self.assertFalse((runtime_dir / "深绘测试图包").exists())
+
+    def test_finalize_prepare_upload_package_compresses_single_large_images(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "exports"
+            runtime_dir.mkdir()
+            export_dir.mkdir()
+
+            image_file = runtime_dir / "runtime-large.jpg"
+            Image.effect_noise((512, 512), 90).convert("RGB").save(
+                image_file,
+                format="JPEG",
+                quality=100,
+            )
+            before_size = image_file.stat().st_size
+
+            exported = base / "summary.xlsx"
+            data_rows = [{
+                "输入款号": "208226103201",
+                "输入编码": "208226103201",
+                "素材来源": "模特图",
+                "文件名": "balaBR05106-72904_P.jpg",
+                "云盘路径": "模拍原图/208226103201/balaBR05106-72904_P.jpg",
+                "处理动作": "保留模特图",
+                "下载结果": "已下载",
+                "本地文件": str(image_file),
+                "压缩结果": "",
+                "备注": "",
+                "__shenhui_group_code": "208226103201",
+                "__shenhui_asset_role": "image",
+                "__package_filename": "balaBR05106-72904_P.jpg",
+            }]
+            columns = [
+                "输入款号",
+                "输入编码",
+                "素材来源",
+                "文件名",
+                "云盘路径",
+                "处理动作",
+                "下载结果",
+                "本地文件",
+                "压缩结果",
+                "备注",
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(columns)
+            sheet.append([data_rows[0].get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            with patch(
+                "core.api_server._SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES",
+                max(1, before_size - 1),
+            ), patch(
+                "core.api_server._SHENHUI_NEW_ARRIVAL_STYLE_PACKAGE_THRESHOLD_BYTES",
+                before_size * 10,
+            ):
+                _finalize_shenhui_new_arrival_outputs(
+                    task_id="prepare_upload_package",
+                    data_rows=data_rows,
+                    runtime_files=[str(image_file)],
+                    exported_files=[str(exported)],
+                    run_params={
+                        "package_name": "深绘测试图包",
+                        "export_folder": str(export_dir),
+                    },
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+            final_image = export_dir / "深绘测试图包" / "208226103201" / "balaBR05106-72904_P.jpg"
+            copied_excel = export_dir / "summary.xlsx"
+            self.assertTrue(final_image.is_file())
+            self.assertLess(final_image.stat().st_size, before_size)
+            with Image.open(final_image) as compressed:
+                self.assertEqual(compressed.size, (512, 512))
+            self.assertIn("单图超过", data_rows[0]["压缩结果"])
+
+            workbook = load_workbook(copied_excel, read_only=True, data_only=True)
+            self.assertEqual(workbook.active["H2"].value, str(final_image))
+            self.assertTrue(Path(workbook.active["H2"].value).is_file())
+            self.assertIn("单图超过", workbook.active["I2"].value)
+            workbook.close()
 
     def test_finalize_batch_label_tile_download_moves_files_under_style_folder(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -552,6 +646,133 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 data_only=True,
             )
             self.assertEqual(workbook.active["C2"].value, expected_path)
+            workbook.close()
+
+    def test_finalize_shoe_outputs_compresses_when_style_package_exceeds_threshold(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            package_dir = runtime_dir / "shoe-packages" / "204326141005"
+            color_dir = package_dir / "1.白紫色调00317"
+            export_dir = base / "downloads"
+            color_dir.mkdir(parents=True)
+            export_dir.mkdir()
+
+            first_image = color_dir / "o.jpg"
+            second_image = color_dir / "yk1.jpg"
+            for path in (first_image, second_image):
+                Image.effect_noise((512, 512), 90).convert("RGB").save(
+                    path,
+                    format="JPEG",
+                    quality=100,
+                )
+            before_sizes = {
+                first_image.name: first_image.stat().st_size,
+                second_image.name: second_image.stat().st_size,
+            }
+            package_total = sum(before_sizes.values())
+
+            data_rows = [
+                {
+                    "输入款号": "204326141005",
+                    "颜色": "白紫色调00317",
+                    "原文件名": "source-o.jpg",
+                    "云盘路径": "鞋品/204326141005/source-o.jpg",
+                    "规则槽位": "o",
+                    "输出文件名": "1.白紫色调00317/o.jpg",
+                    "处理动作": "已选图并按鞋品规则命名",
+                    "下载结果": "已下载",
+                    "本地文件": str(first_image),
+                    "压缩结果": "",
+                    "规则告警": "",
+                    "品类来源": "Excel指定",
+                    "备注": "",
+                },
+                {
+                    "输入款号": "204326141005",
+                    "颜色": "白紫色调00317",
+                    "原文件名": "source-yk1.jpg",
+                    "云盘路径": "鞋品/204326141005/source-yk1.jpg",
+                    "规则槽位": "yk",
+                    "输出文件名": "1.白紫色调00317/yk1.jpg",
+                    "处理动作": "已选图并按鞋品规则命名",
+                    "下载结果": "已下载",
+                    "本地文件": str(second_image),
+                    "压缩结果": "",
+                    "规则告警": "",
+                    "品类来源": "Excel指定",
+                    "备注": "",
+                },
+            ]
+            columns = [
+                "输入款号",
+                "颜色",
+                "原文件名",
+                "云盘路径",
+                "规则槽位",
+                "输出文件名",
+                "处理动作",
+                "下载结果",
+                "本地文件",
+                "压缩结果",
+                "规则告警",
+                "品类来源",
+                "备注",
+            ]
+            exported = base / "深绘鞋品上新图包整理结果.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(columns)
+            for row in data_rows:
+                sheet.append([row.get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            with patch(
+                "core.api_server._SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES",
+                package_total * 10,
+            ), patch(
+                "core.api_server._SHENHUI_NEW_ARRIVAL_STYLE_PACKAGE_THRESHOLD_BYTES",
+                max(1, package_total - 1),
+            ):
+                _finalize_shenhui_new_arrival_outputs(
+                    task_id="prepare_shoe_upload_package",
+                    data_rows=data_rows,
+                    runtime_files=[],
+                    exported_files=[str(exported)],
+                    run_params={
+                        "export_folder": str(export_dir),
+                        "__shenhui_shoe_package_refs": [str(package_dir)],
+                    },
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+            output_package = export_dir / "204326141005"
+            compressed_rows = [
+                row for row in data_rows if "单款总图包超过" in row.get("压缩结果", "")
+            ]
+            self.assertTrue(compressed_rows)
+            for row in compressed_rows:
+                final_image = Path(row["本地文件"])
+                self.assertTrue(final_image.is_file())
+                self.assertLess(final_image.stat().st_size, before_sizes[final_image.name])
+                with Image.open(final_image) as compressed:
+                    self.assertEqual(compressed.size, (512, 512))
+            self.assertTrue(output_package.is_dir())
+
+            workbook = load_workbook(
+                export_dir / "深绘鞋品上新图包整理结果.xlsx",
+                read_only=True,
+                data_only=True,
+            )
+            compression_values = [
+                workbook.active.cell(row=row_index, column=10).value or ""
+                for row_index in range(2, 4)
+            ]
+            self.assertTrue(
+                any("单款总图包超过" in value for value in compression_values)
+            )
             workbook.close()
 
     def test_prepare_shoe_rows_registers_generated_package_before_excel_export(self):
