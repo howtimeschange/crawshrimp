@@ -12,7 +12,7 @@ import {
 } from './llmSettings.mjs'
 
 test('LLM settings expose all configured gateway defaults and supported model ids', () => {
-  assert.equal(LLM_DEFAULTS['ai.llm.default_model'], 'gpt-5.6-terra')
+  assert.equal(LLM_DEFAULTS['ai.llm.default_model'], 'gemini-3.5-flash')
   assert.equal(LLM_MODELS.length, 13)
   assert.deepEqual(
     LLM_MODELS.map(item => item.value),

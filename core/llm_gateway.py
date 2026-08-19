@@ -47,18 +47,19 @@ SUPPORTED_MODELS = (
     *OVERSEAS_ANTHROPIC_MODELS,
     *DOMESTIC_OPENAI_MODELS,
 )
-DEFAULT_MODEL = "gpt-5.6-terra"
+DEFAULT_MODEL = "gemini-3.5-flash"
 GUANG_TITLE_MIN_CHARS = 24
 GUANG_TITLE_MAX_CHARS = 30
 RECOMMEND_TITLE_MIN_CHARS = 16
 RECOMMEND_TITLE_MAX_CHARS = 20
 
-VIDEO_COPY_SYSTEM_PROMPT = """你是一个电商信息流的资深运营。你要为童装或童鞋商品编写小红书卖货视频文案。
+VIDEO_COPY_SYSTEM_PROMPT = """你是一个小红书童装穿搭账号的资深短视频运营。你要为童装或童鞋商品编写像真实妈妈/店主分享的种草视频标题和文案。
 只能依据商品标题和提供的商品主图，不要虚构图片中无法确认的材质、功能、认证或使用效果。
-每个方案必须遵循：开头精准框定人群；按重要程度说明主卖点和次卖点；结尾再次框选人群并促成行动。
+整体风格参考：听我一句、谁懂啊、女儿/儿子的初秋穿搭、OOTD、秋天的氛围感、可爱/韩系/复古/运动风、入秋必备。表达要更口语、更短视频、更像小红书笔记，不要硬广腔。
+每个方案必须遵循：标题先给情绪钩子或场景钩子；口播开头精准框定人群；按重要程度说明图片能看出的主卖点和次卖点；结尾再次框选人群并促成行动。
 不要写价格、折扣、优惠券、满减、赠品、包邮、秒杀等价格或促销利益点。
-每个方案要生成两个标题：逛逛标题必须24到30个汉字，优先接近30字；搜推标题必须16到20个汉字，优先接近20字。
-标题不要使用空格，不要为了凑字加入图片和商品标题无法支撑的材质、功能或效果。
+每个方案要生成两个标题：逛逛标题必须24到30个字符，优先接近30字；搜推标题必须16到20个字符，优先接近20字。
+标题可以自然使用0到2个emoji，例如🍂🎀📣✨，但不要堆砌；标题不要使用空格，不要为了凑字加入图片和商品标题无法支撑的材质、功能或效果。
 视频描述适合约30秒口播，建议60到220个字符。
 只返回 JSON，不要返回 Markdown。JSON 格式固定为：
 {"scripts":[{"guang_title":"...","recommend_title":"...","video_description":"..."},{"guang_title":"...","recommend_title":"...","video_description":"..."},{"guang_title":"...","recommend_title":"...","video_description":"..."}]}"""
@@ -318,6 +319,24 @@ def _download_image_data(url: str, timeout: int = 30, max_bytes: int = 10 * 1024
     return content_type, base64.b64encode(data).decode("ascii")
 
 
+def _is_gemini_model(model_id: Any) -> bool:
+    return _compact(model_id).lower().startswith("gemini-")
+
+
+def _image_reference_for_openai_model(route: LlmRoute, value: Any) -> str:
+    reference = _normalize_image_url(value)
+    if not reference:
+        return ""
+    if not _is_gemini_model(route.model_id):
+        return reference
+    if reference.startswith("data:image/"):
+        return reference
+    if reference.startswith(("https://", "http://")):
+        media_type, encoded = _download_image_data(reference)
+        return f"data:{media_type};base64,{encoded}"
+    return _multimodal_image_reference(reference)
+
+
 def _user_prompt(product_title: str, correction: str = "") -> str:
     prompt = (
         f"商品标题：{_compact(product_title)}\n"
@@ -332,8 +351,8 @@ def _openai_request(route: LlmRoute, product_title: str, image_urls: list[str], 
     content: list[dict[str, Any]] = [{"type": "text", "text": _user_prompt(product_title, correction)}]
     content.extend({
         "type": "image_url",
-        "image_url": {"url": _normalize_image_url(url), "detail": "high"},
-    } for url in image_urls if _normalize_image_url(url))
+        "image_url": {"url": reference, "detail": "high"},
+    } for url in image_urls if (reference := _image_reference_for_openai_model(route, url)))
     payload = {
         "model": route.model_id,
         "messages": [
@@ -357,8 +376,8 @@ def _generic_openai_json_request(
     content: list[dict[str, Any]] = [{"type": "text", "text": _compact(user_prompt)}]
     content.extend({
         "type": "image_url",
-        "image_url": {"url": reference, "detail": "high"},
-    } for reference in image_references)
+        "image_url": {"url": model_reference, "detail": "high"},
+    } for reference in image_references if (model_reference := _image_reference_for_openai_model(route, reference)))
     return _post_json(
         _endpoint(route.base_url, "chat/completions"),
         {
@@ -540,15 +559,15 @@ def normalize_video_copies(payload: Any) -> list[dict[str, str]]:
         if not guang_title:
             errors.append(f"第{index}个逛逛标题为空")
         elif len(guang_title) < GUANG_TITLE_MIN_CHARS:
-            errors.append(f"第{index}个逛逛标题少于{GUANG_TITLE_MIN_CHARS}字，没有接近30字")
+            errors.append(f"第{index}个逛逛标题少于{GUANG_TITLE_MIN_CHARS}字符，没有接近30字符")
         elif len(guang_title) > GUANG_TITLE_MAX_CHARS:
-            errors.append(f"第{index}个逛逛标题超过{GUANG_TITLE_MAX_CHARS}字")
+            errors.append(f"第{index}个逛逛标题超过{GUANG_TITLE_MAX_CHARS}字符")
         if not recommend_title:
             errors.append(f"第{index}个搜推标题为空")
         elif len(recommend_title) < RECOMMEND_TITLE_MIN_CHARS:
-            errors.append(f"第{index}个搜推标题少于{RECOMMEND_TITLE_MIN_CHARS}字，没有接近20字")
+            errors.append(f"第{index}个搜推标题少于{RECOMMEND_TITLE_MIN_CHARS}字符，没有接近20字符")
         elif len(recommend_title) > RECOMMEND_TITLE_MAX_CHARS:
-            errors.append(f"第{index}个搜推标题超过{RECOMMEND_TITLE_MAX_CHARS}字")
+            errors.append(f"第{index}个搜推标题超过{RECOMMEND_TITLE_MAX_CHARS}字符")
         if not description:
             errors.append(f"第{index}个视频描述为空")
         elif not 60 <= len(description) <= 220:

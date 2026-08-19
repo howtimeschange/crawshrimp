@@ -46,7 +46,7 @@ class LlmGatewayTests(unittest.TestCase):
                     "overseas_openai_base_url": "https://openai.example/v1",
                     "overseas_anthropic_base_url": "https://anthropic.example",
                     "domestic_base_url": "https://domestic.example/v1",
-                    "default_model": "gpt-5.6-terra",
+                    "default_model": "gemini-3.5-flash",
                 }
             }
         }
@@ -62,6 +62,15 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(anthropic.base_url, "https://anthropic.example")
         self.assertEqual(domestic.protocol, "openai")
         self.assertEqual(domestic.base_url, "https://domestic.example/v1")
+
+    def test_gateway_default_model_is_gemini_flash(self):
+        config = self.config()
+        config["ai"]["llm"].pop("default_model")
+
+        route = llm_gateway.route_for_model("", config)
+
+        self.assertEqual(llm_gateway.DEFAULT_MODEL, "gemini-3.5-flash")
+        self.assertEqual(route.model_id, "gemini-3.5-flash")
 
     def test_runtime_environment_key_can_be_used_without_persisting_it_in_config(self):
         config = self.config()
@@ -103,6 +112,65 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(len(copies), 3)
         self.assertEqual(len(calls), 2)
         self.assertIn("3个视频方案", calls[1])
+
+    def test_openai_request_converts_remote_images_to_base64_for_gemini(self):
+        captured = {}
+        route = llm_gateway.LlmRoute(
+            model_id="gemini-3.5-flash",
+            protocol="openai",
+            base_url="https://openai.example/v1",
+            api_key="unit-key",
+        )
+
+        def fake_post(url, payload, headers, **_kwargs):
+            captured["url"] = url
+            captured["payload"] = payload
+            captured["headers"] = headers
+            return {"choices": [{"message": {"content": json.dumps(valid_scripts(), ensure_ascii=False)}}]}
+
+        with (
+            patch.object(llm_gateway, "_download_image_data", return_value=("image/jpeg", "/9j/2Q==")) as download,
+            patch.object(llm_gateway, "_post_json", side_effect=fake_post),
+        ):
+            response = llm_gateway._openai_request(
+                route,
+                "巴拉巴拉童鞋儿童运动鞋男童透气跑步鞋",
+                ["https://img.example/1.jpg"],
+                "",
+            )
+
+        self.assertEqual(response["choices"][0]["message"]["content"], json.dumps(valid_scripts(), ensure_ascii=False))
+        download.assert_called_once_with("https://img.example/1.jpg")
+        image_payload = captured["payload"]["messages"][1]["content"][1]["image_url"]
+        self.assertEqual(image_payload["url"], "data:image/jpeg;base64,/9j/2Q==")
+
+    def test_openai_request_keeps_remote_image_urls_for_non_gemini_models(self):
+        captured = {}
+        route = llm_gateway.LlmRoute(
+            model_id="gpt-5.6-terra",
+            protocol="openai",
+            base_url="https://openai.example/v1",
+            api_key="unit-key",
+        )
+
+        def fake_post(_url, payload, _headers, **_kwargs):
+            captured["payload"] = payload
+            return {"choices": [{"message": {"content": json.dumps(valid_scripts(), ensure_ascii=False)}}]}
+
+        with (
+            patch.object(llm_gateway, "_download_image_data") as download,
+            patch.object(llm_gateway, "_post_json", side_effect=fake_post),
+        ):
+            llm_gateway._openai_request(
+                route,
+                "巴拉巴拉童鞋儿童运动鞋男童透气跑步鞋",
+                ["https://img.example/1.jpg"],
+                "",
+            )
+
+        download.assert_not_called()
+        image_payload = captured["payload"]["messages"][1]["content"][1]["image_url"]
+        self.assertEqual(image_payload["url"], "https://img.example/1.jpg")
 
     def test_generation_retries_transient_gateway_errors(self):
         calls = []
@@ -158,6 +226,31 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(payload["slots"]["o"], "GD005292.jpg")
         self.assertEqual(calls[0][1:3], ("识别鞋品姿势", "只返回 JSON"))
         self.assertTrue(calls[0][3][0].startswith("data:image/jpeg;base64,"))
+
+    def test_generic_multimodal_json_converts_remote_images_for_gemini_route(self):
+        captured = {}
+
+        def fake_post(_url, payload, _headers, **_kwargs):
+            captured["payload"] = payload
+            return {"choices": [{"message": {"content": '{"ok":true}'}}]}
+
+        with (
+            patch.object(llm_gateway, "_download_image_data", return_value=("image/png", "iVBORw0KGgo=")) as download,
+            patch.object(llm_gateway, "_post_json", side_effect=fake_post),
+        ):
+            payload, route = llm_gateway.generate_multimodal_json(
+                system_prompt="识别鞋品姿势",
+                user_prompt="只返回 JSON",
+                image_inputs=["https://img.example/remote.png"],
+                model_id="gemini-3.5-flash",
+                config=self.config(),
+            )
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(route.model_id, "gemini-3.5-flash")
+        download.assert_called_once_with("https://img.example/remote.png")
+        image_payload = captured["payload"]["messages"][1]["content"][1]["image_url"]
+        self.assertEqual(image_payload["url"], "data:image/png;base64,iVBORw0KGgo=")
 
     def test_generic_multimodal_json_uses_anthropic_messages_route(self):
         calls = []
@@ -281,7 +374,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
             llm_gateway,
             "generate_video_copies",
             return_value=(llm_gateway.normalize_video_copies(valid_scripts()), llm_gateway.LlmRoute(
-                model_id="gpt-5.6-terra",
+                model_id="gemini-3.5-flash",
                 protocol="openai",
                 base_url="https://openai.example/v1",
                 api_key="unit-key",
@@ -289,7 +382,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
         ):
             rows = await api_server._apply_video_copy_generation(
                 source,
-                {"model_id": "gpt-5.6-terra", "generation_concurrency": 2},
+                {"model_id": "gemini-3.5-flash", "generation_concurrency": 2},
                 lambda payload=None: asyncio.sleep(0, result=waits.append(payload)),
                 lambda _: None,
             )
@@ -300,7 +393,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row["逛逛标题"] and row["搜推标题"] and row["视频描述"] for row in rows))
         self.assertTrue(waits)
 
-    async def test_backend_uses_evaluated_default_model_when_omitted(self):
+    async def test_backend_uses_gemini_flash_default_model_when_omitted(self):
         source = [{
             "款号": "204125140101",
             "ID": "850170525107",
@@ -314,7 +407,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
             llm_gateway,
             "generate_video_copies",
             return_value=(llm_gateway.normalize_video_copies(valid_scripts()), llm_gateway.LlmRoute(
-                model_id="gpt-5.6-terra",
+                model_id="gemini-3.5-flash",
                 protocol="openai",
                 base_url="https://openai.example/v1",
                 api_key="unit-key",
@@ -328,20 +421,23 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(len(rows), 3)
-        self.assertEqual(generate.call_args.kwargs["model_id"], "gpt-5.6-terra")
-        self.assertTrue(any("准备使用 gpt-5.6-terra" in item for item in logs))
+        self.assertEqual(generate.call_args.kwargs["model_id"], "gemini-3.5-flash")
+        self.assertTrue(any("准备使用 gemini-3.5-flash" in item for item in logs))
 
     async def test_final_workbook_matches_batch_upload_headers_and_text_ids(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             with patch.object(runtime_paths, "data_root", return_value=root):
+                guang_title = "OOTD｜女儿初秋穿搭这件小外套真的太好看出门拍照也可爱啦🍂"
+                recommend_title = "女儿初秋小外套出门拍照好可爱日常也好搭🍂"
+                video_description = "谁懂啊，女儿初秋穿这件真的很有氛围感🍂图片里能看到版型利落、颜色干净，日常配小裙子或者裤子都不违和。正在给女儿挑早秋外套的妈妈，可以先把这件放进备选。"
                 workbook_path = Path(data_sink.export_excel(
                     [{
                         "款号": "204125140101",
                         "ID": "850170525107",
-                        "逛逛标题": "爱跑跳男童春日轻运动鞋透气好穿上学户外日常都方便",
-                        "搜推标题": "男童春日轻运动鞋透气上学户外日常",
-                        "视频描述": valid_scripts()["scripts"][0]["video_description"],
+                        "逛逛标题": guang_title,
+                        "搜推标题": recommend_title,
+                        "视频描述": video_description,
                         "参与活动": "",
                         "定时/日": "",
                         "定时/具体时间": "",
@@ -373,6 +469,9 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(sheet["B2"].value, "850170525107")
                 self.assertEqual(sheet["B2"].number_format, "@")
+                self.assertEqual(sheet["C2"].value, guang_title)
+                self.assertEqual(sheet["D2"].value, recommend_title)
+                self.assertEqual(sheet["E2"].value, video_description)
                 self.assertEqual(sheet["A1"].fill.fgColor.rgb, "00FFFF00")
             finally:
                 workbook.close()

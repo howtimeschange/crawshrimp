@@ -18,7 +18,7 @@ async function runAdapter({ params = {}, phase = 'main', shared = {}, exportsBox
   const context = {
     window: windowObject,
     document: contextExtra.document || {},
-    location: contextExtra.location || { href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video' },
+    location: contextExtra.location || { href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?contentType=video' },
     console,
     setTimeout,
     clearTimeout,
@@ -137,6 +137,31 @@ test('short video upload blocks invalid title and missing video before live chan
   assert.equal(parsed.invalidRows.length, 1)
   assert.equal(parsed.invalidRows[0].上传情况, '预检失败')
   assert.match(parsed.invalidRows[0].备注, /20字限制/)
+})
+
+test('short video upload counts emoji as one visible character in titles', async () => {
+  const helpers = await loadExports()
+  const guangTitle = 'OOTD｜女儿初秋穿搭这件小外套真的太好看出门拍照也可爱啦🍂'
+  const recommendTitle = '女儿初秋小外套出门拍照好可爱日常也好搭🍂'
+  const parsed = helpers.normalizeJobs({
+    input_file: {
+      rows: [inputRow({
+        逛逛标题: guangTitle,
+        搜推标题: recommendTitle,
+      })],
+    },
+    video_override_path: '/Users/test/208326133201.mp4',
+    publish_targets: ['guang', 'recommend'],
+  })
+
+  assert.equal(guangTitle.length, 31)
+  assert.equal(helpers.visibleLength(guangTitle), 30)
+  assert.equal(recommendTitle.length, 21)
+  assert.equal(helpers.visibleLength(recommendTitle), 20)
+  assert.equal(parsed.invalidRows.length, 0)
+  assert.equal(parsed.jobs.length, 1)
+  assert.equal(parsed.jobs[0].guang_title, guangTitle)
+  assert.equal(parsed.jobs[0].recommend_title, recommendTitle)
 })
 
 test('short video upload skips precheck failures and continues live jobs', async () => {
@@ -279,7 +304,7 @@ test('short video upload stops the batch when the publisher shows Session expire
         querySelector() { return null },
       },
       location: {
-        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
+        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?contentType=video&ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
       },
     },
   })
@@ -369,7 +394,7 @@ test('short video upload regression covers all three publish target surfaces', a
     },
     contextExtra: {
       location: {
-        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
+        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?contentType=video&ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
       },
     },
   })
@@ -481,7 +506,7 @@ test('short video upload reopens the Guang publisher for each live job', async (
     },
     contextExtra: {
       location: {
-        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
+        href: 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?contentType=video&ugc_scene=pc_newcreator_video&pageType=video&site=guangguang',
         reload() {
           reloads += 1
         },

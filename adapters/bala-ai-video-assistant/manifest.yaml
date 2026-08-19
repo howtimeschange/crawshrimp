@@ -14,7 +14,7 @@ auth:
 tasks:
   - id: tmall_video_copy_generate
     name: AI生成视频标题和文案
-    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，默认用 gpt-5.6-terra 生成3组逛逛标题、搜推标题与约30秒文案，并按短视频批量上传模板导出
+    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，默认用 gemini-3.5-flash 生成3组更小红书体的逛逛标题、搜推标题与约30秒文案，并按短视频批量上传模板导出
     script: tmall-video-copy-generate.js
     entry_url: https://myseller.taobao.com/home.htm/SellManage/on_sale?current=1&pageSize=20
     tab_match_prefixes:
@@ -46,12 +46,12 @@ tasks:
       - id: model_id
         type: select
         label: 文案生成模型
-        default: gpt-5.6-terra
+        default: gemini-3.5-flash
         options:
           - value: gpt-5.6-sol
             label: 海外 · GPT-5.6 Sol
           - value: gpt-5.6-terra
-            label: 海外 · GPT-5.6 Terra（推荐）
+            label: 海外 · GPT-5.6 Terra
           - value: gpt-5.6-luna
             label: 海外 · GPT-5.6 Luna
           - value: gpt-5.5
@@ -63,7 +63,7 @@ tasks:
           - value: gemini-3.1-pro-preview
             label: 海外 · Gemini 3.1 Pro Preview
           - value: gemini-3.5-flash
-            label: 海外 · Gemini 3.5 Flash
+            label: 海外 · Gemini 3.5 Flash（默认）
           - value: qwen3.8-max-preview
             label: 国内 · Qwen 3.8 Max Preview
           - value: qwen3.7-plus
@@ -74,7 +74,7 @@ tasks:
             label: 国内 · GLM 5.2
           - value: kimi-k2.7-code
             label: 国内 · Kimi K2.7 Code
-        hint: 默认使用本次评测胜出的 gpt-5.6-terra；可在本次任务中覆盖。海外 Claude 模型走 Anthropic 兼容地址，其他海外模型走 OpenAI 兼容地址，国内模型走百炼 CodingPlan 兼容地址。
+        hint: 默认使用 gemini-3.5-flash；切换到 Gemini 系列时商品图会自动转为 base64 传输，其他 OpenAI 兼容模型保持图片 URL 直传。海外 Claude 模型走 Anthropic 兼容地址，国内模型走百炼 CodingPlan 兼容地址。
       - id: output_dir
         type: directory
         label: Excel 导出目录

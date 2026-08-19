@@ -6,7 +6,7 @@ export const LLM_DEFAULTS = Object.freeze({
   'ai.llm.overseas_openai_base_url': 'https://ai-aigw.semir.com/overseas-openai-vip/v1',
   'ai.llm.overseas_anthropic_base_url': 'https://ai-aigw.semir.com/overseas-anthropic-vip',
   'ai.llm.domestic_base_url': 'https://ai-aigw.semir.com/bailian-codingplan/v1',
-  'ai.llm.default_model': 'gpt-5.6-terra',
+  'ai.llm.default_model': 'gemini-3.5-flash',
 })
 
 export const LLM_MODELS = Object.freeze([
@@ -17,7 +17,7 @@ export const LLM_MODELS = Object.freeze([
   { value: 'claude-opus-4-8', label: '海外 · Claude Opus 4.8' },
   { value: 'claude-sonnet-5', label: '海外 · Claude Sonnet 5' },
   { value: 'gemini-3.1-pro-preview', label: '海外 · Gemini 3.1 Pro Preview' },
-  { value: 'gemini-3.5-flash', label: '海外 · Gemini 3.5 Flash' },
+  { value: 'gemini-3.5-flash', label: '海外 · Gemini 3.5 Flash（默认）' },
   { value: 'qwen3.8-max-preview', label: '国内 · Qwen 3.8 Max Preview' },
   { value: 'qwen3.7-plus', label: '国内 · Qwen 3.7 Plus' },
   { value: 'deepseek-v4-pro', label: '国内 · DeepSeek V4 Pro' },

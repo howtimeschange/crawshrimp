@@ -114,7 +114,7 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             params["input_file"]["templates"][0]["file"],
             "templates/tmall-video-copy-template.xlsx",
         )
-        self.assertEqual(params["model_id"]["default"], "gpt-5.6-terra")
+        self.assertEqual(params["model_id"]["default"], "gemini-3.5-flash")
         self.assertEqual(
             model_ids,
             [

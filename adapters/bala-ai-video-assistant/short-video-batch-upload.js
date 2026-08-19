@@ -4,7 +4,7 @@
   const shared = window.__CRAWSHRIMP_SHARED__ || {}
   const testExports = window.__CRAWSHRIMP_EXPORTS__ || null
 
-  const GUANG_URL = 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?ugc_scene=pc_newcreator_video&pageType=video&site=guangguang'
+  const GUANG_URL = 'https://huodong.taobao.com/wow/z/guang/gg_publish/gg-video?contentType=video&ugc_scene=pc_newcreator_video&pageType=video&site=guangguang'
   const RECOMMEND_URL = 'https://huodong.taobao.com/wow/z/guang/publish-feeds/videoPreview?ugc_scene=qn_material_manager&pageType=video&from=sucaizhongxin&hidePageTitleText=true'
   const VIDEO_SELECTOR_URL = 'https://sucai.wangpu.taobao.com/videoSelector.htm?type=video&leafCatId=undefined&index=1&appKey=38829&multiple=3&hideHeader=true&videoOptions=4&validAspectRatio=(1:1,3:4,9:16)&publishType=rapid&bizCode=seller_rapid_vod_publish&canSelectAuditing=1&switchAccount=2&smartCut=true&from=pc_sell_detailfirstvideo&maxDuration=300&scene=seller_publish_setmainpic&handleId=sucai&source=sell&#/'
   const SELL_EDIT_URL = 'https://sell.publish.tmall.com/tmall/publish.htm'
@@ -18,6 +18,10 @@
 
   function compact(value) {
     return String(value == null ? '' : value).replace(/\s+/g, ' ').trim()
+  }
+
+  function visibleLength(value) {
+    return Array.from(compact(value)).length
   }
 
   function normalizeKey(value) {
@@ -214,7 +218,7 @@
         invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行缺少逛逛标题`, row))
         return
       }
-      if (publishGuang && guangTitle.length > 30) {
+      if (publishGuang && visibleLength(guangTitle) > 30) {
         invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行逛逛标题超过30字限制`, row))
         return
       }
@@ -222,7 +226,7 @@
         invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行缺少搜推标题`, row))
         return
       }
-      if (publishRecommend && recommendTitle.length > 20) {
+      if (publishRecommend && visibleLength(recommendTitle) > 20) {
         invalidRows.push(failureRow(styleCode, itemId, guangTitle, recommendTitle, description, `模板第${rowNo}行搜推标题超过20字限制`, row))
         return
       }
@@ -1402,6 +1406,7 @@
 
   if (testExports) {
     Object.assign(testExports, {
+      visibleLength,
       normalizeJobs,
       parseScheduleTimestamp,
       matchVideoPath,

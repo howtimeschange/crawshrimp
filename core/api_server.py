@@ -2647,7 +2647,7 @@ BALA_VIDEO_TEMPLATE_CATALOG_JSON = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.j
 BALA_VIDEO_TEMPLATE_CATALOG_CSV = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.csv"
 BALA_SEEDANCE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "seedanceCLI"
 BALA_SEEDANCE_DEFAULT_MODEL = "doubao-seedance-2-0-260128"
-BALA_VIDEO_COPY_DEFAULT_MODEL = "gpt-5.6-terra"
+BALA_VIDEO_COPY_DEFAULT_MODEL = "gemini-3.5-flash"
 BALA_HAPPYHORSE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "bailianCLI"
 BALA_HAPPYHORSE_MODELS = {
     "t2v": "happyhorse-1.1-t2v",
