@@ -21,7 +21,7 @@ class VipshopOpsManifestTests(unittest.TestCase):
 
         self.assertEqual(manifest["id"], "vipshop-ops-assistant")
         self.assertEqual(manifest["name"], "唯品会运营助手")
-        self.assertEqual(manifest["version"], "0.2.3")
+        self.assertEqual(manifest["version"], "0.2.4")
         self.assertEqual(task["name"], "轻供款商品报表")
         self.assertEqual(task["script"], "light-supply-goods-report.js")
         self.assertEqual(task["entry_url"], "https://compass.vip.com/frontend/index.html#/product/details")
