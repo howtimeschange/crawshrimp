@@ -61,6 +61,13 @@
   const VIPSHOP_SAVE_WAIT_MS = Math.max(2000, Number(params.vipshop_save_wait_ms || 6000) || 6000)
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tif', 'tiff'])
   const LIVE_AUTH_MESSAGE = '线上替换由 execute_mode=live 控制；本脚本会取消审核/撤回、上传图片、保存并提交审核。'
+  const PDC_FORBIDDEN_CUSTOM_DETAIL_MODULE_NAMES = new Set([
+    '搜索推荐',
+    '短视频URL',
+    '商品名中心词',
+    '副标题',
+    '洗涤说明',
+  ].map(normalizePdcCustomDetailModuleName))
 
   function compact(value) {
     return String(value == null ? '' : value).replace(/\s+/g, ' ').trim()
@@ -2754,6 +2761,13 @@
     return !text || ['11', '14'].includes(text)
   }
 
+  function pdcEditStateMismatchReason(state = {}, context = {}) {
+    const actual = normalizeCode(state.vendorProductId)
+    const expected = normalizeCode(context.vendorProductId)
+    if (actual && expected && actual !== expected) return `编辑页商品ID未切换完成：当前 ${actual}，目标 ${expected}`
+    return ''
+  }
+
   async function unpublishProduct(vendorProductId, vendorType = 1) {
     const body = new URLSearchParams({
       vendorProductIdList: compact(vendorProductId),
@@ -4228,16 +4242,141 @@
     return null
   }
 
+  function normalizePdcCustomDetailModuleName(value) {
+    return compact(value)
+      .replace(/[（(].*?[）)]/g, '')
+      .replace(/[\s_./\\\-：:（）()]+/g, '')
+      .toUpperCase()
+  }
+
+  function pdcCustomDetailModuleName(module = {}) {
+    const value = [module.name, module.moduleName, module.title, module.label].find(item => item != null)
+    return compact(value)
+  }
+
+  function pdcCustomDetailModuleValue(module = {}) {
+    const value = [module.value, module.moduleValue, module.content, module.desc, module.text].find(item => item != null)
+    return compact(value)
+  }
+
+  function isForbiddenPdcCustomDetailModuleName(name) {
+    return PDC_FORBIDDEN_CUSTOM_DETAIL_MODULE_NAMES.has(normalizePdcCustomDetailModuleName(name))
+  }
+
+  function sanitizePdcCustomDetailModules(modules = []) {
+    const seen = new Set()
+    const kept = []
+    const removed = []
+    for (const module of Array.isArray(modules) ? modules : []) {
+      const name = pdcCustomDetailModuleName(module)
+      const value = pdcCustomDetailModuleValue(module)
+      const normalizedName = normalizePdcCustomDetailModuleName(name)
+      let reason = ''
+      if (!name || !value) reason = '模块名或内容为空'
+      else if (isForbiddenPdcCustomDetailModuleName(name)) reason = '未申请自定义模块'
+      else if (seen.has(normalizedName)) reason = '模块名重复'
+      if (reason) {
+        removed.push({ name, value, reason })
+        continue
+      }
+      if (module && typeof module === 'object') {
+        module.hasError = false
+        module.washDescError = false
+      }
+      seen.add(normalizedName)
+      kept.push(module)
+    }
+    return { modules: kept, removed }
+  }
+
+  function pdcCustomDetailModuleContainers(context = {}) {
+    const editable = findEditableProductVue(context.vendorProductId)
+    const root = findRootProductVue()
+    const containers = []
+    const add = (owner, ownerName, prop, object) => {
+      if (object && Array.isArray(object[prop])) containers.push({ owner, ownerName, prop, object, modules: object[prop] })
+    }
+    const editableData = editable?.$data || {}
+    add(editable, 'editable.editdata', 'itemDetailModules', editable?.editdata)
+    add(editable, 'editable.$data.editdata', 'itemDetailModules', editableData.editdata)
+    add(editable, 'editable.editData', 'itemDetailModules', editable?.editData)
+    add(editable, 'editable.$data.editData', 'itemDetailModules', editableData.editData)
+    add(editable, 'editable.info', 'itemDetailModules', editable?.info)
+    add(editable, 'editable.$data.info', 'itemDetailModules', editableData.info)
+    const rootData = root?.$data || {}
+    add(root, 'root.editData', 'itemDetailModules', root?.editData)
+    add(root, 'root.$data.editData', 'itemDetailModules', rootData.editData)
+    add(root, 'root.info', 'itemDetailModules', root?.info)
+    add(root, 'root.$data.info', 'itemDetailModules', rootData.info)
+    collectVueInstances().forEach((vue, index) => {
+      const name = vue?.$options?.name || `vue${index}`
+      const data = vue?.$data || {}
+      add(vue, `${name}.custommodule`, 'custommodule', vue)
+      add(vue, `${name}.$data.custommodule`, 'custommodule', data)
+      add(vue, `${name}.customModule`, 'customModule', vue)
+      add(vue, `${name}.$data.customModule`, 'customModule', data)
+    })
+    return containers
+  }
+
+  function sanitizePdcItemDetailModulesBeforeSave(context = {}) {
+    const containers = pdcCustomDetailModuleContainers(context)
+    const removed = []
+    const sources = []
+    for (const container of containers) {
+      const result = sanitizePdcCustomDetailModules(container.modules)
+      if (result.removed.length || result.modules.length !== container.modules.length) {
+        container.modules.splice(0, container.modules.length, ...result.modules)
+        container.object[container.prop] = container.modules
+      }
+      if (typeof container.owner?.$forceUpdate === 'function') container.owner.$forceUpdate()
+      removed.push(...result.removed.map(item => ({ ...item, source: container.ownerName })))
+      sources.push({
+        source: container.ownerName,
+        beforeCount: result.modules.length + result.removed.length,
+        afterCount: result.modules.length,
+      })
+    }
+    const remainingInvalid = []
+    for (const container of containers) {
+      sanitizePdcCustomDetailModules(container.modules).removed.forEach(item => {
+        remainingInvalid.push({ ...item, source: container.ownerName })
+      })
+    }
+    return {
+      ok: !remainingInvalid.length,
+      removed,
+      remainingInvalid,
+      sources,
+      currentModules: containers[0]?.modules?.map(module => ({
+        name: pdcCustomDetailModuleName(module),
+        value: pdcCustomDetailModuleValue(module),
+      })) || [],
+    }
+  }
+
+  function pdcSaveItemDetailModulesForPreview(context = {}) {
+    const containers = pdcCustomDetailModuleContainers(context)
+    const source = containers.find(container => /editdata|editData/i.test(container.ownerName)) || containers[0]
+    return jsonClone(source?.modules || [], [])
+  }
+
   function buildPdcSavePayloadPreview(context, uploadRecords = []) {
     const editable = findEditableProductVue(context.vendorProductId)
     const root = findRootProductVue()
     if (!editable && !root) return { ok: false, error: 'PDC 编辑组件未进入可保存状态' }
+    const detailModuleSanitize = sanitizePdcItemDetailModulesBeforeSave(context)
     const info = editable?.info || editable?.$data?.info || root?.$data?.info || {}
     const previewProduct = jsonClone(info, {})
+    previewProduct.itemDetailModules = pdcSaveItemDetailModulesForPreview(context)
     const preview = {
       product: previewProduct,
       saveImages: null,
+      itemDetailModules: detailModuleSanitize,
       errors: [],
+    }
+    if (!detailModuleSanitize.ok) {
+      preview.errors.push(`自定义模块仍存在无效项：${detailModuleSanitize.remainingInvalid.slice(0, 3).map(item => compact([item.name || '(空模块名)', item.reason].join(':'))).join('；')}`)
     }
     const getSaveItemSkuAttr = pdcVueMethod(editable, 'getSaveItemSkuAttr')
     if (getSaveItemSkuAttr && Array.isArray(previewProduct.itemSkuAttr)) {
@@ -4277,6 +4416,7 @@
       foundCount: expectedUrls.length - missingUrls.length,
       missingUrls,
       errors: preview.errors,
+      itemDetailModules: detailModuleSanitize,
     }
   }
 
@@ -4297,6 +4437,10 @@
   function callSaveAndApprove(context) {
     const editable = findEditableProductVue(context.vendorProductId)
     if (!editable) throw new Error('PDC 编辑组件未进入可保存状态')
+    const detailModuleSanitize = sanitizePdcItemDetailModulesBeforeSave(context)
+    if (!detailModuleSanitize.ok) {
+      throw new Error(`唯品会保存前自定义模块仍存在无效项：${detailModuleSanitize.remainingInvalid.slice(0, 3).map(item => compact([item.name || '(空模块名)', item.reason].join(':'))).join('；')}`)
+    }
     editable.fromSaveAndApprove = true
     editable.__timeStart = +new Date()
     const saveAndApprove = pdcVueMethod(editable, 'saveAndApprove')
@@ -4394,6 +4538,68 @@
     const normalizedUrl = normalizeVipshopReadbackImageUrl(url)
     if (!normalizedUrl || normalizedUrl === url) return false
     return text.replace(/https?:\/\/a\.vpimg\d+\.com/gi, '').includes(normalizedUrl)
+  }
+
+  function vipshopPdcvisUploadBatchPrefix(url) {
+    const normalized = normalizeVipshopReadbackImageUrl(url)
+    const match = normalized.match(/\/upload\/merchandise\/pdcvis\/[^/]+\/\d{4}\/\d{4}\//i)
+    return match ? match[0] : ''
+  }
+
+  function readbackImageUrl(item = {}) {
+    return compact(item.imageUrl || item.url || item.src)
+  }
+
+  function readbackColorImages(color = {}) {
+    const lists = [
+      color.squareImages,
+      color.squareMainImages,
+      color.listImages,
+      color.listPics,
+      color.$images,
+      color.colourImages,
+      color.detailImages,
+      color.detailPics,
+      color.list_5_7,
+      color.list_5_7_Pics,
+    ]
+    const seen = new Set()
+    const result = []
+    for (const list of lists) {
+      for (const item of Array.isArray(list) ? list : []) {
+        const url = readbackImageUrl(item)
+        const key = `${item?.imageIndex || ''}:${url}`
+        if (!url || seen.has(key)) continue
+        seen.add(key)
+        result.push(item)
+      }
+    }
+    return result
+  }
+
+  function expectedReadbackImageSize(record = {}) {
+    if (record.usageKey === 'main_square') return '1200x1200'
+    if (record.usageKey === 'list_image') return '950x1200'
+    if (record.usageKey === 'package_micro_square') return '1200x1200'
+    return ''
+  }
+
+  function verifyUploadRecordPersistedInDetail(record = {}, product = {}) {
+    if (verifyImageUrlInDetail(record.imageUrl, product)) return true
+    const goodsCode = normalizeCode(record?.asset?.targetGoodsCode)
+    const color = goodsCode ? findTargetColor(product, goodsCode) : null
+    if (!color) return false
+    const expectedIndex = Number(record.imageIndex)
+    if (!Number.isFinite(expectedIndex)) return false
+    const batchPrefix = vipshopPdcvisUploadBatchPrefix(record.imageUrl)
+    if (!batchPrefix) return false
+    const expectedSize = expectedReadbackImageSize(record)
+    return readbackColorImages(color).some(item => {
+      const url = readbackImageUrl(item)
+      if (!url || Number(item?.imageIndex) !== expectedIndex) return false
+      if (expectedSize && compact(item?.imageSize) && compact(item.imageSize) !== expectedSize) return false
+      return normalizeVipshopReadbackImageUrl(url).includes(batchPrefix)
+    })
   }
 
   function buildJobContexts(parsed, merchandiseResult, assetFiles, rawParams = params) {
@@ -4599,6 +4805,7 @@
       buildJobPlanRows,
       statusLabel,
       hasScope,
+      pdcEditStateMismatchReason,
       isSupportedExecutionOrigin,
       semirLoginWaitMessage,
       isSemirLoginTimeoutText,
@@ -4607,6 +4814,11 @@
       isSemirCloudLoginPageVisible,
       normalizeVipshopReadbackImageUrl,
       verifyImageUrlInDetail,
+      vipshopPdcvisUploadBatchPrefix,
+      verifyUploadRecordPersistedInDetail,
+      normalizePdcCustomDetailModuleName,
+      sanitizePdcCustomDetailModules,
+      sanitizePdcItemDetailModulesBeforeSave,
       buildPdcSavePayloadPreview,
       assertPdcSavePayloadContainsUploads,
       applyMainSquareRecordsToColors,
@@ -4922,6 +5134,17 @@
       if (!state.rootFound) {
         return advanceLiveJob(buildLiveContextRows(context, 'PDC页面加载失败', '等待编辑页 Vue 状态超时'), shared)
       }
+      const mismatchReason = pdcEditStateMismatchReason(state, context)
+      if (mismatchReason && attempts < 30) {
+        return reloadPage('process_live_job', VIPSHOP_PAGE_WAIT_MS, {
+          ...shared,
+          pdc_wait_attempts: attempts + 1,
+          current_store: mismatchReason,
+        })
+      }
+      if (mismatchReason) {
+        return advanceLiveJob(buildLiveContextRows(context, 'PDC页面加载失败', mismatchReason), shared)
+      }
       const latestDetail = await queryProductDetail(context.vendorProductId, context.vendorType)
       const latestStatus = compact(latestDetail.status || state.status)
       if (!isEditableStatus(latestStatus) && !shared.current_unpublished) {
@@ -5145,6 +5368,8 @@
           save_payload_preview: {
             expectedCount: savePayloadPreview.expectedCount,
             foundCount: savePayloadPreview.foundCount,
+            removedInvalidItemDetailModules: savePayloadPreview.itemDetailModules?.removed || [],
+            currentItemDetailModules: savePayloadPreview.itemDetailModules?.currentModules || [],
           },
           current_store: `保存提交读回：${context.vendorProductId}`,
         })
@@ -5163,26 +5388,30 @@
       clickVisibleAlertConfirm()
       const product = await queryProductDetail(context.vendorProductId, context.vendorType)
       const uploads = Array.isArray(shared.current_live_uploads) ? shared.current_live_uploads : []
-      const missingUrls = uploads.map(record => record.imageUrl).filter(url => !verifyImageUrlInDetail(url, product))
+      const missingRecords = uploads.filter(record => !verifyUploadRecordPersistedInDetail(record, product))
       const status = compact(product.status)
       const submitted = ['12', '13'].includes(status)
-      if (!missingUrls.length && !submitted && attempts >= 3 && !shared.publish_fallback_called && params.allow_publish_fallback !== false) {
-        await publishProduct(context.vendorProductId, context.vendorType, params.operator_id || '')
+      if (!missingRecords.length && !submitted && attempts >= 3 && !shared.publish_fallback_called && params.allow_publish_fallback !== false) {
+        try {
+          await publishProduct(context.vendorProductId, context.vendorType, params.operator_id || '')
+        } catch (error) {
+          if (!/已提交审核|审核通过/.test(compact(error?.message || error))) throw error
+        }
         return nextPhase('verify_live_job', VIPSHOP_SAVE_WAIT_MS, {
           ...shared,
           publish_fallback_called: true,
           live_verify_attempts: attempts + 1,
         })
       }
-      if ((missingUrls.length || !submitted) && attempts < 20) {
+      if ((missingRecords.length || !submitted) && attempts < 20) {
         return nextPhase('verify_live_job', 1500, { ...shared, live_verify_attempts: attempts + 1 })
       }
       const rows = buildLiveContextRows(
         context,
-        !missingUrls.length && submitted ? '保存并提交审核成功' : '保存读回异常',
+        !missingRecords.length && submitted ? '保存并提交审核成功' : '保存读回异常',
         compact([
           `读回状态=${statusLabel(status)}`,
-          missingUrls.length ? `未在详情读回中找到 ${missingUrls.length} 个新图URL` : `已读回 ${uploads.length} 个新图URL`,
+          missingRecords.length ? `未在详情读回中找到 ${missingRecords.length} 个目标图位新图` : `已读回 ${uploads.length} 个目标图位新图`,
           shared.publish_fallback_called ? '已调用提交审核兜底接口' : '',
         ].filter(Boolean).join('；')),
       )
