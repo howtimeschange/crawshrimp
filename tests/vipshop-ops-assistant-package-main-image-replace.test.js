@@ -12,18 +12,20 @@ function jsonResponse(payload, status = 200) {
   }
 }
 
-async function loadExports(params = {}, fetchImpl = async () => jsonResponse({ code: '200', data: [] })) {
+async function loadExports(params = {}, fetchImpl = async () => jsonResponse({ code: '200', data: [] }), documentOverrides = {}, windowOverrides = {}) {
   const scriptPath = path.resolve('adapters/vipshop-ops-assistant/vipshop-package-main-image-replace.js')
   const source = fs.readFileSync(scriptPath, 'utf8')
   const exportsBox = {}
+  const documentBase = { body: { innerText: '' } }
   const context = {
     window: {
       __CRAWSHRIMP_PARAMS__: params,
       __CRAWSHRIMP_PHASE__: '__exports__',
       __CRAWSHRIMP_SHARED__: {},
       __CRAWSHRIMP_EXPORTS__: exportsBox,
+      ...windowOverrides,
     },
-    document: { body: { innerText: '' } },
+    document: { ...documentBase, ...documentOverrides },
     location: { href: 'https://nov-admin.vip.com/admin/index.html#/normal/normalMerchandise' },
     fetch: fetchImpl,
     URL,
@@ -456,6 +458,135 @@ test('verifies Vipshop readback image URLs across vpimg CDN host rewrites', asyn
       readbackProduct,
     ),
     false,
+  )
+})
+
+test('does not count unsaved PDC page state as Vipshop readback success', async () => {
+  const uploadUrl = 'http://a.vpimg2.com/upload/merchandise/pdcvis/104218/2026/0820/59/not-persisted.jpg'
+  const editable = {
+    info: {
+      vendorProductId: '2263980907443499008',
+      itemSkuAttr: [{
+        colourGSN: '20832610420530505',
+        squareMainImages: [{ imageIndex: 1, imageUrl: uploadUrl }],
+      }],
+    },
+    saveAndApprove() {},
+  }
+  const helpers = await loadExports({}, undefined, {
+    body: { innerText: '', textContent: '' },
+    querySelectorAll: () => [{ __vue__: editable }],
+  })
+
+  assert.equal(
+    helpers.verifyImageUrlInDetail(uploadUrl, {}, {
+      vendorProductId: '2263980907443499008',
+      job: { goodsCode: '20832610420530505' },
+    }),
+    false,
+  )
+})
+
+test('syncs Vipshop color bucket replacements into the composite page image array', async () => {
+  const helpers = await loadExports()
+  const newSquare = 'http://a.vpimg2.com/upload/merchandise/pdcvis/104218/2026/0820/59/new-square.jpg'
+  const newList = 'http://a.vpimg2.com/upload/merchandise/pdcvis/104218/2026/0820/190/new-list.jpg'
+  const color = {
+    colourGSN: '20832610420530505',
+    squareMainImages: [{ imageIndex: 1, index: 0, imageUrl: 'http://a.vpimg4.com/old-square.jpg' }],
+    squareImages: [],
+    listImages: [{ imageIndex: 50, index: 0, imageUrl: 'http://a.vpimg4.com/old-list.jpg' }],
+    listPics: [{ imageIndex: 50, index: 0, imageUrl: '' }],
+    $images: [
+      { imageIndex: 1, index: 0, imageUrl: 'http://a.vpimg4.com/old-square.jpg' },
+      { imageIndex: 50, index: 10, imageUrl: 'http://a.vpimg4.com/old-list.jpg' },
+    ],
+  }
+
+  helpers.applyMainSquareRecordsToColors([color], [{
+    imageUrl: newSquare,
+    asset: { targetGoodsCode: '20832610420530505', filename: 'main.jpg' },
+  }], '20832610420530505')
+  helpers.applyListImageRecordsToColors([color], [{
+    imageUrl: newList,
+    asset: { targetGoodsCode: '20832610420530505', filename: 'list.jpg' },
+  }], '20832610420530505')
+
+  assert.equal(color.squareMainImages[0].imageUrl, newSquare)
+  assert.equal(color.listImages[0].imageUrl, newList)
+  assert.equal(color.listPics[0].imageUrl, newList)
+  assert.equal(color.$images.find(item => item.imageIndex === 1).imageUrl, newSquare)
+  assert.equal(color.$images.find(item => item.imageIndex === 50).imageUrl, newList)
+})
+
+test('preflights Vipshop page-owned save payload before submitting live uploads', async () => {
+  const squareUrl = 'http://a.vpimg2.com/upload/merchandise/pdcvis/104218/2026/0820/59/new-square.jpg'
+  const listUrl = 'http://a.vpimg2.com/upload/merchandise/pdcvis/104218/2026/0820/190/new-list.jpg'
+  const editable = {
+    $children: [],
+    $options: { name: 'goods-form', methods: {} },
+    info: {
+      vendorProductId: '2263980907443499008',
+      sn: '208326104205',
+      itemSkuAttr: [{
+        colourGSN: '20832610420530505',
+        sizeAttr: [],
+        squareMainImages: [{ imageIndex: 1, index: 0, imageUrl: squareUrl }],
+        listImages: [{ imageIndex: 50, index: 0, imageUrl: listUrl }],
+        detailImages: [],
+        list_5_7: [],
+        transparentImages: [],
+        hangTagWashingMarkImgs: { imgs: [] },
+        tagImage: { imgs: [] },
+      }],
+    },
+    opts: {},
+    saveAndApprove() {},
+    getSaveItemSkuAttr(productVo) {
+      return productVo.itemSkuAttr.map(color => ({
+        ...color,
+        squareImages: [...color.squareMainImages, ...color.listImages],
+        colourImages: [...color.detailImages, ...color.list_5_7, ...color.transparentImages],
+      }))
+    },
+    getSaveImages() {
+      return { itemImages: [], squareImages: [], giftImagesMap: null }
+    },
+    copySaveImages() {},
+  }
+  const helpers = await loadExports({}, undefined, {
+    body: { innerText: '', textContent: '' },
+    querySelectorAll: () => [{ __vue__: editable }],
+  })
+
+  const preview = helpers.buildPdcSavePayloadPreview({
+    vendorProductId: '2263980907443499008',
+  }, [
+    { imageUrl: squareUrl },
+    { imageUrl: listUrl },
+  ])
+
+  assert.equal(preview.ok, true)
+  assert.equal(preview.expectedCount, 2)
+  assert.equal(preview.foundCount, 2)
+  assert.doesNotThrow(() => helpers.assertPdcSavePayloadContainsUploads({
+    vendorProductId: '2263980907443499008',
+  }, [
+    { imageUrl: squareUrl },
+    { imageUrl: listUrl },
+  ]))
+  assert.throws(
+    () => helpers.assertPdcSavePayloadContainsUploads({ vendorProductId: '2263980907443499008' }, [{ imageUrl: 'http://a.vpimg2.com/not-in-payload.jpg' }]),
+    /保存 payload 预检失败/,
+  )
+
+  const emptyPageHelpers = await loadExports({}, undefined, {
+    body: { innerText: '', textContent: '' },
+    querySelectorAll: () => [],
+  })
+  assert.throws(
+    () => emptyPageHelpers.assertPdcSavePayloadContainsUploads({ vendorProductId: '2263980907443499008' }, [{ imageUrl: squareUrl }]),
+    /PDC 编辑组件未进入可保存状态/,
   )
 })
 
