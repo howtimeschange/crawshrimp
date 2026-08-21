@@ -402,7 +402,7 @@ class BuyerShowServiceTests(unittest.TestCase):
         wb = load_workbook(Path(refs[2]))
         values = list(wb.active.iter_rows(values_only=True))
         row = dict(zip(values[0], values[1]))
-        self.assertEqual(row["生图结果"], "生成失败")
+        self.assertEqual(row["生图结果"], "落图失败")
         self.assertIn("download failed", row["备注"])
 
     def test_result_url_candidates_prefer_proxy_before_direct_image(self):

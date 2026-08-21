@@ -664,9 +664,9 @@ def _materialize_buyer_show_generation_row(
         log(f"[buyer-show] 已生成: {label}")
         return row
     except Exception as exc:
-        row["生图结果"] = "生成失败"
+        row["生图结果"] = "落图失败"
         row["备注"] = _append_note(row.get("备注"), str(exc))
-        log(f"[buyer-show] 生成失败: {label} / {_brief_error(exc)}")
+        log(f"[buyer-show] 落图失败: {label} / {_brief_error(exc)}")
         return row
 
 
@@ -753,9 +753,9 @@ def _run_buyer_show_generation_pipeline(
                 try:
                     future.result()
                 except Exception as exc:
-                    row["生图结果"] = "生成失败"
+                    row["生图结果"] = "落图失败"
                     row["备注"] = _append_note(row.get("备注"), str(exc))
-                    log(f"[buyer-show] 生成失败: {row.get('款色号') or row.get('货号') or ''} / {row.get('模拍文件') or ''} / {_brief_error(exc)}")
+                    log(f"[buyer-show] 落图失败: {row.get('款色号') or row.get('货号') or ''} / {row.get('模拍文件') or ''} / {_brief_error(exc)}")
                 download_completed += 1
                 if download_completed % 5 == 0 or (
                     not generation_futures and download_completed == download_submitted
