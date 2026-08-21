@@ -96,7 +96,7 @@
               </label>
               <label class="bsv-field">
                 <span>AI 结果落图并发</span>
-                <input v-model.number="resultDownloadConcurrency" type="number" min="1" max="10" />
+                <input v-model.number="resultDownloadConcurrency" type="number" min="1" max="20" />
               </label>
             </div>
             <label class="bsv-field">
@@ -288,7 +288,7 @@ const imageSize = ref('2160x2880')
 const maxGenerateJobs = ref(0)
 const maxModelImagesPerRow = ref(500)
 const generationConcurrency = ref(5)
-const resultDownloadConcurrency = ref(5)
+const resultDownloadConcurrency = ref(10)
 const customPrompt = ref('')
 const promptExtra = ref('')
 const pollTimer = ref(null)
@@ -420,7 +420,7 @@ function buildRunParams() {
     model_folder_scan_max_folders: 500,
     model_file_info_batch_size: 5,
     ai_generation_concurrency: Number(generationConcurrency.value || 5),
-    ai_result_download_concurrency: Number(resultDownloadConcurrency.value || 5),
+    ai_result_download_concurrency: Number(resultDownloadConcurrency.value || 10),
     usage_record_mode: 'ignore',
     custom_prompt: customPrompt.value,
     prompt_extra: promptExtra.value,

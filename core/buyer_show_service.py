@@ -5,7 +5,7 @@ import re
 import shutil
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -20,8 +20,10 @@ DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_QUALITY = "high"
 DEFAULT_GENERATION_CONCURRENCY = 5
 MAX_GENERATION_CONCURRENCY = 10
-DEFAULT_RESULT_DOWNLOAD_CONCURRENCY = 5
-MAX_RESULT_DOWNLOAD_CONCURRENCY = 10
+DEFAULT_GENERATION_ATTEMPTS = 3
+MAX_GENERATION_ATTEMPTS = 3
+DEFAULT_RESULT_DOWNLOAD_CONCURRENCY = 10
+MAX_RESULT_DOWNLOAD_CONCURRENCY = 20
 DEFAULT_RESULT_DOWNLOAD_ATTEMPTS_PER_URL = 3
 
 SUMMARY_COLUMNS = [
@@ -322,16 +324,22 @@ def _run_buyer_show_ai_job_with_retry(
     attempts: int = 3,
 ) -> dict:
     last_result: dict = {}
-    for attempt in range(1, max(1, attempts) + 1):
-        result = ai_image_service.run_job_with_one_xm(job_uid, settings=settings)
+    safe_attempts = max(1, min(MAX_GENERATION_ATTEMPTS, int(attempts or DEFAULT_GENERATION_ATTEMPTS)))
+    for attempt in range(1, safe_attempts + 1):
+        try:
+            result = ai_image_service.run_job_with_one_xm(job_uid, settings=settings)
+        except ai_image_service.MissingModelKeyError:
+            raise
+        except Exception as exc:
+            result = {"ok": False, "summary": {"error": str(exc)}}
         last_result = result if isinstance(result, dict) else {}
         summary = last_result.get("summary") if isinstance(last_result.get("summary"), Mapping) else {}
         if last_result.get("ok"):
             return last_result
         error = summary.get("error") or "AI 生图失败"
-        if attempt >= attempts or not _looks_transient_error(error):
+        if attempt >= safe_attempts:
             return last_result
-        log(f"[buyer-show] AI 生图临时失败，重试 {attempt + 1}/{attempts}: {label} / {_brief_error(error)}")
+        log(f"[buyer-show] AI 生图失败，自动重跑 {attempt + 1}/{safe_attempts}: {label} / {_brief_error(error)}")
         time.sleep(min(2 * attempt, 8))
     return last_result
 
@@ -376,6 +384,21 @@ def _normalize_generation_concurrency(run_params: Mapping[str, Any]) -> int:
     except Exception:
         return DEFAULT_GENERATION_CONCURRENCY
     return max(1, min(MAX_GENERATION_CONCURRENCY, value))
+
+
+def _normalize_generation_attempts(run_params: Mapping[str, Any]) -> int:
+    raw = _compact(
+        run_params.get("ai_generation_retry_attempts")
+        or run_params.get("generation_retry_attempts")
+        or run_params.get("ai_generation_attempts")
+    )
+    if not raw:
+        return DEFAULT_GENERATION_ATTEMPTS
+    try:
+        value = int(float(raw))
+    except Exception:
+        return DEFAULT_GENERATION_ATTEMPTS
+    return max(1, min(MAX_GENERATION_ATTEMPTS, value))
 
 
 def _normalize_result_download_concurrency(run_params: Mapping[str, Any], fallback: int) -> int:
@@ -538,7 +561,13 @@ def _prepare_buyer_show_generation_row(
         job = _create_buyer_show_job(row, run_params, prompt, target_dir)
         job_uid = _compact(job.get("job_uid"))
         row["AI任务ID"] = job_uid
-        result = _run_buyer_show_ai_job_with_retry(job_uid, settings=settings, log=log, label=label)
+        result = _run_buyer_show_ai_job_with_retry(
+            job_uid,
+            settings=settings,
+            log=log,
+            label=label,
+            attempts=_normalize_generation_attempts(run_params),
+        )
         summary = result.get("summary") if isinstance(result.get("summary"), Mapping) else {}
         row["1XM任务ID"] = _created_run_task_id(summary)
         if not result.get("ok"):
@@ -652,6 +681,88 @@ def _generate_buyer_show_row(
     return _materialize_buyer_show_generation_row(row, run_params=run_params, log=log)
 
 
+def _run_buyer_show_generation_pipeline(
+    generation_rows: list[dict],
+    *,
+    run_params: Mapping[str, Any],
+    settings: Optional[Mapping[str, Any]],
+    generation_concurrency: int,
+    log: Callable[[str], None],
+) -> None:
+    if not generation_rows:
+        return
+
+    worker_count = min(max(1, generation_concurrency), len(generation_rows))
+    download_worker_count = min(
+        _normalize_result_download_concurrency(run_params, DEFAULT_RESULT_DOWNLOAD_CONCURRENCY),
+        len(generation_rows),
+    )
+    log(f"[buyer-show] AI 生图并发窗口：{worker_count}；待生成 {len(generation_rows)} 行")
+    log(f"[buyer-show] AI 结果落图并发窗口：{download_worker_count}；生成链接就入下载队列")
+
+    generation_completed = 0
+    download_submitted = 0
+    download_completed = 0
+
+    with (
+        ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="buyer-show-ai") as generation_executor,
+        ThreadPoolExecutor(max_workers=download_worker_count, thread_name_prefix="buyer-show-download") as download_executor,
+    ):
+        generation_futures = {
+            generation_executor.submit(
+                _prepare_buyer_show_generation_row,
+                row,
+                run_params=run_params,
+                settings=settings,
+                log=log,
+            ): row
+            for row in generation_rows
+        }
+        download_futures: dict[Any, dict] = {}
+
+        while generation_futures or download_futures:
+            done, _pending = wait(
+                {*generation_futures.keys(), *download_futures.keys()},
+                return_when=FIRST_COMPLETED,
+            )
+            for future in done:
+                if future in generation_futures:
+                    row = generation_futures.pop(future)
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        row["生图结果"] = "生成失败"
+                        row["备注"] = _append_note(row.get("备注"), str(exc))
+                        log(f"[buyer-show] 生成失败: {row.get('款色号') or row.get('货号') or ''} / {row.get('模拍文件') or ''} / {_brief_error(exc)}")
+                    generation_completed += 1
+                    if _compact(row.get("生图结果")) == "待落图":
+                        download_futures[
+                            download_executor.submit(
+                                _materialize_buyer_show_generation_row,
+                                row,
+                                run_params=run_params,
+                                log=log,
+                            )
+                        ] = row
+                        download_submitted += 1
+                    if generation_completed % 5 == 0 or generation_completed == len(generation_rows):
+                        log(f"[buyer-show] AI 生图链接收集进度 {generation_completed}/{len(generation_rows)}；已入落图队列 {download_submitted}")
+                    continue
+
+                row = download_futures.pop(future)
+                try:
+                    future.result()
+                except Exception as exc:
+                    row["生图结果"] = "生成失败"
+                    row["备注"] = _append_note(row.get("备注"), str(exc))
+                    log(f"[buyer-show] 生成失败: {row.get('款色号') or row.get('货号') or ''} / {row.get('模拍文件') or ''} / {_brief_error(exc)}")
+                download_completed += 1
+                if download_completed % 5 == 0 or (
+                    not generation_futures and download_completed == download_submitted
+                ):
+                    log(f"[buyer-show] AI 结果落图进度 {download_completed}/{download_submitted}")
+
+
 def finalize_buyer_show_outputs(
     *,
     data_rows: list,
@@ -744,70 +855,13 @@ def finalize_buyer_show_outputs(
         if enforce_usage:
             seen_usage_keys.add(usage_key)
 
-    if generation_rows:
-        worker_count = min(generation_concurrency, len(generation_rows))
-        log(f"[buyer-show] AI 生图并发窗口：{worker_count}；待生成 {len(generation_rows)} 行")
-        if worker_count <= 1:
-            for completed, row in enumerate(generation_rows, start=1):
-                _prepare_buyer_show_generation_row(row, run_params=run_params, settings=settings, log=log)
-                if completed % 5 == 0 or completed == len(generation_rows):
-                    log(f"[buyer-show] AI 生图链接收集进度 {completed}/{len(generation_rows)}")
-        else:
-            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="buyer-show-ai") as generation_executor:
-                generation_futures = {
-                    generation_executor.submit(
-                        _prepare_buyer_show_generation_row,
-                        row,
-                        run_params=run_params,
-                        settings=settings,
-                        log=log,
-                    ): row
-                    for row in generation_rows
-                }
-                for completed, future in enumerate(as_completed(generation_futures), start=1):
-                    row = generation_futures[future]
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        row["生图结果"] = "生成失败"
-                        row["备注"] = _append_note(row.get("备注"), str(exc))
-                        log(f"[buyer-show] 生成失败: {row.get('款色号') or row.get('货号') or ''} / {row.get('模拍文件') or ''} / {_brief_error(exc)}")
-                    if completed % 5 == 0 or completed == len(generation_rows):
-                        log(f"[buyer-show] AI 生图链接收集进度 {completed}/{len(generation_rows)}")
-
-        materialize_rows = [row for row in generation_rows if _compact(row.get("生图结果")) == "待落图"]
-        if materialize_rows:
-            download_worker_count = min(
-                _normalize_result_download_concurrency(run_params, worker_count),
-                len(materialize_rows),
-            )
-            log(f"[buyer-show] AI 结果落图并发窗口：{download_worker_count}；待落图 {len(materialize_rows)} 行")
-            if download_worker_count <= 1:
-                for completed, row in enumerate(materialize_rows, start=1):
-                    _materialize_buyer_show_generation_row(row, run_params=run_params, log=log)
-                    if completed % 5 == 0 or completed == len(materialize_rows):
-                        log(f"[buyer-show] AI 结果落图进度 {completed}/{len(materialize_rows)}")
-            else:
-                with ThreadPoolExecutor(max_workers=download_worker_count, thread_name_prefix="buyer-show-download") as download_executor:
-                    download_futures = {
-                        download_executor.submit(
-                            _materialize_buyer_show_generation_row,
-                            row,
-                            run_params=run_params,
-                            log=log,
-                        ): row
-                        for row in materialize_rows
-                    }
-                    for completed, future in enumerate(as_completed(download_futures), start=1):
-                        row = download_futures[future]
-                        try:
-                            future.result()
-                        except Exception as exc:
-                            row["生图结果"] = "生成失败"
-                            row["备注"] = _append_note(row.get("备注"), str(exc))
-                            log(f"[buyer-show] 生成失败: {row.get('款色号') or row.get('货号') or ''} / {row.get('模拍文件') or ''} / {_brief_error(exc)}")
-                        if completed % 5 == 0 or completed == len(materialize_rows):
-                            log(f"[buyer-show] AI 结果落图进度 {completed}/{len(materialize_rows)}")
+    _run_buyer_show_generation_pipeline(
+        generation_rows,
+        run_params=run_params,
+        settings=settings,
+        generation_concurrency=generation_concurrency,
+        log=log,
+    )
 
     usage_export_rows = [
         _make_usage_export_row(row, _compact(row.get("生图文件")), _compact(row.get("__usage_record_time")))

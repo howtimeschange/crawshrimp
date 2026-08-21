@@ -430,9 +430,9 @@ tasks:
       - id: ai_result_download_concurrency
         type: number
         label: AI 结果落图并发
-        default: 5
+        default: 10
         min: 1
-        max: 10
+        max: 20
         step: 1
         ui_span: third
         hint: 只控制 1XM 结果链接的本地下载，不占用生图并发。

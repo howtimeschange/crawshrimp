@@ -223,6 +223,38 @@ class BuyerShowServiceTests(unittest.TestCase):
         output_files = list(package_root.rglob("*AI买家秀.png"))
         self.assertEqual(len(output_files), 1)
 
+    def test_finalize_retries_non_transient_generation_failure_up_to_three_attempts(self):
+        generated = self.root / "generated-after-non-transient-retry.png"
+        generated.write_bytes(PNG_1X1)
+
+        with (
+            patch("core.buyer_show_service.ai_image_service.run_job_with_one_xm", side_effect=[
+                {"ok": False, "summary": {"error": "provider rejected first attempt", "image_urls": []}},
+                {"ok": False, "summary": {"error": "provider rejected second attempt", "image_urls": []}},
+                {"ok": True, "summary": {"task_id": "1xm-third-attempt", "image_urls": ["https://proxy.example/image.png"]}},
+            ]) as run_job,
+            patch("core.buyer_show_service.ai_image_service.materialize_remote_image", return_value={
+                "ok": True,
+                "path": str(generated),
+                "url": "https://proxy.example/image.png",
+            }),
+            patch("core.buyer_show_service.time.sleep"),
+        ):
+            refs = buyer_show_service.finalize_buyer_show_outputs(
+                data_rows=self._source_rows(),
+                runtime_files=[],
+                exported_files=[],
+                run_params={"export_folder": str(self.root / "exports"), "package_name": "AI买家秀非临时失败重试"},
+                runtime_artifact_dir=str(self.root / "runtime"),
+                settings={"base_url": "https://api.example", "4k": "secret"},
+                log=lambda _msg: None,
+            )
+
+        self.assertEqual(run_job.call_count, 3)
+        package_root = Path(refs[0])
+        output_files = list(package_root.rglob("*AI买家秀.png"))
+        self.assertEqual(len(output_files), 1)
+
     def test_finalize_runs_ai_generation_with_configured_concurrency_window(self):
         source_rows = []
         for index in range(5):
@@ -286,7 +318,7 @@ class BuyerShowServiceTests(unittest.TestCase):
         self.assertTrue(any("AI 生图并发窗口：3" in line for line in logs))
         self.assertTrue(any("AI 结果落图并发窗口：2" in line for line in logs))
 
-    def test_finalize_collects_all_generation_links_before_downloading_results(self):
+    def test_finalize_downloads_ready_results_before_all_generation_links_are_collected(self):
         source_rows = []
         for index in range(6):
             row = self._source_rows(
@@ -300,10 +332,13 @@ class BuyerShowServiceTests(unittest.TestCase):
 
         events = []
         lock = threading.Lock()
+        materialize_started = threading.Event()
 
         def fake_prepare(row, **_kwargs):
             with lock:
                 events.append(f"prepare-{row['表格行号']}")
+            if row["表格行号"] != 2:
+                materialize_started.wait(2)
             row["生图结果"] = "待落图"
             row["AI任务ID"] = f"job-{row['表格行号']}"
             row["__generation_urls"] = [f"https://proxy.example/{row['表格行号']}.png"]
@@ -313,6 +348,7 @@ class BuyerShowServiceTests(unittest.TestCase):
         def fake_materialize(row, **_kwargs):
             with lock:
                 events.append(f"materialize-{row['表格行号']}")
+            materialize_started.set()
             row["生图结果"] = "已生成"
             row["生图文件"] = ""
             row["__usage_record_time"] = "2026-08-21T15:00:00"
@@ -328,9 +364,9 @@ class BuyerShowServiceTests(unittest.TestCase):
                 exported_files=[],
                 run_params={
                     "export_folder": str(self.root / "exports"),
-                    "package_name": "AI买家秀链接先收集测试",
-                    "ai_generation_concurrency": 5,
-                    "ai_result_download_concurrency": 5,
+                    "package_name": "AI买家秀流水线落图测试",
+                    "ai_generation_concurrency": 2,
+                    "ai_result_download_concurrency": 2,
                     "usage_record_mode": "ignore",
                 },
                 runtime_artifact_dir=str(self.root / "runtime"),
@@ -340,7 +376,7 @@ class BuyerShowServiceTests(unittest.TestCase):
 
         first_materialize = next(index for index, event in enumerate(events) if event.startswith("materialize-"))
         last_prepare = max(index for index, event in enumerate(events) if event.startswith("prepare-"))
-        self.assertGreater(first_materialize, last_prepare)
+        self.assertLess(first_materialize, last_prepare)
 
     def test_finalize_marks_materialization_failure_without_usage_record(self):
         with (
