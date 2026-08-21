@@ -8,6 +8,29 @@ MANIFEST_PATH = Path("adapters/semir-cloud-drive/manifest.yaml")
 
 
 class SemirCloudDriveManifestTests(unittest.TestCase):
+    def test_manifest_declares_buyer_show_ai_generate_task(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["version"], "0.1.4")
+        task = next(item for item in manifest["tasks"] if item["id"] == "buyer_show_ai_generate")
+        params = {item["id"]: item for item in task["params"]}
+        output_columns = task["output"][0]["columns"]
+
+        self.assertEqual(task["name"], "AI 买家秀全链路 MVP")
+        self.assertEqual(task["script"], "buyer-show-ai-generate.js")
+        self.assertFalse(task["skip_auth"])
+        self.assertEqual(params["input_file"]["type"], "file_excel")
+        self.assertTrue(params["input_file"]["required"])
+        self.assertEqual(params["flat_cloud_path"]["default"], "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/")
+        self.assertEqual(params["execute_mode"]["default"], "generate")
+        self.assertEqual(params["max_generate_jobs"]["default"], 0)
+        self.assertEqual(params["ai_generation_concurrency"]["default"], 5)
+        self.assertEqual(params["ai_result_download_concurrency"]["default"], 5)
+        self.assertIn("~/Downloads/AI 买家秀全量测试", params["export_folder"]["hint"])
+        self.assertEqual(params["input_file"]["templates"][0]["file"], "templates/buyer-show-ai-template.csv")
+        self.assertIn("模拍云盘路径", output_columns)
+        self.assertIn("平铺云盘路径", output_columns)
+        self.assertIn("生图结果", output_columns)
+
     def test_manifest_declares_tmall_material_new_624_task(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
         task = next(item for item in manifest["tasks"] if item["id"] == "tmall_material_new_624")

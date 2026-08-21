@@ -1,6 +1,6 @@
 id: semir-cloud-drive
 name: 森马云盘图片工具
-version: 0.1.3
+version: 0.1.4
 author: codex
 description: "森马云盘素材图批量检索下载，并串联豆包/Gemini 自动生图"
 entry_url: https://fmp.semirapp.com/web/index#/home/file
@@ -332,6 +332,144 @@ tasks:
           - 下载结果
           - 本地文件
           - 执行结果
+          - 备注
+  - id: buyer_show_ai_generate
+    name: AI 买家秀全链路 MVP
+    description: 读取买家秀 Excel，按行下载森马云盘模拍图，按款色号自动匹配平铺参考图，再调用 1XM GPT-Image-2 批量生成买家秀并本地打包
+    script: buyer-show-ai-generate.js
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+      - id: input_file
+        type: file_excel
+        label: 买家秀需求 Excel
+        required: true
+        templates:
+          - file: templates/buyer-show-ai-template.csv
+            label: Excel / CSV 模板
+            description: 填写订单号、款色号、尺码、唯一值、AI素材库路径、AI图包文件夹命名、存放地址。
+            version: "2026.08.21.1"
+        hint: 必须包含“款色号”和“AI素材库路径”；“唯一值”会作为本地图包子文件夹名称。
+      - id: flat_cloud_path
+        type: text
+        label: 平铺参考图库路径
+        required: true
+        default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        hint: 系统会按 Excel 款色号在这个范围内自动匹配平铺图。
+        quick_fill_options:
+          - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/
+      - id: export_folder
+        type: directory
+        label: 本地图包目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。留空默认保存到 ~/Downloads/AI 买家秀全量测试
+        ui_span: third
+      - id: package_name
+        type: text
+        label: 本地图包名称
+        default: AI买家秀
+        ui_span: third
+        placeholder: "例如：AI买家秀_8月第1批"
+      - id: max_model_images_per_row
+        type: number
+        label: 单行最多模拍图
+        default: 80
+        min: 1
+        max: 500
+        step: 1
+        ui_span: third
+      - id: image_size
+        type: select
+        label: 生图尺寸
+        default: "2160x2880"
+        ui_span: third
+        options:
+          - value: "2160x2880"
+            label: 2160x2880（竖图 3:4）
+          - value: "1536x2048"
+            label: 1536x2048（竖图 3:4）
+          - value: "2048x2048"
+            label: 2048x2048（方图）
+      - id: execute_mode
+        type: select
+        label: 执行模式
+        default: generate
+        ui_span: third
+        options:
+          - value: generate
+            label: 下载并真实生图
+          - value: download_only
+            label: 只下载匹配素材
+      - id: max_generate_jobs
+        type: number
+        label: 最多真实生图数
+        default: 0
+        min: 0
+        max: 2000
+        step: 1
+        ui_span: third
+        hint: 0 表示不限制；调试时可填 1-3 控制费用。
+      - id: ai_generation_concurrency
+        type: number
+        label: 1XM 生图并发
+        default: 5
+        min: 1
+        max: 10
+        step: 1
+        ui_span: third
+        hint: 只控制 1XM 提交/轮询窗口；生成图下载会在拿到链接后独立批量落图。
+      - id: ai_result_download_concurrency
+        type: number
+        label: AI 结果落图并发
+        default: 5
+        min: 1
+        max: 10
+        step: 1
+        ui_span: third
+        hint: 只控制 1XM 结果链接的本地下载，不占用生图并发。
+      - id: custom_prompt
+        type: textarea
+        label: 自定义 Prompt
+        rows: 4
+        placeholder: "可选。留空使用买家秀换装默认 Prompt；特殊款可填写更严格约束。"
+      - id: prompt_extra
+        type: textarea
+        label: Prompt 补充约束
+        rows: 3
+        placeholder: "可选。会追加到默认或自定义 Prompt 后。"
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "AI买家秀匹配下载结果_{timestamp}.xlsx"
+        columns:
+          - 表格行号
+          - 订单号
+          - 款色号
+          - 货号
+          - 尺码
+          - 唯一值
+          - AI素材库路径
+          - AI图包文件夹命名
+          - 存放地址
+          - 模拍文件
+          - 模拍云盘路径
+          - 模拍下载结果
+          - 模拍本地文件
+          - 平铺参考图
+          - 平铺云盘路径
+          - 平铺下载结果
+          - 平铺本地文件
+          - 生图结果
           - 备注
   - id: batch_ai_generate
     name: 下载素材并自动生图

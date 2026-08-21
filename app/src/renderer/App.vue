@@ -2,7 +2,7 @@
   <div
     class="layout"
     :class="{
-      'layout-ai-image': currentView === 'ai_image' || currentView === 'ai_video' || currentView === 'ai_video_generation',
+      'layout-ai-image': currentView === 'ai_image' || currentView === 'ai_video' || currentView === 'ai_video_generation' || currentView === 'buyer_show_workflow',
       'sidebar-collapsed': effectiveSidebarCollapsed,
       'titlebar-macos': isMacTitlebar,
     }"
@@ -155,6 +155,13 @@
           @open-settings="openSettingsPanel"
         />
       </KeepAlive>
+      <!-- AI 买家秀工作流 -->
+      <KeepAlive>
+        <BuyerShowWorkflow
+          v-if="currentView === 'buyer_show_workflow'"
+          @open-settings="openSettingsPanel"
+        />
+      </KeepAlive>
       <!-- 提示词库 -->
       <LocalPromptLibrary
         v-if="currentView === 'local_prompt_library'"
@@ -190,6 +197,7 @@ import TaskInstanceRunner from './views/TaskInstanceRunner.vue'
 import AiImageWorkbench from './views/AiImageWorkbench.vue'
 import AiVideoGenerationWorkbench from './views/AiVideoGenerationWorkbench.vue'
 import AiVideoWorkflow from './views/AiVideoWorkflow.vue'
+import BuyerShowWorkflow from './views/BuyerShowWorkflow.vue'
 import LocalPromptLibrary from './views/LocalPromptLibrary.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
@@ -271,6 +279,7 @@ const navItems = [
   { id: 'ai_image', icon: '🎨', label: 'AI 生图' },
   { id: 'ai_video_generation', icon: '🎬', label: 'AI 生视频' },
   { id: 'ai_video', icon: '🎞️', label: 'AI 视频工作流' },
+  { id: 'buyer_show_workflow', icon: '🛍️', label: 'AI 买家秀工作流' },
   { id: 'local_prompt_library', icon: '💬', label: '提示词库' },
   { id: 'files',    icon: '📁', label: '数据文件' },
   { id: 'cloud_approval', icon: '☁️', label: '云端审批' },

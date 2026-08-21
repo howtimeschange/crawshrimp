@@ -1,0 +1,36 @@
+import { readFile } from 'node:fs/promises'
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+test('AI buyer show workflow is exposed as an independent app view', async () => {
+  const appSource = await readFile(new URL('../App.vue', import.meta.url), 'utf8')
+
+  assert.match(appSource, /import BuyerShowWorkflow from '\.\/views\/BuyerShowWorkflow\.vue'/)
+  assert.match(appSource, /currentView === 'buyer_show_workflow'/)
+  assert.match(appSource, /\{ id: 'buyer_show_workflow', icon: '🛍️', label: 'AI 买家秀工作流' \}/)
+  assert.match(appSource, /<BuyerShowWorkflow\s+v-if="currentView === 'buyer_show_workflow'"/)
+})
+
+test('AI buyer show workflow submits the Semir MVP task with stepper controls', async () => {
+  const workflowSource = await readFile(new URL('../views/BuyerShowWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /const ADAPTER_ID = 'semir-cloud-drive'/)
+  assert.match(workflowSource, /const TASK_ID = 'buyer_show_ai_generate'/)
+  assert.match(workflowSource, /<nav class="bsv-stepper" role="tablist"/)
+  assert.match(workflowSource, /role="tab"/)
+  assert.match(workflowSource, /:aria-selected="activeStep === step\.id"/)
+  assert.match(workflowSource, /window\.cs\.runTask\(ADAPTER_ID, TASK_ID, buildRunParams\(\), \{\}\)/)
+  assert.match(workflowSource, /const DEFAULT_EXPORT_FOLDER = '~\/Downloads\/AI 买家秀全量测试'/)
+  assert.match(workflowSource, /execute_mode: executeMode\.value/)
+  assert.match(workflowSource, /flat_cloud_path: flatCloudPath\.value/)
+  assert.match(workflowSource, /max_model_images_per_row: Number\(maxModelImagesPerRow\.value \|\| 500\)/)
+  assert.match(workflowSource, /model_folder_scan_depth: 4/)
+  assert.match(workflowSource, /model_folder_scan_max_folders: 500/)
+  assert.match(workflowSource, /model_file_info_batch_size: 5/)
+  assert.match(workflowSource, /const generationConcurrency = ref\(5\)/)
+  assert.match(workflowSource, /const resultDownloadConcurrency = ref\(5\)/)
+  assert.match(workflowSource, /ai_generation_concurrency: Number\(generationConcurrency\.value \|\| 5\)/)
+  assert.match(workflowSource, /ai_result_download_concurrency: Number\(resultDownloadConcurrency\.value \|\| 5\)/)
+  assert.match(workflowSource, /usage_record_mode: 'ignore'/)
+  assert.doesNotMatch(workflowSource, /\/Users\//)
+})

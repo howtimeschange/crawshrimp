@@ -1,5 +1,6 @@
 import json
 import ssl
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +49,140 @@ class AiImageServiceTests(unittest.TestCase):
         path = ai_image_service.default_output_dir(job)
 
         self.assertEqual(path, output_dir)
+
+    def test_default_downloader_stops_after_content_length_without_waiting_for_eof(self):
+        class FakeResponse:
+            def __init__(self, data: bytes):
+                self.data = data
+                self.offset = 0
+                self.headers = {"Content-Length": str(len(data))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                if self.offset >= len(self.data):
+                    raise AssertionError("downloader waited for EOF after Content-Length")
+                if size is None or size < 0:
+                    raise AssertionError("downloader should read bounded chunks")
+                chunk = self.data[self.offset:self.offset + size]
+                self.offset += len(chunk)
+                return chunk
+
+        target = self.root / "downloaded.png"
+        with (
+            patch("core.ai_image_service.shutil.which", return_value=None),
+            patch("core.ai_image_service.urllib.request.urlopen", return_value=FakeResponse(PNG_1X1)),
+        ):
+            ai_image_service._default_downloader("https://cdn.example/result.png", target)
+
+        self.assertEqual(target.read_bytes(), PNG_1X1)
+
+    def test_default_downloader_prefers_urllib_when_curl_is_available(self):
+        class FakeResponse:
+            headers = {"Content-Length": str(len(PNG_1X1))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                data = getattr(self, "data", PNG_1X1)
+                if not data:
+                    return b""
+                chunk = data[:size]
+                self.data = data[size:]
+                return chunk
+
+        target = self.root / "downloaded-after-curl-fail.png"
+        target.write_bytes(b"partial")
+
+        with (
+            patch("core.ai_image_service.shutil.which", return_value="/usr/bin/curl"),
+            patch("core.ai_image_service.subprocess.run") as curl_run,
+            patch("core.ai_image_service.urllib.request.urlopen", return_value=FakeResponse()),
+        ):
+            ai_image_service._default_downloader("https://cdn.example/result.png", target)
+
+        self.assertEqual(target.read_bytes(), PNG_1X1)
+        curl_run.assert_not_called()
+
+    def test_default_downloader_falls_back_to_curl_when_urllib_fails(self):
+        target = self.root / "downloaded-after-urllib-fail.png"
+
+        def fake_curl_run(args, check):
+            self.assertIn("--http1.1", args)
+            self.assertIn("--connect-timeout", args)
+            self.assertIn(str(ai_image_service.DOWNLOAD_SOCKET_TIMEOUT_SECONDS), args)
+            target.write_bytes(PNG_1X1)
+            return subprocess.CompletedProcess(args, 0)
+
+        with (
+            patch("core.ai_image_service.shutil.which", return_value="/usr/bin/curl"),
+            patch("core.ai_image_service.urllib.request.urlopen", side_effect=URLError("incomplete")),
+            patch("core.ai_image_service.subprocess.run", side_effect=fake_curl_run),
+        ):
+            ai_image_service._default_downloader("https://cdn.example/result.png", target)
+
+        self.assertEqual(target.read_bytes(), PNG_1X1)
+
+    def test_default_downloader_has_no_total_download_deadline(self):
+        class FakeResponse:
+            headers = {"Content-Length": str(len(PNG_1X1))}
+
+            def __enter__(self):
+                self.data = PNG_1X1
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                if not self.data:
+                    return b""
+                chunk = self.data[:size]
+                self.data = self.data[size:]
+                return chunk
+
+        target = self.root / "no-total-deadline.png"
+        with (
+            patch("core.ai_image_service.shutil.which", return_value=None),
+            patch("core.ai_image_service.time.monotonic", side_effect=AssertionError("wall-clock deadline should not run")),
+            patch("core.ai_image_service.urllib.request.urlopen", return_value=FakeResponse()),
+        ):
+            ai_image_service._default_downloader("https://cdn.example/result.png", target)
+
+        self.assertEqual(target.read_bytes(), PNG_1X1)
+
+    def test_default_downloader_does_not_use_curl_for_one_xm_proxy_images(self):
+        target = self.root / "one-xm-proxy-fail.png"
+        url = "https://one-xm-proxy.crawshrimp.com/v1/proxy-image?url=https%3A%2F%2Fimg.1xm.ai%2Fgenerated%2Ftask.png"
+
+        with (
+            patch("core.ai_image_service.urllib.request.urlopen", side_effect=URLError("proxy cut")),
+            patch("core.ai_image_service.subprocess.run") as curl_run,
+        ):
+            with self.assertRaises(URLError):
+                ai_image_service._default_downloader(url, target)
+
+        curl_run.assert_not_called()
+
+    def test_default_downloader_raises_original_error_when_no_fallback_exists(self):
+        target = self.root / "missing-fallback.png"
+
+        with (
+            patch("core.ai_image_service.shutil.which", return_value=None),
+            patch("core.ai_image_service.urllib.request.urlopen", side_effect=URLError("network cut")),
+        ):
+            with self.assertRaises(URLError):
+                ai_image_service._default_downloader("https://cdn.example/result.png", target)
+
+        self.assertFalse(target.exists())
 
     def test_select_model_key_prefers_size_tier_and_raises_without_key(self):
         settings = {"2k": "key-2k", "4k": "key-4k"}
@@ -639,7 +774,7 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(len(attempts), 2)
         self.assertEqual(Path(result["path"]).read_bytes(), PNG_1X1)
-        sleep.assert_called_once_with(0.25)
+        sleep.assert_called_once_with(ai_image_service.DOWNLOAD_CACHE_RETRY_DELAYS_SECONDS[0])
 
     def test_materialize_remote_image_can_cache_stale_persisted_result_url(self):
         result = ai_image_service.materialize_remote_image(

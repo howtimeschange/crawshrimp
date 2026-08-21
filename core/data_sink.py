@@ -267,6 +267,37 @@ def init_db():
             ON ai_image_assets (job_uid, sort_order, id)
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS buyer_show_material_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usage_uid TEXT NOT NULL UNIQUE,
+                style_code TEXT NOT NULL DEFAULT '',
+                style_color_code TEXT NOT NULL DEFAULT '',
+                model_cloud_path TEXT NOT NULL DEFAULT '',
+                model_filename TEXT NOT NULL DEFAULT '',
+                model_local_path TEXT NOT NULL DEFAULT '',
+                reference_cloud_path TEXT NOT NULL DEFAULT '',
+                reference_local_path TEXT NOT NULL DEFAULT '',
+                output_file TEXT NOT NULL DEFAULT '',
+                source_row_no INTEGER NOT NULL DEFAULT 0,
+                unique_value TEXT NOT NULL DEFAULT '',
+                ai_job_uid TEXT NOT NULL DEFAULT '',
+                ai_task_id TEXT NOT NULL DEFAULT '',
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(style_color_code, model_cloud_path)
+            )
+        """)
+        _migrate_buyer_show_usage_unique_key(conn)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_buyer_show_material_usage_style
+            ON buyer_show_material_usage (style_code, created_at)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_buyer_show_material_usage_skc
+            ON buyer_show_material_usage (style_color_code, created_at)
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS ai_image_canvases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 canvas_uid TEXT NOT NULL UNIQUE,
@@ -371,6 +402,102 @@ def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, 
     }
     if column_name not in columns:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _sqlite_identifier(value: str) -> str:
+    return '"' + str(value or "").replace('"', '""') + '"'
+
+
+def _sqlite_string_literal(value: str) -> str:
+    return "'" + str(value or "").replace("'", "''") + "'"
+
+
+def _buyer_show_usage_unique_columns(conn: sqlite3.Connection) -> set[tuple[str, ...]]:
+    result: set[tuple[str, ...]] = set()
+    for index_row in conn.execute("PRAGMA index_list(buyer_show_material_usage)").fetchall():
+        try:
+            is_unique = bool(index_row["unique"])
+            index_name = str(index_row["name"])
+        except (IndexError, KeyError, TypeError):
+            continue
+        if not is_unique or not index_name:
+            continue
+        columns = [
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA index_info({_sqlite_string_literal(index_name)})").fetchall()
+        ]
+        if columns:
+            result.add(tuple(columns))
+    return result
+
+
+def _migrate_buyer_show_usage_unique_key(conn: sqlite3.Connection) -> None:
+    unique_columns = _buyer_show_usage_unique_columns(conn)
+    if ("style_code", "model_cloud_path") not in unique_columns:
+        return
+    if ("style_color_code", "model_cloud_path") in unique_columns:
+        return
+
+    backup_name = f"buyer_show_material_usage_legacy_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    conn.execute("SAVEPOINT buyer_show_usage_unique_key")
+    try:
+        conn.execute(f"ALTER TABLE buyer_show_material_usage RENAME TO {_sqlite_identifier(backup_name)}")
+        conn.execute("""
+            CREATE TABLE buyer_show_material_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usage_uid TEXT NOT NULL UNIQUE,
+                style_code TEXT NOT NULL DEFAULT '',
+                style_color_code TEXT NOT NULL DEFAULT '',
+                model_cloud_path TEXT NOT NULL DEFAULT '',
+                model_filename TEXT NOT NULL DEFAULT '',
+                model_local_path TEXT NOT NULL DEFAULT '',
+                reference_cloud_path TEXT NOT NULL DEFAULT '',
+                reference_local_path TEXT NOT NULL DEFAULT '',
+                output_file TEXT NOT NULL DEFAULT '',
+                source_row_no INTEGER NOT NULL DEFAULT 0,
+                unique_value TEXT NOT NULL DEFAULT '',
+                ai_job_uid TEXT NOT NULL DEFAULT '',
+                ai_task_id TEXT NOT NULL DEFAULT '',
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(style_color_code, model_cloud_path)
+            )
+        """)
+        columns = (
+            "usage_uid, style_code, style_color_code, model_cloud_path, "
+            "model_filename, model_local_path, reference_cloud_path, "
+            "reference_local_path, output_file, source_row_no, unique_value, "
+            "ai_job_uid, ai_task_id, meta_json, created_at, updated_at"
+        )
+        conn.execute(f"""
+            INSERT OR IGNORE INTO buyer_show_material_usage ({columns})
+            SELECT
+                usage_uid,
+                style_code,
+                COALESCE(NULLIF(style_color_code, ''), style_code),
+                model_cloud_path,
+                model_filename,
+                model_local_path,
+                reference_cloud_path,
+                reference_local_path,
+                output_file,
+                source_row_no,
+                unique_value,
+                ai_job_uid,
+                ai_task_id,
+                meta_json,
+                created_at,
+                updated_at
+            FROM {_sqlite_identifier(backup_name)}
+            ORDER BY id
+        """)
+        conn.execute("RELEASE buyer_show_usage_unique_key")
+        logger.info("Migrated buyer_show_material_usage unique key to style_color_code; backup=%s", backup_name)
+    except sqlite3.DatabaseError as exc:
+        conn.execute("ROLLBACK TO buyer_show_usage_unique_key")
+        conn.execute("RELEASE buyer_show_usage_unique_key")
+        logger.warning("Unable to migrate buyer_show_material_usage unique key: %s", exc)
 
 
 def _now_iso() -> str:
@@ -787,6 +914,106 @@ def list_ai_image_assets(job_uid: str = "", limit: int = 200) -> list[dict]:
             [*params, safe_limit],
         ).fetchall()
     return [item for row in rows if (item := _ai_image_asset_from_row(row))]
+
+
+def _buyer_show_usage_from_row(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if not row:
+        return None
+    data = dict(row)
+    data["meta"] = _json_loads_object(data.pop("meta_json", "{}"))
+    return data
+
+
+def find_buyer_show_material_usage(style_color_code: str, model_cloud_path: str) -> Optional[dict]:
+    style_color = str(style_color_code or "").strip()
+    cloud_path = str(model_cloud_path or "").strip()
+    if not style_color or not cloud_path:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM buyer_show_material_usage
+            WHERE style_color_code=? AND model_cloud_path=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (style_color, cloud_path),
+        ).fetchone()
+    return _buyer_show_usage_from_row(row)
+
+
+def create_buyer_show_material_usage(payload: Optional[Mapping[str, Any]] = None) -> dict:
+    source = dict(payload or {})
+    now = _now_iso()
+    usage_uid = str(source.get("usage_uid") or "").strip() or uuid.uuid4().hex
+    style_code = str(source.get("style_code") or "").strip()
+    style_color_code = str(source.get("style_color_code") or "").strip()
+    model_cloud_path = str(source.get("model_cloud_path") or "").strip()
+    if not style_color_code or not model_cloud_path:
+        raise ValueError("buyer show material usage requires style_color_code and model_cloud_path")
+
+    values = (
+        usage_uid,
+        style_code,
+        style_color_code,
+        model_cloud_path,
+        str(source.get("model_filename") or "").strip(),
+        str(source.get("model_local_path") or "").strip(),
+        str(source.get("reference_cloud_path") or "").strip(),
+        str(source.get("reference_local_path") or "").strip(),
+        str(source.get("output_file") or "").strip(),
+        int(source.get("source_row_no") or 0),
+        str(source.get("unique_value") or "").strip(),
+        str(source.get("ai_job_uid") or "").strip(),
+        str(source.get("ai_task_id") or "").strip(),
+        _json_dumps(source.get("meta") if isinstance(source.get("meta"), Mapping) else {}),
+        now,
+        now,
+    )
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO buyer_show_material_usage (
+                usage_uid, style_code, style_color_code, model_cloud_path,
+                model_filename, model_local_path, reference_cloud_path,
+                reference_local_path, output_file, source_row_no, unique_value,
+                ai_job_uid, ai_task_id, meta_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT *
+            FROM buyer_show_material_usage
+            WHERE style_color_code=? AND model_cloud_path=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (style_color_code, model_cloud_path),
+        ).fetchone()
+    return _buyer_show_usage_from_row(row) or {}
+
+
+def list_buyer_show_material_usage(limit: int = 500) -> list[dict]:
+    try:
+        safe_limit = max(1, min(int(limit), 5000))
+    except Exception:
+        safe_limit = 500
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM buyer_show_material_usage
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [item for row in rows if (item := _buyer_show_usage_from_row(row))]
 
 
 def create_ai_image_canvas(payload: Optional[Mapping[str, Any]] = None) -> dict:

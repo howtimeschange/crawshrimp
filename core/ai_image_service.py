@@ -4,10 +4,12 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import http.client
 import mimetypes
 import re
 import shutil
 import ssl
+import subprocess
 import threading
 import time
 import urllib.error
@@ -286,22 +288,99 @@ def build_one_xm_payload(
     )
 
 
-def _default_downloader(url: str, target: Path) -> None:
+DOWNLOAD_USER_AGENT = "Mozilla/5.0 Crawshrimp/AIImageWorkbench"
+DOWNLOAD_ACCEPT = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+DOWNLOAD_SOCKET_TIMEOUT_SECONDS = 60
+DOWNLOAD_READ_CHUNK_BYTES = 256 * 1024
+DOWNLOAD_CACHE_RETRY_DELAYS_SECONDS = (1.0, 3.0)
+
+
+def _is_one_xm_proxy_image_url(url: str) -> bool:
+    parsed = urlparse(_compact(url))
+    return parsed.netloc == "one-xm-proxy.crawshrimp.com" and parsed.path.endswith("/proxy-image")
+
+
+def _download_with_curl(url: str, target: Path) -> bool:
+    curl = shutil.which("curl")
+    if not curl:
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            curl,
+            "--http1.1",
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            str(DOWNLOAD_SOCKET_TIMEOUT_SECONDS),
+            "--retry",
+            "2",
+            "--retry-delay",
+            "2",
+            "--output",
+            str(target),
+            "--header",
+            f"User-Agent: {DOWNLOAD_USER_AGENT}",
+            "--header",
+            f"Accept: {DOWNLOAD_ACCEPT}",
+            url,
+        ],
+        check=True,
+    )
+    return True
+
+
+def _stream_download_with_urllib(url: str, target: Path) -> None:
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0 Crawshrimp/AIImageWorkbench",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "User-Agent": DOWNLOAD_USER_AGENT,
+            "Accept": DOWNLOAD_ACCEPT,
         },
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        target.write_bytes(response.read())
+    with urllib.request.urlopen(request, timeout=DOWNLOAD_SOCKET_TIMEOUT_SECONDS) as response:
+        expected = int(response.headers.get("Content-Length") or 0)
+        written = 0
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as handle:
+            while True:
+                if expected > 0 and written >= expected:
+                    break
+                read_size = min(DOWNLOAD_READ_CHUNK_BYTES, expected - written) if expected > 0 else DOWNLOAD_READ_CHUNK_BYTES
+                chunk = response.read(read_size)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                written += len(chunk)
+        if expected > 0 and written < expected:
+            raise http.client.IncompleteRead(b"", expected - written)
+
+
+def _default_downloader(url: str, target: Path) -> None:
+    urllib_error: Exception | None = None
+    try:
+        _stream_download_with_urllib(url, target)
+        return
+    except Exception as exc:
+        urllib_error = exc
+        target.unlink(missing_ok=True)
+        if _is_one_xm_proxy_image_url(url):
+            raise
+    if _download_with_curl(url, target):
+        return
+    if urllib_error is not None:
+        raise urllib_error
+    raise RuntimeError("no downloader available")
 
 
 def _is_transient_download_error(exc: Exception) -> bool:
+    if isinstance(exc, subprocess.CalledProcessError):
+        return True
     if isinstance(exc, urllib.error.HTTPError):
         return int(exc.code or 0) in {408, 425, 429, 500, 502, 503, 504}
-    if isinstance(exc, (TimeoutError, ConnectionError, ssl.SSLError)):
+    if isinstance(exc, (TimeoutError, ConnectionError, ssl.SSLError, http.client.IncompleteRead)):
         return True
     if isinstance(exc, urllib.error.URLError):
         reason = exc.reason
@@ -319,7 +398,7 @@ def _download_cache_image(
     target: Path,
     downloader: Callable[[str, Path], None],
 ) -> None:
-    retry_delays = (0.25, 0.75)
+    retry_delays = DOWNLOAD_CACHE_RETRY_DELAYS_SECONDS
     for attempt in range(len(retry_delays) + 1):
         try:
             downloader(url, target)
