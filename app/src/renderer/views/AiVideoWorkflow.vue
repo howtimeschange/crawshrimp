@@ -2826,6 +2826,18 @@ function persistWorkspaceState() {
   scheduleWorkspaceManifestPersist()
 }
 
+function restoredMaterialTaskSnapshot(task = {}) {
+  const restored = cloneWorkspaceValue(task, {})
+  if (!isActiveWorkflowStatus(restored.status)) return restored
+  return {
+    ...restored,
+    status: 'idle',
+    runId: '',
+    error: '',
+    message: '已恢复上次素材快照；未确认有正在运行的找图任务，可重新开始找图。',
+  }
+}
+
 function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   const workspace = String(path || '').trim()
   if (!workspace) return false
@@ -2844,7 +2856,7 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   materialBatch.value = cloneWorkspaceValue(material.batch, null)
   materialBoardUrl.value = String(material.boardUrl || '')
   replaceMaterialRecallHiddenPaths(material.recallHiddenPaths || [])
-  Object.assign(materialTask, cloneWorkspaceValue(material.task, {}))
+  Object.assign(materialTask, restoredMaterialTaskSnapshot(material.task))
 
   const image = snapshot.image || {}
   const savedStyles = Array.isArray(image.styles) ? cloneWorkspaceValue(image.styles, []) : []
@@ -9008,8 +9020,10 @@ onMounted(() => {
   const restoredWorkspace = restoreWorkspaceSnapshot(workspaceDir.value)
   void (async () => {
     const restoredManifest = await restoreWorkspaceManifest(workspaceDir.value)
-    if (!restoredWorkspace && workspaceDir.value) {
+    if (workspaceDir.value) {
       await restoreLatestMaterialTask()
+    }
+    if (!restoredWorkspace && workspaceDir.value) {
       const restoredBatchCount = await restoreReviewWorkspaceBatches({ silent: true })
       if (!restoredBatchCount) await restoreLatestReviewBatch({ silent: true })
     }

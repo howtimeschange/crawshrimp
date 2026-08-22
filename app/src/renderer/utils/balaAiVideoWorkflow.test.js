@@ -339,6 +339,9 @@ test('AI video keeps local references, image tasks, and workspace snapshots isol
 
   assert.match(workflowSource, /BALA_AI_VIDEO_WORKSPACE_STATE_STORAGE_KEY = 'crawshrimp\.bala-ai-video\.workspace-state\.v2'/)
   assert.match(workflowSource, /function restoreWorkspaceSnapshot/)
+  assert.match(workflowSource, /function restoredMaterialTaskSnapshot\(task = \{\}\)/)
+  assert.match(workflowSource, /if \(!isActiveWorkflowStatus\(restored\.status\)\) return restored/)
+  assert.match(workflowSource, /Object\.assign\(materialTask, restoredMaterialTaskSnapshot\(material\.task\)\)/)
   assert.match(workflowSource, /workspace_dir: workspaceDir\.value/)
   assert.match(workflowSource, /surface: 'ai-video-workflow'/)
   assert.match(workbenchSource, /import \{ isAiVideoWorkflowJob, selectRestorableAiImageJob \} from '\.\.\/utils\/aiImageTaskIsolation\.js'/)
