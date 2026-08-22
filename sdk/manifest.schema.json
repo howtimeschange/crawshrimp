@@ -77,7 +77,8 @@
             "file_excel",
             "file_images",
             "file_zip",
-            "file_pdf"
+            "file_pdf",
+            "model_chain"
           ]
         },
         "label": { "type": "string" },
