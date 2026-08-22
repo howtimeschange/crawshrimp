@@ -25,6 +25,18 @@ MAX_GENERATION_ATTEMPTS = 3
 DEFAULT_RESULT_DOWNLOAD_CONCURRENCY = 10
 MAX_RESULT_DOWNLOAD_CONCURRENCY = 20
 DEFAULT_RESULT_DOWNLOAD_ATTEMPTS_PER_URL = 3
+RESUME_EXECUTE_MODES = {"resume", "recover", "resume-recover", "resume_recover"}
+IMAGE_OUTPUT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+BUYER_SHOW_SIZE_OPTIONS = [
+    {"ratio": "1:1", "size_2k": "2048x2048", "size_4k": "2880x2880", "width": 1, "height": 1},
+    {"ratio": "3:4", "size_2k": "1536x2048", "size_4k": "2448x3264", "width": 3, "height": 4},
+    {"ratio": "4:3", "size_2k": "2048x1536", "size_4k": "3264x2448", "width": 4, "height": 3},
+    {"ratio": "4:5", "size_2k": "1536x1920", "size_4k": "2560x3200", "width": 4, "height": 5},
+    {"ratio": "3:2", "size_2k": "1536x1024", "size_4k": "3504x2336", "width": 3, "height": 2},
+    {"ratio": "2:3", "size_2k": "1024x1536", "size_4k": "2336x3504", "width": 2, "height": 3},
+    {"ratio": "16:9", "size_2k": "2048x1152", "size_4k": "3840x2160", "width": 16, "height": 9},
+    {"ratio": "9:16", "size_2k": "1152x2048", "size_4k": "2160x3840", "width": 9, "height": 16},
+]
 
 SUMMARY_COLUMNS = [
     "表格行号",
@@ -150,11 +162,149 @@ def _image_suffix_from_file(source_path: Path, fallback: str = ".png") -> str:
     return fallback
 
 
+def _parse_image_dimensions_from_header(source_path: Path) -> Optional[tuple[int, int]]:
+    try:
+        header = source_path.read_bytes()[:512 * 1024]
+    except OSError:
+        return None
+    if len(header) >= 24 and header.startswith(b"\x89PNG\r\n\x1a\n"):
+        width = int.from_bytes(header[16:20], "big")
+        height = int.from_bytes(header[20:24], "big")
+        if width > 0 and height > 0:
+            return width, height
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        try:
+            from PIL import Image
+
+            with Image.open(source_path) as image:
+                return int(image.width), int(image.height)
+        except Exception:
+            return None
+    if len(header) >= 4 and header.startswith(b"\xff\xd8"):
+        index = 2
+        while index + 9 < len(header):
+            if header[index] != 0xFF:
+                index += 1
+                continue
+            while index < len(header) and header[index] == 0xFF:
+                index += 1
+            if index >= len(header):
+                break
+            marker = header[index]
+            index += 1
+            if marker in {0x01, *range(0xD0, 0xD9)}:
+                continue
+            if index + 2 > len(header):
+                break
+            length = int.from_bytes(header[index:index + 2], "big")
+            if length < 2 or index + length > len(header):
+                break
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                height = int.from_bytes(header[index + 3:index + 5], "big")
+                width = int.from_bytes(header[index + 5:index + 7], "big")
+                if width > 0 and height > 0:
+                    return width, height
+                break
+            index += length
+    return None
+
+
+def _read_image_dimensions(source_path: Path) -> Optional[tuple[int, int]]:
+    try:
+        from PIL import Image
+
+        with Image.open(source_path) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        return _parse_image_dimensions_from_header(source_path)
+
+
+def _nearest_buyer_show_size(width: int, height: int, tier: str = "4k") -> dict:
+    source_ratio = max(1, int(width or 0)) / float(max(1, int(height or 0)))
+    option = min(
+        BUYER_SHOW_SIZE_OPTIONS,
+        key=lambda item: abs(source_ratio - (float(item["width"]) / float(item["height"]))),
+    )
+    size_key = "size_2k" if _compact(tier).lower() == "2k" else "size_4k"
+    return {
+        "size": str(option[size_key]),
+        "ratio": str(option["ratio"]),
+        "tier": "2k" if size_key == "size_2k" else "4k",
+    }
+
+
+def _resolve_buyer_show_image_size(row: Mapping[str, Any], run_params: Mapping[str, Any]) -> dict:
+    model_path = Path(_compact(row.get("模拍本地文件"))).expanduser()
+    tier = _compact(run_params.get("model_key_tier") or run_params.get("one_xm_key_tier")).lower()
+    if tier not in {"2k", "4k"}:
+        tier = "4k"
+    dimensions = _read_image_dimensions(model_path) if model_path.is_file() else None
+    if dimensions:
+        width, height = dimensions
+        resolved = _nearest_buyer_show_size(width, height, tier)
+        return {
+            **resolved,
+            "source_width": width,
+            "source_height": height,
+            "strategy": "source_ratio",
+        }
+    return {
+        "size": DEFAULT_IMAGE_SIZE,
+        "ratio": "3:4",
+        "tier": tier,
+        "source_width": 0,
+        "source_height": 0,
+        "strategy": "fallback_default",
+    }
+
+
 def _resolve_output_root(run_params: Mapping[str, Any]) -> Path:
     export_folder = _compact(run_params.get("export_folder") or run_params.get("output_dir"))
     if export_folder:
         return Path(export_folder).expanduser()
     return Path.home() / "Downloads" / "AI 买家秀全量测试"
+
+
+def _is_resume_mode(run_params: Mapping[str, Any]) -> bool:
+    value = _compact(run_params.get("execute_mode")).lower()
+    return value in RESUME_EXECUTE_MODES or value.replace("_", "-") in RESUME_EXECUTE_MODES
+
+
+def _resolve_package_paths(
+    output_root: Path,
+    package_base: str,
+    run_params: Mapping[str, Any],
+    *,
+    resume_enabled: bool,
+) -> tuple[Path, Path]:
+    if not resume_enabled:
+        return _ensure_unique_dir(output_root / package_base), output_root
+
+    resume_dir = _compact(
+        run_params.get("resume_package_dir")
+        or run_params.get("recover_package_dir")
+        or run_params.get("existing_package_dir")
+        or run_params.get("package_dir")
+    )
+    if resume_dir:
+        package_root = Path(resume_dir).expanduser()
+    elif output_root.name == package_base:
+        package_root = output_root
+    else:
+        package_root = output_root / package_base
+
+    if not package_root.exists():
+        raise FileNotFoundError(f"续跑原图包目录不存在：{package_root}")
+    if not package_root.is_dir():
+        raise NotADirectoryError(f"续跑原图包路径不是目录：{package_root}")
+    return package_root, package_root.parent
+
+
+def _artifact_path(path: Path, *, resume_enabled: bool) -> Path:
+    if not resume_enabled:
+        return _ensure_unique_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _write_rows_xlsx(path: Path, rows: list[dict], columns: list[str], sheet_name: str) -> str:
@@ -421,23 +571,28 @@ def _create_buyer_show_job(row: Mapping[str, Any], run_params: Mapping[str, Any]
     reference_path = _compact(row.get("平铺本地文件"))
     style_color_code = _compact(row.get("款色号"))
     style_code = _extract_style_code(style_color_code)
+    size_info = _resolve_buyer_show_image_size(row, run_params)
     title = _safe_local_name(
         f"AI买家秀 {style_color_code or style_code} {row.get('唯一值') or ''}",
         "AI买家秀",
     )
     params = {
         "prompt": prompt,
-        "size": _compact(run_params.get("image_size")) or DEFAULT_IMAGE_SIZE,
+        "size": _compact(size_info.get("size")) or DEFAULT_IMAGE_SIZE,
         "quality": _compact(run_params.get("quality")) or DEFAULT_QUALITY,
         "output_format": _compact(run_params.get("output_format")) or DEFAULT_OUTPUT_FORMAT,
         "n": 1,
-        "model_key_tier": _compact(run_params.get("model_key_tier")) or "4k",
+        "model_key_tier": _compact(run_params.get("model_key_tier")) or _compact(size_info.get("tier")) or "4k",
         "main_image_path": model_path,
         "reference_image_paths": [reference_path],
         "workflow": BUYER_SHOW_TASK_ID,
         "surface": "semir-cloud-drive",
         "style_code": style_code,
         "style_color_code": style_color_code,
+        "source_image_width": int(size_info.get("source_width") or 0),
+        "source_image_height": int(size_info.get("source_height") or 0),
+        "source_image_ratio": _compact(size_info.get("ratio")),
+        "image_size_strategy": _compact(size_info.get("strategy")),
         "unique_value": _compact(row.get("唯一值")),
         "model_cloud_path": _compact(row.get("模拍云盘路径")),
         "reference_cloud_path": _compact(row.get("平铺云盘路径")),
@@ -483,11 +638,16 @@ def _is_successful_download(row: Mapping[str, Any], result_key: str, path_key: s
     return _compact(row.get(result_key)) == "已下载" and Path(_compact(row.get(path_key))).expanduser().is_file()
 
 
-def _package_filename(row: Mapping[str, Any], ordinal: int, source_path: Path) -> str:
+def _package_output_stem(row: Mapping[str, Any], ordinal: int) -> str:
     unique_value = _safe_local_name(row.get("唯一值") or row.get("AI图包文件夹命名"), "未命名")
     style_color_code = _safe_local_name(row.get("款色号"), "款色号")
+    return f"{unique_value}_{ordinal:03d}_{style_color_code}_AI买家秀"
+
+
+def _package_filename(row: Mapping[str, Any], ordinal: int, source_path: Path) -> str:
+    stem = _package_output_stem(row, ordinal)
     suffix = _image_suffix_from_file(source_path)
-    return f"{unique_value}_{ordinal:03d}_{style_color_code}_AI买家秀{suffix}"
+    return f"{stem}{suffix}"
 
 
 def _material_package_filename(row: Mapping[str, Any], ordinal: int, role: str, source_path: Path) -> str:
@@ -543,6 +703,119 @@ def _buyer_show_row_label(row: Mapping[str, Any]) -> str:
     style_color_code = _compact(row.get("款色号"))
     style_code = _extract_style_code(style_color_code)
     return f"{style_color_code or style_code} / {row.get('模拍文件') or ''}"
+
+
+def _record_buyer_show_usage(row: dict, output_files: list[str], prompt: str) -> None:
+    style_color_code = _compact(row.get("款色号"))
+    style_code = _extract_style_code(style_color_code)
+    model_cloud_path = _compact(row.get("模拍云盘路径"))
+    target_dir = Path(_compact(row.get("本地图包文件夹"))).expanduser()
+    created_at = datetime.now().isoformat(timespec="seconds")
+    row["__usage_record_time"] = created_at
+    data_sink.create_buyer_show_material_usage({
+        "style_code": style_code,
+        "style_color_code": style_color_code,
+        "model_cloud_path": model_cloud_path,
+        "model_filename": _compact(row.get("模拍文件")),
+        "model_local_path": _compact(row.get("模拍本地文件")),
+        "reference_cloud_path": _compact(row.get("平铺云盘路径")),
+        "reference_local_path": _compact(row.get("平铺本地文件")),
+        "output_file": "\n".join(output_files),
+        "source_row_no": int(row.get("表格行号") or 0),
+        "unique_value": _compact(row.get("唯一值")),
+        "ai_job_uid": _compact(row.get("AI任务ID")),
+        "ai_task_id": _compact(row.get("1XM任务ID")),
+        "meta": {
+            "workflow": BUYER_SHOW_TASK_ID,
+            "package_root": str(target_dir.parent),
+            "prompt": prompt,
+        },
+    })
+
+
+def _find_existing_buyer_show_output(row: Mapping[str, Any]) -> Optional[Path]:
+    target_dir = Path(_compact(row.get("本地图包文件夹"))).expanduser()
+    if not target_dir.is_dir():
+        return None
+    ordinal_start = max(1, int(row.get("__package_ordinal_start") or 1))
+    stem = _package_output_stem(row, ordinal_start)
+    candidates: list[Path] = []
+    for path in target_dir.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in IMAGE_OUTPUT_SUFFIXES:
+            continue
+        if not path.name.startswith(stem):
+            continue
+        try:
+            if path.stat().st_size <= 0:
+                continue
+        except OSError:
+            continue
+        candidates.append(path)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (0 if item.stem == stem else 1, item.name))[0]
+
+
+def _mark_existing_buyer_show_output(
+    row: dict,
+    existing_path: Path,
+    *,
+    run_params: Mapping[str, Any],
+    log: Callable[[str], None],
+) -> None:
+    usage = data_sink.find_buyer_show_material_usage(_compact(row.get("款色号")), _compact(row.get("模拍云盘路径")))
+    if usage:
+        row["AI任务ID"] = _compact(row.get("AI任务ID")) or _compact(usage.get("ai_job_uid"))
+        row["1XM任务ID"] = _compact(row.get("1XM任务ID")) or _compact(usage.get("ai_task_id"))
+    row["生图结果"] = "已生成"
+    row["生图文件"] = str(existing_path)
+    row["__生成图明细"] = [{
+        "filename": existing_path.name,
+        "local_path": str(existing_path),
+        "source_url": "",
+        "resume": True,
+    }]
+    row["备注"] = _append_note(row.get("备注"), "续跑复用原图包已有成品")
+    prompt = _compact(row.get("__generation_prompt")) or build_buyer_show_prompt(row, run_params)
+    _record_buyer_show_usage(row, [str(existing_path)], prompt)
+    log(f"[buyer-show] 续跑复用已有成品: {_buyer_show_row_label(row)}")
+
+
+def _prepare_buyer_show_resume_row(
+    row: dict,
+    *,
+    run_params: Mapping[str, Any],
+    log: Callable[[str], None],
+) -> bool:
+    existing = _find_existing_buyer_show_output(row)
+    if existing:
+        _mark_existing_buyer_show_output(row, existing, run_params=run_params, log=log)
+        return True
+
+    job = data_sink.find_completed_buyer_show_ai_image_job(
+        style_color_code=_compact(row.get("款色号")),
+        main_image_path=_compact(row.get("模拍本地文件")),
+        reference_image_path=_compact(row.get("平铺本地文件")),
+    )
+    if not job:
+        return False
+
+    summary = job.get("summary") if isinstance(job.get("summary"), Mapping) else {}
+    urls = _result_image_urls(summary)
+    if not urls:
+        log(f"[buyer-show] 续跑找到已完成 AI 任务但缺少图片链接，将重新生成: {_buyer_show_row_label(row)}")
+        return False
+
+    row["AI任务ID"] = _compact(job.get("job_uid"))
+    row["1XM任务ID"] = _created_run_task_id(summary)
+    row["__generation_urls"] = urls
+    row["__generation_prompt"] = _compact(job.get("prompt")) or _compact(summary.get("prompt")) or build_buyer_show_prompt(row, run_params)
+    row["生图结果"] = "待落图"
+    row["备注"] = _append_note(row.get("备注"), "续跑复用已完成 AI 生图链接")
+    log(f"[buyer-show] 续跑复用已完成 AI 任务链接: {_buyer_show_row_label(row)}")
+    return True
 
 
 def _prepare_buyer_show_generation_row(
@@ -605,9 +878,6 @@ def _materialize_buyer_show_generation_row(
     run_params: Mapping[str, Any],
     log: Callable[[str], None],
 ) -> dict:
-    style_color_code = _compact(row.get("款色号"))
-    style_code = _extract_style_code(style_color_code)
-    model_cloud_path = _compact(row.get("模拍云盘路径"))
     label = _buyer_show_row_label(row)
     target_dir = Path(_compact(row.get("本地图包文件夹"))).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -633,6 +903,12 @@ def _materialize_buyer_show_generation_row(
             if not source.is_file():
                 raise FileNotFoundError(f"生成图物化失败：{source}")
             target = target_dir / _package_filename(row, ordinal_start + url_index, source)
+            if _is_resume_mode(run_params) and target.exists() and target.is_file():
+                try:
+                    if target.stat().st_size <= 0:
+                        target.unlink()
+                except OSError:
+                    pass
             copied = _copy_file_to_unique_target(source, target)
             copied_files.append(str(copied))
             generated_details.append({"filename": copied.name, "local_path": str(copied), "source_url": url})
@@ -640,27 +916,7 @@ def _materialize_buyer_show_generation_row(
         row["生图结果"] = "已生成"
         row["生图文件"] = "\n".join(copied_files)
         row["__生成图明细"] = generated_details
-        created_at = datetime.now().isoformat(timespec="seconds")
-        row["__usage_record_time"] = created_at
-        data_sink.create_buyer_show_material_usage({
-            "style_code": style_code,
-            "style_color_code": style_color_code,
-            "model_cloud_path": model_cloud_path,
-            "model_filename": _compact(row.get("模拍文件")),
-            "model_local_path": _compact(row.get("模拍本地文件")),
-            "reference_cloud_path": _compact(row.get("平铺云盘路径")),
-            "reference_local_path": _compact(row.get("平铺本地文件")),
-            "output_file": "\n".join(copied_files),
-            "source_row_no": int(row.get("表格行号") or 0),
-            "unique_value": _compact(row.get("唯一值")),
-            "ai_job_uid": _compact(row.get("AI任务ID")),
-            "ai_task_id": _compact(row.get("1XM任务ID")),
-            "meta": {
-                "workflow": BUYER_SHOW_TASK_ID,
-                "package_root": str(target_dir.parent),
-                "prompt": prompt,
-            },
-        })
+        _record_buyer_show_usage(row, copied_files, prompt)
         log(f"[buyer-show] 已生成: {label}")
         return row
     except Exception as exc:
@@ -688,16 +944,22 @@ def _run_buyer_show_generation_pipeline(
     settings: Optional[Mapping[str, Any]],
     generation_concurrency: int,
     log: Callable[[str], None],
+    materialize_only_rows: Optional[list[dict]] = None,
 ) -> None:
-    if not generation_rows:
+    prepared_rows = list(materialize_only_rows or [])
+    if not generation_rows and not prepared_rows:
         return
 
-    worker_count = min(max(1, generation_concurrency), len(generation_rows))
+    worker_count = min(max(1, generation_concurrency), len(generation_rows)) if generation_rows else 1
+    download_total = max(1, len(generation_rows) + len(prepared_rows))
     download_worker_count = min(
         _normalize_result_download_concurrency(run_params, DEFAULT_RESULT_DOWNLOAD_CONCURRENCY),
-        len(generation_rows),
+        download_total,
     )
-    log(f"[buyer-show] AI 生图并发窗口：{worker_count}；待生成 {len(generation_rows)} 行")
+    if generation_rows:
+        log(f"[buyer-show] AI 生图并发窗口：{worker_count}；待生成 {len(generation_rows)} 行")
+    if prepared_rows:
+        log(f"[buyer-show] 续跑待落图 {len(prepared_rows)} 行；直接进入下载队列")
     log(f"[buyer-show] AI 结果落图并发窗口：{download_worker_count}；生成链接就入下载队列")
 
     generation_completed = 0
@@ -719,6 +981,16 @@ def _run_buyer_show_generation_pipeline(
             for row in generation_rows
         }
         download_futures: dict[Any, dict] = {}
+        for row in prepared_rows:
+            download_futures[
+                download_executor.submit(
+                    _materialize_buyer_show_generation_row,
+                    row,
+                    run_params=run_params,
+                    log=log,
+                )
+            ] = row
+            download_submitted += 1
 
         while generation_futures or download_futures:
             done, _pending = wait(
@@ -781,7 +1053,13 @@ def finalize_buyer_show_outputs(
         run_params.get("package_name") or f"AI买家秀_{timestamp}",
         f"AI买家秀_{timestamp}",
     )
-    package_root = _ensure_unique_dir(output_root / package_base)
+    resume_enabled = _is_resume_mode(run_params)
+    package_root, zip_output_root = _resolve_package_paths(
+        output_root,
+        package_base,
+        run_params,
+        resume_enabled=resume_enabled,
+    )
 
     rows = [dict(row) if isinstance(row, Mapping) else {"备注": str(row)} for row in (data_rows or [])]
     usage_export_rows: list[dict] = []
@@ -791,13 +1069,17 @@ def finalize_buyer_show_outputs(
     execute_mode = _compact(run_params.get("execute_mode") or "generate").lower()
     generate_enabled = execute_mode not in {"download_only", "download-only", "plan", "false", "0"}
     enforce_usage = _compact(run_params.get("usage_record_mode") or "enforce").lower() != "ignore"
+    usage_blocks_enabled = enforce_usage and not resume_enabled
     max_generate_jobs_raw = _compact(run_params.get("max_generate_jobs"))
     max_generate_jobs = int(max_generate_jobs_raw) if max_generate_jobs_raw.isdigit() else 0
     generation_concurrency = _normalize_generation_concurrency(run_params)
     scheduled_count = 0
     generation_rows: list[dict] = []
+    materialize_only_rows: list[dict] = []
 
     log(f"[buyer-show] 开始后处理 {len(rows)} 行，输出目录：{package_root}")
+    if resume_enabled:
+        log("[buyer-show] 当前为原包续跑模式：复用已有成品或已完成 AI 链接，缺口才重新生图")
 
     for index, row in enumerate(rows):
         style_color_code = _compact(row.get("款色号"))
@@ -822,11 +1104,24 @@ def finalize_buyer_show_outputs(
             row["生图结果"] = "参数缺失"
             row["备注"] = _append_note(row.get("备注"), "缺少款色号或模拍云盘路径")
             continue
-        if enforce_usage and usage_key in seen_usage_keys:
+
+        if resume_enabled:
+            unique_folder = _safe_local_name(row.get("唯一值") or row.get("AI图包文件夹命名"), "未命名")
+            target_dir = package_root / unique_folder
+            target_dir.mkdir(parents=True, exist_ok=True)
+            row["本地图包文件夹"] = str(target_dir)
+            folder_ordinals[unique_folder] = int(folder_ordinals.get(unique_folder) or 0) + 1
+            row["__package_ordinal_start"] = folder_ordinals[unique_folder]
+            if _prepare_buyer_show_resume_row(row, run_params=run_params, log=log):
+                if _compact(row.get("生图结果")) == "待落图":
+                    materialize_only_rows.append(row)
+                continue
+
+        if usage_blocks_enabled and usage_key in seen_usage_keys:
             row["生图结果"] = "已跳过"
             row["备注"] = _append_note(row.get("备注"), "本批次同款色号已使用过这张模拍图")
             continue
-        if enforce_usage:
+        if usage_blocks_enabled:
             existing = data_sink.find_buyer_show_material_usage(style_color_code, model_cloud_path)
             if existing:
                 row["生图结果"] = "已跳过"
@@ -844,15 +1139,16 @@ def finalize_buyer_show_outputs(
             row["备注"] = _append_note(row.get("备注"), "当前为下载/打包预演模式，未提交 AI 生图")
             continue
 
-        unique_folder = _safe_local_name(row.get("唯一值") or row.get("AI图包文件夹命名"), "未命名")
-        target_dir = package_root / unique_folder
-        target_dir.mkdir(parents=True, exist_ok=True)
-        row["本地图包文件夹"] = str(target_dir)
-        folder_ordinals[unique_folder] = int(folder_ordinals.get(unique_folder) or 0) + 1
-        row["__package_ordinal_start"] = folder_ordinals[unique_folder]
+        if not resume_enabled:
+            unique_folder = _safe_local_name(row.get("唯一值") or row.get("AI图包文件夹命名"), "未命名")
+            target_dir = package_root / unique_folder
+            target_dir.mkdir(parents=True, exist_ok=True)
+            row["本地图包文件夹"] = str(target_dir)
+            folder_ordinals[unique_folder] = int(folder_ordinals.get(unique_folder) or 0) + 1
+            row["__package_ordinal_start"] = folder_ordinals[unique_folder]
         scheduled_count += 1
         generation_rows.append(row)
-        if enforce_usage:
+        if usage_blocks_enabled:
             seen_usage_keys.add(usage_key)
 
     _run_buyer_show_generation_pipeline(
@@ -861,6 +1157,7 @@ def finalize_buyer_show_outputs(
         settings=settings,
         generation_concurrency=generation_concurrency,
         log=log,
+        materialize_only_rows=materialize_only_rows,
     )
 
     usage_export_rows = [
@@ -869,12 +1166,12 @@ def finalize_buyer_show_outputs(
         if _compact(row.get("生图结果")) == "已生成" and _compact(row.get("__usage_record_time"))
     ]
 
-    summary_path = _ensure_unique_path(package_root / f"{package_root.name}_执行结果.xlsx")
-    usage_path = _ensure_unique_path(package_root / f"{package_root.name}_使用记录.xlsx")
+    summary_path = _artifact_path(package_root / f"{package_root.name}_执行结果.xlsx", resume_enabled=resume_enabled)
+    usage_path = _artifact_path(package_root / f"{package_root.name}_使用记录.xlsx", resume_enabled=resume_enabled)
     _write_rows_xlsx(summary_path, rows, SUMMARY_COLUMNS, "执行结果")
     _write_rows_xlsx(usage_path, usage_export_rows or [], USAGE_COLUMNS, "使用记录")
 
-    zip_path = _ensure_unique_path(output_root / f"{package_root.name}.zip")
+    zip_path = _artifact_path(zip_output_root / f"{package_root.name}.zip", resume_enabled=resume_enabled)
     started = time.monotonic()
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for file_path in sorted(package_root.rglob("*")):

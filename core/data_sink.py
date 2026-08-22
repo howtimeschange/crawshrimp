@@ -789,6 +789,36 @@ def list_ai_image_jobs(limit: int = 100) -> list[dict]:
     return [item for row in rows if (item := _ai_image_job_from_row(row))]
 
 
+def find_completed_buyer_show_ai_image_job(
+    *,
+    style_color_code: str,
+    main_image_path: str,
+    reference_image_path: str = "",
+) -> Optional[dict]:
+    style_color = str(style_color_code or "").strip()
+    main_path = str(main_image_path or "").strip()
+    reference_path = str(reference_image_path or "").strip()
+    if not style_color or not main_path:
+        return None
+
+    sql = """
+        SELECT *
+        FROM ai_image_jobs
+        WHERE lower(status) = 'completed'
+          AND json_extract(params_json, '$.workflow') = ?
+          AND json_extract(params_json, '$.style_color_code') = ?
+          AND json_extract(params_json, '$.main_image_path') = ?
+    """
+    params: list[Any] = ["buyer_show_ai_generate", style_color, main_path]
+    if reference_path:
+        sql += " AND json_extract(params_json, '$.reference_image_paths[0]') = ?"
+        params.append(reference_path)
+    sql += " ORDER BY updated_at DESC, id DESC LIMIT 1"
+    with _get_conn() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return _ai_image_job_from_row(row)
+
+
 def list_active_ai_image_jobs() -> list[dict]:
     with _get_conn() as conn:
         rows = conn.execute(

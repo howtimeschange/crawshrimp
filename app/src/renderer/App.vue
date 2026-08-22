@@ -36,17 +36,51 @@
     <aside class="sidebar">
       <!-- 一级菜单 -->
       <nav v-if="!activeScript">
-        <button
-          v-for="item in filteredNavItems" :key="item.id"
-          :class="['nav-btn', { active: currentView === item.id }]"
-          :aria-label="item.label"
-          :data-tooltip="effectiveSidebarCollapsed ? item.label : null"
-          :title="effectiveSidebarCollapsed ? undefined : item.label"
-          @click="selectNav(item)"
-        >
-          <span class="icon">{{ item.icon }}</span>
-          <span>{{ item.label }}</span>
-        </button>
+        <template v-for="item in filteredNavItems" :key="item.id">
+          <div
+            v-if="item.children?.length"
+            :class="['nav-group', { active: isNavGroupActive(item), open: isNavGroupExpanded(item) }]"
+          >
+            <button
+              :class="['nav-btn', 'nav-group-btn', { 'group-active': isNavGroupActive(item) }]"
+              :aria-label="item.label"
+              :aria-expanded="isNavGroupExpanded(item)"
+              :aria-controls="`${item.id}-children`"
+              :data-tooltip="effectiveSidebarCollapsed ? item.label : null"
+              :title="effectiveSidebarCollapsed ? undefined : item.label"
+              @click="toggleNavGroup(item)"
+            >
+              <span class="icon">{{ item.icon }}</span>
+              <span>{{ item.label }}</span>
+              <span class="nav-group-chevron" aria-hidden="true">›</span>
+            </button>
+            <div v-if="isNavGroupExpanded(item)" :id="`${item.id}-children`" class="nav-children">
+              <button
+                v-for="child in item.children"
+                :key="child.id"
+                :class="['nav-btn', 'nav-child-btn', { active: currentView === child.id }]"
+                :aria-label="child.label"
+                :data-tooltip="effectiveSidebarCollapsed ? child.label : null"
+                :title="effectiveSidebarCollapsed ? undefined : child.label"
+                @click="selectNav(child)"
+              >
+                <span class="icon">{{ child.icon }}</span>
+                <span>{{ child.label }}</span>
+              </button>
+            </div>
+          </div>
+          <button
+            v-else
+            :class="['nav-btn', { active: currentView === item.id }]"
+            :aria-label="item.label"
+            :data-tooltip="effectiveSidebarCollapsed ? item.label : null"
+            :title="effectiveSidebarCollapsed ? undefined : item.label"
+            @click="selectNav(item)"
+          >
+            <span class="icon">{{ item.icon }}</span>
+            <span>{{ item.label }}</span>
+          </button>
+        </template>
       </nav>
 
       <!-- 二级菜单：进入脚本后 -->
@@ -236,6 +270,7 @@ const scriptGroups = ref([])
 const cloudApprovalStatus = ref(null)
 const focusSettingsPanelId = ref('')
 const sidebarCollapsed = ref(readSidebarCollapsed(window.localStorage))
+const expandedNavGroupIds = ref(new Set(['ai_workflows']))
 const effectiveSidebarCollapsed = computed(() => !activeScript.value && sidebarCollapsed.value)
 const isMacTitlebar = /mac/i.test(String(navigator.userAgentData?.platform || navigator.platform || navigator.userAgent))
 const updateStatus = ref({
@@ -278,8 +313,15 @@ const navItems = [
   { id: 'task_center', icon: '📋', label: '任务中心' },
   { id: 'ai_image', icon: '🎨', label: 'AI 生图' },
   { id: 'ai_video_generation', icon: '🎬', label: 'AI 生视频' },
-  { id: 'ai_video', icon: '🎞️', label: 'AI 视频工作流' },
-  { id: 'buyer_show_workflow', icon: '🛍️', label: 'AI 买家秀工作流' },
+  {
+    id: 'ai_workflows',
+    icon: '🤖',
+    label: 'AI 工作流',
+    children: [
+      { id: 'ai_video', icon: '🎞️', label: 'AI 视频工作流' },
+      { id: 'buyer_show_workflow', icon: '🛍️', label: 'AI 买家秀工作流' },
+    ],
+  },
   { id: 'local_prompt_library', icon: '💬', label: '提示词库' },
   { id: 'files',    icon: '📁', label: '数据文件' },
   { id: 'cloud_approval', icon: '☁️', label: '云端审批' },
@@ -301,12 +343,38 @@ function selectNav(item) {
     activeTaskId.value = null
   }
   currentView.value = item.id
+  expandParentNavGroupForView(item.id)
   activeInstanceUid.value = ''
   if (item.id !== 'settings') focusSettingsPanelId.value = ''
 }
 
 function shouldClearActiveScriptForNav(item) {
   return Boolean(activeScript.value) && item.id !== currentView.value
+}
+
+function isNavGroupActive(item) {
+  return Boolean(item?.children?.some(child => child.id === currentView.value))
+}
+
+function isNavGroupExpanded(item) {
+  return expandedNavGroupIds.value.has(item?.id)
+}
+
+function toggleNavGroup(item) {
+  if (!item?.children?.length) return
+  const next = new Set(expandedNavGroupIds.value)
+  if (next.has(item.id)) {
+    next.delete(item.id)
+  } else {
+    next.add(item.id)
+  }
+  expandedNavGroupIds.value = next
+}
+
+function expandParentNavGroupForView(viewId) {
+  const group = navItems.find(item => item.children?.some(child => child.id === viewId))
+  if (!group || expandedNavGroupIds.value.has(group.id)) return
+  expandedNavGroupIds.value = new Set([...expandedNavGroupIds.value, group.id])
 }
 
 function openSettingsPanel(panelId) {
@@ -723,10 +791,41 @@ nav {
 .nav-btn {
   position: relative;
   display: flex; align-items: center; gap: 10px;
+  width: 100%;
   padding: 10px 12px; border-radius: 8px;
   background: transparent; border: none;
   color: var(--text2); font-size: 13px; text-align: left;
   transition: all 0.15s;
+}
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-group-btn.group-active {
+  background: var(--bg3);
+  color: var(--text);
+  font-weight: 600;
+}
+.nav-group-chevron {
+  margin-left: auto;
+  color: var(--text3);
+  font-size: 15px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+.nav-group.open .nav-group-chevron {
+  transform: rotate(90deg);
+}
+.nav-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 16px;
+}
+.nav-child-btn {
+  padding-left: 12px;
+  font-size: 12.5px;
 }
 .sidebar-collapsed nav {
   padding: 0 6px;
@@ -742,6 +841,12 @@ nav {
 .sidebar-collapsed .nav-btn .icon {
   width: auto;
   font-size: 17px;
+}
+.sidebar-collapsed .nav-group-chevron {
+  display: none;
+}
+.sidebar-collapsed .nav-children {
+  padding-left: 0;
 }
 .nav-btn:hover { background: var(--bg3); color: var(--text); }
 .nav-btn:focus-visible {
@@ -921,8 +1026,42 @@ nav {
     padding: 8px;
   }
 
+  .layout-ai-image .nav-group {
+    position: relative;
+    flex: 1 0 48px;
+    min-width: 48px;
+  }
+
+  .layout-ai-image .nav-group-btn {
+    height: 100%;
+  }
+
+  .layout-ai-image .nav-children {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    z-index: 30;
+    min-width: 164px;
+    padding: 6px;
+    border: 1px solid var(--subtle-border);
+    border-radius: 10px;
+    background: var(--bg2);
+    box-shadow: var(--shadow-soft);
+  }
+
+  .layout-ai-image .nav-children .nav-child-btn {
+    min-width: 0;
+    flex: 0 0 auto;
+    justify-content: flex-start;
+    padding: 9px 10px;
+  }
+
   .layout-ai-image .nav-btn > span:not(.icon) {
     display: none;
+  }
+
+  .layout-ai-image .nav-children .nav-child-btn > span:not(.icon) {
+    display: inline;
   }
 
   .layout-ai-image .nav-btn .icon {

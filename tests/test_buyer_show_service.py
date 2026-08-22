@@ -19,6 +19,16 @@ PNG_1X1 = bytes.fromhex(
 JPEG_HEADER_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
 
 
+def png_header_with_size(width: int, height: int) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        + int(width).to_bytes(4, "big")
+        + int(height).to_bytes(4, "big")
+        + b"\x08\x06\x00\x00\x00"
+    )
+
+
 class BuyerShowServiceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -405,6 +415,163 @@ class BuyerShowServiceTests(unittest.TestCase):
         self.assertEqual(row["生图结果"], "落图失败")
         self.assertIn("download failed", row["备注"])
 
+    def test_resume_mode_reuses_existing_package_output_without_ai_or_download(self):
+        package_root = self.root / "exports" / "AI买家秀测试"
+        target_dir = package_root / "ORD-1208326102205-00316"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        existing_output = target_dir / "ORD-1208326102205-00316_001_208326102205-00316_AI买家秀.png"
+        existing_output.write_bytes(PNG_1X1)
+        stale_summary = package_root / f"{package_root.name}_执行结果.xlsx"
+        stale_summary.write_text("old", encoding="utf-8")
+        stale_zip = package_root.parent / f"{package_root.name}.zip"
+        stale_zip.write_bytes(b"old zip")
+
+        with (
+            patch("core.buyer_show_service.ai_image_service.run_job_with_one_xm") as run_job,
+            patch("core.buyer_show_service.ai_image_service.materialize_remote_image") as materialize,
+        ):
+            refs = buyer_show_service.finalize_buyer_show_outputs(
+                data_rows=self._source_rows(),
+                runtime_files=[],
+                exported_files=[],
+                run_params={
+                    "export_folder": str(package_root.parent),
+                    "package_name": package_root.name,
+                    "execute_mode": "resume",
+                    "resume_package_dir": str(package_root),
+                    "usage_record_mode": "ignore",
+                },
+                runtime_artifact_dir=str(self.root / "runtime"),
+                settings={"base_url": "https://api.example", "4k": "secret"},
+                log=lambda _msg: None,
+            )
+
+        run_job.assert_not_called()
+        materialize.assert_not_called()
+        self.assertEqual(Path(refs[0]), package_root)
+        self.assertEqual(Path(refs[1]), stale_zip)
+        self.assertEqual(Path(refs[2]), stale_summary)
+        self.assertFalse((package_root / f"{package_root.name}_执行结果_2.xlsx").exists())
+        self.assertFalse((package_root.parent / f"{package_root.name}_2.zip").exists())
+        self.assertEqual(sorted(path.name for path in target_dir.glob("*AI买家秀*.png")), [existing_output.name])
+
+        wb = load_workbook(stale_summary)
+        values = list(wb.active.iter_rows(values_only=True))
+        row = dict(zip(values[0], values[1]))
+        self.assertEqual(row["生图结果"], "已生成")
+        self.assertEqual(row["生图文件"], str(existing_output))
+        self.assertIn("续跑复用原图包已有成品", row["备注"])
+
+    def test_resume_mode_reuses_completed_ai_job_url_when_output_is_missing(self):
+        package_root = self.root / "exports" / "AI买家秀测试"
+        package_root.mkdir(parents=True, exist_ok=True)
+        source_row = self._source_rows()[0]
+        generated = self.root / "generated-from-reused-url.png"
+        generated.write_bytes(PNG_1X1)
+
+        data_sink.create_ai_image_job({
+            "job_uid": "buyer-show-done-job",
+            "title": "done buyer show job",
+            "prompt": "stored prompt",
+            "model_key": "gpt-image-2",
+            "status": "completed",
+            "output_dir": str(package_root / source_row["唯一值"]),
+            "params": {
+                "workflow": buyer_show_service.BUYER_SHOW_TASK_ID,
+                "style_color_code": source_row["款色号"],
+                "main_image_path": source_row["模拍本地文件"],
+                "reference_image_paths": [source_row["平铺本地文件"]],
+            },
+            "summary": {
+                "task_id": "1xm-reused-task",
+                "image_urls": ["https://cdn.example/reused.png"],
+            },
+        })
+
+        with (
+            patch("core.buyer_show_service.ai_image_service.run_job_with_one_xm") as run_job,
+            patch("core.buyer_show_service.ai_image_service.materialize_remote_image", return_value={
+                "ok": True,
+                "path": str(generated),
+                "url": "https://cdn.example/reused.png",
+            }) as materialize,
+        ):
+            refs = buyer_show_service.finalize_buyer_show_outputs(
+                data_rows=[source_row],
+                runtime_files=[],
+                exported_files=[],
+                run_params={
+                    "export_folder": str(package_root.parent),
+                    "package_name": package_root.name,
+                    "execute_mode": "recover",
+                    "resume_package_dir": str(package_root),
+                    "usage_record_mode": "ignore",
+                },
+                runtime_artifact_dir=str(self.root / "runtime"),
+                settings={"base_url": "https://api.example", "4k": "secret"},
+                log=lambda _msg: None,
+            )
+
+        run_job.assert_not_called()
+        materialize.assert_called_once()
+        package_outputs = list(Path(refs[0]).rglob("*AI买家秀.png"))
+        self.assertEqual(len(package_outputs), 1)
+        self.assertIn("_001_208326102205-00316_AI买家秀", package_outputs[0].name)
+
+        wb = load_workbook(Path(refs[2]))
+        values = list(wb.active.iter_rows(values_only=True))
+        row = dict(zip(values[0], values[1]))
+        self.assertEqual(row["生图结果"], "已生成")
+        self.assertEqual(row["AI任务ID"], "buyer-show-done-job")
+        self.assertEqual(row["1XM任务ID"], "1xm-reused-task")
+        self.assertIn("续跑复用已完成 AI 生图链接", row["备注"])
+
+    def test_resume_mode_derives_ordinals_from_full_row_order(self):
+        package_root = self.root / "exports" / "AI买家秀测试"
+        target_dir = package_root / "ORD-SAME"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        first_existing = target_dir / "ORD-SAME_001_208326102205-00310_AI买家秀.png"
+        first_existing.write_bytes(PNG_1X1)
+        generated = self.root / "generated-second-row.png"
+        generated.write_bytes(PNG_1X1)
+        rows = [
+            self._source_rows(style_color_code="208326102205-00310", unique_value="ORD-SAME")[0],
+            self._source_rows(style_color_code="208326102205-00311", unique_value="ORD-SAME")[0],
+        ]
+        rows[1]["模拍文件"] = "model-second.jpg"
+        rows[1]["模拍云盘路径"] = "买家秀图库/冬季/上装/女/model-second.jpg"
+
+        with (
+            patch("core.buyer_show_service.ai_image_service.run_job_with_one_xm", return_value={
+                "ok": True,
+                "summary": {"task_id": "1xm-second", "image_urls": ["https://cdn.example/second.png"]},
+            }),
+            patch("core.buyer_show_service.ai_image_service.materialize_remote_image", return_value={
+                "ok": True,
+                "path": str(generated),
+                "url": "https://cdn.example/second.png",
+            }),
+        ):
+            refs = buyer_show_service.finalize_buyer_show_outputs(
+                data_rows=rows,
+                runtime_files=[],
+                exported_files=[],
+                run_params={
+                    "export_folder": str(package_root.parent),
+                    "package_name": package_root.name,
+                    "execute_mode": "resume",
+                    "resume_package_dir": str(package_root),
+                    "usage_record_mode": "ignore",
+                },
+                runtime_artifact_dir=str(self.root / "runtime"),
+                settings={"base_url": "https://api.example", "4k": "secret"},
+                log=lambda _msg: None,
+            )
+
+        output_names = sorted(path.name for path in Path(refs[0]).rglob("*AI买家秀.png"))
+        self.assertIn("ORD-SAME_001_208326102205-00310_AI买家秀.png", output_names)
+        self.assertIn("ORD-SAME_002_208326102205-00311_AI买家秀.png", output_names)
+
     def test_result_url_candidates_prefer_proxy_before_direct_image(self):
         url = (
             "https://one-xm-proxy.crawshrimp.com/v1/proxy-image"
@@ -448,6 +615,45 @@ class BuyerShowServiceTests(unittest.TestCase):
         self.assertEqual(len(usage_rows), 1)
         self.assertEqual(usage_rows[0]["style_code"], "208426104201")
         self.assertEqual(usage_rows[0]["style_color_code"], "20842610420180915")
+
+    def test_finalize_derives_generation_size_from_model_image_ratio(self):
+        rows = self._source_rows()
+        Path(rows[0]["模拍本地文件"]).write_bytes(png_header_with_size(900, 1600))
+        generated = self.root / "generated-source-ratio.png"
+        generated.write_bytes(PNG_1X1)
+        captured = {}
+
+        def fake_run(job_uid, settings=None):
+            job = data_sink.get_ai_image_job(job_uid) or {}
+            captured.update(job.get("params") or {})
+            return {
+                "ok": True,
+                "summary": {"task_id": "1xm-source-ratio", "image_urls": ["https://cdn.example/generated.png"]},
+            }
+
+        with (
+            patch("core.buyer_show_service.ai_image_service.run_job_with_one_xm", side_effect=fake_run),
+            patch("core.buyer_show_service.ai_image_service.materialize_remote_image", return_value={
+                "ok": True,
+                "path": str(generated),
+                "url": "https://cdn.example/generated.png",
+            }),
+        ):
+            buyer_show_service.finalize_buyer_show_outputs(
+                data_rows=rows,
+                runtime_files=[],
+                exported_files=[],
+                run_params={"export_folder": str(self.root / "exports"), "package_name": "AI买家秀原图比例测试"},
+                runtime_artifact_dir=str(self.root / "runtime"),
+                settings={"base_url": "https://api.example", "4k": "secret"},
+                log=lambda _msg: None,
+            )
+
+        self.assertEqual(captured["size"], "2160x3840")
+        self.assertEqual(captured["source_image_width"], 900)
+        self.assertEqual(captured["source_image_height"], 1600)
+        self.assertEqual(captured["source_image_ratio"], "9:16")
+        self.assertEqual(captured["image_size_strategy"], "source_ratio")
 
     def test_finalize_uses_actual_image_header_for_package_extension(self):
         generated = self.root / "generated-mislabeled.png"

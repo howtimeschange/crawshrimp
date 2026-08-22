@@ -62,43 +62,21 @@
               <span>图包名称</span>
               <input v-model="packageName" />
             </label>
-            <div class="bsv-field-row">
-              <label class="bsv-field">
-                <span>执行模式</span>
-                <select v-model="executeMode">
-                  <option value="generate">下载并真实生图</option>
-                  <option value="download_only">只下载匹配素材</option>
-                </select>
-              </label>
-              <label class="bsv-field">
-                <span>生图尺寸</span>
-                <select v-model="imageSize">
-                  <option value="2160x2880">2160x2880</option>
-                  <option value="1536x2048">1536x2048</option>
-                  <option value="2048x2048">2048x2048</option>
-                </select>
-              </label>
-            </div>
-            <div class="bsv-field-row">
-              <label class="bsv-field">
-                <span>最多真实生图数</span>
-                <input v-model.number="maxGenerateJobs" type="number" min="0" max="2000" />
-              </label>
-              <label class="bsv-field">
-                <span>单行最多模拍图</span>
-                <input v-model.number="maxModelImagesPerRow" type="number" min="1" max="500" />
-              </label>
-            </div>
-            <div class="bsv-field-row">
-              <label class="bsv-field">
-                <span>1XM 生图并发</span>
-                <input v-model.number="generationConcurrency" type="number" min="1" max="10" />
-              </label>
-              <label class="bsv-field">
-                <span>AI 结果落图并发</span>
-                <input v-model.number="resultDownloadConcurrency" type="number" min="1" max="20" />
-              </label>
-            </div>
+            <label class="bsv-field">
+              <span>执行模式</span>
+              <select v-model="executeMode">
+                <option value="generate">下载并真实生图</option>
+                <option value="download_only">只下载匹配素材</option>
+                <option value="resume">续跑原图包</option>
+              </select>
+            </label>
+            <label v-if="isResumeMode" class="bsv-field">
+              <span>续跑原图包目录</span>
+              <div class="bsv-file-picker">
+                <strong :title="resumePackageDir">{{ resumePackageDir || '请选择已有图包文件夹' }}</strong>
+                <button type="button" class="bsv-ghost small" @click="pickResumePackageDir">选择</button>
+              </div>
+            </label>
             <label class="bsv-field">
               <span>自定义 Prompt</span>
               <textarea v-model="customPrompt" rows="4" placeholder="特殊款可填写；留空使用默认买家秀换装 Prompt"></textarea>
@@ -120,7 +98,7 @@
               </div>
             </section>
             <button type="button" class="bsv-primary wide" :disabled="taskState.status === 'running'" @click="startWorkflow">
-              {{ taskState.status === 'running' ? '正在执行...' : '开始 Excel 找图并生图' }}
+              {{ startButtonLabel }}
             </button>
             <button v-if="taskState.status === 'running'" type="button" class="bsv-ghost wide danger" @click="stopWorkflow">
               停止任务
@@ -284,11 +262,7 @@ const flatCloudPath = ref(DEFAULT_FLAT_PATH)
 const exportFolder = ref(DEFAULT_EXPORT_FOLDER)
 const packageName = ref('AI买家秀')
 const executeMode = ref('generate')
-const imageSize = ref('2160x2880')
-const maxGenerateJobs = ref(0)
-const maxModelImagesPerRow = ref(500)
-const generationConcurrency = ref(5)
-const resultDownloadConcurrency = ref(10)
+const resumePackageDir = ref('')
 const customPrompt = ref('')
 const promptExtra = ref('')
 const pollTimer = ref(null)
@@ -340,11 +314,32 @@ const overallProgress = computed(() => {
   const generation = taskState.generationTotal ? taskState.generationCompleted / taskState.generationTotal : 0
   return Math.round(Math.max(search * 35, download * 62, generation * 88, taskState.status === 'running' ? 8 : 0))
 })
+const isResumeMode = computed(() => ['resume', 'recover', 'resume_recover', 'resume-recover'].includes(String(executeMode.value || '').toLowerCase()))
+const startButtonLabel = computed(() => {
+  if (taskState.status === 'running') return '正在执行...'
+  return isResumeMode.value ? '开始续跑原图包' : '开始 Excel 找图并生图'
+})
 const packageOutputFiles = computed(() => outputFiles.value.filter(file => /\.(zip|xlsx)$/i.test(file) || !/\.[a-z0-9]{2,5}$/i.test(file)))
-const primaryOutputTarget = computed(() => outputFiles.value.find(file => !/\.[a-z0-9]{2,5}$/i.test(file)) || exportFolder.value || outputFiles.value[0] || '')
+const primaryOutputTarget = computed(() => (
+  outputFiles.value.find(file => !/\.[a-z0-9]{2,5}$/i.test(file))
+  || (isResumeMode.value ? resumePackageDir.value : '')
+  || exportFolder.value
+  || outputFiles.value[0]
+  || ''
+))
 
 function fileName(value) {
   return String(value || '').split(/[\\/]/).filter(Boolean).pop() || ''
+}
+
+function dirName(value) {
+  const text = String(value || '').replace(/[\\/]+$/, '')
+  const separator = text.includes('\\') ? '\\' : '/'
+  const parts = text.split(/[\\/]/).filter(Boolean)
+  parts.pop()
+  if (!parts.length) return ''
+  if (text.startsWith(separator)) return `${separator}${parts.join(separator)}`
+  return parts.join(separator)
 }
 
 function outputFileLabel(file) {
@@ -401,6 +396,20 @@ async function pickExportFolder() {
   if (selected) exportFolder.value = selected
 }
 
+async function pickResumePackageDir() {
+  const selected = await window.cs.browseFile({
+    title: '选择要续跑的 AI 买家秀原图包目录',
+    directory: true,
+    defaultPath: resumePackageDir.value || exportFolder.value || DEFAULT_EXPORT_FOLDER,
+  })
+  if (!selected) return
+  resumePackageDir.value = selected
+  const selectedName = fileName(selected)
+  if (selectedName) packageName.value = selectedName
+  const parent = dirName(selected)
+  if (parent) exportFolder.value = parent
+}
+
 function buildRunParams() {
   return {
     mode: 'current',
@@ -413,14 +422,15 @@ function buildRunParams() {
     export_folder: exportFolder.value,
     package_name: packageName.value,
     execute_mode: executeMode.value,
-    image_size: imageSize.value,
-    max_generate_jobs: Number(maxGenerateJobs.value || 0),
-    max_model_images_per_row: Number(maxModelImagesPerRow.value || 500),
+    resume_package_dir: isResumeMode.value ? resumePackageDir.value : '',
+    image_size: 'source_ratio',
+    max_generate_jobs: 0,
+    max_model_images_per_row: 500,
     model_folder_scan_depth: 4,
     model_folder_scan_max_folders: 500,
     model_file_info_batch_size: 5,
-    ai_generation_concurrency: Number(generationConcurrency.value || 5),
-    ai_result_download_concurrency: Number(resultDownloadConcurrency.value || 10),
+    ai_generation_concurrency: 5,
+    ai_result_download_concurrency: 10,
     usage_record_mode: 'ignore',
     custom_prompt: customPrompt.value,
     prompt_extra: promptExtra.value,
@@ -457,6 +467,12 @@ async function startWorkflow() {
     taskState.status = 'failed'
     taskState.message = '请填写平铺参考图库路径'
     taskState.error = '缺少平铺参考图库路径'
+    return
+  }
+  if (isResumeMode.value && !resumePackageDir.value) {
+    taskState.status = 'failed'
+    taskState.message = '请选择要续跑的原图包目录'
+    taskState.error = '缺少续跑原图包目录'
     return
   }
   if (!excelPreview.rows.length) {
