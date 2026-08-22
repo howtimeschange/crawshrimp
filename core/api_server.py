@@ -2689,6 +2689,7 @@ BALA_VIDEO_TEMPLATE_CATALOG_CSV = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.cs
 BALA_SEEDANCE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "seedanceCLI"
 BALA_SEEDANCE_DEFAULT_MODEL = "doubao-seedance-2-0-260128"
 BALA_VIDEO_COPY_DEFAULT_MODEL = "gemini-3.5-flash"
+BALA_VIDEO_PROMPT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 BALA_HAPPYHORSE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "bailianCLI"
 BALA_HAPPYHORSE_MODELS = {
     "t2v": "happyhorse-1.1-t2v",
@@ -8267,6 +8268,13 @@ class BalaReviewExportVideoInputRequest(BaseModel):
     download_videos: bool = True
 
 
+class BalaVideoPromptGenerateRequest(BaseModel):
+    model_id: str = llm_gateway.BALA_VIDEO_PROMPT_DEFAULT_MODEL
+    image_paths: List[str] = []
+    template_prompt: str = llm_gateway.BALA_VIDEO_PROMPT_TEMPLATE
+    timeout_seconds: int = 120
+
+
 class BalaSeedanceVideoRequest(BaseModel):
     style_code: str = ""
     prompt: str = ""
@@ -9595,6 +9603,63 @@ def list_bala_ai_video_templates(search: str = "", template_type: str = ""):
         **payload,
         "templates": templates,
         "count": len(templates),
+    }
+
+
+def _bala_video_prompt_image_inputs(paths: list[str]) -> list[str]:
+    images: list[str] = []
+    seen: set[str] = set()
+    for item in paths or []:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        try:
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                raise ValueError("图片路径必须是绝对路径")
+            resolved = path.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise HTTPException(422, f"图片不存在：{Path(value).name}") from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if not resolved.is_file():
+            raise HTTPException(422, f"不是图片文件：{resolved.name}")
+        if resolved.suffix.lower() not in BALA_VIDEO_PROMPT_IMAGE_SUFFIXES:
+            raise HTTPException(422, f"不支持的图片格式：{resolved.name}")
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        images.append(key)
+        if len(images) >= 5:
+            break
+    if not images:
+        raise HTTPException(400, "请选择至少 1 张图片后再生成视频 Prompt")
+    return images
+
+
+@app.post("/bala-ai-video-prompt/api/generate")
+def generate_bala_ai_video_prompt(req: BalaVideoPromptGenerateRequest):
+    image_inputs = _bala_video_prompt_image_inputs(list(req.image_paths or []))
+    try:
+        prompt, route = llm_gateway.generate_bala_video_prompt(
+            image_inputs=image_inputs,
+            model_id=str(req.model_id or "").strip(),
+            template_prompt=str(req.template_prompt or "").strip(),
+            timeout_seconds=max(10, min(240, int(req.timeout_seconds or 120))),
+        )
+    except llm_gateway.LlmConfigurationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except llm_gateway.LlmResponseError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except llm_gateway.LlmGatewayError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {
+        "ok": True,
+        "prompt": prompt,
+        "model_id": str(req.model_id or "").strip() or llm_gateway.BALA_VIDEO_PROMPT_DEFAULT_MODEL,
+        "resolved_model_id": route.model_id,
+        "image_count": len(image_inputs),
     }
 
 

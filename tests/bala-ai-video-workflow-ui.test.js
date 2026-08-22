@@ -1430,6 +1430,45 @@ test('business-manager video task exposes four generation tiers and persists the
   assert.match(taskSource, /videoDuration:\s*normalizeQnVideoDuration\(task\.videoDuration \|\| task\.video_duration\)/)
 })
 
+test('video task dialog can write prompt from selected images with a vision LLM model', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+  const preloadSource = fs.readFileSync('app/src/preload.js', 'utf8')
+  const mainSource = fs.readFileSync('app/src/main.js', 'utf8')
+  const devBridgeSource = fs.readFileSync('app/src/renderer/utils/devCsBridge.js', 'utf8')
+
+  assert.deepEqual(balaWorkflow.BALA_VIDEO_PROMPT_MODEL_OPTIONS.map(option => option.value), [
+    'deepseek-official-v4-flash-vision-exp',
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
+    'claude-sonnet-5',
+    'gemini-3.1-pro-preview',
+    'gemini-3.5-flash',
+    'qwen3.8-max-preview',
+    'qwen3.7-plus',
+    'glm-5.2',
+  ])
+  assert.match(balaWorkflow.BALA_VIDEO_PROMPT_TEMPLATE, /根据图 1-5 的模拍图/)
+  assert.match(balaWorkflow.BALA_VIDEO_PROMPT_TEMPLATE, /下摆设计和面料/)
+  assert.match(templateSource, /aria-label="AI 写 Prompt 模型"/)
+  assert.match(templateSource, /v-for="model in configuredVideoPromptModels"/)
+  assert.match(templateSource, /一键写 Prompt/)
+  assert.match(templateSource, /v-model="videoTaskDraft\.prompt"/)
+  assert.match(source, /const selectedVideoTaskPromptImagePaths = computed\(\(\) => \([\s\S]*selectedVideoTaskDraftAssets\.value\.map\(asset => asset\.path\)[\s\S]*\.slice\(0, 5\)/)
+  assert.match(source, /function ensureVideoPromptModelSelected\(\)/)
+  assert.match(source, /isDeepSeekConfigured\(settings\)/)
+  assert.match(source, /isLlmConfigured\(settings\)/)
+  assert.match(source, /async function generateVideoTaskPrompt\(\)/)
+  assert.match(source, /window\.cs\.generateBalaVideoPrompt/)
+  assert.match(source, /template_prompt:\s*BALA_VIDEO_PROMPT_TEMPLATE/)
+  assert.match(source, /videoTaskDraft\.prompt = prompt/)
+  assert.match(preloadSource, /generateBalaVideoPrompt/)
+  assert.match(preloadSource, /\/bala-ai-video-prompt\/api\/generate/)
+  assert.match(mainSource, /secureHandle\('generate-bala-video-prompt'/)
+  assert.match(devBridgeSource, /generateBalaVideoPrompt/)
+})
+
 test('legacy provider wording is migrated when persisted video tasks and results are restored', () => {
   const legacyProviderName = ['软件', '管家'].join('')
 

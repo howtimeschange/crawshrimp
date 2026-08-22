@@ -446,6 +446,7 @@ export function createDevCsBridge() {
       const suffix = queryString(filters || {})
       return apiCall('GET', `/bala-ai-video-templates/api${suffix ? `?${suffix}` : ''}`)
     },
+    generateBalaVideoPrompt: (payload = {}) => apiCall('POST', '/bala-ai-video-prompt/api/generate', payload || {}),
     runBalaSeedanceVideo: (payload = {}) => apiCall('POST', '/bala-ai-video-seedance/api/run', payload || {}),
     getBalaVideoProviderStatus: () => apiCall('GET', '/bala-ai-video-providers/api/status'),
     preflightBalaVideoProvider: (payload = {}) => apiCall('POST', '/bala-ai-video-providers/api/preflight', payload || {}),

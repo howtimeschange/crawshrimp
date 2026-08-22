@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import api_server
+from core import api_server, llm_gateway
 from core import data_sink
 
 
@@ -64,6 +64,33 @@ class AiVideoGenerationApiTests(unittest.TestCase):
         self.assertEqual(len(models), 7)
         self.assertIn("kling/kling-v3-video-generation", {item["id"] for item in models})
         self.assertIn("pixverse/pixverse-motioncontrol", {item["id"] for item in models})
+
+    def test_bala_video_prompt_endpoint_passes_selected_local_images_to_llm(self):
+        image_paths = []
+        for index in range(6):
+            path = self.root / f"model-{index}.jpg"
+            path.write_bytes(b"\xff\xd8\xff\xdbunit")
+            image_paths.append(str(path))
+        with patch.object(
+            api_server.llm_gateway,
+            "generate_bala_video_prompt",
+            return_value=(
+                "竖屏9:16，20秒高清写实短视频，精准分镜时序，负面提示词。",
+                llm_gateway.LlmRoute("gpt-5.6-luna", "openai", "https://openai.example/v1", "unit-key"),
+            ),
+        ) as generate:
+            result = api_server.generate_bala_ai_video_prompt(api_server.BalaVideoPromptGenerateRequest(
+                model_id="gpt-5.6-luna",
+                image_paths=image_paths,
+                template_prompt="帮我根据图 1-5 写 Prompt",
+            ))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["prompt"], "竖屏9:16，20秒高清写实短视频，精准分镜时序，负面提示词。")
+        self.assertEqual(result["resolved_model_id"], "gpt-5.6-luna")
+        self.assertEqual(result["image_count"], 5)
+        self.assertEqual(generate.call_args.kwargs["model_id"], "gpt-5.6-luna")
+        self.assertEqual(generate.call_args.kwargs["image_inputs"], [str(Path(item).resolve()) for item in image_paths[:5]])
 
     def test_public_parameter_schema_accepts_bailian_gateway_fields(self):
         req = api_server.AiVideoValidateRequest.model_validate({

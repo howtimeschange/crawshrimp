@@ -107,6 +107,23 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocked.status_code, 401)
         self.assertEqual(allowed.status_code, 200)
 
+    async def test_bala_video_prompt_generation_requires_local_api_auth(self):
+        async def call_next(_request):
+            return PlainTextResponse("ok")
+
+        with patch.dict(os.environ, {"CRAWSHRIMP_API_TOKEN": "unit-token"}, clear=False):
+            blocked = await api_server.require_local_api_token(
+                FakeRequest("/bala-ai-video-prompt/api/generate", method="POST"),
+                call_next,
+            )
+            allowed = await api_server.require_local_api_token(
+                FakeRequest("/bala-ai-video-prompt/api/generate", {"x-crawshrimp-token": "unit-token"}, method="POST"),
+                call_next,
+            )
+
+        self.assertEqual(blocked.status_code, 401)
+        self.assertEqual(allowed.status_code, 200)
+
     async def test_bala_review_export_requires_local_api_auth(self):
         async def call_next(_request):
             return PlainTextResponse("ok")

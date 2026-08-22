@@ -3024,6 +3024,15 @@ secureHandle('list-bala-video-templates', async (_, filters = {}) => {
   return apiCall('GET', `/bala-ai-video-templates/api${suffix}`)
 })
 
+secureHandle('generate-bala-video-prompt', async (_, payload = {}) => {
+  return apiCall(
+    'POST',
+    '/bala-ai-video-prompt/api/generate',
+    payload || {},
+    { timeoutMs: 5 * 60 * 1000 },
+  )
+})
+
 secureHandle('run-bala-seedance-video', async (_, payload = {}) => {
   return apiCall(
     'POST',

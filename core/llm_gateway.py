@@ -71,6 +71,25 @@ GUANG_TITLE_MIN_CHARS = 24
 GUANG_TITLE_MAX_CHARS = 30
 RECOMMEND_TITLE_MIN_CHARS = 16
 RECOMMEND_TITLE_MAX_CHARS = 20
+BALA_VIDEO_PROMPT_DEFAULT_MODEL = "gemini-3.5-flash"
+BALA_VIDEO_PROMPT_DEEPSEEK_VISION_MODELS = (
+    "deepseek-official-v4-flash-vision-exp",
+)
+BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS = (
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "claude-sonnet-5",
+    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "qwen3.8-max-preview",
+    "qwen3.7-plus",
+    "glm-5.2",
+)
+BALA_VIDEO_PROMPT_MODELS = (
+    *BALA_VIDEO_PROMPT_DEEPSEEK_VISION_MODELS,
+    *BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS,
+)
 
 VIDEO_COPY_SYSTEM_PROMPT = """你是一个小红书童装穿搭账号的资深短视频运营。你要为童装或童鞋商品编写像真实妈妈/店主分享的种草视频标题和文案。
 只能依据商品标题和提供的商品主图，不要虚构图片中无法确认的材质、功能、认证或使用效果。
@@ -82,6 +101,20 @@ VIDEO_COPY_SYSTEM_PROMPT = """你是一个小红书童装穿搭账号的资深�
 视频描述适合约30秒口播，建议60到220个字符。
 只返回 JSON，不要返回 Markdown。JSON 格式固定为：
 {"scripts":[{"guang_title":"...","recommend_title":"...","video_description":"..."},{"guang_title":"...","recommend_title":"...","video_description":"..."},{"guang_title":"...","recommend_title":"...","video_description":"..."}]}"""
+
+BALA_VIDEO_PROMPT_TEMPLATE = (
+    "帮我根据图 1-5 的模拍图写一个外景的视频生成提示词，要抖音和小红书爆款种草视频 20 秒左右，"
+    "严格按照图片 1-5 模特和穿搭的衣服颜色生成，要换 5 个场景，还需要近距离展示衣服下摆设计和面料，"
+    "人物可以稍微活泼一点，但是不要畸变"
+)
+
+BALA_VIDEO_PROMPT_SYSTEM_PROMPT = """你是童装短视频生成 Prompt 专家。请根据用户提供的模拍图，为图生视频模型写一条可直接粘贴使用的中文视频生成提示词。
+必须只依据图片中能确认的模特形象、穿搭、服装颜色、图案、配饰和面料特征，不要编造图片看不出的卖点。
+输出要适合抖音和小红书爆款种草视频，竖屏 9:16，约 20 秒，高清写实，外景自然光。
+按实际提供的图片数量编排分镜；每张图至少对应一个外景场景，最多使用图 1-5。若不足 5 张图，也要保持场景之间有明显变化。
+每个场景都要包含人物动作、镜头运动，并安排下摆设计和面料肌理近距离特写。
+要明确约束全程不畸变、不手脚扭曲、不五官崩坏、不衣服颜色改变、不条纹/印花错乱、不水印、不文字。
+只返回最终 Prompt 文本，不要返回 Markdown、解释、标题或 JSON。"""
 
 _PROMOTION_PATTERN = re.compile(
     r"(?:[¥￥$]\s*\d|\d+(?:\.\d+)?\s*元|价格|优惠|折扣|满减|立减|领券|券后|"
@@ -767,6 +800,7 @@ def generate_multimodal_json(
     request_openai: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_openai_json_request,
     request_anthropic: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_anthropic_json_request,
     timeout_seconds: float | None = None,
+    retry_same_model: bool = True,
 ) -> tuple[Any, LlmRoute]:
     """Call a multimodal route and parse its JSON response."""
 
@@ -789,9 +823,13 @@ def generate_multimodal_json(
     if not model_ids:
         model_ids = [""]
 
-    # A configured fallback replaces the same-model retry. This prevents a
-    # single slow provider route from consuming two full timeout windows.
-    attempts = model_ids if len(model_ids) > 1 else [model_ids[0], model_ids[0]]
+    # A configured fallback replaces the same-model retry. Callers that manage
+    # their own retry ladder can disable this implicit retry.
+    attempts = (
+        model_ids
+        if len(model_ids) > 1 or not retry_same_model
+        else [model_ids[0], model_ids[0]]
+    )
     last_error: LlmGatewayError | None = None
     for attempt_index, current_model_id in enumerate(attempts):
         route = route_for_model(current_model_id, config=config)
@@ -822,3 +860,138 @@ def generate_multimodal_json(
             if attempt_index == len(attempts) - 1 or not retryable:
                 raise
     raise last_error or LlmGatewayError("文本模型接口调用失败")
+
+
+def generate_multimodal_text(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    image_inputs: list[str],
+    model_id: str = "",
+    fallback_model_ids: list[str] | None = None,
+    config: dict | None = None,
+    request_openai: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_openai_json_request,
+    request_anthropic: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_anthropic_json_request,
+    timeout_seconds: float | None = None,
+    retry_same_model: bool = True,
+) -> tuple[str, LlmRoute]:
+    """Call a multimodal route and return plain model text."""
+
+    system = _compact(system_prompt)
+    prompt = _compact(user_prompt)
+    if not system:
+        raise LlmResponseError("多模态文本生成系统提示词为空")
+    if not prompt:
+        raise LlmResponseError("多模态文本生成任务提示词为空")
+    references = [
+        _multimodal_image_reference(value)
+        for value in image_inputs
+        if _compact(value)
+    ][:10]
+    if not references:
+        raise LlmResponseError("未提供可识别的图片")
+
+    model_ids = [model_id, *(fallback_model_ids or [])]
+    model_ids = list(dict.fromkeys(_compact(value) for value in model_ids if _compact(value)))
+    if not model_ids:
+        model_ids = [""]
+
+    attempts = (
+        model_ids
+        if len(model_ids) > 1 or not retry_same_model
+        else [model_ids[0], model_ids[0]]
+    )
+    last_error: LlmGatewayError | None = None
+    for attempt_index, current_model_id in enumerate(attempts):
+        route = route_for_model(current_model_id, config=config)
+        try:
+            response = (
+                _call_multimodal_request(
+                    request_anthropic,
+                    route,
+                    system,
+                    prompt,
+                    references,
+                    timeout_seconds=timeout_seconds,
+                )
+                if route.protocol == "anthropic"
+                else _call_multimodal_request(
+                    request_openai,
+                    route,
+                    system,
+                    prompt,
+                    references,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+            return _response_text(response), route
+        except LlmGatewayError as exc:
+            last_error = exc
+            retryable = _is_retryable_llm_error(exc)
+            if attempt_index == len(attempts) - 1 or not retryable:
+                raise
+    raise last_error or LlmGatewayError("文本模型接口调用失败")
+
+
+def _strip_markdown_fence(value: str) -> str:
+    text = _compact(value)
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:[a-z0-9_-]+)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _bala_video_prompt_user_prompt(image_count: int, template_prompt: str = "") -> str:
+    count = max(1, min(5, int(image_count or 1)))
+    template = _compact(template_prompt) or BALA_VIDEO_PROMPT_TEMPLATE
+    image_lines = "\n".join(f"图 {index}：已随消息提供" for index in range(1, count + 1))
+    return (
+        f"{template}\n\n"
+        f"当前实际提供了 {count} 张图片，请只按图 1-{count} 编排，不要引用未提供的图片。\n"
+        f"{image_lines}\n\n"
+        "参考格式：先写整体视频风格与总约束；再写“精准分镜时序”，每个场景标明时间、外景地点、对应图片、人物动作、镜头运动、下摆/面料特写；"
+        "最后写“负面提示词”。不要逐字照搬示例，要根据图片内容具体描述。"
+    )
+
+
+def normalize_bala_video_prompt(value: str) -> str:
+    prompt = re.sub(r"\n{3,}", "\n\n", _strip_markdown_fence(value))
+    prompt = prompt.strip()
+    if not prompt:
+        raise LlmResponseError("文本模型未返回视频 Prompt")
+    if len(prompt) < 40:
+        raise LlmResponseError("文本模型返回的视频 Prompt 过短")
+    return prompt
+
+
+def generate_bala_video_prompt(
+    *,
+    image_inputs: list[str],
+    model_id: str = "",
+    template_prompt: str = "",
+    config: dict | None = None,
+    request_openai: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_openai_json_request,
+    request_anthropic: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_anthropic_json_request,
+    timeout_seconds: float | None = 120,
+) -> tuple[str, LlmRoute]:
+    """Generate a short-video prompt from selected Bala model images."""
+
+    selected_model_id = _compact(model_id) or BALA_VIDEO_PROMPT_DEFAULT_MODEL
+    if selected_model_id not in BALA_VIDEO_PROMPT_MODELS:
+        raise LlmConfigurationError(f"不支持的视频 Prompt 视觉模型：{selected_model_id}")
+    images = [_compact(item) for item in image_inputs if _compact(item)][:5]
+    if not images:
+        raise LlmResponseError("请选择至少 1 张图片后再生成视频 Prompt")
+
+    text, route = generate_multimodal_text(
+        system_prompt=BALA_VIDEO_PROMPT_SYSTEM_PROMPT,
+        user_prompt=_bala_video_prompt_user_prompt(len(images), template_prompt),
+        image_inputs=images,
+        model_id=selected_model_id,
+        config=config,
+        request_openai=request_openai,
+        request_anthropic=request_anthropic,
+        timeout_seconds=timeout_seconds,
+        retry_same_model=False,
+    )
+    return normalize_bala_video_prompt(text), route

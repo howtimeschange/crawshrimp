@@ -17,6 +17,19 @@ export const QN_VIDEO_MODEL_OPTIONS = Object.freeze([
   { value: 'advanced', label: '进阶', detail: '' },
   { value: 'premium', label: '极致', detail: '' },
 ])
+export const BALA_VIDEO_PROMPT_TEMPLATE = '帮我根据图 1-5 的模拍图写一个外景的视频生成提示词，要抖音和小红书爆款种草视频 20 秒左右，严格按照图片 1-5 模特和穿搭的衣服颜色生成，要换 5 个场景，还需要近距离展示衣服下摆设计和面料，人物可以稍微活泼一点，但是不要畸变'
+export const BALA_VIDEO_PROMPT_MODEL_OPTIONS = Object.freeze([
+  { value: 'deepseek-official-v4-flash-vision-exp', label: 'DeepSeek 官方 · V4 Flash Vision', keyScope: 'deepseek' },
+  { value: 'gpt-5.6-sol', label: '森马网关 · GPT-5.6 Sol', keyScope: 'gateway' },
+  { value: 'gpt-5.6-terra', label: '森马网关 · GPT-5.6 Terra', keyScope: 'gateway' },
+  { value: 'gpt-5.6-luna', label: '森马网关 · GPT-5.6 Luna', keyScope: 'gateway' },
+  { value: 'claude-sonnet-5', label: '森马网关 · Claude Sonnet 5', keyScope: 'gateway' },
+  { value: 'gemini-3.1-pro-preview', label: '森马网关 · Gemini 3.1 Pro Preview', keyScope: 'gateway' },
+  { value: 'gemini-3.5-flash', label: '森马网关 · Gemini 3.5 Flash', keyScope: 'gateway' },
+  { value: 'qwen3.8-max-preview', label: '森马网关 · Qwen 3.8 Max Preview', keyScope: 'gateway' },
+  { value: 'qwen3.7-plus', label: '森马网关 · Qwen 3.7 Plus', keyScope: 'gateway' },
+  { value: 'glm-5.2', label: '森马网关 · GLM 5.2', keyScope: 'gateway' },
+])
 
 const LEGACY_BALA_BUSINESS_MANAGER_NAME = ['软件', '管家'].join('')
 

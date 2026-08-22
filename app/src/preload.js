@@ -401,6 +401,8 @@ contextBridge.exposeInMainWorld('cs', {
       const suffix = queryString(filters || {})
       return apiCall('GET', `/bala-ai-video-templates/api${suffix ? `?${suffix}` : ''}`)
     }),
+  generateBalaVideoPrompt: (payload) => invokeWithApiFallback('generate-bala-video-prompt', [payload || {}],
+    () => apiCall('POST', '/bala-ai-video-prompt/api/generate', payload || {})),
   runBalaSeedanceVideo: (payload) => invokeWithApiFallback('run-bala-seedance-video', [payload || {}],
     () => apiCall('POST', '/bala-ai-video-seedance/api/run', payload || {})),
   getBalaVideoProviderStatus: () => invokeWithApiFallback('get-bala-video-provider-status', [],

@@ -151,6 +151,50 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(route.base_url, llm_gateway.DEEPSEEK_OFFICIAL_BASE_URL)
         self.assertEqual(calls[0][3], ["data:image/png;base64,iVBORw0KGgo="])
 
+    def test_bala_video_prompt_generation_uses_selected_images_and_model(self):
+        calls = []
+
+        def fake_openai(route, system_prompt, user_prompt, images, *, timeout_seconds=None):
+            calls.append((route, system_prompt, user_prompt, images, timeout_seconds))
+            return {
+                "choices": [{
+                    "message": {
+                        "content": "竖屏9:16，20秒高清写实童装短视频，严格复刻图1-2模特穿搭与服装颜色。\n\n精准分镜时序：0-10s 场景1；10-20s 场景2。\n\n负面提示词：人体畸变，手脚扭曲，衣服颜色改变。"
+                    }
+                }]
+            }
+
+        prompt, route = llm_gateway.generate_bala_video_prompt(
+            image_inputs=[
+                "data:image/jpeg;base64,/9j/2Q==",
+                "data:image/png;base64,iVBORw0KGgo=",
+            ],
+            model_id="gpt-5.6-luna",
+            template_prompt=llm_gateway.BALA_VIDEO_PROMPT_TEMPLATE,
+            config=self.config(),
+            request_openai=fake_openai,
+            timeout_seconds=77,
+        )
+
+        self.assertIn("竖屏9:16", prompt)
+        self.assertEqual(route.model_id, "gpt-5.6-luna")
+        self.assertEqual(calls[0][3], [
+            "data:image/jpeg;base64,/9j/2Q==",
+            "data:image/png;base64,iVBORw0KGgo=",
+        ])
+        self.assertIn("图 1-2", calls[0][2])
+        self.assertIn("下摆设计和面料", calls[0][2])
+        self.assertEqual(calls[0][4], 77)
+
+    def test_bala_video_prompt_generation_rejects_non_vision_prompt_model(self):
+        with self.assertRaisesRegex(llm_gateway.LlmConfigurationError, "不支持的视频 Prompt 视觉模型"):
+            llm_gateway.generate_bala_video_prompt(
+                image_inputs=["data:image/jpeg;base64,/9j/2Q=="],
+                model_id="gpt-5.5",
+                config=self.config(),
+                request_openai=lambda *_args, **_kwargs: {},
+            )
+
     def test_response_validation_rejects_price_or_promotional_benefits(self):
         payload = valid_scripts()
         payload["scripts"][0]["video_description"] += "现在领券更优惠。"
