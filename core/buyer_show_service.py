@@ -27,6 +27,35 @@ MAX_RESULT_DOWNLOAD_CONCURRENCY = 20
 DEFAULT_RESULT_DOWNLOAD_ATTEMPTS_PER_URL = 3
 RESUME_EXECUTE_MODES = {"resume", "recover", "resume-recover", "resume_recover"}
 IMAGE_OUTPUT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+BUYER_SHOW_MODEL_OPTIONS = {
+    "gpt-image-2k": {
+        "model_id": "gpt-image-2k",
+        "model": "gpt-image-2",
+        "model_key_tier": "2k",
+        "provider_family": "gpt-image",
+    },
+    "gpt-image-4k": {
+        "model_id": "gpt-image-4k",
+        "model": "gpt-image-2",
+        "model_key_tier": "4k",
+        "provider_family": "gpt-image",
+    },
+    "gemini-3.1-flash-image-preview": {
+        "model_id": "gemini-3.1-flash-image-preview",
+        "model": "gemini-3.1-flash-image-preview",
+        "model_key_tier": "ai.1xm.gemini_3_1_flash_image_preview_key",
+        "provider_family": "nano-banana",
+        "resolution": "1K",
+    },
+    "gemini-3-pro-image-preview": {
+        "model_id": "gemini-3-pro-image-preview",
+        "model": "gemini-3-pro-image-preview",
+        "model_key_tier": "ai.1xm.gemini_3_pro_image_preview_key",
+        "provider_family": "nano-banana",
+        "resolution": "2K",
+    },
+}
+DEFAULT_BUYER_SHOW_MODEL_ID = "gpt-image-4k"
 BUYER_SHOW_SIZE_OPTIONS = [
     {"ratio": "1:1", "size_2k": "2048x2048", "size_4k": "2880x2880", "width": 1, "height": 1},
     {"ratio": "3:4", "size_2k": "1536x2048", "size_4k": "2448x3264", "width": 3, "height": 4},
@@ -219,6 +248,30 @@ def _read_image_dimensions(source_path: Path) -> Optional[tuple[int, int]]:
         return _parse_image_dimensions_from_header(source_path)
 
 
+def _resolve_buyer_show_model_params(run_params: Mapping[str, Any]) -> dict:
+    model_id = _compact(
+        run_params.get("model_id")
+        or run_params.get("ai_model_id")
+        or run_params.get("buyer_show_model_id")
+    )
+    if model_id in BUYER_SHOW_MODEL_OPTIONS:
+        return dict(BUYER_SHOW_MODEL_OPTIONS[model_id])
+
+    model = _compact(run_params.get("model") or run_params.get("model_key"))
+    if model in BUYER_SHOW_MODEL_OPTIONS:
+        return dict(BUYER_SHOW_MODEL_OPTIONS[model])
+    if model in {
+        "gemini-3.1-flash-image-preview",
+        "gemini-3-pro-image-preview",
+    }:
+        return dict(BUYER_SHOW_MODEL_OPTIONS[model])
+
+    tier = _compact(run_params.get("model_key_tier") or run_params.get("one_xm_key_tier")).lower()
+    if model == "gpt-image-2" and tier in {"2k", "4k"}:
+        return dict(BUYER_SHOW_MODEL_OPTIONS[f"gpt-image-{tier}"])
+    return dict(BUYER_SHOW_MODEL_OPTIONS[DEFAULT_BUYER_SHOW_MODEL_ID])
+
+
 def _nearest_buyer_show_size(width: int, height: int, tier: str = "4k") -> dict:
     source_ratio = max(1, int(width or 0)) / float(max(1, int(height or 0)))
     option = min(
@@ -235,7 +288,8 @@ def _nearest_buyer_show_size(width: int, height: int, tier: str = "4k") -> dict:
 
 def _resolve_buyer_show_image_size(row: Mapping[str, Any], run_params: Mapping[str, Any]) -> dict:
     model_path = Path(_compact(row.get("模拍本地文件"))).expanduser()
-    tier = _compact(run_params.get("model_key_tier") or run_params.get("one_xm_key_tier")).lower()
+    model_params = _resolve_buyer_show_model_params(run_params)
+    tier = _compact(model_params.get("model_key_tier")).lower()
     if tier not in {"2k", "4k"}:
         tier = "4k"
     dimensions = _read_image_dimensions(model_path) if model_path.is_file() else None
@@ -571,6 +625,7 @@ def _create_buyer_show_job(row: Mapping[str, Any], run_params: Mapping[str, Any]
     reference_path = _compact(row.get("平铺本地文件"))
     style_color_code = _compact(row.get("款色号"))
     style_code = _extract_style_code(style_color_code)
+    model_params = _resolve_buyer_show_model_params(run_params)
     size_info = _resolve_buyer_show_image_size(row, run_params)
     title = _safe_local_name(
         f"AI买家秀 {style_color_code or style_code} {row.get('唯一值') or ''}",
@@ -582,13 +637,17 @@ def _create_buyer_show_job(row: Mapping[str, Any], run_params: Mapping[str, Any]
         "quality": _compact(run_params.get("quality")) or DEFAULT_QUALITY,
         "output_format": _compact(run_params.get("output_format")) or DEFAULT_OUTPUT_FORMAT,
         "n": 1,
-        "model_key_tier": _compact(run_params.get("model_key_tier")) or _compact(size_info.get("tier")) or "4k",
+        "model_id": _compact(model_params.get("model_id")),
+        "model": _compact(model_params.get("model")),
+        "model_key_tier": _compact(model_params.get("model_key_tier")) or _compact(size_info.get("tier")) or "4k",
+        "model_provider_family": _compact(model_params.get("provider_family")),
         "main_image_path": model_path,
         "reference_image_paths": [reference_path],
         "workflow": BUYER_SHOW_TASK_ID,
         "surface": "semir-cloud-drive",
         "style_code": style_code,
         "style_color_code": style_color_code,
+        "ratio": _compact(size_info.get("ratio")),
         "source_image_width": int(size_info.get("source_width") or 0),
         "source_image_height": int(size_info.get("source_height") or 0),
         "source_image_ratio": _compact(size_info.get("ratio")),
@@ -597,10 +656,12 @@ def _create_buyer_show_job(row: Mapping[str, Any], run_params: Mapping[str, Any]
         "model_cloud_path": _compact(row.get("模拍云盘路径")),
         "reference_cloud_path": _compact(row.get("平铺云盘路径")),
     }
+    if _compact(model_params.get("resolution")):
+        params["resolution"] = _compact(model_params.get("resolution"))
     job = data_sink.create_ai_image_job({
         "title": title,
         "prompt": prompt,
-        "model_key": _compact(run_params.get("model")) or "gpt-image-2",
+        "model_key": _compact(model_params.get("model")) or "gpt-image-2",
         "status": "draft",
         "output_dir": str(output_dir),
         "params": params,
@@ -609,6 +670,9 @@ def _create_buyer_show_job(row: Mapping[str, Any], run_params: Mapping[str, Any]
             "surface": "semir-cloud-drive",
             "style_code": style_code,
             "style_color_code": style_color_code,
+            "model_id": _compact(model_params.get("model_id")),
+            "model_key": _compact(model_params.get("model")),
+            "model_key_tier": _compact(model_params.get("model_key_tier")),
             "unique_value": _compact(row.get("唯一值")),
             "model_cloud_path": _compact(row.get("模拍云盘路径")),
             "reference_cloud_path": _compact(row.get("平铺云盘路径")),

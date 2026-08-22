@@ -134,6 +134,8 @@ test('workspace image listing only returns real regular images with their curren
     assert.deepEqual(assets.map(asset => asset.path), [fs.realpathSync.native(imagePath)])
     assert.equal(assets[0].styleCode, '208326102205')
     assert.equal(assets[0].sourceType, 'model')
+    assert.equal(assets[0].sha256, '6105d6cc76af400325e94d588ce511be5bfdbb73b437dc51eca43917d7a43e3d')
+    assert.equal(assets[0].contentHash, assets[0].sha256)
     assert.match(assets[0].version, /-/)
     assert.equal(typeof assets[0].mtimeMs, 'number')
     assert.equal(Number.isFinite(Date.parse(assets[0].modifiedAt)), true)

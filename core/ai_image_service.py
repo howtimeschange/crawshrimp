@@ -463,6 +463,53 @@ def _unique_path(path: Path) -> Path:
     raise RuntimeError(f"Cannot allocate unique file name for {path.name}")
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _same_file_content(left: Path, right: Path) -> bool:
+    try:
+        if left.samefile(right):
+            return True
+    except OSError:
+        pass
+    try:
+        left_stat = left.stat()
+        right_stat = right.stat()
+    except OSError:
+        return False
+    if not left_stat.st_size or left_stat.st_size != right_stat.st_size:
+        return False
+    try:
+        return _file_sha256(left) == _file_sha256(right)
+    except OSError:
+        return False
+
+
+def _existing_same_content_path(target_dir: Path, source: Path) -> Path | None:
+    try:
+        candidates = [
+            item for item in target_dir.iterdir()
+            if item.is_file()
+            and item != source
+            and not item.name.startswith(".")
+            and item.suffix.lower() == source.suffix.lower()
+        ]
+    except OSError:
+        candidates = []
+    if source.is_file() and target_dir in source.parents and not source.name.startswith("."):
+        candidates.insert(0, source)
+    candidates.sort(key=lambda item: item.name)
+    for candidate in candidates:
+        if _same_file_content(candidate, source):
+            return candidate
+    return None
+
+
 def _sanitize_error(value: Any, secrets: list[str] | None = None) -> str:
     text = _compact(value)
     for secret in secrets or []:
@@ -1490,12 +1537,27 @@ def copy_assets_to_directory(
         source_path = _compact(asset.get("path"))
         if source_url.startswith("http://") or source_url.startswith("https://"):
             suffix = _extension_from_url(source_url)
-            target = _unique_path(target_dir / f"result-{len(copied) + 1:02d}{suffix}")
-            downloader(source_url, target)
-            copied.append(str(target))
+            temporary = _unique_path(target_dir / f".download-{uuid4().hex[:12]}{suffix}")
+            try:
+                downloader(source_url, temporary)
+                existing = _existing_same_content_path(target_dir, temporary)
+                if existing:
+                    temporary.unlink(missing_ok=True)
+                    copied.append(str(existing))
+                    continue
+                target = _unique_path(target_dir / f"result-{len(copied) + 1:02d}{suffix}")
+                temporary.replace(target)
+                copied.append(str(target))
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
             continue
         source = Path(source_path).expanduser()
         if not source_path or not source.is_file():
+            continue
+        existing = _existing_same_content_path(target_dir, source)
+        if existing:
+            copied.append(str(existing))
             continue
         target = _unique_path(target_dir / source.name)
         shutil.copy2(source, target)

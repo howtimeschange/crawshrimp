@@ -60,6 +60,58 @@ def test_build_material_batch_groups_downloaded_images_by_style_and_source(tmp_p
     assert "token=" in batch["board_url"]
 
 
+def test_build_material_batch_deduplicates_same_downloaded_image_content(tmp_path):
+    first = tmp_path / "208326103208" / "01_模拍原图" / "260510bala7218-1.jpg"
+    duplicate = tmp_path / "208326103208" / "01_模拍原图" / "260510bala7218-2.jpg"
+    different = tmp_path / "208326103208" / "01_模拍原图" / "260510bala7218-3.jpg"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"same original image bytes")
+    duplicate.write_bytes(b"same original image bytes")
+    different.write_bytes(b"different original image bytes")
+
+    rows = [
+        {
+            "输入款号": "208326103208",
+            "素材来源": "模拍图",
+            "文件名": "260510bala7218-1.jpg",
+            "本地文件": str(first),
+            "下载结果": "已下载",
+            "处理动作": "保留模拍图",
+        },
+        {
+            "输入款号": "208326103208",
+            "素材来源": "模拍图",
+            "文件名": "260510bala7218-2.jpg",
+            "本地文件": str(duplicate),
+            "下载结果": "已下载",
+            "处理动作": "保留模拍图",
+        },
+        {
+            "输入款号": "208326103208",
+            "素材来源": "模拍图",
+            "文件名": "260510bala7218-3.jpg",
+            "本地文件": str(different),
+            "下载结果": "已下载",
+            "处理动作": "保留模拍图",
+        },
+    ]
+
+    batch = materials.build_material_batch(
+        rows,
+        str(tmp_path / "material-batches"),
+        "http://127.0.0.1:18765",
+    )
+
+    assets = batch["items"][0]["assets"]
+    assert [asset["filename"] for asset in assets] == [
+        "260510bala7218-1.jpg",
+        "260510bala7218-3.jpg",
+    ]
+    assert assets[0]["content_hash"]
+    assert assets[0]["content_hash"] == assets[0]["sha256"]
+    assert assets[0]["content_hash"] != assets[1]["content_hash"]
+
+
 def test_material_thumbnail_is_compressed_cached_and_keeps_the_original(tmp_path):
     from PIL import Image
 

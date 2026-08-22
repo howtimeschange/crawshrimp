@@ -922,6 +922,21 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertEqual(len(copied), 1)
         self.assertEqual(Path(copied[0]).read_bytes(), b"image")
 
+    def test_copy_assets_to_directory_reuses_same_content_local_asset(self):
+        source = self.root / "source.png"
+        source.write_bytes(b"image")
+        target_dir = self.root / "export"
+        target_dir.mkdir()
+        existing = target_dir / "source.png"
+        existing.write_bytes(b"image")
+
+        copied = ai_image_service.copy_assets_to_directory([
+            {"path": str(source), "kind": "generated"},
+        ], target_dir)
+
+        self.assertEqual(copied, [str(existing)])
+        self.assertFalse((target_dir / "source-1.png").exists())
+
     def test_copy_assets_to_directory_downloads_remote_assets(self):
         target_dir = self.root / "remote-export"
 
@@ -934,6 +949,22 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertEqual(len(copied), 1)
         self.assertEqual(Path(copied[0]).name, "result-01.png")
         self.assertEqual(Path(copied[0]).read_bytes(), b"remote")
+
+    def test_copy_assets_to_directory_reuses_same_content_remote_asset(self):
+        target_dir = self.root / "remote-export"
+        target_dir.mkdir()
+        existing = target_dir / "result-01.png"
+        existing.write_bytes(b"remote")
+
+        copied = ai_image_service.copy_assets_to_directory(
+            [{"url": "https://cdn.example/generated.png", "kind": "generated"}],
+            target_dir,
+            downloader=lambda _url, target: Path(target).write_bytes(b"remote"),
+        )
+
+        self.assertEqual(copied, [str(existing)])
+        self.assertFalse((target_dir / "result-01-1.png").exists())
+        self.assertFalse(any(path.name.startswith(".download-") for path in target_dir.iterdir()))
 
     def test_copy_assets_to_directory_loops_until_unique_name(self):
         source = self.root / "source.png"

@@ -73,6 +73,15 @@ function createBackendController(options) {
     if (generation !== expectedGeneration) throw new Error('Backend startup canceled')
   }
 
+  async function stopOwnedProcess(proc) {
+    if (!proc) return
+    try {
+      await stopProcess(proc)
+    } catch (error) {
+      log(`[api] failed to stop backend process: ${describeError(error)}`)
+    }
+  }
+
   function rememberProcess(proc) {
     backendProcess = proc
     currentProcessWasReady = false
@@ -143,7 +152,7 @@ function createBackendController(options) {
           try {
             const proc = await startProcess()
             if (generation !== startupGeneration) {
-              if (proc) stopProcess(proc)
+              await stopOwnedProcess(proc)
               assertActiveGeneration(startupGeneration)
             }
             if (proc) rememberProcess(proc)
@@ -169,7 +178,7 @@ function createBackendController(options) {
               const proc = backendProcess
               backendProcess = null
               currentProcessWasReady = false
-              stopProcess(proc)
+              await stopOwnedProcess(proc)
             }
             await switchEndpoint()
             assertActiveGeneration(startupGeneration)
@@ -205,7 +214,7 @@ function createBackendController(options) {
           const proc = backendProcess
           backendProcess = null
           currentProcessWasReady = false
-          stopProcess(proc)
+          await stopOwnedProcess(proc)
           markNotReady(hadReadyBackend ? 'restarting' : 'failed')
         }
 
@@ -269,7 +278,7 @@ function createBackendController(options) {
     throw lastError
   }
 
-  function stop() {
+  async function stop() {
     generation += 1
     const proc = backendProcess
     backendProcess = null
@@ -280,9 +289,9 @@ function createBackendController(options) {
     ready = false
     currentProcessWasReady = false
     consecutiveProbeFailures = 0
-    if (proc) stopProcess(proc)
     sendStatus('api', false)
     setState('stopped')
+    await stopOwnedProcess(proc)
   }
 
   return {

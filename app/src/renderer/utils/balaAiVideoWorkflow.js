@@ -331,11 +331,35 @@ function materialFolderKey(asset = {}) {
   ).toLocaleLowerCase()
 }
 
+function materialContentHashKey(asset = {}) {
+  return compact(
+    asset?.contentHash
+    || asset?.content_hash
+    || asset?.sha256
+    || asset?.fileHash
+    || asset?.file_hash
+    || asset?.filehash
+    || asset?.cloudFilehash
+    || asset?.cloud_filehash
+    || asset?.cloudHash
+    || asset?.cloud_hash
+    || asset?.['云盘Hash']
+    || asset?.hash,
+  ).toLocaleLowerCase()
+}
+
 function sameMaterialAsset(left = {}, right = {}) {
   const rightPath = compact(right?.path)
   const rightId = compact(right?.id)
   if (rightPath && compact(left?.path) === rightPath) return true
   if (rightId && compact(left?.id) === rightId) return true
+  const leftContentHash = materialContentHashKey(left)
+  const rightContentHash = materialContentHashKey(right)
+  if (leftContentHash && rightContentHash && leftContentHash === rightContentHash) {
+    const leftSourceType = compact(left?.sourceType || left?.source_type)
+    const rightSourceType = compact(right?.sourceType || right?.source_type)
+    if (!leftSourceType || !rightSourceType || leftSourceType === rightSourceType) return true
+  }
 
   const leftFilename = materialFilenameKey(left)
   const rightFilename = materialFilenameKey(right)
@@ -347,6 +371,11 @@ function sameMaterialAsset(left = {}, right = {}) {
 }
 
 function materialDedupeKey(asset = {}) {
+  const contentHash = materialContentHashKey(asset)
+  if (contentHash) {
+    const sourceType = compact(asset?.sourceType || asset?.source_type || 'asset')
+    return `content:${sourceType}:${contentHash}`
+  }
   const filename = materialFilenameKey(asset)
   if (!filename) return ''
   const folder = materialFolderKey(asset)
@@ -372,6 +401,9 @@ function mergeMaterialAsset(existing = {}, incoming = {}) {
     path: compact(existing?.path) || compact(incoming?.path),
     name: compact(existing?.name) || compact(incoming?.name),
     filename: compact(existing?.filename) || compact(incoming?.filename),
+    contentHash: materialContentHashKey(existing) || materialContentHashKey(incoming),
+    cloudFilehash: compact(existing?.cloudFilehash || existing?.cloud_filehash || incoming?.cloudFilehash || incoming?.cloud_filehash),
+    sha256: compact(existing?.sha256 || incoming?.sha256),
     selected: Boolean(existing?.selected || incoming?.selected),
     editSelected: Boolean(existing?.editSelected || incoming?.editSelected),
     versions: mergeBalaWorkspaceVersions(existing?.versions, incoming?.versions),
@@ -408,9 +440,13 @@ function materialRowFromWorkspaceAsset({
     素材来源: materialRowSourceLabel(sourceType),
     文件名: filename || filenameFromPath(localPath),
     本地文件: localPath,
+    云盘Hash: compact(asset?.cloudFilehash || asset?.cloud_filehash || asset?.filehash || asset?.file_hash),
     下载结果: '已下载',
     处理动作: compact(action || asset?.action || asset?.operationType || asset?.operation_type || '本地恢复'),
     备注: compact(note || asset?.note || asset?.meta || ''),
+    __cloud_filehash: compact(asset?.cloudFilehash || asset?.cloud_filehash || asset?.filehash || asset?.file_hash),
+    content_hash: materialContentHashKey(asset),
+    sha256: compact(asset?.sha256),
   }
 }
 
@@ -486,6 +522,9 @@ function applyBatchAssetIdentity(target = {}, batchAsset = {}) {
   target.remoteAssetId = batchId || compact(target.remoteAssetId || target.remote_asset_id)
   target.imageUrl = compact(batchAsset?.image_url || batchAsset?.imageUrl || target.imageUrl || target.image_url)
   target.thumbnailUrl = compact(batchAsset?.thumbnail_url || batchAsset?.thumbnailUrl || target.thumbnailUrl || target.thumbnail_url)
+  target.contentHash = materialContentHashKey(batchAsset) || materialContentHashKey(target)
+  target.cloudFilehash = compact(batchAsset?.cloud_filehash || batchAsset?.cloudFilehash || target.cloudFilehash || target.cloud_filehash)
+  target.sha256 = compact(batchAsset?.sha256 || target.sha256)
   return Boolean(batchId)
 }
 
@@ -535,6 +574,9 @@ function normalizeBatchAsset(asset = {}) {
     note: compact(asset.note),
     fileSizeMb: asset.file_size_mb || asset.fileSizeMb || '',
     folder: compact(asset.folder || asset.cloud_folder || ''),
+    contentHash: materialContentHashKey(asset),
+    cloudFilehash: compact(asset.cloud_filehash || asset.cloudFilehash || asset.filehash || asset.file_hash),
+    sha256: compact(asset.sha256),
     versions: [],
   }
 }
@@ -562,6 +604,9 @@ function downloadedAssetForMaterial(row = {}) {
     note: compact(row['备注'] || row.note),
     fileSizeMb: row['文件大小MB'] || row.file_size_mb || '',
     folder: compact(row['选择文件夹'] || row.folder || row.cloud_folder),
+    contentHash: materialContentHashKey(row),
+    cloudFilehash: compact(row.__cloud_filehash || row['云盘Hash'] || row.cloud_filehash || row.cloudFilehash || row.filehash || row.file_hash),
+    sha256: compact(row.sha256),
     versions: [],
   }
 }
@@ -746,6 +791,7 @@ function materialAssetFromWorkspaceFile(file = {}) {
   const filePath = workspaceFilePath(file)
   const sourceType = compact(file?.sourceType || file?.source_type || 'other') || 'other'
   const filename = compact(file?.name || file?.filename || filenameFromPath(filePath))
+  const contentHash = materialContentHashKey(file)
   return {
     id: `workspace-${filePath}`,
     path: filePath,
@@ -755,6 +801,8 @@ function materialAssetFromWorkspaceFile(file = {}) {
     sourceType,
     role: sourceType === 'model' ? '模拍' : (sourceType === 'detail' ? '细节' : '素材'),
     fileVersion: compact(file?.version),
+    contentHash,
+    sha256: compact(file?.sha256),
     selected: false,
     editSelected: false,
     versions: [],
@@ -1339,6 +1387,9 @@ function persistedBalaWorkspaceSource(source = {}, sourceType = 'model') {
     name: compact(source?.name || source?.filename),
     filename: compact(source?.filename || source?.name),
     folder: compact(source?.folder || source?.cloudFolder || source?.cloud_folder),
+    contentHash: materialContentHashKey(source),
+    cloudFilehash: compact(source?.cloudFilehash || source?.cloud_filehash || source?.filehash || source?.file_hash),
+    sha256: compact(source?.sha256),
     selected: Boolean(source?.selected),
     editSelected: Boolean(source?.editSelected),
     reviewStatus: normalizeBalaReviewStatus(source?.reviewStatus || source?.status),
@@ -1485,6 +1536,9 @@ export function resolveVideoAssetTaxonomy(asset = {}, { folderHint = '' } = {}) 
   const pathLooksModel = (value = '') => (
     /01[_-]?模拍|模拍原图|\/model(?:s)?\//i.test(value)
   )
+  const pathLooksAiResult = (value = '') => (
+    /03[_-]?AI图|AI结果|(?:^|\/)[^/]*(?:^|[-_])AI(?:[-_.]|$)/i.test(value)
+  )
 
   let sourceType = ''
   if (sourceTypeRaw === 'detail' || sourceTypeRaw === 'reference') sourceType = 'detail'
@@ -1497,12 +1551,16 @@ export function resolveVideoAssetTaxonomy(asset = {}, { folderHint = '' } = {}) 
   else if (folderHint === 'model') sourceType = 'model'
   else sourceType = 'model'
 
-  // AI 是叠加属性：kind=ai / 有 job·run / 明确 AI 操作；原图 origin 不算 AI
-  const isAi = kind !== 'origin' && Boolean(
+  // AI 是叠加属性：kind=ai / 有 job·run / 明确 AI 操作 / 已归档 AI 目录。
+  // 旧工作区可能把 AI 文件落在模拍目录里，文件名仍以 "-AI" 标识。
+  const explicitlyOriginal = kind === 'origin' && !pathLooksAiResult(path) && !pathLooksAiResult(sourcePath)
+  const isAi = !explicitlyOriginal && Boolean(
     kind === 'ai'
     || sourceTypeRaw === 'ai'
     || asset?.isAi === true
     || asset?.is_ai === true
+    || pathLooksAiResult(path)
+    || pathLooksAiResult(sourcePath)
     || compact(asset?.jobUid || asset?.job_uid)
     || compact(asset?.runUid || asset?.run_uid)
     || (operationType && operationType !== 'origin')
@@ -1522,6 +1580,7 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
   const styleCode = compact(reviewStyle?.styleCode || reviewStyle?.style_code || materialStyle?.styleCode)
   const output = []
   const seenPaths = new Set()
+  const seenContent = new Set()
   const selectedForVideo = (asset = {}, status = 'pending', taxonomy = {}) => (
     Boolean(asset?.selected || asset?.editSelected || asset?.videoSelected)
     || (taxonomy?.isAi && !asset?.deleted)
@@ -1535,6 +1594,12 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
     seenPaths.add(path)
     const rawId = compact(asset?.id || path)
     const taxonomy = resolveVideoAssetTaxonomy(asset, { folderHint })
+    const contentHash = materialContentHashKey(asset)
+    const contentKey = contentHash ? `${taxonomy.sourceType}:${contentHash}` : ''
+    if (contentKey) {
+      if (seenContent.has(contentKey)) return
+      seenContent.add(contentKey)
+    }
     // Preserve structural kind for downstream: origin | reference | ai
     const structuralKind = taxonomy.isAi
       ? 'ai'
@@ -1552,6 +1617,8 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
       selectable: true,
       path,
       sourcePath: compact(asset?.sourcePath || asset?.source_path),
+      contentHash,
+      sha256: compact(asset?.sha256),
       imageUrl: compact(asset?.imageUrl || asset?.image_url),
       thumbnailUrl: compact(asset?.thumbnailUrl || asset?.thumbnail_url),
       operationType: normalizeOperationType(asset?.operationType || asset?.operation_type || asset?.action),

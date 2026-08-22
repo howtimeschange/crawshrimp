@@ -154,6 +154,41 @@ test('stop ignores a delayed exit from the child it no longer owns', async () =>
   })
 })
 
+test('stop waits for asynchronous process-tree cleanup before resolving', async () => {
+  const proc = new EventEmitter()
+  proc.pid = 7788
+  let releaseStop
+  let stopStarted
+  const stopStartedPromise = new Promise(resolve => { stopStarted = resolve })
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => false,
+    startProcess: () => proc,
+    stopProcess: child => {
+      assert.equal(child.pid, 7788)
+      stopStarted()
+      return new Promise(resolve => { releaseStop = resolve })
+    },
+    intervalMs: 5,
+    attempts: 20,
+  })
+
+  const startup = controller.ensureReady()
+  await new Promise(resolve => setTimeout(resolve, 1))
+  const stopPromise = controller.stop()
+  await stopStartedPromise
+  let resolved = false
+  stopPromise.then(() => { resolved = true })
+  await new Promise(resolve => setTimeout(resolve, 1))
+  assert.equal(resolved, false)
+  releaseStop()
+  await stopPromise
+
+  await assert.rejects(startup, /startup canceled/)
+  assert.equal(controller.getState(), 'stopped')
+})
+
 test('stop cancels startup while the initial readiness probe is pending', async () => {
   let releaseProbe
   let starts = 0

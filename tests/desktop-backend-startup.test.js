@@ -77,6 +77,21 @@ test('desktop backend terminates stale crawshrimp backend processes for the same
   assert.match(main, /taskkill', \['\/F', '\/T', '\/PID', String\(pid\)\]/)
 })
 
+test('desktop backend shutdown waits and escalates process-tree cleanup', () => {
+  const main = readRepoFile('app/src/main.js')
+  const backendController = readRepoFile('app/src/backendController.js')
+
+  assert.match(main, /async function stopBackendProcess\(proc = backendProcess\)/)
+  assert.match(main, /function listDescendantPids\(pid, seen = new Set\(\)\)/)
+  assert.match(main, /function stopProcessTreeByPid\(pid, proc = null, signal = 'SIGTERM'\)/)
+  assert.match(main, /async function terminateProcessTreeByPid\(pid, proc = null, timeoutMs = 3500\)/)
+  assert.match(main, /stopProcessTreeByPid\(pid, null, 'SIGKILL'\)/)
+  assert.match(main, /async function stopBackend\(\) \{\s*await backendController\.stop\(\)/)
+  assert.match(main, /await backendController\.stop\(\)\s*resolvedCrawshrimpDataDir = ''/)
+  assert.match(backendController, /async function stopOwnedProcess\(proc\)/)
+  assert.match(backendController, /async function stop\(\) \{[\s\S]*await stopOwnedProcess\(proc\)/)
+})
+
 test('desktop services restart when macOS reopens the app after all windows close', () => {
   const main = readRepoFile('app/src/main.js')
 

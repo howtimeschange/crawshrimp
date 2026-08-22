@@ -24,6 +24,17 @@ class SemirCloudDriveManifestTests(unittest.TestCase):
         self.assertEqual(params["execute_mode"]["default"], "generate")
         self.assertIn({"value": "resume", "label": "续跑原图包"}, params["execute_mode"]["options"])
         self.assertEqual(params["resume_package_dir"]["type"], "directory")
+        self.assertEqual(params["model_id"]["label"], "生图模型")
+        self.assertEqual(params["model_id"]["default"], "gpt-image-4k")
+        self.assertEqual(
+            [item["value"] for item in params["model_id"]["options"]],
+            [
+                "gpt-image-2k",
+                "gpt-image-4k",
+                "gemini-3.1-flash-image-preview",
+                "gemini-3-pro-image-preview",
+            ],
+        )
         self.assertEqual(params["max_generate_jobs"]["default"], 0)
         self.assertTrue(params["max_generate_jobs"]["hidden"])
         self.assertEqual(params["max_model_images_per_row"]["default"], 500)

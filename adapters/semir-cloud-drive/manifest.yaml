@@ -379,6 +379,20 @@ tasks:
         default: AI买家秀
         ui_span: third
         placeholder: "例如：AI买家秀_8月第1批"
+      - id: model_id
+        type: select
+        label: 生图模型
+        default: gpt-image-4k
+        ui_span: third
+        options:
+          - value: gpt-image-2k
+            label: GPT Image 2K
+          - value: gpt-image-4k
+            label: GPT Image 4K
+          - value: gemini-3.1-flash-image-preview
+            label: Gemini Flash
+          - value: gemini-3-pro-image-preview
+            label: Gemini Pro
       - id: max_model_images_per_row
         type: number
         label: 单行最多模拍图

@@ -4,7 +4,7 @@
       <div>
         <p class="bsv-kicker">AI 买家秀</p>
         <h2>AI 买家秀工作流</h2>
-        <p class="bsv-subtitle">Excel 解析、森马云盘找图、GPT-Image-2 生图和本地打包</p>
+        <p class="bsv-subtitle">Excel 解析、森马云盘找图、AI 生图和本地打包</p>
       </div>
       <div class="bsv-top-actions">
         <button type="button" class="bsv-ghost" :disabled="!primaryOutputTarget" @click="openPrimaryOutput">打开输出目录</button>
@@ -68,6 +68,14 @@
                 <option value="generate">下载并真实生图</option>
                 <option value="download_only">只下载匹配素材</option>
                 <option value="resume">续跑原图包</option>
+              </select>
+            </label>
+            <label class="bsv-field">
+              <span>生图模型</span>
+              <select v-model="selectedModelId">
+                <option v-for="model in buyerShowModelOptions" :key="model.id" :value="model.id">
+                  {{ model.label }}
+                </option>
               </select>
             </label>
             <label v-if="isResumeMode" class="bsv-field">
@@ -249,12 +257,22 @@
 
 <script setup>
 import { computed, onUnmounted, reactive, ref } from 'vue'
+import { AI_IMAGE_MODELS } from '../utils/aiImageModels.js'
 
 const ADAPTER_ID = 'semir-cloud-drive'
 const TASK_ID = 'buyer_show_ai_generate'
 const DEFAULT_EXCEL_PATH = ''
 const DEFAULT_FLAT_PATH = '巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/'
 const DEFAULT_EXPORT_FOLDER = '~/Downloads/AI 买家秀全量测试'
+const DEFAULT_MODEL_ID = 'gpt-image-4k'
+const BUYER_SHOW_MODEL_LABELS = {
+  'gemini-3.1-flash-image-preview': 'Gemini Flash',
+  'gemini-3-pro-image-preview': 'Gemini Pro',
+}
+const buyerShowModelOptions = AI_IMAGE_MODELS.map(model => ({
+  ...model,
+  label: BUYER_SHOW_MODEL_LABELS[model.id] || model.label,
+}))
 
 const activeStep = ref('match')
 const excelPath = ref(DEFAULT_EXCEL_PATH)
@@ -262,6 +280,7 @@ const flatCloudPath = ref(DEFAULT_FLAT_PATH)
 const exportFolder = ref(DEFAULT_EXPORT_FOLDER)
 const packageName = ref('AI买家秀')
 const executeMode = ref('generate')
+const selectedModelId = ref(DEFAULT_MODEL_ID)
 const resumePackageDir = ref('')
 const customPrompt = ref('')
 const promptExtra = ref('')
@@ -315,6 +334,11 @@ const overallProgress = computed(() => {
   return Math.round(Math.max(search * 35, download * 62, generation * 88, taskState.status === 'running' ? 8 : 0))
 })
 const isResumeMode = computed(() => ['resume', 'recover', 'resume_recover', 'resume-recover'].includes(String(executeMode.value || '').toLowerCase()))
+const selectedAiModel = computed(() => (
+  buyerShowModelOptions.find(model => model.id === selectedModelId.value)
+  || buyerShowModelOptions.find(model => model.id === DEFAULT_MODEL_ID)
+  || buyerShowModelOptions[0]
+))
 const startButtonLabel = computed(() => {
   if (taskState.status === 'running') return '正在执行...'
   return isResumeMode.value ? '开始续跑原图包' : '开始 Excel 找图并生图'
@@ -358,6 +382,15 @@ function parseOutputFiles(value) {
     return Array.isArray(parsed) ? parsed.map(item => String(item || '').trim()).filter(Boolean) : []
   } catch {
     return []
+  }
+}
+
+function toPlainJson(value, fallback) {
+  try {
+    const cloned = JSON.parse(JSON.stringify(value ?? fallback))
+    return cloned ?? fallback
+  } catch {
+    return fallback
   }
 }
 
@@ -415,14 +448,17 @@ function buildRunParams() {
     mode: 'current',
     input_file: {
       path: excelPath.value,
-      rows: excelPreview.rows,
-      headers: excelPreview.headers,
+      rows: toPlainJson(excelPreview.rows, []),
+      headers: toPlainJson(excelPreview.headers, []),
     },
     flat_cloud_path: flatCloudPath.value,
     export_folder: exportFolder.value,
     package_name: packageName.value,
     execute_mode: executeMode.value,
     resume_package_dir: isResumeMode.value ? resumePackageDir.value : '',
+    model_id: selectedAiModel.value?.id || DEFAULT_MODEL_ID,
+    model: selectedAiModel.value?.key || 'gpt-image-2',
+    model_key_tier: selectedAiModel.value?.keyTier || '4k',
     image_size: 'source_ratio',
     max_generate_jobs: 0,
     max_model_images_per_row: 500,

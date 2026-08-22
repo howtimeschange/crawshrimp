@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import re
@@ -82,6 +83,37 @@ def _asset_version(path: str | Path) -> str:
     return f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
 
 
+def _file_sha256(path: str | Path) -> str:
+    source = Path(path).expanduser()
+    try:
+        digest = hashlib.sha256()
+        with source.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return ""
+
+
+def _row_cloud_filehash(row: dict) -> str:
+    for key in (
+        "__cloud_filehash",
+        "云盘Hash",
+        "cloud_filehash",
+        "cloudFilehash",
+        "filehash",
+        "file_hash",
+        "hash",
+        "content_hash",
+        "contentHash",
+        "sha256",
+    ):
+        value = compact(row.get(key))
+        if value:
+            return value
+    return ""
+
+
 def attach_material_preview_urls(batch: dict, api_base_url: str) -> dict:
     base = compact(api_base_url).rstrip("/")
     batch_id = compact(batch.get("batch_id"))
@@ -143,30 +175,44 @@ def build_material_batch(rows: list[dict], artifact_dir: str, api_base_url: str)
     batch_id = f"bala-material-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
     token = secrets.token_urlsafe(18)
     items_by_style: dict[str, dict] = {}
+    seen_content_by_style: dict[str, set[str]] = {}
     for row in rows or []:
         if not isinstance(row, dict):
             continue
         local_path = compact(row.get("本地文件"))
-        if not local_path or not Path(local_path).is_file():
+        local_file = Path(local_path).expanduser()
+        if not local_path or not local_file.is_file():
             continue
         if compact(row.get("下载结果")) in {"已跳过", "失败", "下载失败"}:
             continue
         style_code = _style_code_from_row(row, local_path)
-        item = items_by_style.setdefault(style_code, {"style_code": style_code, "assets": []})
         source_type = normalize_source_type(row.get("素材来源"))
+        cloud_filehash = _row_cloud_filehash(row)
+        sha256 = _file_sha256(local_file)
+        content_hash = sha256 or cloud_filehash
+        content_key = f"{source_type}:{content_hash}" if content_hash else ""
+        if content_key:
+            seen = seen_content_by_style.setdefault(style_code, set())
+            if content_key in seen:
+                continue
+            seen.add(content_key)
+        item = items_by_style.setdefault(style_code, {"style_code": style_code, "assets": []})
         asset_id = f"{_safe_id(style_code, 'style')}-{source_type}-{len(item['assets']) + 1}"
         item["assets"].append({
             "id": asset_id,
             "style_code": style_code,
             "source_type": source_type,
             "filename": compact(row.get("文件名")) or Path(local_path).name,
-            "path": str(Path(local_path).expanduser()),
+            "path": str(local_file),
             "selected": False,
             "download_result": compact(row.get("下载结果")),
             "action": compact(row.get("处理动作")),
             "note": compact(row.get("备注")),
             "folder": compact(row.get("选择文件夹") or row.get("__cloud_folder_path")),
             "cloud_folder": compact(row.get("选择文件夹") or row.get("__cloud_folder_path")),
+            "cloud_filehash": cloud_filehash,
+            "sha256": sha256,
+            "content_hash": content_hash,
             "image_url": f"{api_base_url.rstrip('/')}/bala-ai-video-materials/api/{batch_id}/image/{asset_id}?token={token}",
         })
     batch = {

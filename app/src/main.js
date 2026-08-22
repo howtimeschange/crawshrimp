@@ -1215,26 +1215,74 @@ function spawnBackendProcess() {
   return proc
 }
 
-function stopBackendProcess(proc = backendProcess) {
-  if (!proc) return
-  stopProcessTreeByPid(proc.pid, proc)
+async function stopBackendProcess(proc = backendProcess) {
+  if (!proc) return true
   if (backendProcess === proc) backendProcess = null
+  return await terminateProcessTreeByPid(proc.pid, proc)
 }
 
-function stopProcessTreeByPid(pid, proc = null) {
+function listChildPids(pid) {
+  if (process.platform === 'win32' || !Number.isInteger(pid) || pid <= 0) return []
+  try {
+    const output = execFileSync('pgrep', ['-P', String(pid)], {
+      encoding: 'utf8',
+      timeout: 1500,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return output.split(/\s+/).map(value => Number(value)).filter(value => Number.isInteger(value) && value > 0)
+  } catch {
+    return []
+  }
+}
+
+function listDescendantPids(pid, seen = new Set()) {
+  const descendants = []
+  for (const childPid of listChildPids(pid)) {
+    if (seen.has(childPid)) continue
+    seen.add(childPid)
+    descendants.push(childPid)
+    descendants.push(...listDescendantPids(childPid, seen))
+  }
+  return descendants
+}
+
+function signalPid(pid, signal) {
+  try {
+    process.kill(pid, signal)
+    return true
+  } catch (error) {
+    return error?.code === 'ESRCH'
+  }
+}
+
+function stopProcessTreeByPid(pid, proc = null, signal = 'SIGTERM') {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
     if (process.platform === 'win32') {
       execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 3000, stdio: 'ignore' })
-    } else if (proc && typeof proc.kill === 'function') {
-      proc.kill('SIGTERM')
     } else {
-      process.kill(pid, 'SIGTERM')
+      for (const childPid of listDescendantPids(pid).reverse()) {
+        signalPid(childPid, signal)
+      }
+      if (proc && typeof proc.kill === 'function') {
+        try { proc.kill(signal) } catch (_) {}
+      } else {
+        signalPid(pid, signal)
+      }
     }
     return true
   } catch {
     return false
   }
+}
+
+async function terminateProcessTreeByPid(pid, proc = null, timeoutMs = 3500) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  if (!stopProcessTreeByPid(pid, proc, 'SIGTERM')) return false
+  if (await waitForPidExit(pid, timeoutMs)) return true
+  log(`[api] backend pid=${pid} did not exit after SIGTERM; forcing process tree`)
+  stopProcessTreeByPid(pid, null, 'SIGKILL')
+  return await waitForPidExit(pid, 2000)
 }
 
 // ── Chrome / CDP ──────────────────────────────────────────────────────────────
@@ -2220,7 +2268,9 @@ async function stopForeignBackendRuntime(runtime = {}) {
 
   log(`[api] terminating stale crawshrimp backend pid=${runtimePid}`)
   if (!stopProcessTreeByPid(runtimePid)) return false
-  return await waitForPidExit(runtimePid)
+  if (await waitForPidExit(runtimePid)) return true
+  stopProcessTreeByPid(runtimePid, null, 'SIGKILL')
+  return await waitForPidExit(runtimePid, 2000)
 }
 
 async function switchApiEndpoint() {
@@ -2270,7 +2320,7 @@ const backendController = createBackendController({
 const restartBackend = createSingleFlightRecovery(async () => {
   log('[api] manual recovery requested')
   desktopServicesStartupPromise = null
-  backendController.stop()
+  await backendController.stop()
   resolvedCrawshrimpDataDir = ''
   await prepareBackendEndpoint()
   await backendController.ensureReady()
@@ -2314,8 +2364,8 @@ async function startChromeOnLaunch() {
   return result
 }
 
-function stopBackend() {
-  backendController.stop()
+async function stopBackend() {
+  await backendController.stop()
   desktopServicesStartupPromise = null
 }
 

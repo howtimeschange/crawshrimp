@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from core import buyer_show_service, data_sink
+from core import ai_image_service, buyer_show_service, data_sink
 
 
 PNG_1X1 = bytes.fromhex(
@@ -625,6 +625,7 @@ class BuyerShowServiceTests(unittest.TestCase):
 
         def fake_run(job_uid, settings=None):
             job = data_sink.get_ai_image_job(job_uid) or {}
+            captured["job_model_key"] = job.get("model_key")
             captured.update(job.get("params") or {})
             return {
                 "ok": True,
@@ -650,10 +651,119 @@ class BuyerShowServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(captured["size"], "2160x3840")
+        self.assertEqual(captured["job_model_key"], "gpt-image-2")
+        self.assertEqual(captured["model_id"], "gpt-image-4k")
+        self.assertEqual(captured["model"], "gpt-image-2")
+        self.assertEqual(captured["model_key_tier"], "4k")
+        self.assertEqual(captured["ratio"], "9:16")
         self.assertEqual(captured["source_image_width"], 900)
         self.assertEqual(captured["source_image_height"], 1600)
         self.assertEqual(captured["source_image_ratio"], "9:16")
         self.assertEqual(captured["image_size_strategy"], "source_ratio")
+
+    def test_finalize_uses_selected_gpt_2k_model_tier_for_source_ratio(self):
+        rows = self._source_rows()
+        Path(rows[0]["模拍本地文件"]).write_bytes(png_header_with_size(900, 1600))
+        generated = self.root / "generated-source-ratio-2k.png"
+        generated.write_bytes(PNG_1X1)
+        captured = {}
+
+        def fake_run(job_uid, settings=None):
+            job = data_sink.get_ai_image_job(job_uid) or {}
+            captured["job_model_key"] = job.get("model_key")
+            captured.update(job.get("params") or {})
+            return {
+                "ok": True,
+                "summary": {"task_id": "1xm-source-ratio-2k", "image_urls": ["https://cdn.example/generated-2k.png"]},
+            }
+
+        with (
+            patch("core.buyer_show_service.ai_image_service.run_job_with_one_xm", side_effect=fake_run),
+            patch("core.buyer_show_service.ai_image_service.materialize_remote_image", return_value={
+                "ok": True,
+                "path": str(generated),
+                "url": "https://cdn.example/generated-2k.png",
+            }),
+        ):
+            buyer_show_service.finalize_buyer_show_outputs(
+                data_rows=rows,
+                runtime_files=[],
+                exported_files=[],
+                run_params={
+                    "export_folder": str(self.root / "exports"),
+                    "package_name": "AI买家秀2K模型测试",
+                    "model_id": "gpt-image-2k",
+                },
+                runtime_artifact_dir=str(self.root / "runtime"),
+                settings={"base_url": "https://api.example", "2k": "secret"},
+                log=lambda _msg: None,
+            )
+
+        self.assertEqual(captured["size"], "1152x2048")
+        self.assertEqual(captured["job_model_key"], "gpt-image-2")
+        self.assertEqual(captured["model_id"], "gpt-image-2k")
+        self.assertEqual(captured["model"], "gpt-image-2")
+        self.assertEqual(captured["model_key_tier"], "2k")
+        self.assertEqual(captured["ratio"], "9:16")
+
+    def test_finalize_uses_selected_gemini_model_with_source_ratio_payload(self):
+        rows = self._source_rows()
+        Path(rows[0]["模拍本地文件"]).write_bytes(png_header_with_size(900, 1600))
+        generated = self.root / "generated-gemini.png"
+        generated.write_bytes(PNG_1X1)
+        captured = {}
+
+        def fake_run(job_uid, settings=None):
+            job = data_sink.get_ai_image_job(job_uid) or {}
+            assets = data_sink.list_ai_image_assets(job_uid)
+            captured["job_model_key"] = job.get("model_key")
+            captured.update(job.get("params") or {})
+            captured["payload"] = ai_image_service.build_one_xm_payload(
+                job,
+                assets,
+                file_to_data_url_fn=lambda _path: "data:image/png;base64,AA==",
+            )
+            return {
+                "ok": True,
+                "summary": {"task_id": "1xm-gemini", "image_urls": ["https://cdn.example/generated-gemini.png"]},
+            }
+
+        with (
+            patch("core.buyer_show_service.ai_image_service.run_job_with_one_xm", side_effect=fake_run),
+            patch("core.buyer_show_service.ai_image_service.materialize_remote_image", return_value={
+                "ok": True,
+                "path": str(generated),
+                "url": "https://cdn.example/generated-gemini.png",
+            }),
+        ):
+            buyer_show_service.finalize_buyer_show_outputs(
+                data_rows=rows,
+                runtime_files=[],
+                exported_files=[],
+                run_params={
+                    "export_folder": str(self.root / "exports"),
+                    "package_name": "AI买家秀Gemini模型测试",
+                    "model_id": "gemini-3-pro-image-preview",
+                },
+                runtime_artifact_dir=str(self.root / "runtime"),
+                settings={
+                    "base_url": "https://api.example",
+                    "ai.1xm.gemini_3_pro_image_preview_key": "secret",
+                },
+                log=lambda _msg: None,
+            )
+
+        self.assertEqual(captured["job_model_key"], "gemini-3-pro-image-preview")
+        self.assertEqual(captured["model_id"], "gemini-3-pro-image-preview")
+        self.assertEqual(captured["model"], "gemini-3-pro-image-preview")
+        self.assertEqual(captured["model_key_tier"], "ai.1xm.gemini_3_pro_image_preview_key")
+        self.assertEqual(captured["resolution"], "2K")
+        self.assertEqual(captured["ratio"], "9:16")
+        self.assertEqual(captured["source_image_ratio"], "9:16")
+        self.assertEqual(captured["payload"]["model"], "gemini-3-pro-image-preview")
+        self.assertEqual(captured["payload"]["size"], "9:16")
+        self.assertEqual(captured["payload"]["quality"], "2K")
+        self.assertNotIn("n", captured["payload"])
 
     def test_finalize_uses_actual_image_header_for_package_extension(self):
         generated = self.root / "generated-mislabeled.png"

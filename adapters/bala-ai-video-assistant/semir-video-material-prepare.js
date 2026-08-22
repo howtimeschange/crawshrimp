@@ -392,6 +392,7 @@
   function rowForAsset(inputCode, sourceType, folderItem, item, classification, overrides = {}) {
     const styleCode = getGroupCode(inputCode)
     const sourceLabel = SOURCE_LABELS[sourceType] || sourceType
+    const cloudFilehash = compact(item?.filehash || item?.hash || item?.content_hash || item?.sha256)
     return {
       '输入款号': styleCode,
       '输入编码': inputCode,
@@ -399,6 +400,7 @@
       '选择文件夹': String(folderItem?.fullpath || ''),
       '文件名': classification.packageFilename || itemName(item),
       '云盘路径': String(item?.fullpath || ''),
+      '云盘Hash': cloudFilehash,
       '文件大小MB': fileSizeMb(item),
       '处理动作': classification.action,
       '下载结果': classification.keep ? '' : '已跳过',
@@ -409,6 +411,7 @@
       '__bala_source_type': sourceType,
       '__package_filename': classification.packageFilename || itemName(item),
       '__cloud_folder_path': String(folderItem?.fullpath || ''),
+      '__cloud_filehash': cloudFilehash,
       ...overrides,
     }
   }

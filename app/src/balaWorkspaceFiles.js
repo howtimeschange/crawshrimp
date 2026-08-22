@@ -2,11 +2,13 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const crypto = require('node:crypto')
 
 const BALA_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
 const BALA_VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.webm'])
 const BALA_WORKSPACE_MANIFEST_FILENAME = '.crawshrimp-ai-video-workflow.json'
 const BALA_WORKSPACE_MANIFEST_MAX_BYTES = 8 * 1024 * 1024
+const fileSha256Cache = new Map()
 
 function canonicalPath(value, fsApi = fs) {
   const resolved = path.resolve(String(value || '').trim())
@@ -98,6 +100,19 @@ function imageMimeForPath(filePath = '') {
   return ''
 }
 
+function fileSha256(filePath, fsApi = fs, cacheKey = '') {
+  const key = `${filePath}:${cacheKey}`
+  if (fileSha256Cache.has(key)) return fileSha256Cache.get(key)
+  try {
+    const digest = crypto.createHash('sha256').update(fsApi.readFileSync(filePath)).digest('hex')
+    fileSha256Cache.set(key, digest)
+    if (fileSha256Cache.size > 2000) fileSha256Cache.delete(fileSha256Cache.keys().next().value)
+    return digest
+  } catch {
+    return ''
+  }
+}
+
 function getAuthorizedBalaWorkspaceImage({ workspaceRoot, filePath, roots = new Set(), fsApi = fs } = {}) {
   const rawFile = String(filePath || '').trim()
   if (!rawFile) throw new Error('缺少本地图片路径')
@@ -131,6 +146,8 @@ function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), f
       if (!entry.isFile() || !BALA_IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue
       const stat = fsApi.statSync(candidate)
       const canonical = canonicalPath(candidate, fsApi)
+      const version = `${stat.mtimeMs.toString(16)}-${stat.size.toString(16)}`
+      const sha256 = fileSha256(canonical, fsApi, version)
       assertDescendant(canonicalRoot, canonical)
       const relative = path.relative(canonicalRoot, canonical).split(path.sep)
       const styleCode = (relative.find(part => /^\d{12}$/.test(part)) || '')
@@ -145,7 +162,9 @@ function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), f
         styleCode,
         sourceType,
         isAi,
-        version: `${stat.mtimeMs.toString(16)}-${stat.size.toString(16)}`,
+        sha256,
+        contentHash: sha256,
+        version,
         modifiedAt: new Date(stat.mtimeMs).toISOString(),
         mtimeMs: stat.mtimeMs,
         size: stat.size,

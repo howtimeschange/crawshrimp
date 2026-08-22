@@ -231,7 +231,7 @@ test('material batch recovery includes restored AI result versions and relinks n
   assert.equal(groups[0].detailPhotos[0].versions[0].imageUrl, '/image/detail-ai')
 })
 
-test('restored material groups dedupe legacy paths and reselect AI-named files', () => {
+test('restored material groups dedupe legacy paths without reselecting AI-named files', () => {
   const restored = balaWorkflow.mergeBalaMaterialGroups([], [{
     styleCode: '208326108104',
     modelPhotos: [
@@ -243,7 +243,7 @@ test('restored material groups dedupe legacy paths and reselect AI-named files',
   }])
 
   assert.equal(restored[0].modelPhotos.length, 2)
-  assert.equal(restored[0].modelPhotos.find(asset => asset.name === 'o-AI(2).png')?.selected, true)
+  assert.equal(restored[0].modelPhotos.find(asset => asset.name === 'o-AI(2).png')?.selected, false)
 })
 
 test('workspace polling ignores hidden duplicate batch files and stays stable after the first render', () => {
@@ -357,7 +357,7 @@ test('workspace snapshot restore normalizes cached material groups before render
   assert.match(replaceSource, /styleWorkspaces\.splice\(0, styleWorkspaces\.length, \.\.\.normalizedGroups\)/)
 })
 
-test('AI-named material is selected and sorted first while duplicate filenames collapse across source folders', () => {
+test('AI-named material stays unselected while duplicate filenames collapse across source folders', () => {
   const groups = normalizeBalaMaterialGroups({
     batch: {
       status: 'pending_selection',
@@ -372,12 +372,50 @@ test('AI-named material is selected and sorted first while duplicate filenames c
     },
   })
 
-  assert.equal(groups[0].modelPhotos.find(asset => asset.filename === 'lookAI-result.jpg')?.selected, true)
+  assert.equal(groups[0].modelPhotos.find(asset => asset.filename === 'lookAI-result.jpg')?.selected, false)
   assert.equal(groups[0].modelPhotos.length + groups[0].detailPhotos.length, 2)
   assert.equal(balaWorkflow.sortBalaMaterialAssets([
     { filename: 'z.jpg', selected: false },
     { filename: 'firstAI.jpg', selected: true },
   ])[0].filename, 'firstAI.jpg')
+})
+
+test('material recall collapses same-content original images with different filenames', () => {
+  const groups = normalizeBalaMaterialGroups({
+    batch: {
+      status: 'pending_selection',
+      items: [{
+        style_code: '208326103208',
+        assets: [
+          {
+            id: 'origin-1',
+            source_type: 'model',
+            filename: '260510bala7218-1.jpg',
+            path: '/tmp/model/260510bala7218-1.jpg',
+            content_hash: 'same-origin-content',
+          },
+          {
+            id: 'origin-2',
+            source_type: 'model',
+            filename: '260510bala7218-2.jpg',
+            path: '/tmp/model/260510bala7218-2.jpg',
+            content_hash: 'same-origin-content',
+          },
+          {
+            id: 'detail-copy',
+            source_type: 'detail',
+            filename: '260510bala7218-2.jpg',
+            path: '/tmp/detail/260510bala7218-2.jpg',
+            content_hash: 'same-origin-content',
+          },
+        ],
+      }],
+    },
+  })
+
+  assert.equal(groups[0].modelPhotos.length, 1)
+  assert.equal(groups[0].detailPhotos.length, 1)
+  assert.equal(groups[0].modelPhotos[0].filename, '260510bala7218-1.jpg')
 })
 
 test('find-materials supports grid and list display modes while keeping selected materials first', async () => {
@@ -466,7 +504,7 @@ test('AI video workflow restores downloaded Excel rows into material groups with
   assert.equal(rowOnlyGroups.length, 1)
   assert.equal(rowOnlyGroups[0].modelPhotos.length, 1)
   assert.equal(rowOnlyGroups[0].modelPhotos[0].path, downloadedRow.本地文件)
-  assert.equal(rowOnlyGroups[0].modelPhotos[0].selected, true)
+  assert.equal(rowOnlyGroups[0].modelPhotos[0].selected, false)
 
   const groupsWithBatch = normalizeBalaMaterialGroups({
     batch: {
@@ -1454,7 +1492,13 @@ test('video task dialog can write prompt from selected images with a vision LLM 
   assert.match(templateSource, /aria-label="AI 写 Prompt 模型"/)
   assert.match(templateSource, /v-for="model in configuredVideoPromptModels"/)
   assert.match(templateSource, /一键写 Prompt/)
+  assert.match(templateSource, /aria-label="取消当前 Prompt 生成"/)
+  assert.match(templateSource, /class="aiv-video-prompt-loading"/)
+  assert.match(templateSource, /v-for="message in videoPromptWriterLoadingMessages"/)
   assert.match(templateSource, /v-model="videoTaskDraft\.prompt"/)
+  assert.match(source, /const videoPromptWriterLoadingMessages = Object\.freeze\(\[[\s\S]*模型思考中[\s\S]*生成种草文案中/)
+  assert.match(source, /let videoPromptWriterRequestToken = 0/)
+  assert.match(source, /function cancelVideoTaskPromptGeneration\(options = \{\}\)/)
   assert.match(source, /const selectedVideoTaskPromptImagePaths = computed\(\(\) => \([\s\S]*selectedVideoTaskDraftAssets\.value\.map\(asset => asset\.path\)[\s\S]*\.slice\(0, 5\)/)
   assert.match(source, /function ensureVideoPromptModelSelected\(\)/)
   assert.match(source, /isDeepSeekConfigured\(settings\)/)
@@ -1462,6 +1506,7 @@ test('video task dialog can write prompt from selected images with a vision LLM 
   assert.match(source, /async function generateVideoTaskPrompt\(\)/)
   assert.match(source, /window\.cs\.generateBalaVideoPrompt/)
   assert.match(source, /template_prompt:\s*BALA_VIDEO_PROMPT_TEMPLATE/)
+  assert.match(source, /if \(requestToken !== videoPromptWriterRequestToken\) return/)
   assert.match(source, /videoTaskDraft\.prompt = prompt/)
   assert.match(preloadSource, /generateBalaVideoPrompt/)
   assert.match(preloadSource, /\/bala-ai-video-prompt\/api\/generate/)
@@ -1775,8 +1820,11 @@ test('batch AI generation archives generated images inside each style workspace 
   const archiveSource = source.slice(archiveStart, archiveEnd)
 
   assert.match(source, /function aiResultDirectoryForStyle\(styleCode = ''\)[\s\S]*?\/03_AI图/)
+  assert.match(source, /function archivedWorkspacePathForAiAsset\(asset = \{\}, styleCode = ''\)/)
   assert.match(source, /void archiveReviewStylesToWorkspace\(styles\)/)
   assert.match(archiveSource, /asset\?\.kind !== 'ai'/)
+  assert.match(archiveSource, /const archivedPath = archivedWorkspacePathForAiAsset\(asset, styleCode\)/)
+  assert.match(archiveSource, /if \(archivedPath\) return archivedPath/)
   assert.match(archiveSource, /window\.cs\.saveAsAiImageJob\(jobUid,[\s\S]*?directory: targetDir/)
   assert.match(source, /syncWorkspaceVersionsFromReviewStyles\(styles\)[\s\S]*?void syncWorkspaceFiles\(\)/)
 })
