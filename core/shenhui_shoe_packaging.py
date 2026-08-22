@@ -223,6 +223,22 @@ def _selection_list(slots: dict[str, Any], slot: str) -> list[str]:
     return [source for _index, source in _selection_indexed(slots, slot)]
 
 
+def _selection_array(
+    slots: dict[str, Any],
+    slot: str,
+    expected_count: int,
+) -> list[str]:
+    values = [""] * expected_count
+    direct = slots.get(slot)
+    if isinstance(direct, list):
+        for index, value in enumerate(direct[:expected_count], start=1):
+            values[index - 1] = _text(value)
+        return values
+    for index in range(1, expected_count + 1):
+        values[index - 1] = _text(slots.get(f"{slot}{index}"))
+    return values
+
+
 def _slot_warning(
     *,
     color: str,
@@ -423,6 +439,18 @@ SHOE_YQ_REFERENCE_IMAGE = (
     / "assets"
     / "shoe-yq-template.jpg"
 )
+SHOE_MAIN_TEMPLATE_CATEGORY_ORDER: tuple[str, ...] = (
+    "雪地",
+    "运动",
+    "婴童",
+    "休闲",
+)
+SHOE_MAIN_TEMPLATE_CATEGORY_SLUGS: dict[str, str] = {
+    "雪地": "snow",
+    "运动": "sports",
+    "婴童": "baby",
+    "休闲": "leisure",
+}
 SHOE_POSE_MULTI_MODEL_ID = "multi-model"
 SHOE_LABEL_OCR_MODEL = SHOE_POSE_MULTI_MODEL_ID
 SHOE_POSE_DEFAULT_MODEL = SHOE_POSE_MULTI_MODEL_ID
@@ -502,6 +530,7 @@ SHOE_POSE5_FEATURE_RULES = {
 
 SHOE_SELECTION_SYSTEM_PROMPT = """你是电商鞋品图片审核员。你要把候选原图匹配到深绘鞋品图包槽位。
 只能选择候选图编号，不能编造编号或文件名。先识别鞋盒标签中的产品名称和颜色，再结合参考模板判断品类和姿势。
+如果输入中包含当前品类 tmz1..tmz5 的切片参考，主图位必须优先逐张对照这些参考图判断。
 品类只能是：运动、休闲、雪地、婴童。
 运动：运动鞋、板鞋。
 休闲：公主鞋、皮鞋、普通靴子、女生凉鞋。
@@ -1098,6 +1127,45 @@ def _binary_pose_horizontal_asymmetry(feature: _BinaryPoseFeature | None) -> flo
     )
 
 
+def _binary_pose_third_densities(
+    feature: _BinaryPoseFeature | None,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    if not feature or not feature.valid or feature.mask is None:
+        return None
+
+    mask = feature.mask.convert("L")
+    width, height = mask.size
+    if width <= 0 or height <= 0:
+        return None
+    data = list(mask.getdata())
+
+    def density(x0: int, x1: int, y0: int, y1: int) -> float:
+        x0 = max(0, min(width, x0))
+        x1 = max(0, min(width, x1))
+        y0 = max(0, min(height, y0))
+        y1 = max(0, min(height, y1))
+        area = max((x1 - x0) * (y1 - y0), 1)
+        return (
+            sum(
+                1
+                for y in range(y0, y1)
+                for x in range(x0, x1)
+                if data[y * width + x] > 0
+            )
+            / area
+        )
+
+    column_densities = tuple(
+        density(index * width // 3, (index + 1) * width // 3, 0, height)
+        for index in range(3)
+    )
+    row_densities = tuple(
+        density(0, width, index * height // 3, (index + 1) * height // 3)
+        for index in range(3)
+    )
+    return column_densities, row_densities
+
+
 def _is_low_detail_main_shoe_candidate(
     pose: _BinaryPoseFeature | None,
 ) -> bool:
@@ -1552,9 +1620,95 @@ def _apply_selection_quality_rules(
             f"yx 已清空：{yx_name} 为鞋面局部特写，未完整展示鞋子与功能吊牌"
         )
 
-    wpz = ruled["wpz"]
-    yq = _selection_list(slots, "yq")
+    wpz = _selection_array(slots, "wpz", 6)
+    ruled["wpz"] = wpz
+    yq = _selection_array(slots, "yq", 3)
     ruled["yq"] = yq
+
+    def valid_shared_pose2(pose: _BinaryPoseFeature | None) -> bool:
+        profile = _binary_pose_third_densities(pose)
+        if profile:
+            column_densities, row_densities = profile
+            rear_outsole_layout = (
+                min(column_densities[0], column_densities[2]) >= 0.20
+                and abs(column_densities[0] - column_densities[2]) <= 0.08
+                and row_densities[1] >= 0.62
+            )
+        else:
+            rear_outsole_layout = True
+        return bool(
+            pose
+            and pose.valid
+            and 1.15 <= pose.aspect_ratio <= 1.65
+            and 0.10 <= pose.bounding_coverage <= 0.30
+            and pose.background_luma >= 235.0
+            and _is_complete_main_shoe_candidate(pose)
+            and rear_outsole_layout
+        )
+
+    def shared_pose2_score(pose: _BinaryPoseFeature) -> float:
+        profile = _binary_pose_third_densities(pose)
+        if profile:
+            column_densities, row_densities = profile
+            layout_score = (
+                abs(row_densities[0] - 0.54) * 0.35
+                + abs(column_densities[0] - column_densities[2]) * 0.25
+            )
+        else:
+            layout_score = 0.0
+        return (
+            abs(pose.aspect_ratio - 1.36)
+            + abs(pose.bounding_coverage - 0.16) * 2.0
+            + abs(pose.background_luma - 242.0) / 255.0 * 0.08
+            + layout_score
+        )
+
+    if len(wpz) >= 2:
+        current_wpz2 = wpz[1]
+        current_tmz2 = _text(ruled.get("tmz2")) or current_wpz2
+        current_wpz2_feature = feature_for(current_wpz2)
+        current_tmz2_feature = feature_for(current_tmz2)
+        current_valid = (
+            valid_shared_pose2(current_wpz2_feature)
+            and valid_shared_pose2(current_tmz2_feature)
+        )
+        if (current_wpz2_feature or current_tmz2_feature) and not current_valid:
+            occupied = {
+                _text(value)
+                for value in [
+                    wpz[0] if wpz else "",
+                    *wpz[2:],
+                    *yq[1:],
+                    ruled.get("yx"),
+                    ruled.get("tmz1"),
+                    ruled.get("tmz3"),
+                    ruled.get("tmz4"),
+                    ruled.get("tmz5"),
+                ]
+                if _text(value)
+            }
+            eligible_baby_pose2 = [
+                (filename, pose)
+                for filename in entries_by_name
+                if filename not in occupied
+                for pose in [feature_for(filename)]
+                if valid_shared_pose2(pose)
+            ]
+            if eligible_baby_pose2:
+                replacement, _replacement_feature = min(
+                    eligible_baby_pose2,
+                    key=lambda item: (shared_pose2_score(item[1]), item[0].lower()),
+                )
+                if (
+                    current_wpz2 != replacement
+                    or current_tmz2 != replacement
+                ):
+                    wpz[1] = replacement
+                    ruled["tmz2"] = replacement
+                    corrections.append(
+                        "主图2前鞋加后鞋底姿势已纠正："
+                        f"{current_wpz2} -> {replacement}"
+                    )
 
     # yq1 is not category-specific: it is the same front-shoe plus rear-outsole
     # composition as main-image pose 2. Reusing the already selected pose keeps
@@ -1645,33 +1799,64 @@ def _apply_selection_quality_rules(
         ]
         pose3_locked = False
 
-        def valid_baby_side_pose3(pose: _BinaryPoseFeature | None) -> bool:
+        def valid_baby_pose3(pose: _BinaryPoseFeature | None) -> bool:
             return bool(
                 pose
-                and 0.74 <= pose.aspect_ratio <= 0.98
-                and 0.07 <= pose.bounding_coverage <= 0.13
+                and 0.48 <= pose.aspect_ratio <= 0.82
+                and 0.055 <= pose.bounding_coverage <= 0.13
                 and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
                 and _is_complete_main_shoe_candidate(pose)
             )
 
+        def baby_pose3_score(pose: _BinaryPoseFeature) -> float:
+            return (
+                abs(pose.aspect_ratio - 0.66)
+                + abs(pose.bounding_coverage - 0.09) * 2.0
+                + abs(pose.background_luma - 242.0) / 255.0 * 0.08
+                - min(_binary_pose_horizontal_asymmetry(pose), 0.24) * 0.35
+            )
+
         if _text(category) == "婴童":
+            occupied_baby_pose3 = {
+                _text(value)
+                for value in [
+                    *wpz[:2],
+                    *wpz[3:],
+                    *yq,
+                    ruled.get("yx"),
+                    *[
+                        ruled.get(f"tmz{index}")
+                        for index in (1, 2, 4, 5)
+                    ],
+                ]
+                if _text(value)
+            }
             baby_side_pose3 = [
                 (filename, pose)
                 for filename in entries_by_name
+                if filename not in occupied_baby_pose3
                 for pose in [feature_for(filename)]
-                if valid_baby_side_pose3(pose)
+                if valid_baby_pose3(pose)
             ]
+            current_wpz3_feature = feature_for(current_wpz3)
+            current_tmz3_feature = feature_for(current_tmz3)
+            current_valid = (
+                valid_baby_pose3(current_wpz3_feature)
+                and valid_baby_pose3(current_tmz3_feature)
+            )
             if baby_side_pose3 and (
-                not valid_baby_side_pose3(feature_for(current_wpz3))
-                or not valid_baby_side_pose3(feature_for(current_tmz3))
+                not current_valid
+                or min(
+                    baby_pose3_score(pose)
+                    for name, pose in baby_side_pose3
+                    if name in {current_wpz3, current_tmz3}
+                )
+                - min(baby_pose3_score(pose) for _name, pose in baby_side_pose3)
+                >= 0.01
             ):
                 replacement, _replacement_feature = min(
                     baby_side_pose3,
-                    key=lambda item: (
-                        abs(item[1].aspect_ratio - 0.84)
-                        + abs(item[1].bounding_coverage - 0.10) * 2.0,
-                        item[0].lower(),
-                    ),
+                    key=lambda item: (baby_pose3_score(item[1]), item[0].lower()),
                 )
                 if (
                     current_wpz3 != replacement
@@ -1680,7 +1865,7 @@ def _apply_selection_quality_rules(
                     wpz[2] = replacement
                     ruled["tmz3"] = replacement
                     corrections.append(
-                        "婴童第3姿势侧向竖立图已纠正："
+                        "婴童第3姿势外侧竖立图已纠正："
                         f"{current_wpz3} -> {replacement}"
                     )
                     current_wpz3 = replacement
@@ -1693,7 +1878,7 @@ def _apply_selection_quality_rules(
         # symmetric. Only use that signal when the candidate gap is clear.
         if (
             not pose3_locked
-            and _text(category) in {"运动", "婴童"}
+            and _text(category) == "运动"
             and len(eligible_pose3) >= 2
         ):
             pose3_by_asymmetry = sorted(
@@ -1867,6 +2052,33 @@ def _apply_selection_quality_rules(
                     f"{current_wpz1} -> {replacement}"
                 )
 
+    def valid_shared_pose4_candidate(
+        filename: str,
+        pose: _BinaryPoseFeature | None,
+    ) -> bool:
+        if _text(category) == "雪地":
+            return _is_snow_pose4_business_opening(filename, pose)
+        return bool(
+            pose
+            and 0.62 <= pose.aspect_ratio <= 1.75
+            and 0.05 <= pose.bounding_coverage <= 0.24
+            and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
+            and not (
+                pose.aspect_ratio >= 1.55
+                and pose.bounding_coverage >= 0.16
+            )
+            and _is_complete_main_shoe_candidate(pose)
+        )
+
+    def shared_pose4_score(pose: _BinaryPoseFeature) -> float:
+        if _text(category) == "雪地":
+            return _snow_pose4_opening_score(pose)
+        return (
+            abs(pose.aspect_ratio - 1.22)
+            + abs(pose.bounding_coverage - 0.12) * 2.0
+            + abs(pose.background_luma - 242.0) / 255.0 * 0.08
+        )
+
     if _text(category) == "雪地" and len(wpz) >= 4:
         current_wpz4 = wpz[3]
         current_tmz4 = _text(ruled.get("tmz4")) or current_wpz4
@@ -1911,174 +2123,82 @@ def _apply_selection_quality_rules(
                     f"{current_wpz4} -> {replacement}"
                 )
 
-    if _text(category) == "休闲" and len(wpz) >= 4:
+    if _text(category) != "雪地" and len(wpz) >= 4:
         current_wpz4 = wpz[3]
         current_tmz4 = _text(ruled.get("tmz4")) or current_wpz4
-
-        def valid_leisure_pose4(pose: _BinaryPoseFeature | None) -> bool:
-            return bool(
-                pose
-                and 1.35 <= pose.aspect_ratio <= 1.75
-                and 0.05 <= pose.bounding_coverage <= 0.11
-                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                and _is_complete_main_shoe_candidate(pose)
+        current_pose4_feature = feature_for(current_wpz4)
+        current_tmz4_feature = feature_for(current_tmz4)
+        current_valid = (
+            bool(
+                current_pose4_feature
+                and valid_shared_pose4_candidate(current_wpz4, current_pose4_feature)
             )
-
-        if (
-            not valid_leisure_pose4(feature_for(current_wpz4))
-            or not valid_leisure_pose4(feature_for(current_tmz4))
-        ):
-            occupied = {
-                _text(value)
-                for value in [
-                    *wpz[:3],
-                    *wpz[4:],
-                    *yq,
-                    ruled.get("yx"),
-                    *[
-                        ruled.get(f"tmz{index}")
-                        for index in (1, 2, 3, 5)
-                    ],
-                ]
-                if _text(value)
-            }
-            eligible_pose4 = [
-                (filename, pose)
-                for filename in entries_by_name
-                if filename not in occupied
-                for pose in [feature_for(filename)]
-                if valid_leisure_pose4(pose)
+            and bool(
+                current_tmz4_feature
+                and valid_shared_pose4_candidate(current_tmz4, current_tmz4_feature)
+            )
+        )
+        occupied = {
+            _text(value)
+            for value in [
+                *wpz[:3],
+                *wpz[4:],
+                *yq[:2],
+                ruled.get("yx"),
+                *[
+                    ruled.get(f"tmz{index}")
+                    for index in (1, 2, 3, 5)
+                ],
             ]
-            if eligible_pose4:
-                replacement, _replacement_feature = min(
-                    eligible_pose4,
-                    key=lambda item: (
-                        abs(item[1].aspect_ratio - 1.55)
-                        + abs(item[1].bounding_coverage - 0.078) * 2.0,
-                        item[0].lower(),
-                    ),
+            if _text(value)
+        }
+        eligible_pose4 = [
+            (filename, pose)
+            for filename in entries_by_name
+            if filename not in occupied
+            for pose in [feature_for(filename)]
+            if valid_shared_pose4_candidate(filename, pose)
+        ]
+        if eligible_pose4:
+            replacement, replacement_feature = min(
+                eligible_pose4,
+                key=lambda item: (shared_pose4_score(item[1]), item[0].lower()),
+            )
+            current_score = max(
+                (
+                    shared_pose4_score(pose)
+                    for pose in (current_pose4_feature, current_tmz4_feature)
+                    if pose is not None
+                ),
+                default=float("inf"),
+            )
+            should_replace = (
+                not current_valid
+                or (
+                    replacement not in {current_wpz4, current_tmz4}
+                    and current_score - shared_pose4_score(replacement_feature) >= 0.02
                 )
+            )
+            if should_replace:
                 wpz[3] = replacement
                 ruled["tmz4"] = replacement
                 corrections.append(
-                    "休闲第4姿势后侧完整侧面已纠正："
-                    f"{current_wpz4} -> {replacement}"
+                    "主图4/wpz4 最新模板姿势已纠正："
+                    f"{current_wpz4 or current_tmz4} -> {replacement}"
                 )
-
-    if _text(category) == "婴童" and len(wpz) >= 4:
-        current_wpz4 = wpz[3]
-        current_tmz4 = _text(ruled.get("tmz4")) or current_wpz4
-
-        def valid_baby_pose4(pose: _BinaryPoseFeature | None) -> bool:
-            return bool(
-                pose
-                and 1.05 <= pose.aspect_ratio <= 1.45
-                and 0.06 <= pose.bounding_coverage <= 0.18
-                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                and _is_complete_main_shoe_candidate(pose)
-            )
-
-        if (
-            not valid_baby_pose4(feature_for(current_wpz4))
-            or not valid_baby_pose4(feature_for(current_tmz4))
+        elif (
+            current_wpz4
+            or current_tmz4
+        ) and (
+            current_pose4_feature
+            or current_tmz4_feature
         ):
-            # A model commonly swaps the baby-shoe rear-side pose with yq3.
-            # Keep the current yq3 available here; the shared yq3 rule below
-            # will then recover the released complete outer-side image.
-            occupied = {
-                _text(value)
-                for value in [
-                    *wpz[:3],
-                    *wpz[4:],
-                    *yq[:2],
-                    ruled.get("yx"),
-                    *[
-                        ruled.get(f"tmz{index}")
-                        for index in (1, 2, 3, 5)
-                    ],
-                ]
-                if _text(value)
-            }
-            eligible_pose4 = [
-                (filename, pose)
-                for filename in entries_by_name
-                if filename not in occupied
-                for pose in [feature_for(filename)]
-                if valid_baby_pose4(pose)
-            ]
-            if eligible_pose4:
-                replacement, _replacement_feature = min(
-                    eligible_pose4,
-                    key=lambda item: (
-                        abs(item[1].aspect_ratio - 1.22)
-                        + abs(item[1].bounding_coverage - 0.145) * 2.0,
-                        item[0].lower(),
-                    ),
-                )
-                wpz[3] = replacement
-                ruled["tmz4"] = replacement
-                corrections.append(
-                    "婴童第4姿势后侧角度已纠正："
-                    f"{current_wpz4} -> {replacement}"
-                )
-
-    if _text(category) == "运动":
-        current_pose4 = wpz[3] if len(wpz) >= 4 else _text(ruled.get("tmz4"))
-        current_pose4_feature = feature_for(current_pose4)
-
-        def valid_sports_pose4(pose: _BinaryPoseFeature | None) -> bool:
-            return bool(
-                pose
-                and 0.82 <= pose.aspect_ratio <= 1.08
-                and 0.10 <= pose.bounding_coverage <= 0.24
-                and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                and _is_complete_main_shoe_candidate(pose)
-            )
-
-        if current_pose4 and not valid_sports_pose4(current_pose4_feature):
-            occupied = {
-                _text(value)
-                for value in [
-                    *wpz[:3],
-                    *wpz[4:],
-                    *yq,
-                    ruled.get("yx"),
-                    *[
-                        ruled.get(f"tmz{index}")
-                        for index in (1, 2, 3, 5)
-                    ],
-                ]
-                if _text(value)
-            }
-            eligible_pose4 = [
-                (filename, pose)
-                for filename in entries_by_name
-                if filename not in occupied
-                for pose in [feature_for(filename)]
-                if valid_sports_pose4(pose)
-            ]
-            if eligible_pose4:
-                replacement, _replacement_feature = min(
-                    eligible_pose4,
-                    key=lambda item: (
-                        abs(item[1].aspect_ratio - 0.90)
-                        + abs(item[1].bounding_coverage - 0.18) * 2.0,
-                        item[0].lower(),
-                    ),
-                )
-                ruled["tmz4"] = replacement
-                if len(wpz) >= 4:
-                    wpz[3] = replacement
-                corrections.append(
-                    f"运动第4姿势后侧鞋底角度已纠正："
-                    f"{current_pose4} -> {replacement}"
-                )
-            else:
+            if not current_valid:
+                wpz[3] = ""
                 ruled["tmz4"] = ""
-                if len(wpz) >= 4:
-                    wpz[3] = ""
                 corrections.append(
-                    f"运动第4姿势未找到合格后侧鞋底角度，已跳过：{current_pose4}"
+                    "主图4/wpz4 未找到合格最新模板姿势，已跳过："
+                    f"{current_wpz4 or current_tmz4}"
                 )
 
     current_yq3 = yq[2] if len(yq) >= 3 else ""
@@ -2160,12 +2280,7 @@ def _apply_selection_quality_rules(
         if index == 3:
             return (0.66, 0.075)
         if index == 4:
-            return {
-                "雪地": (1.25, 0.20),
-                "运动": (0.85, 0.14),
-                "休闲": (1.55, 0.078),
-                "婴童": (1.22, 0.145),
-            }.get(category_text, (1.0, 0.12))
+            return (1.25, 0.20) if category_text == "雪地" else (1.22, 0.12)
         pose5_rule = SHOE_POSE5_FEATURE_RULES.get(category_text) or {}
         return (
             float(pose5_rule.get("target_aspect", 0.60)),
@@ -2211,30 +2326,7 @@ def _apply_selection_quality_rules(
         if index == 3:
             return valid_pose3(pose)
         if index == 4:
-            if category_text == "雪地":
-                return _is_snow_pose4_business_opening(filename, pose)
-            if category_text == "运动":
-                return bool(
-                    0.62 <= pose.aspect_ratio <= 1.08
-                    and 0.07 <= pose.bounding_coverage <= 0.24
-                    and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                    and _is_complete_main_shoe_candidate(pose)
-                    and not _is_low_detail_main_shoe_candidate(pose)
-                )
-            if category_text == "休闲":
-                return bool(
-                    1.35 <= pose.aspect_ratio <= 1.75
-                    and 0.05 <= pose.bounding_coverage <= 0.11
-                    and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                    and _is_complete_main_shoe_candidate(pose)
-                )
-            if category_text == "婴童":
-                return bool(
-                    1.05 <= pose.aspect_ratio <= 1.45
-                    and 0.06 <= pose.bounding_coverage <= 0.18
-                    and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                    and _is_complete_main_shoe_candidate(pose)
-                )
+            return valid_shared_pose4_candidate(filename, pose)
         if index == 5:
             pose5_rule = SHOE_POSE5_FEATURE_RULES.get(category_text)
             return bool(
@@ -2520,34 +2612,7 @@ def _apply_selection_quality_rules(
             filename: str,
             pose: _BinaryPoseFeature | None,
         ) -> bool:
-            if category_text == "雪地":
-                return _is_snow_pose4_business_opening(filename, pose)
-            if category_text == "运动":
-                return bool(
-                    pose
-                    and 0.62 <= pose.aspect_ratio <= 1.08
-                    and 0.07 <= pose.bounding_coverage <= 0.24
-                    and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                    and _is_complete_main_shoe_candidate(pose)
-                    and not _is_low_detail_main_shoe_candidate(pose)
-                )
-            if category_text == "休闲":
-                return bool(
-                    pose
-                    and 1.35 <= pose.aspect_ratio <= 1.75
-                    and 0.05 <= pose.bounding_coverage <= 0.11
-                    and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                    and _is_complete_main_shoe_candidate(pose)
-                )
-            if category_text == "婴童":
-                return bool(
-                    pose
-                    and 1.05 <= pose.aspect_ratio <= 1.45
-                    and 0.06 <= pose.bounding_coverage <= 0.18
-                    and 235.0 <= pose.background_luma < SHOE_WHITE_BACKGROUND_LUMA
-                    and _is_complete_main_shoe_candidate(pose)
-                )
-            return False
+            return valid_shared_pose4_candidate(filename, pose)
 
         occupied = {
             _text(value)
@@ -2575,18 +2640,7 @@ def _apply_selection_quality_rules(
             replacement, replacement_feature = min(
                 eligible_pose4,
                 key=lambda item: (
-                    _snow_pose4_opening_score(item[1])
-                    if category_text == "雪地"
-                    else abs(item[1].aspect_ratio - {
-                        "运动": 0.85,
-                        "休闲": 1.55,
-                        "婴童": 1.22,
-                    }.get(category_text, 1.0))
-                    + abs(item[1].bounding_coverage - {
-                        "运动": 0.14,
-                        "休闲": 0.078,
-                        "婴童": 0.145,
-                    }.get(category_text, 0.1)) * 2.0,
+                    shared_pose4_score(item[1]),
                     item[0].lower(),
                 ),
             )
@@ -2854,7 +2908,7 @@ def _match_slots_from_anchor_color(
     for key in (f"tmz{index}" for index in range(1, 6)):
         matched[key] = match_source(_text(anchor_slots.get(key)))
     matched["o"] = match_source(_text(anchor_slots.get("o")), optional=True)
-    wpz_sources = _selection_list(anchor_slots, "wpz")
+    wpz_sources = _selection_array(anchor_slots, "wpz", 6)
     matched["wpz"] = [
         match_source(
             source,
@@ -2864,7 +2918,7 @@ def _match_slots_from_anchor_color(
     ]
     matched["yq"] = [
         match_source(source)
-        for source in _selection_list(anchor_slots, "yq")
+        for source in _selection_array(anchor_slots, "yq", 3)
     ]
     matched["yx"] = match_source(
         _text(anchor_slots.get("yx")),
@@ -2888,10 +2942,27 @@ def _shoe_selection_prompt(
     shoe_category: str = "",
     *,
     candidate_sheet_count: int = 1,
+    main_pose_reference_count: int = 0,
 ) -> str:
     candidate_text = "\n".join(f"{key}={value}" for key, value in candidate_ids.items())
     candidate_sheet_count = max(1, int(candidate_sheet_count))
-    if candidate_sheet_count == 1:
+    main_pose_reference_count = max(0, int(main_pose_reference_count))
+    if main_pose_reference_count:
+        reference_start = candidate_sheet_count + 1
+        poster_index = reference_start + main_pose_reference_count
+        yq_index = poster_index + 1
+        if candidate_sheet_count == 1:
+            candidate_order = "第一张图是带编号的本色候选原图；"
+        else:
+            candidate_order = f"前{candidate_sheet_count}张图都是带编号的本色候选原图；"
+        image_order = (
+            candidate_order +
+            f"第{reference_start}到第{poster_index - 1}张图是当前品类的主图位切片参考，"
+            "按顺序一一对应 tmz1、tmz2、tmz3、tmz4、tmz5；"
+            f"第{poster_index}张图是鞋品海报姿势模板，"
+            f"第{yq_index}张图是 yq 三姿势参考模板。"
+        )
+    elif candidate_sheet_count == 1:
         image_order = (
             "第一张图是带编号的本色候选原图，第二张图是鞋品主图姿势模板，"
             "第三张图是最新主图1姿势参考，第四张图是鞋品海报姿势模板，"
@@ -2950,6 +3021,7 @@ def _shoe_selection_prompt(
 
 选择规则：
 1. tmz1..tmz5 是天猫5张主图；wpz1..wpz4 与天猫前4张姿势相同。
+   如果本次输入提供了当前品类的 5 张主图位切片参考，必须优先逐张对照这些参考图判断 tmz1..tmz5，不要只按文字描述猜姿势。
    tmz1/wpz1 必须匹配最新主图模板第1行：按品类选择一双鞋或双鞋 3/4 斜前方完整展示，
    能同时看清鞋面、鞋头、鞋身外侧和整体造型；不能再按旧规则选择单只鞋、鞋垫、单独鞋底、鞋盒、吊牌、小配件或局部特写。
    tmz2..tmz4 匹配该品类模板第2至4姿势；tmz5 是新版主图5，必须优先挑选原始白底单只鞋斜向展示图；
@@ -2960,11 +3032,10 @@ def _shoe_selection_prompt(
    所有品类的 tmz3/wpz3 都必须是单只鞋竖立或悬立、鞋身近似纵向的姿势；
    必须展示鞋子的完整外侧轮廓，鞋头不能正对镜头；不能选择“鞋头朝镜头”的正面竖立图，
    也不能选择正常平放的侧视图、普通斜前方单鞋图，或复用 tmz1/wpz1、yq3。
-   tmz4/wpz4 必须按品类区分：运动是后侧斜悬且鞋底朝镜头；休闲是完整后侧面；
-   雪地是完整鞋口内里图：画面要同时看见鞋口绒毛/内里和鞋帮侧面，不能只裁到鞋面或鞋头；
-   婴童是单鞋后侧角度。
+   除雪地靴/秋冬拖鞋/运动靴外，其他品类的 tmz4/wpz4 都按主图模板第4行的同一姿势族选择：完整单鞋后侧或侧后角度。
+   雪地是唯一特殊主图4：必须是完整鞋口内里图，画面要同时看见鞋口绒毛/内里和鞋帮侧面，不能只裁到鞋面或鞋头。
    雪地第4姿势不能选择拉链、鞋帮外侧、普通侧面特写、鞋面/鞋头局部裁切图；
-   婴童第4姿势不能误用 yq3 的完整外侧面。
+   非雪地主图4不能误用 yq3 的完整外侧面。
 2. wpz 共6张，wpz1..wpz4 与天猫前4张姿势相同；wpz5 优先选择与 tmz5 同姿势的灰底原图，wpz6 必须是带款号和颜色标签的鞋盒图。
    如果没有同姿势灰底原图，仍按候选原图返回，程序不会把白底或灰底图片改色。
 3. o 是主推色必需的海报图，新版海报姿势与主图5不同，不要再把 tmz5/wpz5 当海报图。
@@ -3075,6 +3146,39 @@ def _create_model_input_preview(
             optimize=True,
         )
     return target
+
+
+def _create_main_pose_reference_cells(
+    source: Path,
+    target_dir: Path,
+) -> dict[str, list[Path]]:
+    from PIL import Image, ImageOps
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with Image.open(source) as opened:
+        image = _image_rgb_on_white(ImageOps.exif_transpose(opened))
+    width, height = image.size
+    references: dict[str, list[Path]] = {}
+    for column_index, category in enumerate(SHOE_MAIN_TEMPLATE_CATEGORY_ORDER):
+        slug = SHOE_MAIN_TEMPLATE_CATEGORY_SLUGS[category]
+        category_refs: list[Path] = []
+        for row_index in range(5):
+            left = round(column_index * width / 4)
+            right = round((column_index + 1) * width / 4)
+            top = round(row_index * height / 5)
+            bottom = round((row_index + 1) * height / 5)
+            target = target_dir / f"{slug}-tmz{row_index + 1}.jpg"
+            cell = image.crop((left, top, right, bottom))
+            cell.thumbnail((900, 900), Image.Resampling.LANCZOS)
+            cell.save(
+                target,
+                format="JPEG",
+                quality=SHOE_MODEL_INPUT_JPEG_QUALITY,
+                optimize=True,
+            )
+            category_refs.append(target)
+        references[category] = category_refs
+    return references
 
 
 def _candidate_id_number(candidate_id: Any) -> int | None:
@@ -3216,6 +3320,11 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
     style_code = kwargs["style_code"]
     color_code = kwargs["color_code"]
     total_batches = max(1, len(contact_sheets))
+    main_pose_reference_images = [
+        _text(path)
+        for path in (kwargs.get("main_pose_reference_images") or [])
+        if _text(path)
+    ][:5]
 
     model_payloads: list[dict[str, Any]] = []
     route_model_ids: list[str] = []
@@ -3228,6 +3337,21 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
         )
         if not batch_candidate_ids:
             continue
+        if main_pose_reference_images:
+            image_inputs = [
+                contact_sheet,
+                *main_pose_reference_images,
+                kwargs.get("poster_reference_image") or str(SHOE_POSTER_REFERENCE_IMAGE),
+                kwargs["yq_reference_image"],
+            ]
+        else:
+            image_inputs = [
+                contact_sheet,
+                kwargs["reference_image"],
+                kwargs["pose1_reference_image"],
+                kwargs.get("poster_reference_image") or str(SHOE_POSTER_REFERENCE_IMAGE),
+                kwargs["yq_reference_image"],
+            ]
         batch_inputs.append({
             "batch_index": batch_index,
             "contact_sheet": contact_sheet,
@@ -3238,14 +3362,9 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                 batch_candidate_ids,
                 kwargs.get("shoe_category") or "",
                 candidate_sheet_count=1,
+                main_pose_reference_count=len(main_pose_reference_images),
             ),
-            "image_inputs": [
-                contact_sheet,
-                kwargs["reference_image"],
-                kwargs["pose1_reference_image"],
-                kwargs.get("poster_reference_image") or str(SHOE_POSTER_REFERENCE_IMAGE),
-                kwargs["yq_reference_image"],
-            ],
+            "image_inputs": image_inputs,
         })
 
     def analyze_batch_with_model(
@@ -3514,7 +3633,6 @@ def _resolve_selection_payload(
             resolved[key] = [
                 _resolve_candidate_value(item, candidate_ids)
                 for item in value
-                if _resolve_candidate_value(item, candidate_ids)
             ]
         else:
             resolved[key] = _resolve_candidate_value(value, candidate_ids)
@@ -3539,6 +3657,28 @@ def _apply_o_category_rule(category: str, slots: dict[str, Any]) -> dict[str, An
     elif category_text in {"雪地", "婴童", "休闲"}:
         ruled["o"] = _text(ruled.get("tmz1")) or wpz_by_index.get(1, "")
     return ruled
+
+
+def _sync_wpz_main_slots(slots: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    ruled = dict(slots)
+    wpz = _selection_array(slots, "wpz", 6)
+    corrections: list[str] = []
+    for index in range(1, 5):
+        tmz_key = f"tmz{index}"
+        tmz_value = _text(ruled.get(tmz_key))
+        wpz_value = _text(wpz[index - 1])
+        if tmz_value and wpz_value != tmz_value:
+            wpz[index - 1] = tmz_value
+            corrections.append(
+                f"wpz{index} 已按 {tmz_key} 同步：{wpz_value or '空'} -> {tmz_value}"
+            )
+        elif not tmz_value and wpz_value:
+            ruled[tmz_key] = wpz_value
+            corrections.append(
+                f"{tmz_key} 已按 wpz{index} 补齐：空 -> {wpz_value}"
+            )
+    ruled["wpz"] = wpz
+    return ruled, corrections
 
 
 def _resolve_label_color_name(
@@ -3904,6 +4044,10 @@ def prepare_shoe_packages(
         reference_image,
         model_input_root / "main-template.jpg",
     )
+    main_pose_references_by_category = _create_main_pose_reference_cells(
+        reference_image,
+        model_input_root / "main-pose-cells",
+    )
     poster_reference_image_for_model = _create_model_input_preview(
         poster_reference_image,
         model_input_root / "poster-template.jpg",
@@ -4019,6 +4163,13 @@ def prepare_shoe_packages(
                     contact_sheet=str(contact_sheets[0]),
                     contact_sheets=[str(path) for path in contact_sheets],
                     reference_image=str(reference_image_for_model),
+                    main_pose_reference_images=[
+                        str(path)
+                        for path in main_pose_references_by_category.get(
+                            forced_category,
+                            [],
+                        )
+                    ],
                     poster_reference_image=str(poster_reference_image_for_model),
                     pose1_reference_image=str(pose1_reference_image_for_model),
                     yq_reference_image=str(yq_reference_image_for_model),
@@ -4106,6 +4257,9 @@ def prepare_shoe_packages(
                 outsole_entries_by_name=outsole_entries_by_name,
             )
             for correction in quality_corrections:
+                log(f"鞋品确定性校验：{style_code}-{color_code}，{correction}")
+            slots, wpz_sync_corrections = _sync_wpz_main_slots(slots)
+            for correction in wpz_sync_corrections:
                 log(f"鞋品确定性校验：{style_code}-{color_code}，{correction}")
             slots = _apply_o_category_rule(category, slots)
 
@@ -4203,6 +4357,12 @@ def prepare_shoe_packages(
                 f"鞋品姿势识别完成：{style_code}-{color_name}，"
                 f"品类 {category or '未返回'}（{category_source}），"
                 f"模型 {slots.get('_model_id') or model_id}"
+            )
+            organize_completed += 1
+            report_progress(
+                "款色识别完成",
+                style_code=style_code,
+                color_code=color_name,
             )
 
         if not selections_by_color:
@@ -4471,9 +4631,8 @@ def prepare_shoe_packages(
                             "品类来源": selections_by_color[color_name].get("shoe_category_source") or "",
                             "备注": "460x460",
                         })
-            organize_completed += 1
             report_progress(
-                "款色完成",
+                "复制命名完成",
                 style_code=style_code,
                 color_code=color_name,
             )

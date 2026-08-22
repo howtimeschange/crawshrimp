@@ -113,6 +113,59 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertIn("不能选择旧版第五姿势的两只鞋组合图", prompt)
         self.assertIn("鞋垫、单独鞋底、鞋盒或局部特写", prompt)
 
+    def test_prompt_maps_main_pose_reference_cells_to_slots(self):
+        prompt = shenhui_shoe_packaging._shoe_selection_prompt(
+            "208326146209",
+            "00316",
+            {"I01": "candidate.jpg"},
+            "婴童",
+            main_pose_reference_count=5,
+        )
+
+        self.assertIn("第2到第6张图是当前品类的主图位切片参考", prompt)
+        self.assertIn("tmz1、tmz2、tmz3、tmz4、tmz5", prompt)
+        self.assertIn("必须优先逐张对照这些参考图判断", prompt)
+
+    def test_main_pose_template_is_cut_into_category_slot_references(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            template = root / "template.jpg"
+            image = Image.new("RGB", (400, 500), (255, 255, 255))
+            draw = ImageDraw.Draw(image)
+            for row in range(5):
+                for column in range(4):
+                    color = (
+                        20 + column * 50,
+                        30 + row * 40,
+                        220 - column * 30,
+                    )
+                    draw.rectangle(
+                        (
+                            column * 100,
+                            row * 100,
+                            column * 100 + 99,
+                            row * 100 + 99,
+                        ),
+                        fill=color,
+                    )
+            image.save(template)
+
+            refs = shenhui_shoe_packaging._create_main_pose_reference_cells(
+                template,
+                root / "cells",
+            )
+
+            self.assertEqual(
+                set(refs),
+                {"雪地", "运动", "婴童", "休闲"},
+            )
+            self.assertEqual(len(refs["婴童"]), 5)
+            for paths in refs.values():
+                for path in paths:
+                    self.assertTrue(path.is_file())
+                    with Image.open(path) as reference:
+                        self.assertLessEqual(max(reference.size), 900)
+
     def test_prompt_spells_out_new_shared_main_pose_one(self):
         prompt = shenhui_shoe_packaging._shoe_selection_prompt(
             "204325141014",
@@ -143,12 +196,11 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertIn("tmz3/wpz3", prompt)
         self.assertIn("单只鞋竖立或悬立", prompt)
         self.assertIn("不能选择正常平放的侧视图", prompt)
-        self.assertIn("tmz4/wpz4 必须按品类区分", prompt)
-        self.assertIn("运动是后侧斜悬且鞋底朝镜头", prompt)
-        self.assertIn("休闲是完整后侧面", prompt)
-        self.assertIn("雪地是完整鞋口内里图", prompt)
+        self.assertIn("除雪地靴/秋冬拖鞋/运动靴外", prompt)
+        self.assertIn("其他品类的 tmz4/wpz4 都按主图模板第4行", prompt)
+        self.assertIn("必须是完整鞋口内里图", prompt)
         self.assertIn("不能只裁到鞋面或鞋头", prompt)
-        self.assertIn("婴童是单鞋后侧角度", prompt)
+        self.assertIn("雪地是唯一特殊主图4", prompt)
         self.assertIn("鞋面/鞋头局部裁切图", prompt)
         self.assertIn("会从正确的雪地第4姿势鞋口内里图裁切生成 yk1", prompt)
 
@@ -1145,7 +1197,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
         self.assertEqual(ruled["tmz4"], "rear-outsole-angle.jpg")
         self.assertEqual(ruled["wpz"][3], "rear-outsole-angle.jpg")
-        self.assertTrue(any("运动第4姿势" in item for item in corrections))
+        self.assertTrue(any("主图4/wpz4" in item for item in corrections))
 
     def test_quality_rules_reject_low_detail_insole_for_latest_main_pose_one(self):
         features = {
@@ -1272,7 +1324,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
         self.assertEqual(ruled["tmz4"], "rear-outsole-angle.jpg")
         self.assertEqual(ruled["wpz"][3], "rear-outsole-angle.jpg")
-        self.assertTrue(any("运动第4姿势" in item for item in corrections))
+        self.assertTrue(any("主图4/wpz4" in item for item in corrections))
 
     def test_quality_rules_clear_sports_pose_four_when_only_insole_is_available(self):
         features = {
@@ -1393,7 +1445,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
         self.assertEqual(ruled["tmz4"], "rear-side-view.jpg")
         self.assertEqual(ruled["wpz"][3], "rear-side-view.jpg")
-        self.assertTrue(any("婴童第4姿势" in item for item in corrections))
+        self.assertTrue(any("主图4/wpz4" in item for item in corrections))
 
     def test_quality_rules_repair_leisure_pose_four_to_rear_side_view(self):
         features = {
@@ -1459,7 +1511,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(ruled["tmz4"], "rear-side-view.jpg")
         self.assertEqual(ruled["wpz"][3], "rear-side-view.jpg")
         self.assertEqual(ruled["yq"][2], "outer-side-view.jpg")
-        self.assertTrue(any("休闲第4姿势" in item for item in corrections))
+        self.assertTrue(any("主图4/wpz4" in item for item in corrections))
 
     def test_quality_rules_separate_baby_pose_four_from_shared_yq_three(self):
         features = {
@@ -1518,7 +1570,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(ruled["tmz4"], "rear-side-view.jpg")
         self.assertEqual(ruled["wpz"][3], "rear-side-view.jpg")
         self.assertEqual(ruled["yq"][2], "wrong-outer-side.jpg")
-        self.assertTrue(any("婴童第4姿势" in item for item in corrections))
+        self.assertTrue(any("主图4/wpz4" in item for item in corrections))
         self.assertTrue(any("yq3" in item for item in corrections))
 
     def test_quality_rules_separate_baby_pose_four_from_main_five(self):
@@ -1589,7 +1641,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(ruled["wpz"][4], "gray-single.jpg")
         self.assertEqual(ruled["tmz4"], "rear-side-view.jpg")
         self.assertEqual(ruled["wpz"][3], "rear-side-view.jpg")
-        self.assertTrue(any("第4姿势" in item for item in corrections))
+        self.assertTrue(any("主图4/wpz4" in item for item in corrections))
 
     def test_quality_rules_repair_fixed_yq_one_and_outsole_for_baby_shoes(self):
         features = {
@@ -2045,6 +2097,48 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
         ruled = shenhui_shoe_packaging._apply_o_category_rule("运动", {"wpz": ["only-one.jpg"]})
         self.assertEqual(ruled["o"], "")
+
+    def test_selection_payload_preserves_empty_wpz_positions(self):
+        _color_name, _category, slots = shenhui_shoe_packaging._resolve_selection_payload(
+            {
+                "color_name": "白紫色调00317",
+                "shoe_category": "婴童",
+                "slots": {
+                    "wpz": ["I01", "", "I03", "", "I05", "I06"],
+                    "yq": ["", "I02", ""],
+                },
+            },
+            {
+                "I01": "wpz1.jpg",
+                "I02": "yq2.jpg",
+                "I03": "wpz3.jpg",
+                "I05": "wpz5.jpg",
+                "I06": "box.jpg",
+            },
+        )
+
+        self.assertEqual(
+            slots["wpz"],
+            ["wpz1.jpg", "", "wpz3.jpg", "", "wpz5.jpg", "box.jpg"],
+        )
+        self.assertEqual(slots["yq"], ["", "yq2.jpg", ""])
+
+    def test_sync_wpz_main_slots_with_tmz_rows(self):
+        ruled, corrections = shenhui_shoe_packaging._sync_wpz_main_slots({
+            "tmz1": "tmz1.jpg",
+            "tmz2": "tmz2.jpg",
+            "tmz3": "",
+            "tmz4": "tmz4.jpg",
+            "wpz": ["old1.jpg", "", "wpz3.jpg", "old4.jpg", "wpz5.jpg", "box.jpg"],
+        })
+
+        self.assertEqual(
+            ruled["wpz"],
+            ["tmz1.jpg", "tmz2.jpg", "wpz3.jpg", "tmz4.jpg", "wpz5.jpg", "box.jpg"],
+        )
+        self.assertEqual(ruled["tmz3"], "wpz3.jpg")
+        self.assertTrue(any("wpz2" in item for item in corrections))
+        self.assertTrue(any("tmz3" in item for item in corrections))
 
     def test_selection_source_validation_sanitizes_missing_references(self):
         slots = {
@@ -2806,6 +2900,9 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 self.assertTrue(Path(kwargs["poster_reference_image"]).is_file())
                 self.assertTrue(Path(kwargs["pose1_reference_image"]).is_file())
                 self.assertTrue(Path(kwargs["yq_reference_image"]).is_file())
+                self.assertEqual(len(kwargs["main_pose_reference_images"]), 5)
+                for path in kwargs["main_pose_reference_images"]:
+                    self.assertTrue(Path(path).is_file())
                 for reference_key in (
                     "reference_image",
                     "poster_reference_image",
@@ -2908,6 +3005,16 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                     event["organize_stage"] == "识别姿势"
                     and event["organize_current_style"] == "204326141005"
                     and event["organize_current_color"] == "00317"
+                    for event in progress_events
+                )
+            )
+            self.assertTrue(
+                any(
+                    event["organize_stage"] == "款色识别完成"
+                    and event["organize_completed"] == 1
+                    and event["organize_total"] == 2
+                    and event["organize_current_style"] == "204326141005"
+                    and event["organize_current_color"] == "白紫色调00317"
                     for event in progress_events
                 )
             )
@@ -3568,6 +3675,62 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(calls[1][1][0], "contact-2.jpg")
         self.assertEqual(len(calls[0][1]), 5)
         self.assertEqual(payload["slots"]["tmz1"], "1.jpg")
+
+    def test_default_pose_model_uses_main_pose_reference_cells(self):
+        calls = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append(kwargs)
+            return (
+                {
+                    "color_name": "白紫色调00317",
+                    "shoe_category": "婴童",
+                    "slots": {
+                        "tmz1": "1.jpg",
+                        "wpz": ["1.jpg"],
+                        "yq": [],
+                    },
+                },
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        references = [f"baby-tmz{index}.jpg" for index in range(1, 6)]
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color(
+                style_code="204426146036",
+                color_code="00317",
+                contact_sheet="contact-1.jpg",
+                contact_sheets=["contact-1.jpg"],
+                reference_image="main-template.jpg",
+                main_pose_reference_images=references,
+                poster_reference_image="poster-template.jpg",
+                pose1_reference_image="pose1-template.jpg",
+                yq_reference_image="yq-template.jpg",
+                candidate_ids={f"I{index:02d}": f"{index}.jpg" for index in range(1, 5)},
+                candidate_names=[f"{index}.jpg" for index in range(1, 5)],
+                shoe_category="婴童",
+                model_id="gpt-5.5",
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+            )
+
+        self.assertEqual(payload["slots"]["tmz1"], "1.jpg")
+        self.assertEqual(
+            calls[0]["image_inputs"],
+            [
+                "contact-1.jpg",
+                *references,
+                "poster-template.jpg",
+                "yq-template.jpg",
+            ],
+        )
+        self.assertIn(
+            "第2到第6张图是当前品类的主图位切片参考",
+            calls[0]["user_prompt"],
+        )
 
 
 if __name__ == "__main__":

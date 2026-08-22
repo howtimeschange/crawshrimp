@@ -5311,7 +5311,7 @@ onUnmounted(() => {
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: linear-gradient(180deg, rgba(255,106,41,0.08), rgba(255,106,41,0.03));
+  background: linear-gradient(180deg, rgba(var(--orange-rgb),0.07), rgba(var(--orange-rgb),0.025));
 }
 .progress-strip-head {
   display: flex;
@@ -5395,26 +5395,26 @@ onUnmounted(() => {
   height: 6px;
   border-radius: 999px;
   overflow: hidden;
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,106,41,0.18);
+  background: var(--soft-fill-hover);
+  border: 1px solid rgba(var(--orange-rgb),0.18);
 }
 .progress-strip-bar.indeterminate {
-  background: rgba(255,255,255,0.06);
+  background: var(--soft-fill-hover);
 }
 .progress-strip-bar-fill {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--orange), #ff9a5f);
-  box-shadow: 0 0 12px rgba(255,106,41,0.25);
+  box-shadow: 0 0 12px rgba(var(--orange-rgb),0.24);
   transition: width 180ms ease;
 }
 .progress-strip-bar-secondary {
-  border-color: rgba(124, 139, 255, 0.18);
-  background: rgba(124, 139, 255, 0.08);
+  border-color: rgba(37, 99, 235, 0.18);
+  background: color-mix(in srgb, var(--blue) 8%, transparent);
 }
 .progress-strip-bar-fill-secondary {
-  background: linear-gradient(90deg, #7c8bff, #9dc1ff);
-  box-shadow: 0 0 12px rgba(124, 139, 255, 0.22);
+  background: linear-gradient(90deg, var(--blue), #7ba7ff);
+  box-shadow: 0 0 12px rgba(37, 99, 235, 0.20);
 }
 .progress-strip-bar-fill.indeterminate {
   width: 36%;
@@ -5430,31 +5430,45 @@ onUnmounted(() => {
   min-width: 0;
   padding: 9px 10px;
   border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.018)),
-    rgba(9, 11, 18, 0.26);
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bg2) 92%, #fff 8%),
+      color-mix(in srgb, var(--bg2) 98%, #fff 2%)
+    ),
+    var(--bg2);
   overflow: hidden;
+  box-shadow: 0 8px 20px rgba(30, 31, 38, 0.06);
 }
 .progress-stage-card::before {
   content: '';
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(circle at top right, rgba(255,255,255,0.07), transparent 44%);
-  opacity: 0.55;
+  background: linear-gradient(90deg, rgba(var(--orange-rgb),0.10), transparent 28%);
+  opacity: 0;
 }
 .progress-stage-card-primary {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 10px 28px rgba(255,106,41,0.06);
+  border-color: rgba(var(--orange-rgb),0.24);
+  background:
+    linear-gradient(180deg, rgba(var(--orange-rgb),0.075), rgba(var(--orange-rgb),0.025)),
+    var(--bg2);
 }
 .progress-stage-card-secondary {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 10px 28px rgba(124,139,255,0.05);
+  border-color: rgba(37, 99, 235, 0.20);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--blue) 7%, transparent), color-mix(in srgb, var(--blue) 2%, transparent)),
+    var(--bg2);
 }
 .progress-stage-card-active {
-  border-color: rgba(255,255,255,0.1);
+  box-shadow: 0 10px 24px rgba(30, 31, 38, 0.08);
 }
 .progress-stage-card-complete {
-  border-color: rgba(255,255,255,0.08);
+  background:
+    linear-gradient(180deg, rgba(34,197,94,0.075), rgba(34,197,94,0.025)),
+    var(--bg2);
+  border-color: rgba(34,197,94,0.24);
 }
 .progress-stage-card-head,
 .progress-stage-card-kicker,
@@ -5486,7 +5500,7 @@ onUnmounted(() => {
   padding: 4px 7px;
   border-radius: 999px;
   color: var(--text2);
-  background: rgba(255,255,255,0.06);
+  background: var(--soft-fill-hover);
 }
 .progress-stage-card-mainline {
   display: flex;

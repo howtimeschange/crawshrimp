@@ -141,6 +141,9 @@ test('state-specific cards and overlays keep readable colors in light mode', () 
     cssRule(runnerSource, '.progress-stage-card-primary .progress-stage-card-percent,\n.progress-stage-card-primary .progress-stage-card-status'),
     /color:\s*var\(--orange-text\);/,
   )
+  assert.doesNotMatch(cssRule(runnerSource, '.progress-stage-card'), /rgba\(9,\s*11,\s*18/)
+  assert.match(cssRule(runnerSource, '.progress-strip-bar'), /background:\s*var\(--soft-fill-hover\);/)
+  assert.match(cssRule(runnerSource, '.progress-stage-card-primary'), /rgba\(var\(--orange-rgb\),0\.24\)/)
   assert.match(cssRule(approvalSource, '.ghost-btn.regenerate'), /color:\s*var\(--orange-text\);/)
 })
 
