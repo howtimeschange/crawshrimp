@@ -75,6 +75,7 @@ class ParamType(str, Enum):
     file_images = "file_images"  # 多图文件选择（png/jpg/jpeg），注入 paths 数组
     file_zip = "file_zip"      # 多 ZIP 文件选择，注入 paths 数组
     file_pdf = "file_pdf"      # 多 PDF 文件选择，注入 paths 数组
+    model_chain = "model_chain"  # 模型 + 备选模型配置组合，提交时展开为多个模型参数
 
 
 class ParamOption(BaseModel):
@@ -107,6 +108,8 @@ class TaskParam(BaseModel):
     templates: Optional[List[TaskTemplate]] = None  # 多模板下载配置
     default: Optional[Any] = None
     options: Optional[List[ParamOption]] = None  # radio / select / checkbox 用
+    default_model: Optional[dict[str, Any]] = None  # model_chain 用：主模型 select 配置
+    fallback_models: Optional[List[dict[str, Any]]] = None  # model_chain 用：备选模型 select 配置
     visible_when: Optional[dict[str, Any]] = None  # GUI 可选：按其他字段值控制显示
     hidden: bool = False                  # GUI 可选：内部参数不在表单展示，但后端仍注入默认值
     include_file_listing: bool = False          # directory 用：选择目录后把递归文件清单随参数注入

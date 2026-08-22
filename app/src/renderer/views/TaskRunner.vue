@@ -205,6 +205,51 @@
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
 
+            <template v-else-if="isModelChainParam(param)">
+              <div class="model-chain">
+                <div class="model-chain-primary">
+                  <label class="model-chain-field">
+                    <span>{{ modelChainDefaultModel(param).label || '默认模型' }}</span>
+                    <select v-model="values[modelChainDefaultModel(param).id]" class="select">
+                      <option
+                        v-for="opt in modelChainDefaultModel(param).options || []"
+                        :key="opt.value"
+                        :value="opt.value"
+                      >
+                        {{ opt.label }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
+                <div v-if="modelChainFallbackModels(param).length" class="model-chain-backups">
+                  <span class="model-chain-section-label">备选模型</span>
+                  <div class="model-chain-fallbacks" :style="modelChainFallbackGridStyle(param)">
+                    <label
+                      v-for="(fallback, index) in modelChainFallbackModels(param)"
+                      :key="fallback.id"
+                      class="model-chain-fallback"
+                    >
+                      <span class="model-chain-order">{{ index + 1 }}</span>
+                      <select
+                        v-model="values[fallback.id]"
+                        class="select"
+                        :aria-label="fallback.label || `备选模型 ${index + 1}`"
+                      >
+                        <option
+                          v-for="opt in fallback.options || []"
+                          :key="opt.value"
+                          :value="opt.value"
+                        >
+                          {{ opt.label }}
+                        </option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
+
             <template v-else-if="param.type === 'select'">
               <select v-model="values[param.id]" class="select">
                 <option v-for="opt in param.options" :key="opt.value" :value="opt.value">
@@ -1214,6 +1259,13 @@ function buildDefaultValues(params = []) {
   for (const p of (params || [])) {
     if (isBooleanCheckboxParam(p)) next[p.id] = Boolean(p.default)
     else if (p.type === 'checkbox') next[p.id] = Array.isArray(p.default) ? [...p.default] : []
+    else if (isModelChainParam(p)) {
+      const defaultModel = modelChainDefaultModel(p)
+      if (defaultModel.id) next[defaultModel.id] = defaultModel.default ?? ''
+      for (const fallback of modelChainFallbackModels(p)) {
+        if (fallback.id) next[fallback.id] = fallback.default ?? ''
+      }
+    }
     else if (isLineListParam(p)) next[p.id] = normalizeLineListRows(p.default, true)
     else if (isSingleTemporalParamType(p.type)) next[p.id] = p.default ?? ''
     else if (isRangeParamType(p.type)) { next[p.id + '_start'] = ''; next[p.id + '_end'] = '' }
@@ -1241,6 +1293,14 @@ function applyInitialParamsToValues(initialParams = {}) {
   if (!initialParams || typeof initialParams !== 'object') return
   const next = { ...values.value }
   for (const p of taskParams.value || []) {
+    if (isModelChainParam(p)) {
+      const modelFields = [modelChainDefaultModel(p), ...modelChainFallbackModels(p)]
+      for (const field of modelFields) {
+        if (!field.id || !Object.prototype.hasOwnProperty.call(initialParams, field.id)) continue
+        next[field.id] = initialParams[field.id]
+      }
+      continue
+    }
     if (!Object.prototype.hasOwnProperty.call(initialParams, p.id)) continue
     const value = initialParams[p.id]
     if (isSingleTemporalParamType(p.type)) next[p.id] = value || ''
@@ -1303,6 +1363,41 @@ function applyQuickFill(param, value) {
 
 function isLineListParam(param) {
   return param?.type === 'line_list' || String(param?.ui_variant || '').trim().toLowerCase() === 'line_list'
+}
+
+function isModelChainParam(param) {
+  return param?.type === 'model_chain'
+}
+
+function modelChainDefaultModel(param) {
+  const model = param?.default_model && typeof param.default_model === 'object'
+    ? param.default_model
+    : {}
+  return {
+    id: String(model.id || 'model_id'),
+    label: model.label || '默认模型',
+    default: model.default ?? '',
+    options: Array.isArray(model.options) ? model.options : [],
+  }
+}
+
+function modelChainFallbackModels(param) {
+  return Array.isArray(param?.fallback_models)
+    ? param.fallback_models
+      .map((item, index) => ({
+        id: String(item?.id || `fallback_model_${index + 1}`),
+        label: item?.label || `备选 ${index + 1}`,
+        default: item?.default ?? '',
+        options: Array.isArray(item?.options) ? item.options : [],
+      }))
+      .filter(item => item.id)
+    : []
+}
+
+function modelChainFallbackGridStyle(param) {
+  const count = Math.max(1, modelChainFallbackModels(param).length)
+  const minWidth = count >= 5 ? '156px' : '180px'
+  return { gridTemplateColumns: `repeat(auto-fit, minmax(${minWidth}, 1fr))` }
 }
 
 function normalizeLineListRows(value, keepOneEmpty = false, keepEmptyRows = false) {
@@ -1394,6 +1489,23 @@ function reconcileValuesWithParams(params = []) {
       if (JSON.stringify(next[p.id]) !== JSON.stringify(normalized)) {
         next[p.id] = normalized
         changed = true
+      }
+      continue
+    }
+
+    if (isModelChainParam(p)) {
+      for (const field of [modelChainDefaultModel(p), ...modelChainFallbackModels(p)]) {
+        if (!field.id) continue
+        if (!Object.prototype.hasOwnProperty.call(next, field.id)) {
+          next[field.id] = field.default ?? ''
+          changed = true
+          continue
+        }
+        const valid = new Set((field.options || []).map(opt => opt?.value))
+        if (valid.size && !valid.has(next[field.id])) {
+          next[field.id] = normalizeSelectFallback(field)
+          changed = true
+        }
       }
       continue
     }
@@ -2216,7 +2328,7 @@ function paramLayoutClass(param) {
       return 'param-span-third'
     }
   }
-  if (param.type === 'directory' || param.type === 'file_excel' || param.type === 'file_images' || isMultiFileParamType(param.type) || param.type === 'checkbox' || param.type === 'textarea' || isLineListParam(param) || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
+  if (param.type === 'directory' || param.type === 'file_excel' || param.type === 'file_images' || isMultiFileParamType(param.type) || param.type === 'checkbox' || param.type === 'textarea' || isLineListParam(param) || isModelChainParam(param) || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
     return 'param-span-full'
   }
   if (param.type === 'radio' && (param.options?.length || 0) > 2) {
@@ -2560,6 +2672,13 @@ function buildRunParams(overrides = {}) {
       params[p.id] = {
         start: values.value[p.id + '_start'] || '',
         end: values.value[p.id + '_end'] || '',
+      }
+      continue
+    }
+
+    if (isModelChainParam(p)) {
+      for (const field of [modelChainDefaultModel(p), ...modelChainFallbackModels(p)]) {
+        if (field.id) params[field.id] = values.value[field.id] || ''
       }
       continue
     }
@@ -4862,6 +4981,67 @@ onUnmounted(() => {
 .line-list-add:hover {
   border-color: var(--orange);
   background: rgba(255, 99, 35, 0.14);
+}
+.model-chain {
+  display: grid;
+  gap: 10px;
+}
+.model-chain-primary {
+  max-width: min(420px, 100%);
+}
+.model-chain-backups {
+  display: grid;
+  gap: 6px;
+}
+.model-chain-section-label {
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.model-chain-fallbacks {
+  display: grid;
+  gap: 8px;
+}
+.model-chain-field {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+.model-chain-field span {
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.model-chain-field .select {
+  min-width: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.model-chain-fallback {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+.model-chain-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 30px;
+  border-radius: 7px;
+  background: rgba(255, 99, 35, 0.09);
+  color: var(--orange-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.model-chain-fallback .select {
+  min-width: 0;
+  padding: 8px 9px;
+  font-size: 12px;
 }
 .input-number { width: 100%; }
 .select {

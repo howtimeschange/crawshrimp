@@ -13,7 +13,9 @@ from core.api_server import (
     _cleanup_orphaned_runtime_artifacts,
     _finalize_shenhui_new_arrival_outputs,
     _prepare_shenhui_shoe_package_rows,
+    _serialize_task_param,
 )
+from core.models import AdapterManifest
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "adapters" / "shenhui-new-arrival" / "manifest.yaml"
@@ -59,33 +61,49 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             params["shoe_category_file"]["template_file"],
             "assets/鞋品品类映射模板.xlsx",
         )
-        self.assertEqual(params["model_id"]["default"], "gpt-5.6-terra")
+        self.assertEqual(params["model_chain"]["type"], "model_chain")
+        self.assertEqual(params["model_chain"]["label"], "模型策略")
+        self.assertEqual(params["model_chain"]["ui_span"], "full")
+        default_model = params["model_chain"]["default_model"]
+        fallback_models = {
+            item["id"]: item
+            for item in params["model_chain"]["fallback_models"]
+        }
+        self.assertEqual(default_model["id"], "model_id")
+        self.assertEqual(default_model["label"], "默认模型")
+        self.assertEqual(default_model["default"], "gpt-5.6-terra")
         self.assertEqual(
-            params["fallback_model_1"]["default"],
+            fallback_models["fallback_model_1"]["default"],
             "gpt-5.6-luna",
         )
-        self.assertEqual(params["fallback_model_2"]["default"], "gpt-5.6-sol")
-        self.assertEqual(params["fallback_model_3"]["default"], "gpt-5.5")
+        self.assertEqual(fallback_models["fallback_model_1"]["label"], "备选模型 1")
+        self.assertEqual(fallback_models["fallback_model_2"]["default"], "gpt-5.6-sol")
+        self.assertEqual(fallback_models["fallback_model_2"]["label"], "备选模型 2")
+        self.assertEqual(fallback_models["fallback_model_3"]["default"], "gpt-5.5")
+        self.assertEqual(fallback_models["fallback_model_3"]["label"], "备选模型 3")
         self.assertEqual(
-            params["fallback_model_4"]["default"],
+            fallback_models["fallback_model_4"]["default"],
             "deepseek-official-v4-flash-vision-exp",
         )
-        self.assertEqual(params["fallback_model_5"]["default"], "")
+        self.assertEqual(fallback_models["fallback_model_4"]["label"], "备选模型 4")
+        self.assertEqual(fallback_models["fallback_model_5"]["default"], "")
+        self.assertEqual(fallback_models["fallback_model_5"]["label"], "备选模型 5")
+        self.assertNotIn("Fallback", params["model_chain"]["hint"])
         self.assertIn("不使用", [
             option["label"]
-            for option in params["fallback_model_1"]["options"]
+            for option in fallback_models["fallback_model_1"]["options"]
         ])
         self.assertIn(
             "multi-model",
-            [option["value"] for option in params["model_id"]["options"]],
+            [option["value"] for option in default_model["options"]],
         )
         self.assertIn(
             "gpt-5.5",
-            [option["value"] for option in params["model_id"]["options"]],
+            [option["value"] for option in default_model["options"]],
         )
         self.assertIn(
             "qwen3.7-plus",
-            [option["value"] for option in params["model_id"]["options"]],
+            [option["value"] for option in default_model["options"]],
         )
         self.assertTrue(
             {
@@ -99,7 +117,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             }.issubset(
                 {
                     option["value"]
-                    for option in params["model_id"]["options"]
+                    for option in default_model["options"]
                 }
             )
         )
@@ -110,6 +128,28 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         self.assertIn("规则槽位", output_columns)
         self.assertIn("规则告警", output_columns)
         self.assertIn("压缩结果", output_columns)
+
+    def test_shoe_model_chain_param_survives_manifest_validation(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        adapter = AdapterManifest(**manifest)
+        task = next(
+            item
+            for item in adapter.tasks
+            if item.id == "prepare_shoe_upload_package"
+        )
+        param = next(item for item in task.params if item.id == "model_chain")
+
+        self.assertEqual(param.type.value, "model_chain")
+        self.assertEqual(param.default_model["id"], "model_id")
+        self.assertEqual(param.fallback_models[0]["id"], "fallback_model_1")
+        self.assertEqual(param.fallback_models[0]["label"], "备选模型 1")
+
+        serialized = _serialize_task_param("shenhui-new-arrival", param)
+        self.assertEqual(serialized["default_model"]["default"], "gpt-5.6-terra")
+        self.assertEqual(
+            serialized["fallback_models"][3]["default"],
+            "deepseek-official-v4-flash-vision-exp",
+        )
 
     def test_manifest_declares_deepdraw_upload_task_with_fail_closed_controls(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))

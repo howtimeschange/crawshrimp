@@ -158,6 +158,20 @@ test('TaskRunner renders single date params with temporal date picker cards', ()
   assert.match(runner, /openDatePicker\(param\.id\)/)
 })
 
+test('TaskRunner renders model chain params as compact backup model controls', () => {
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+
+  assert.match(runner, /v-else-if="isModelChainParam\(param\)"/)
+  assert.match(runner, /class="model-chain-primary"/)
+  assert.match(runner, /class="model-chain-backups"/)
+  assert.match(runner, /class="model-chain-section-label">备选模型</)
+  assert.match(runner, /v-for="\(\s*fallback,\s*index\s*\) in modelChainFallbackModels\(param\)"/)
+  assert.match(runner, /:aria-label="fallback\.label \|\| `备选模型 \$\{index \+ 1\}`"/)
+  assert.match(runner, /grid-template-columns:\s*22px minmax\(0, 1fr\)/)
+  assert.match(runner, /if \(isModelChainParam\(p\)\) \{[\s\S]*modelChainDefaultModel\(p\), \.\.\.modelChainFallbackModels\(p\)/)
+  assert.match(runner, /params\[field\.id\] = values\.value\[field\.id\] \|\| ''/)
+})
+
 test('Task instance approval board button prefers the local board URL in the desktop client', () => {
   const view = fs.readFileSync('app/src/renderer/views/TaskInstanceRunner.vue', 'utf8')
   assert.match(view, /const preferredApprovalBoardUrl = computed/)
