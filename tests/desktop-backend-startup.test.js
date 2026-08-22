@@ -300,7 +300,9 @@ test('desktop API helper rejects HTTP error responses with backend detail', () =
 test('desktop result data requests do not trigger backend restart readiness flow', () => {
   const main = readRepoFile('app/src/main.js')
 
-  assert.match(main, /secureHandle\('get-data',[\s\S]*apiCall\('GET', `\/data\/\$\{aid\}\/\$\{tid\}`, null, \{\s*ensureReady: false,\s*\}\)/)
+  assert.match(main, /secureHandle\('get-data',\s+async \(_, aid, tid, options = \{\}\) => \{/)
+  assert.match(main, /const suffix = limit === 20 \? '' : `\?limit=\$\{encodeURIComponent\(String\(limit\)\)\}`/)
+  assert.match(main, /apiCall\('GET', `\/data\/\$\{aid\}\/\$\{tid\}\$\{suffix\}`, null, \{\s*ensureReady: false,\s*\}\)/)
 })
 
 test('desktop quit stop requests log backend rejection details', () => {

@@ -21,6 +21,10 @@ class SemirCloudDriveManifestTests(unittest.TestCase):
         self.assertEqual(params["input_file"]["type"], "file_excel")
         self.assertTrue(params["input_file"]["required"])
         self.assertEqual(params["flat_cloud_path"]["default"], "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/")
+        self.assertEqual(params["mode"]["default"], "new")
+        mode_labels = {item["value"]: item["label"] for item in params["mode"]["options"]}
+        self.assertEqual(mode_labels["new"], "全新页面（推荐）")
+        self.assertEqual(mode_labels["current"], "当前页面")
         self.assertEqual(params["execute_mode"]["default"], "generate")
         self.assertIn({"value": "resume", "label": "续跑原图包"}, params["execute_mode"]["options"])
         self.assertEqual(params["resume_package_dir"]["type"], "directory")

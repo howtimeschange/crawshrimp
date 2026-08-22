@@ -55,6 +55,20 @@ class DataSinkLifecycleTests(unittest.TestCase):
                 self.assertEqual(run["records_count"], 5)
                 self.assertTrue(run["last_seen_at"])
 
+    def test_list_runs_limit_zero_returns_all_history_for_task(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"CRAWSHRIMP_DATA": tmpdir}, clear=False):
+                data_sink.init_db()
+                first_id = data_sink.begin_run("adapter", "task")
+                second_id = data_sink.begin_run("adapter", "task")
+                data_sink.begin_run("adapter", "other")
+
+                latest_only = data_sink.list_runs("adapter", "task", limit=1)
+                all_runs = data_sink.list_runs("adapter", "task", limit=0)
+
+                self.assertEqual([run["id"] for run in latest_only], [second_id])
+                self.assertEqual([run["id"] for run in all_runs], [second_id, first_id])
+
     def test_export_excel_shortens_long_temu_product_title_filename(self):
         long_title = (
             "Balabala Kids' Shoes Children's Sports Sandals, Boys' Summer New Closed-Toe "

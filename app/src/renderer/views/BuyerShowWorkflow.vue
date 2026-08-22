@@ -19,7 +19,7 @@
         role="tab"
         :class="['bsv-step', { active: activeStep === step.id, done: step.done }]"
         :aria-selected="activeStep === step.id"
-        @click="activeStep = step.id"
+        @click="selectStep(step)"
       >
         <span class="bsv-step-index">{{ step.index }}</span>
         <span class="bsv-step-copy">
@@ -163,12 +163,16 @@
           <div class="bsv-panel-body">
             <div class="bsv-stat-grid">
               <div>
-                <strong>{{ taskState.generationTotal || 0 }}</strong>
+                <strong>{{ generationPendingCount }}</strong>
                 <span>待生图</span>
               </div>
               <div>
                 <strong>{{ taskState.generationCompleted || 0 }}</strong>
-                <span>已完成</span>
+                <span>已拿链接</span>
+              </div>
+              <div>
+                <strong>{{ resultDownloadLabel }}</strong>
+                <span>已落图</span>
               </div>
               <div>
                 <strong>{{ taskState.records || 0 }}</strong>
@@ -195,61 +199,76 @@
         </section>
       </section>
 
-      <section v-else-if="activeStep === 'package'" class="bsv-two-column">
-        <section class="bsv-panel">
+      <section v-else class="bsv-result-layout">
+        <section class="bsv-panel bsv-run-list-panel">
           <header class="bsv-panel-head">
             <div>
-              <strong>本地打包与记录</strong>
-              <span>{{ packageOutputFiles.length ? '已生成输出文件' : '等待任务完成' }}</span>
+              <strong>历史任务队列</strong>
+              <span>{{ resultHistoryRuns.length }} 条本机记录</span>
             </div>
+            <button type="button" class="bsv-ghost small" @click="loadResultHistory()">刷新</button>
           </header>
           <div class="bsv-panel-body">
+            <div v-if="resultHistoryError" class="bsv-inline-error">{{ resultHistoryError }}</div>
+            <div v-else-if="resultHistoryLoading" class="bsv-empty-inline">正在读取本机历史任务...</div>
+            <div v-else-if="!resultHistoryRuns.length" class="bsv-empty-inline">暂无 AI 买家秀历史任务。</div>
+            <div v-else class="bsv-run-table-shell">
+              <table class="bsv-run-table">
+                <thead>
+                  <tr>
+                    <th>任务</th>
+                    <th>状态</th>
+                    <th>完成时间</th>
+                    <th>结果</th>
+                    <th>输出</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="run in resultHistoryRuns"
+                    :key="runKey(run)"
+                    :class="{ selected: selectedResultRunId === runKey(run) }"
+                    tabindex="0"
+                    :aria-selected="selectedResultRunId === runKey(run)"
+                    @click="selectResultRun(run)"
+                    @keydown.enter.prevent="selectResultRun(run)"
+                    @keydown.space.prevent="selectResultRun(run)"
+                  >
+                    <td>#{{ run.id }}</td>
+                    <td><span :class="['bsv-status-pill', runStatusClass(run.status)]">{{ runStatusLabel(run.status) }}</span></td>
+                    <td>{{ formatRunTime(run) }}</td>
+                    <td>{{ Number(run.records_count || 0) }} 行</td>
+                    <td>{{ parseRunOutputFiles(run).length }} 个</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="bsv-panel bsv-run-detail-panel">
+          <header class="bsv-panel-head">
+            <div>
+              <strong>{{ selectedResultRun ? `任务 #${selectedResultRun.id}` : '结果详情' }}</strong>
+              <span>{{ selectedResultRun ? formatRunTime(selectedResultRun) : '选择左侧任务查看输出' }}</span>
+            </div>
+            <button type="button" class="bsv-primary" :disabled="!primaryOutputTarget" @click="openPrimaryOutput">打开结果目录</button>
+          </header>
+          <div class="bsv-panel-body">
+            <div class="bsv-result-summary" :class="runStatusClass(selectedResultRun?.status || taskState.status)">
+              <strong>{{ selectedResultRun ? runStatusLabel(selectedResultRun.status) : taskState.message }}</strong>
+              <span>{{ selectedResultSummary }}</span>
+            </div>
             <div class="bsv-output-list">
-              <article v-for="file in packageOutputFiles" :key="file">
+              <article v-for="file in selectedResultFiles" :key="file">
                 <strong>{{ outputFileLabel(file) }}</strong>
                 <span :title="file">{{ file }}</span>
                 <button type="button" class="bsv-ghost small" @click="openFile(file)">打开</button>
               </article>
             </div>
-            <div v-if="!packageOutputFiles.length" class="bsv-empty-inline">完成后这里会显示图包、ZIP、执行结果表和使用记录表。</div>
+            <div v-if="selectedResultRun && !selectedResultFiles.length" class="bsv-empty-inline">该任务没有可打开的输出文件。</div>
           </div>
         </section>
-        <section class="bsv-panel">
-          <header class="bsv-panel-head">
-            <div>
-              <strong>使用记录约束</strong>
-              <span>按款色号记录模拍调用</span>
-            </div>
-          </header>
-          <div class="bsv-panel-body bsv-copy-list">
-            <span>批次内部按“款色号 + 模拍云盘路径”识别同一张素材</span>
-            <span>全量测试默认忽略历史拦截，避免前几次试跑影响稳定性测试</span>
-            <span>每次图包都会附带可读的使用记录 Excel</span>
-          </div>
-        </section>
-      </section>
-
-      <section v-else class="bsv-panel bsv-result-panel">
-        <header class="bsv-panel-head">
-          <div>
-            <strong>结果</strong>
-            <span>{{ taskState.status === 'done' ? '任务完成' : taskState.status === 'failed' ? '任务失败' : '等待执行' }}</span>
-          </div>
-          <button type="button" class="bsv-primary" :disabled="!primaryOutputTarget" @click="openPrimaryOutput">打开结果目录</button>
-        </header>
-        <div class="bsv-panel-body">
-          <div class="bsv-result-summary" :class="taskState.status">
-            <strong>{{ taskState.message }}</strong>
-            <span>{{ taskState.error || `${taskState.records || 0} 条结果；${outputFiles.length} 个输出引用` }}</span>
-          </div>
-          <div class="bsv-output-list">
-            <article v-for="file in outputFiles" :key="file">
-              <strong>{{ outputFileLabel(file) }}</strong>
-              <span :title="file">{{ file }}</span>
-              <button type="button" class="bsv-ghost small" @click="openFile(file)">打开</button>
-            </article>
-          </div>
-        </div>
       </section>
     </main>
   </section>
@@ -310,28 +329,62 @@ const taskState = reactive({
   downloadFailed: 0,
   generationTotal: 0,
   generationCompleted: 0,
+  resultDownloadSubmitted: 0,
+  resultDownloadTotal: 0,
+  resultDownloadCompleted: 0,
   logs: [],
 })
 
 const outputFiles = ref([])
+const manualStepSelection = ref(false)
+const resultHistoryRuns = ref([])
+const selectedResultRunId = ref('')
+const resultHistoryLoading = ref(false)
+const resultHistoryError = ref('')
 
 const steps = computed(() => [
-  { id: 'match', index: 1, title: '找图', detail: 'Excel 解析与云盘匹配', done: ['generate', 'package', 'result'].includes(activeStep.value) || taskState.searchCompleted > 0 },
-  { id: 'generate', index: 2, title: 'AI 生图', detail: '一对一生成买家秀', done: taskState.status === 'done' || taskState.generationCompleted > 0 },
-  { id: 'package', index: 3, title: '打包', detail: '本地命名和使用记录', done: packageOutputFiles.value.length > 0 },
-  { id: 'result', index: 4, title: '结果', detail: '文件打开和复核', done: taskState.status === 'done' },
+  { id: 'match', index: 1, title: '找图', detail: '导入表格与设置参数', done: ['generate', 'result'].includes(activeStep.value) || taskState.searchCompleted > 0 },
+  { id: 'generate', index: 2, title: 'AI 生图', detail: '查看下载与生图进度', done: ['done', 'failed'].includes(taskState.status) },
+  { id: 'result', index: 3, title: '结果', detail: '任务结束后查看结果', done: taskState.status === 'done' },
 ])
 
 const searchLabel = computed(() => taskState.searchTotal ? `${taskState.searchCompleted}/${taskState.searchTotal}` : '0/0')
 const downloadLabel = computed(() => taskState.downloadTotal ? `${taskState.downloadCompleted}/${taskState.downloadTotal}` : '0/0')
 const generationLabel = computed(() => taskState.generationTotal ? `${taskState.generationCompleted}/${taskState.generationTotal}` : '0/0')
+const generationPendingCount = computed(() => Math.max(0, Number(taskState.generationTotal || 0) - Number(taskState.generationCompleted || 0)))
+const resultDownloadTotal = computed(() => Math.max(
+  Number(taskState.resultDownloadTotal || 0),
+  Number(taskState.resultDownloadSubmitted || 0),
+  Number(taskState.generationTotal || 0),
+))
+const resultDownloadLabel = computed(() => resultDownloadTotal.value ? `${taskState.resultDownloadCompleted}/${resultDownloadTotal.value}` : '0/0')
+const selectedResultRun = computed(() => {
+  const selectedId = String(selectedResultRunId.value || '').trim()
+  if (!selectedId) return null
+  return resultHistoryRuns.value.find(run => runKey(run) === selectedId) || null
+})
+const selectedResultFiles = computed(() => (
+  selectedResultRun.value ? parseRunOutputFiles(selectedResultRun.value) : outputFiles.value
+))
+const activeOutputFiles = computed(() => (
+  activeStep.value === 'result' ? selectedResultFiles.value : outputFiles.value
+))
+const selectedResultSummary = computed(() => {
+  const run = selectedResultRun.value
+  if (!run) return taskState.error || `${taskState.records || 0} 条结果；${outputFiles.value.length} 个输出引用`
+  const files = parseRunOutputFiles(run)
+  const error = String(run.error || '').trim()
+  if (error) return error
+  return `${Number(run.records_count || 0)} 条结果；${files.length} 个输出引用`
+})
 const overallProgress = computed(() => {
   if (taskState.status === 'done') return 100
   if (taskState.status === 'failed') return Math.max(8, taskState.records ? 70 : 12)
   const search = taskState.searchTotal ? taskState.searchCompleted / taskState.searchTotal : 0
   const download = taskState.downloadTotal ? taskState.downloadCompleted / taskState.downloadTotal : 0
   const generation = taskState.generationTotal ? taskState.generationCompleted / taskState.generationTotal : 0
-  return Math.round(Math.max(search * 35, download * 62, generation * 88, taskState.status === 'running' ? 8 : 0))
+  const resultDownload = resultDownloadTotal.value ? taskState.resultDownloadCompleted / resultDownloadTotal.value : 0
+  return Math.round(Math.max(search * 30, download * 48, generation * 78, resultDownload * 92, taskState.status === 'running' ? 8 : 0))
 })
 const isResumeMode = computed(() => ['resume', 'recover', 'resume_recover', 'resume-recover'].includes(String(executeMode.value || '').toLowerCase()))
 const selectedAiModel = computed(() => (
@@ -343,12 +396,11 @@ const startButtonLabel = computed(() => {
   if (taskState.status === 'running') return '正在执行...'
   return isResumeMode.value ? '开始续跑原图包' : '开始 Excel 找图并生图'
 })
-const packageOutputFiles = computed(() => outputFiles.value.filter(file => /\.(zip|xlsx)$/i.test(file) || !/\.[a-z0-9]{2,5}$/i.test(file)))
 const primaryOutputTarget = computed(() => (
-  outputFiles.value.find(file => !/\.[a-z0-9]{2,5}$/i.test(file))
+  activeOutputFiles.value.find(file => !/\.[a-z0-9]{2,5}$/i.test(file))
   || (isResumeMode.value ? resumePackageDir.value : '')
   || exportFolder.value
-  || outputFiles.value[0]
+  || activeOutputFiles.value[0]
   || ''
 ))
 
@@ -385,12 +437,133 @@ function parseOutputFiles(value) {
   }
 }
 
+function parseRunOutputFiles(run) {
+  return parseOutputFiles(run?.output_files)
+}
+
+function runKey(run) {
+  return String(run?.id || run?.run_id || '').trim()
+}
+
+function selectResultRun(run) {
+  selectedResultRunId.value = runKey(run)
+}
+
+function runStatusClass(status) {
+  const value = String(status || '').toLowerCase()
+  if (['done', 'success', 'completed', 'partial'].includes(value)) return 'done'
+  if (['failed', 'error', 'stopped', 'cancelled'].includes(value)) return 'failed'
+  if (['running', 'queued', 'paused', 'pausing', 'stopping'].includes(value)) return 'running'
+  return 'idle'
+}
+
+function runStatusLabel(status) {
+  const value = runStatusClass(status)
+  if (value === 'done') return '完成'
+  if (value === 'failed') return String(status || '').toLowerCase() === 'stopped' ? '已停止' : '失败'
+  if (value === 'running') return '进行中'
+  return '未知'
+}
+
+function formatDateTime(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value || '')
+  return date.toLocaleString('zh-CN', { hour12: false }).replace(',', '')
+}
+
+function formatRunTime(run) {
+  return formatDateTime(run?.finished_at || run?.last_seen_at || run?.started_at)
+}
+
+async function loadResultHistory(preferredRunId = '') {
+  resultHistoryLoading.value = true
+  resultHistoryError.value = ''
+  try {
+    const data = await window.cs.getData(ADAPTER_ID, TASK_ID, { limit: 0 })
+    const runs = Array.isArray(data?.runs) ? data.runs : []
+    resultHistoryRuns.value = runs
+    const preferredId = String(preferredRunId || selectedResultRunId.value || currentRunId || '').trim()
+    const selected = (preferredId ? runs.find(run => runKey(run) === preferredId) : null) || runs[0] || null
+    selectedResultRunId.value = selected ? runKey(selected) : ''
+    if (selected) outputFiles.value = parseRunOutputFiles(selected)
+  } catch (error) {
+    resultHistoryError.value = error?.message || String(error)
+  } finally {
+    resultHistoryLoading.value = false
+  }
+}
+
 function toPlainJson(value, fallback) {
   try {
     const cloned = JSON.parse(JSON.stringify(value ?? fallback))
     return cloned ?? fallback
   } catch {
     return fallback
+  }
+}
+
+function selectStep(step) {
+  activeStep.value = step.id
+  manualStepSelection.value = true
+  if (step.id === 'result') loadResultHistory()
+}
+
+function setAutoStep(stepId) {
+  if (!manualStepSelection.value) activeStep.value = stepId
+}
+
+function currentRunLogLines(logs = []) {
+  const lines = Array.isArray(logs) ? logs.map(line => String(line || '')) : []
+  let markerIndex = -1
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (/新运行/.test(lines[index])) {
+      markerIndex = index
+      break
+    }
+  }
+  return markerIndex >= 0 ? lines.slice(markerIndex + 1) : lines
+}
+
+function applyProgressFromLogs(logs = []) {
+  const lines = currentRunLogLines(logs)
+  let visibleMaterialized = 0
+  for (const line of lines) {
+    let match = line.match(/待生成\s+(\d+)\s+行/)
+    if (match) {
+      taskState.generationTotal = Math.max(taskState.generationTotal, Number(match[1] || 0))
+    }
+    match = line.match(/续跑待落图\s+(\d+)\s+行/)
+    if (match) {
+      const value = Number(match[1] || 0)
+      taskState.resultDownloadSubmitted = Math.max(taskState.resultDownloadSubmitted, value)
+      taskState.resultDownloadTotal = Math.max(taskState.resultDownloadTotal, value)
+    }
+    match = line.match(/AI 生图链接收集进度\s+(\d+)\s*\/\s*(\d+)(?:[；;]\s*已入落图队列\s+(\d+))?/)
+    if (match) {
+      taskState.generationCompleted = Math.max(taskState.generationCompleted, Number(match[1] || 0))
+      taskState.generationTotal = Math.max(taskState.generationTotal, Number(match[2] || 0))
+      if (match[3]) {
+        const submitted = Number(match[3] || 0)
+        taskState.resultDownloadSubmitted = Math.max(taskState.resultDownloadSubmitted, submitted)
+        taskState.resultDownloadTotal = Math.max(taskState.resultDownloadTotal, submitted)
+      }
+    }
+    match = line.match(/AI 结果落图进度\s+(\d+)\s*\/\s*(\d+)/)
+    if (match) {
+      taskState.resultDownloadCompleted = Math.max(taskState.resultDownloadCompleted, Number(match[1] || 0))
+      taskState.resultDownloadTotal = Math.max(taskState.resultDownloadTotal, Number(match[2] || 0))
+      taskState.resultDownloadSubmitted = Math.max(taskState.resultDownloadSubmitted, Number(match[2] || 0))
+    }
+    if (/\[buyer-show\]\s+(已生成|落图失败):/.test(line)) visibleMaterialized += 1
+    match = line.match(/Script complete\.\s*Records:\s*(\d+)/i) || line.match(/开始后处理\s+(\d+)\s+行/)
+    if (match) {
+      taskState.records = Math.max(taskState.records, Number(match[1] || 0))
+    }
+  }
+  if (visibleMaterialized) {
+    taskState.resultDownloadCompleted = Math.max(taskState.resultDownloadCompleted, visibleMaterialized)
+    taskState.resultDownloadTotal = Math.max(taskState.resultDownloadTotal, taskState.resultDownloadSubmitted, visibleMaterialized)
   }
 }
 
@@ -445,7 +618,7 @@ async function pickResumePackageDir() {
 
 function buildRunParams() {
   return {
-    mode: 'current',
+    mode: 'new',
     input_file: {
       path: excelPath.value,
       rows: toPlainJson(excelPreview.rows, []),
@@ -488,6 +661,9 @@ function resetTaskState() {
   taskState.downloadFailed = 0
   taskState.generationTotal = 0
   taskState.generationCompleted = 0
+  taskState.resultDownloadSubmitted = 0
+  taskState.resultDownloadTotal = 0
+  taskState.resultDownloadCompleted = 0
   taskState.logs = []
   outputFiles.value = []
 }
@@ -518,6 +694,7 @@ async function startWorkflow() {
   const previousRunId = String(previousStatus?.live?.run_id || previousStatus?.last_run?.id || '').trim()
   resetTaskState()
   activeStep.value = 'match'
+  manualStepSelection.value = false
   try {
     const result = await window.cs.runTask(ADAPTER_ID, TASK_ID, buildRunParams(), {})
     if (!result?.ok) throw new Error(result?.message || result?.error || '任务启动失败')
@@ -570,6 +747,7 @@ async function pollTask() {
     ])
     if (Array.isArray(logsPayload?.logs)) {
       taskState.logs = logsPayload.logs.slice(-80)
+      applyProgressFromLogs(taskState.logs)
       inferStepFromLogs(taskState.logs)
     }
     const live = status?.live
@@ -624,23 +802,21 @@ function applyStatusSnapshot(snapshot = {}) {
 
 function inferStepFromLogs(logs = []) {
   const text = logs.slice(-20).join('\n')
-  if (/本地图包已打包|Excel exported|Finished|Done/i.test(text)) activeStep.value = 'result'
-  else if (/\[buyer-show\]|生图|GPT|1XM|后处理/.test(text)) activeStep.value = 'generate'
-  else if (/download|下载|collect|plan_job|找图|搜索/.test(text)) activeStep.value = 'match'
+  if (/\[buyer-show\]|生图|GPT|1XM|后处理/.test(text)) setAutoStep('generate')
+  else if (/download|下载|collect|plan_job|找图|搜索/.test(text)) setAutoStep('match')
 }
 
 async function finalizeRun(runId = '') {
   stopPolling()
-  const data = await window.cs.getData(ADAPTER_ID, TASK_ID).catch(() => null)
-  const runs = Array.isArray(data?.runs) ? data.runs : []
-  const run = runs.find(item => String(item?.id || '') === String(runId || currentRunId)) || runs[0] || {}
-  outputFiles.value = parseOutputFiles(run.output_files)
-  if (!outputFiles.value.length && Array.isArray(run.output_files)) outputFiles.value = run.output_files
+  await loadResultHistory(runId || currentRunId)
+  const run = selectedResultRun.value || {}
+  outputFiles.value = parseRunOutputFiles(run)
   if (taskState.status !== 'failed') {
     taskState.status = normalizeStatus(run.status) === 'failed' ? 'failed' : 'done'
     taskState.message = taskState.status === 'done' ? 'AI 买家秀任务完成' : String(run.error || 'AI 买家秀任务失败')
     taskState.error = String(run.error || '')
   }
+  manualStepSelection.value = false
   activeStep.value = 'result'
 }
 
@@ -650,6 +826,7 @@ async function stopWorkflow() {
   taskState.status = 'failed'
   taskState.message = '任务已停止'
   taskState.error = '用户停止任务'
+  manualStepSelection.value = false
   activeStep.value = 'result'
 }
 
@@ -729,7 +906,7 @@ onUnmounted(() => {
 
 .bsv-stepper {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   padding: 8px 22px;
   background: var(--bg2);
@@ -1009,10 +1186,15 @@ onUnmounted(() => {
   background: linear-gradient(90deg, var(--orange) var(--progress), rgba(255, 255, 255, .12) 0);
 }
 
-.bsv-progress-grid,
-.bsv-stat-grid {
+.bsv-progress-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.bsv-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1115,6 +1297,79 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
+.bsv-result-layout {
+  min-height: 70%;
+  display: grid;
+  grid-template-columns: minmax(520px, 1fr) minmax(360px, 520px);
+  gap: 16px;
+}
+
+.bsv-run-table-shell {
+  max-height: calc(100vh - 335px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.bsv-run-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 620px;
+}
+
+.bsv-run-table th,
+.bsv-run-table td {
+  padding: 10px 9px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text2);
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.bsv-run-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--text);
+  background: var(--bg3);
+}
+
+.bsv-run-table tr {
+  cursor: pointer;
+}
+
+.bsv-run-table tbody tr:hover,
+.bsv-run-table tbody tr.selected {
+  background: rgba(var(--orange-rgb), .10);
+}
+
+.bsv-status-pill {
+  display: inline-grid;
+  place-items: center;
+  min-width: 46px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 99px;
+  color: var(--text2);
+  background: rgba(255, 255, 255, .06);
+}
+
+.bsv-status-pill.done {
+  color: var(--green);
+  background: rgba(34, 197, 94, .10);
+}
+
+.bsv-status-pill.failed {
+  color: var(--red);
+  background: rgba(239, 68, 68, .10);
+}
+
+.bsv-status-pill.running {
+  color: var(--orange);
+  background: rgba(var(--orange-rgb), .12);
+}
+
 .bsv-output-list {
   display: grid;
   gap: 9px;
@@ -1149,13 +1404,10 @@ onUnmounted(() => {
   color: var(--text3);
 }
 
-.bsv-result-panel {
-  min-height: 70%;
-}
-
 @media (max-width: 1100px) {
   .bsv-stage-grid,
-  .bsv-two-column {
+  .bsv-two-column,
+  .bsv-result-layout {
     grid-template-columns: minmax(0, 1fr);
   }
 }

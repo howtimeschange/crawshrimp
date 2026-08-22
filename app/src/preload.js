@@ -369,7 +369,7 @@ contextBridge.exposeInMainWorld('cs', {
   getTaskLogs:     (aid, tid, instanceUid = '') => ipcRenderer.invoke('get-task-logs', aid, tid, instanceUid),
   clearTaskLogs:   (aid, tid, instanceUid = '') => ipcRenderer.invoke('clear-task-logs', aid, tid, instanceUid),
 
-  getData:         (aid, tid) => ipcRenderer.invoke('get-data', aid, tid),
+  getData:         (aid, tid, options = {}) => ipcRenderer.invoke('get-data', aid, tid, options),
   exportData:      (aid, tid, fmt) => ipcRenderer.invoke('export-data', aid, tid, fmt),
   openFile:        (path) => ipcRenderer.invoke('open-file', path),
   openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),

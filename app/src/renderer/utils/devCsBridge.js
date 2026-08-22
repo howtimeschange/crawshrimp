@@ -412,7 +412,11 @@ export function createDevCsBridge() {
         : apiCall('DELETE', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/logs`)
     },
 
-    getData: (aid, tid) => apiCall('GET', `/data/${encodePathPart(aid)}/${encodePathPart(tid)}`),
+    getData: (aid, tid, options = {}) => {
+      const limit = Number.isFinite(Number(options?.limit)) ? Number(options.limit) : 20
+      const suffix = limit === 20 ? '' : `?limit=${encodeURIComponent(String(limit))}`
+      return apiCall('GET', `/data/${encodePathPart(aid)}/${encodePathPart(tid)}${suffix}`)
+    },
     exportData: async (aid, tid, fmt = 'excel') => {
       const url = buildUrl(`/data/${encodePathPart(aid)}/${encodePathPart(tid)}/export?format=${encodeURIComponent(fmt)}`)
       window.open(url, '_blank', 'noopener,noreferrer')

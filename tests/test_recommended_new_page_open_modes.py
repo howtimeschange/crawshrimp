@@ -5,6 +5,7 @@ import yaml
 
 
 MANIFESTS = {
+    "semir-cloud-drive": Path("adapters/semir-cloud-drive/manifest.yaml"),
     "vipshop-ops-assistant": Path("adapters/vipshop-ops-assistant/manifest.yaml"),
     "weimob-ops-assistant": Path("adapters/weimob-ops-assistant/manifest.yaml"),
     "mop-ops-assistant": Path("adapters/mop-ops-assistant/manifest.yaml"),
@@ -12,6 +13,7 @@ MANIFESTS = {
 
 
 EXPECTED_TASKS = [
+    ("semir-cloud-drive", "buyer_show_ai_generate"),
     ("vipshop-ops-assistant", "light_supply_goods_report"),
     ("vipshop-ops-assistant", "package_main_image_replace"),
     ("weimob-ops-assistant", "goods_new_arrival_automation"),

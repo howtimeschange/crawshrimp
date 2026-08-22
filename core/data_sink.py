@@ -2357,11 +2357,19 @@ def get_latest_task_instance_run(instance_uid: str) -> Optional[dict]:
 
 def list_runs(adapter_id: str, task_id: str, limit: int = 20) -> List[dict]:
     with _get_conn() as conn:
+        normalized_limit = int(limit or 20)
+        if normalized_limit <= 0:
+            rows = conn.execute("""
+                SELECT * FROM task_runs
+                WHERE adapter_id=? AND task_id=?
+                ORDER BY id DESC
+            """, (adapter_id, task_id)).fetchall()
+            return [dict(r) for r in rows]
         rows = conn.execute("""
             SELECT * FROM task_runs
             WHERE adapter_id=? AND task_id=?
             ORDER BY id DESC LIMIT ?
-        """, (adapter_id, task_id, limit)).fetchall()
+        """, (adapter_id, task_id, normalized_limit)).fetchall()
         return [dict(r) for r in rows]
 
 

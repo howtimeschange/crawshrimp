@@ -2932,9 +2932,13 @@ secureHandle('clear-task-logs', async (_, aid, tid, instanceUid = '') => {
     : `/tasks/${aid}/${tid}/logs`)
 })
 
-secureHandle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`, null, {
-  ensureReady: false,
-}))
+secureHandle('get-data',    async (_, aid, tid, options = {}) => {
+  const limit = Number.isFinite(Number(options?.limit)) ? Number(options.limit) : 20
+  const suffix = limit === 20 ? '' : `?limit=${encodeURIComponent(String(limit))}`
+  return apiCall('GET', `/data/${aid}/${tid}${suffix}`, null, {
+    ensureReady: false,
+  })
+})
 secureHandle('export-data', async (_, aid, tid, fmt) => {
   try {
     const res = await apiCall('GET', `/data/${aid}/${tid}/export?format=${fmt}`)
