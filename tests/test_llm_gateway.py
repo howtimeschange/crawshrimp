@@ -54,14 +54,63 @@ class LlmGatewayTests(unittest.TestCase):
     def test_model_routes_match_protocol_and_region(self):
         overseas = llm_gateway.route_for_model("gemini-3.5-flash", self.config())
         anthropic = llm_gateway.route_for_model("claude-sonnet-5", self.config())
-        domestic = llm_gateway.route_for_model("deepseek-v4-pro", self.config())
+        domestic_flash = llm_gateway.route_for_model("deepseek-v4-flash", self.config())
+        domestic_pro = llm_gateway.route_for_model("deepseek-v4-pro", self.config())
 
         self.assertEqual(overseas.protocol, "openai")
         self.assertEqual(overseas.base_url, "https://openai.example/v1")
         self.assertEqual(anthropic.protocol, "anthropic")
         self.assertEqual(anthropic.base_url, "https://anthropic.example")
-        self.assertEqual(domestic.protocol, "openai")
-        self.assertEqual(domestic.base_url, "https://domestic.example/v1")
+        self.assertEqual(domestic_flash.protocol, "openai")
+        self.assertEqual(domestic_flash.base_url, "https://domestic.example/v1")
+        self.assertEqual(domestic_flash.model_id, "deepseek-v4-flash")
+        self.assertEqual(domestic_pro.protocol, "openai")
+        self.assertEqual(domestic_pro.base_url, "https://domestic.example/v1")
+        self.assertEqual(domestic_pro.model_id, "deepseek-v4-pro")
+
+    def test_deepseek_official_routes_use_dedicated_key_and_real_model_names(self):
+        config = self.config()
+        config["ai"]["llm"]["deepseek_api_key"] = "sk-ds-official-unit"
+        config["ai"]["llm"]["deepseek_base_url"] = "https://api.deepseek.example"
+
+        flash = llm_gateway.route_for_model("deepseek-official-v4-flash", config)
+        pro = llm_gateway.route_for_model("deepseek-official-v4-pro", config)
+        vision = llm_gateway.route_for_model("deepseek-official-v4-flash-vision-exp", config)
+
+        self.assertEqual(flash.model_id, "deepseek-v4-flash")
+        self.assertEqual(flash.base_url, "https://api.deepseek.example")
+        self.assertEqual(flash.api_key, "sk-ds-official-unit")
+        self.assertEqual(flash.protocol, "openai")
+        self.assertEqual(pro.model_id, "deepseek-v4-pro")
+        self.assertEqual(vision.model_id, "deepseek-v4-flash-vision-exp")
+        self.assertEqual(vision.base_url, "https://api.deepseek.example")
+        self.assertEqual(vision.api_key, "sk-ds-official-unit")
+        self.assertEqual(vision.protocol, "openai")
+
+    def test_deepseek_official_requires_dedicated_key(self):
+        config = self.config()
+        config["ai"]["llm"].pop("deepseek_api_key", None)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(llm_gateway.LlmConfigurationError):
+                llm_gateway.route_for_model("deepseek-official-v4-flash", config)
+
+    def test_deepseek_official_key_can_come_from_runtime_environment(self):
+        config = self.config()
+        config["ai"]["llm"].pop("deepseek_api_key", None)
+        config["ai"]["llm"]["api_key"] = ""
+        with patch.dict(os.environ, {"CRAWSHRIMP_DEEPSEEK_API_KEY": "runtime-ds-key"}):
+            route = llm_gateway.route_for_model("deepseek-official-v4-flash", config)
+        self.assertEqual(route.api_key, "runtime-ds-key")
+        self.assertEqual(route.model_id, "deepseek-v4-flash")
+
+    def test_saved_official_default_falls_back_to_gateway_when_deepseek_key_is_missing(self):
+        config = self.config()
+        config["ai"]["llm"]["default_model"] = "deepseek-official-v4-flash"
+        config["ai"]["llm"].pop("deepseek_api_key", None)
+        with patch.dict(os.environ, {}, clear=True):
+            route = llm_gateway.route_for_model("", config)
+        self.assertEqual(route.model_id, "gemini-3.5-flash")
+        self.assertEqual(route.api_key, "unit-key")
 
     def test_gateway_default_model_is_gemini_flash(self):
         config = self.config()
@@ -78,6 +127,29 @@ class LlmGatewayTests(unittest.TestCase):
         with patch.dict(os.environ, {"CRAWSHRIMP_LLM_API_KEY": "runtime-only-key"}):
             route = llm_gateway.route_for_model("qwen3.8-max-preview", config)
         self.assertEqual(route.api_key, "runtime-only-key")
+
+    def test_generic_multimodal_json_can_use_deepseek_official_vision_route(self):
+        config = self.config()
+        config["ai"]["llm"]["deepseek_api_key"] = "sk-ds-official-unit"
+        calls = []
+
+        def fake_openai(route, system_prompt, user_prompt, images):
+            calls.append((route, system_prompt, user_prompt, images))
+            return {"choices": [{"message": {"content": '{"color":"red"}'}}]}
+
+        payload, route = llm_gateway.generate_multimodal_json(
+            system_prompt="识别图片颜色",
+            user_prompt="只返回 JSON",
+            image_inputs=["data:image/png;base64,iVBORw0KGgo="],
+            model_id="deepseek-official-v4-flash-vision-exp",
+            config=config,
+            request_openai=fake_openai,
+        )
+
+        self.assertEqual(payload, {"color": "red"})
+        self.assertEqual(route.model_id, "deepseek-v4-flash-vision-exp")
+        self.assertEqual(route.base_url, llm_gateway.DEEPSEEK_OFFICIAL_BASE_URL)
+        self.assertEqual(calls[0][3], ["data:image/png;base64,iVBORw0KGgo="])
 
     def test_response_validation_rejects_price_or_promotional_benefits(self):
         payload = valid_scripts()
@@ -317,6 +389,27 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(payload, {"ok": True})
         self.assertEqual(route.model_id, "qwen3.7-plus")
         self.assertEqual(calls, ["qwen3.8-max-preview", "qwen3.7-plus"])
+
+    def test_generic_multimodal_json_passes_timeout_to_supported_requester(self):
+        captured = []
+
+        def fake_openai(route, system_prompt, user_prompt, images, *, timeout_seconds=None):
+            captured.append(timeout_seconds)
+            return {"choices": [{"message": {"content": '{"ok":true}'}}]}
+
+        payload, route = llm_gateway.generate_multimodal_json(
+            system_prompt="识别鞋品姿势",
+            user_prompt="只返回 JSON",
+            image_inputs=["data:image/jpeg;base64,/9j/2Q=="],
+            model_id="gpt-5.5",
+            config=self.config(),
+            request_openai=fake_openai,
+            timeout_seconds=75,
+        )
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(route.model_id, "gpt-5.5")
+        self.assertEqual(captured, [75])
 
     def test_post_json_enforces_total_deadline_when_response_keeps_dripping_bytes(self):
         payload = json.dumps({"ok": True}).encode("utf-8")

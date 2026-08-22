@@ -375,6 +375,9 @@ SHOE_LABEL_OCR_MODEL = "qwen3.7-plus"
 SHOE_POSE_MULTI_MODEL_ID = "multi-model"
 SHOE_POSE_DEFAULT_MODEL = "gpt-5.5"
 SHOE_POSE_MODEL_CANDIDATES = (
+    "deepseek-official-v4-flash-vision-exp",
+    "deepseek-official-v4-flash",
+    "deepseek-official-v4-pro",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -385,6 +388,7 @@ SHOE_POSE_MODEL_CANDIDATES = (
     "gemini-3.5-flash",
     "qwen3.8-max-preview",
     "qwen3.7-plus",
+    "deepseek-v4-flash",
     "deepseek-v4-pro",
     "glm-5.2",
     "kimi-k2.7-code",

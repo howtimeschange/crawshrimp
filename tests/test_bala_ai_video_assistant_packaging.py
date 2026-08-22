@@ -118,6 +118,9 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(
             model_ids,
             [
+                "deepseek-official-v4-flash",
+                "deepseek-official-v4-pro",
+                "deepseek-official-v4-flash-vision-exp",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
@@ -128,6 +131,7 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                 "gemini-3.5-flash",
                 "qwen3.8-max-preview",
                 "qwen3.7-plus",
+                "deepseek-v4-flash",
                 "deepseek-v4-pro",
                 "glm-5.2",
                 "kimi-k2.7-code",

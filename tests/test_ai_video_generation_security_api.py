@@ -87,23 +87,32 @@ class AiVideoGenerationSecurityApiTests(unittest.TestCase):
     def test_settings_response_and_blank_writes_never_expose_or_erase_llm_key(self):
         patch_config({
             "ai.llm.api_key": "llm-secret",
+            "ai.llm.deepseek_api_key": "deepseek-secret",
+            "ai.llm.deepseek_base_url": "https://api.deepseek.example",
             "ai.llm.default_model": "claude-sonnet-5",
         })
 
         settings = api_server.get_settings()
         self.assertNotIn("api_key", settings["ai"]["llm"])
+        self.assertNotIn("deepseek_api_key", settings["ai"]["llm"])
         self.assertEqual(settings["ai"]["llm"]["configured"], True)
+        self.assertEqual(settings["ai"]["llm"]["deepseek_configured"], True)
+        self.assertEqual(settings["ai"]["llm"]["deepseek_base_url"], "https://api.deepseek.example")
         self.assertEqual(settings["ai"]["llm"]["default_model"], "claude-sonnet-5")
 
         api_server.patch_settings({
             "ai.llm.api_key": "",
+            "ai.llm.deepseek_api_key": "",
             "ai.llm.configured": True,
+            "ai.llm.deepseek_configured": True,
             "ai.llm.default_model": "gpt-5.6-terra",
         })
         llm = load_config()["ai"]["llm"]
         self.assertEqual(llm["api_key"], "llm-secret")
+        self.assertEqual(llm["deepseek_api_key"], "deepseek-secret")
         self.assertEqual(llm["default_model"], "gpt-5.6-terra")
         self.assertNotIn("configured", llm)
+        self.assertNotIn("deepseek_configured", llm)
 
     def test_non_owner_backend_rejects_every_ai_video_mutation_route(self):
         previous = getattr(api_server.app.state, "owns_backend_instance", None)

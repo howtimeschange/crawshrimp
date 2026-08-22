@@ -45,6 +45,8 @@ DEFAULT_CONFIG = {
             "overseas_openai_base_url": "https://ai-aigw.semir.com/overseas-openai-vip/v1",
             "overseas_anthropic_base_url": "https://ai-aigw.semir.com/overseas-anthropic-vip",
             "domestic_base_url": "https://ai-aigw.semir.com/bailian-codingplan/v1",
+            "deepseek_api_key": "",
+            "deepseek_base_url": "https://api.deepseek.com",
             "default_model": "gemini-3.5-flash",
         },
     },

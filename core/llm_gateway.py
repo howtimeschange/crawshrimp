@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import mimetypes
 import os
@@ -22,6 +23,21 @@ from core.config import load_config
 OVERSEAS_OPENAI_BASE_URL = "https://ai-aigw.semir.com/overseas-openai-vip/v1"
 OVERSEAS_ANTHROPIC_BASE_URL = "https://ai-aigw.semir.com/overseas-anthropic-vip"
 DOMESTIC_OPENAI_BASE_URL = "https://ai-aigw.semir.com/bailian-codingplan/v1"
+DEEPSEEK_OFFICIAL_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_OFFICIAL_MODELS = (
+    "deepseek-official-v4-flash",
+    "deepseek-official-v4-pro",
+    "deepseek-official-v4-flash-vision-exp",
+)
+_DEEPSEEK_OFFICIAL_REAL_MODELS = {
+    "deepseek-official-v4-flash": "deepseek-v4-flash",
+    "deepseek-official-v4-pro": "deepseek-v4-pro",
+    "deepseek-official-v4-flash-vision-exp": "deepseek-v4-flash-vision-exp",
+}
+
+
+def deepseek_official_real_model(model_id: str) -> str:
+    return _DEEPSEEK_OFFICIAL_REAL_MODELS.get(model_id, model_id)
 
 OVERSEAS_OPENAI_MODELS = (
     "gpt-5.6-sol",
@@ -38,6 +54,7 @@ OVERSEAS_ANTHROPIC_MODELS = (
 DOMESTIC_OPENAI_MODELS = (
     "qwen3.8-max-preview",
     "qwen3.7-plus",
+    "deepseek-v4-flash",
     "deepseek-v4-pro",
     "glm-5.2",
     "kimi-k2.7-code",
@@ -46,8 +63,10 @@ SUPPORTED_MODELS = (
     *OVERSEAS_OPENAI_MODELS,
     *OVERSEAS_ANTHROPIC_MODELS,
     *DOMESTIC_OPENAI_MODELS,
+    *DEEPSEEK_OFFICIAL_MODELS,
 )
 DEFAULT_MODEL = "gemini-3.5-flash"
+GATEWAY_FALLBACK_MODEL = "gpt-5.6-terra"
 GUANG_TITLE_MIN_CHARS = 24
 GUANG_TITLE_MAX_CHARS = 30
 RECOMMEND_TITLE_MIN_CHARS = 16
@@ -104,13 +123,76 @@ def _nested(source: dict, *keys: str) -> Any:
     return value
 
 
-def route_for_model(model_id: str, config: dict | None = None) -> LlmRoute:
+def _llm_settings(config: dict | None = None) -> dict:
     cfg = config if isinstance(config, dict) else load_config()
     llm = _nested(cfg, "ai", "llm")
-    llm = llm if isinstance(llm, dict) else {}
-    selected = _compact(model_id) or _compact(llm.get("default_model")) or DEFAULT_MODEL
+    return llm if isinstance(llm, dict) else {}
+
+
+def gateway_api_key_configured(config: dict | None = None) -> bool:
+    llm = _llm_settings(config)
+    return bool(_compact(os.environ.get("CRAWSHRIMP_LLM_API_KEY")) or _compact(llm.get("api_key")))
+
+
+def deepseek_api_key_configured(config: dict | None = None) -> bool:
+    llm = _llm_settings(config)
+    return bool(
+        _compact(os.environ.get("CRAWSHRIMP_DEEPSEEK_API_KEY"))
+        or _compact(llm.get("deepseek_api_key"))
+    )
+
+
+def model_has_configured_key(model_id: str, config: dict | None = None) -> bool:
+    selected = _compact(model_id)
+    if selected in DEEPSEEK_OFFICIAL_MODELS:
+        return deepseek_api_key_configured(config)
+    if (
+        selected in OVERSEAS_OPENAI_MODELS
+        or selected in OVERSEAS_ANTHROPIC_MODELS
+        or selected in DOMESTIC_OPENAI_MODELS
+    ):
+        return gateway_api_key_configured(config)
+    return False
+
+
+def select_default_model(config: dict | None = None) -> str:
+    cfg = config if isinstance(config, dict) else load_config()
+    llm = _llm_settings(cfg)
+    configured = _compact(llm.get("default_model")) or DEFAULT_MODEL
+    if configured not in SUPPORTED_MODELS:
+        configured = DEFAULT_MODEL
+    if model_has_configured_key(configured, cfg):
+        return configured
+    for candidate in (DEFAULT_MODEL, GATEWAY_FALLBACK_MODEL):
+        if candidate != configured and model_has_configured_key(candidate, cfg):
+            return candidate
+    return configured
+
+
+def route_for_model(model_id: str, config: dict | None = None) -> LlmRoute:
+    cfg = config if isinstance(config, dict) else load_config()
+    llm = _llm_settings(cfg)
+    selected = _compact(model_id) or select_default_model(cfg)
     if selected not in SUPPORTED_MODELS:
         raise LlmConfigurationError(f"不支持的文本模型：{selected}")
+
+    if selected in DEEPSEEK_OFFICIAL_MODELS:
+        api_key = (
+            _compact(os.environ.get("CRAWSHRIMP_DEEPSEEK_API_KEY"))
+            or _compact(llm.get("deepseek_api_key"))
+        )
+        if not api_key:
+            raise LlmConfigurationError("DeepSeek 官方模型需要独立 API Key，请先在设置 → AI 能力 → 文本大模型中配置")
+        return LlmRoute(
+            model_id=deepseek_official_real_model(selected),
+            protocol="openai",
+            base_url=(
+                _compact(os.environ.get("CRAWSHRIMP_DEEPSEEK_BASE_URL"))
+                or _compact(llm.get("deepseek_base_url"))
+                or DEEPSEEK_OFFICIAL_BASE_URL
+            ),
+            api_key=api_key,
+        )
 
     api_key = _compact(os.environ.get("CRAWSHRIMP_LLM_API_KEY")) or _compact(llm.get("api_key"))
     if not api_key:
@@ -372,12 +454,15 @@ def _generic_openai_json_request(
     system_prompt: str,
     user_prompt: str,
     image_references: list[str],
+    *,
+    timeout_seconds: float | None = None,
 ) -> dict:
     content: list[dict[str, Any]] = [{"type": "text", "text": _compact(user_prompt)}]
     content.extend({
         "type": "image_url",
         "image_url": {"url": model_reference, "detail": "high"},
     } for reference in image_references if (model_reference := _image_reference_for_openai_model(route, reference)))
+    request_timeout = max(float(timeout_seconds or 240), 0.001)
     return _post_json(
         _endpoint(route.base_url, "chat/completions"),
         {
@@ -388,8 +473,8 @@ def _generic_openai_json_request(
             ],
         },
         {"Authorization": f"Bearer {route.api_key}"},
-        timeout=240,
-        total_timeout=240,
+        timeout=min(request_timeout, 30),
+        total_timeout=request_timeout,
     )
 
 
@@ -421,9 +506,12 @@ def _generic_anthropic_json_request(
     system_prompt: str,
     user_prompt: str,
     image_references: list[str],
+    *,
+    timeout_seconds: float | None = None,
 ) -> dict:
     content: list[dict[str, Any]] = [{"type": "text", "text": _compact(user_prompt)}]
     content.extend(_anthropic_image_content(reference) for reference in image_references)
+    request_timeout = max(float(timeout_seconds or 240), 0.001)
     return _post_json(
         _anthropic_endpoint(route.base_url),
         {
@@ -437,8 +525,8 @@ def _generic_anthropic_json_request(
             "Authorization": f"Bearer {route.api_key}",
             "anthropic-version": "2023-06-01",
         },
-        timeout=240,
-        total_timeout=240,
+        timeout=min(request_timeout, 30),
+        total_timeout=request_timeout,
     )
 
 
@@ -517,6 +605,39 @@ def _is_retryable_llm_error(exc: LlmGatewayError) -> bool:
         or "http 429" in text
         or re.search(r"http 5\d\d", text, flags=re.IGNORECASE) is not None
     )
+
+
+def _request_accepts_timeout_seconds(requester: Callable[..., dict]) -> bool:
+    try:
+        signature = inspect.signature(requester)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "timeout_seconds":
+            return True
+    return False
+
+
+def _call_multimodal_request(
+    requester: Callable[..., dict],
+    route: LlmRoute,
+    system_prompt: str,
+    user_prompt: str,
+    image_references: list[str],
+    *,
+    timeout_seconds: float | None = None,
+) -> dict:
+    if timeout_seconds is not None and _request_accepts_timeout_seconds(requester):
+        return requester(
+            route,
+            system_prompt,
+            user_prompt,
+            image_references,
+            timeout_seconds=timeout_seconds,
+        )
+    return requester(route, system_prompt, user_prompt, image_references)
 
 
 def normalize_video_copies(payload: Any) -> list[dict[str, str]]:
@@ -645,6 +766,7 @@ def generate_multimodal_json(
     config: dict | None = None,
     request_openai: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_openai_json_request,
     request_anthropic: Callable[[LlmRoute, str, str, list[str]], dict] = _generic_anthropic_json_request,
+    timeout_seconds: float | None = None,
 ) -> tuple[Any, LlmRoute]:
     """Call a multimodal route and parse its JSON response."""
 
@@ -675,19 +797,28 @@ def generate_multimodal_json(
         route = route_for_model(current_model_id, config=config)
         try:
             response = (
-                request_anthropic(route, system, prompt, references)
+                _call_multimodal_request(
+                    request_anthropic,
+                    route,
+                    system,
+                    prompt,
+                    references,
+                    timeout_seconds=timeout_seconds,
+                )
                 if route.protocol == "anthropic"
-                else request_openai(route, system, prompt, references)
+                else _call_multimodal_request(
+                    request_openai,
+                    route,
+                    system,
+                    prompt,
+                    references,
+                    timeout_seconds=timeout_seconds,
+                )
             )
             return _parse_json_text(_response_text(response)), route
         except LlmGatewayError as exc:
             last_error = exc
-            retryable = (
-                "连接失败" in str(exc)
-                or "timed out" in str(exc).lower()
-                or "http 429" in str(exc).lower()
-                or re.search(r"http 5\d\d", str(exc), flags=re.IGNORECASE)
-            )
+            retryable = _is_retryable_llm_error(exc)
             if attempt_index == len(attempts) - 1 or not retryable:
                 raise
     raise last_error or LlmGatewayError("文本模型接口调用失败")

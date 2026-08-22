@@ -506,8 +506,8 @@
               <p class="panel-kicker">AI 文本与多模态</p>
               <h3>文本大模型网关</h3>
             </div>
-            <span :class="['badge', isLlmConfigured(cfg) ? 'on' : 'off']">
-              {{ isLlmConfigured(cfg) ? '已配置' : '未配置' }}
+            <span :class="['badge', (isLlmConfigured(cfg) || isDeepSeekConfigured(cfg)) ? 'on' : 'off']">
+              {{ (isLlmConfigured(cfg) || isDeepSeekConfigured(cfg)) ? '已配置' : '未配置' }}
             </span>
           </div>
 
@@ -526,6 +526,18 @@
                 <p class="field-hint">三个兼容网关共用同一个 Key；保存后只显示“已配置”，不会把密钥读回页面。</p>
               </div>
               <div class="field">
+                <label>DeepSeek 官方 API Key</label>
+                <input
+                  v-model="cfg[DEEPSEEK_API_KEY_FIELD]"
+                  class="input"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="输入 DeepSeek 官方 API Key"
+                  @focus="selectInputText"
+                />
+                <p class="field-hint">仅用于 DeepSeek 官方 V4 Flash / Pro / Vision Exp；保存后不会把密钥读回页面。</p>
+              </div>
+              <div class="field">
                 <label>海外 OpenAI 兼容 Base URL</label>
                 <input v-model="cfg['ai.llm.overseas_openai_base_url']" class="input" />
                 <p class="field-hint">GPT 与 Gemini 模型使用此地址。</p>
@@ -541,6 +553,11 @@
                 <p class="field-hint">Qwen、DeepSeek、GLM 与 Kimi 模型使用此地址。</p>
               </div>
               <div class="field">
+                <label>DeepSeek 官方 Base URL</label>
+                <input v-model="cfg['ai.llm.deepseek_base_url']" class="input" />
+                <p class="field-hint">默认 https://api.deepseek.com；官方模型不走森马网关。</p>
+              </div>
+              <div class="field">
                 <label>默认模型</label>
                 <select v-model="cfg['ai.llm.default_model']" class="select">
                   <option v-for="model in LLM_MODELS" :key="model.value" :value="model.value">
@@ -553,7 +570,8 @@
             <div class="side-note">
               <strong>运行时路由</strong>
               <div class="key-states">
-                <span :class="['key-pill', isLlmConfigured(cfg) ? 'on' : 'off']">KEY</span>
+                <span :class="['key-pill', isLlmConfigured(cfg) ? 'on' : 'off']">网关</span>
+                <span :class="['key-pill', isDeepSeekConfigured(cfg) ? 'on' : 'off']">DS</span>
                 <span class="key-pill neutral">OPENAI</span>
                 <span class="key-pill neutral">ANTHROPIC</span>
               </div>
@@ -803,6 +821,7 @@ import {
   isAiVideoCredentialConfigured,
 } from '../utils/aiVideoSettings.mjs'
 import {
+  DEEPSEEK_API_KEY_FIELD,
   LLM_API_KEY_FIELD,
   LLM_DEFAULTS,
   LLM_MASKED_CREDENTIAL_VALUE,
@@ -810,6 +829,7 @@ import {
   LLM_PANEL_FIELDS,
   buildLlmSettingsPatch,
   clearWrittenLlmSettings,
+  isDeepSeekConfigured,
   isLlmConfigured,
 } from '../utils/llmSettings.mjs'
 
@@ -869,7 +889,7 @@ const aiVideoKeyFields = [
   'ai.video.bailian_api_key',
   'ai.video.bailian_upload_api_key',
 ]
-const llmKeyFields = [LLM_API_KEY_FIELD]
+const llmKeyFields = [LLM_API_KEY_FIELD, DEEPSEEK_API_KEY_FIELD]
 const aiVideoConnectionHints = {
   'ai.video.seedance_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.seedance_base_url']}；森马网关可填 https://ai-aigw.semir.com/doubao-seedance/api/v3。`,
   'ai.video.bailian_region': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_region']}；输入新值才会覆盖。`,
@@ -1079,6 +1099,7 @@ function normalizedSettings(raw) {
     if (!flat[key]) flat[key] = value
   }
   flat[LLM_API_KEY_FIELD] = isLlmConfigured(flat) ? LLM_MASKED_CREDENTIAL_VALUE : ''
+  flat[DEEPSEEK_API_KEY_FIELD] = isDeepSeekConfigured(flat) ? LLM_MASKED_CREDENTIAL_VALUE : ''
   // Provider connection fields are write-only. Never retain a value returned
   // by an older backend, and never synthesize defaults that could overwrite it.
   for (const key of AI_VIDEO_WRITE_ONLY_FIELDS) flat[key] = ''
@@ -1127,6 +1148,7 @@ function selectInputText(event) {
 function isFieldConfigured(key) {
   if (aiVideoKeyFields.includes(key)) return isAiVideoCredentialConfigured(cfg.value, key)
   if (key === LLM_API_KEY_FIELD) return isLlmConfigured(cfg.value)
+  if (key === DEEPSEEK_API_KEY_FIELD) return isDeepSeekConfigured(cfg.value)
   return String(cfg.value[key] || '').trim().length > 0
 }
 

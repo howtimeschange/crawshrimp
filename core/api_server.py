@@ -12609,7 +12609,7 @@ _AI_VIDEO_PRIVATE_SETTING_FIELDS = frozenset({
     "bailian_upload_api_key",
     "bailian_uploads_url",
 })
-_LLM_PRIVATE_SETTING_FIELDS = frozenset({"api_key"})
+_LLM_PRIVATE_SETTING_FIELDS = frozenset({"api_key", "deepseek_api_key"})
 
 
 def _public_settings() -> dict:
@@ -12631,6 +12631,7 @@ def _public_settings() -> dict:
         if key not in _LLM_PRIVATE_SETTING_FIELDS
     }
     public_llm["configured"] = bool(str(source_llm.get("api_key") or "").strip())
+    public_llm["deepseek_configured"] = bool(str(source_llm.get("deepseek_api_key") or "").strip())
     ai["llm"] = public_llm
     public["ai"] = ai
     return public
@@ -12648,6 +12649,7 @@ def _safe_settings_write_patch(cfg: dict) -> dict:
         if dotted in patch and not str(patch.get(dotted) or "").strip():
             patch.pop(dotted, None)
     patch.pop("ai.llm.configured", None)
+    patch.pop("ai.llm.deepseek_configured", None)
     ai = patch.get("ai") if isinstance(patch.get("ai"), dict) else None
     video = ai.get("video") if isinstance(ai, dict) and isinstance(ai.get("video"), dict) else None
     if isinstance(video, dict):
@@ -12664,6 +12666,7 @@ def _safe_settings_write_patch(cfg: dict) -> dict:
             if field in llm and not str(llm.get(field) or "").strip():
                 llm.pop(field, None)
         llm.pop("configured", None)
+        llm.pop("deepseek_configured", None)
     return patch
 
 

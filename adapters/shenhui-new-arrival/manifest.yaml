@@ -275,6 +275,12 @@ tasks:
         label: 鞋品姿势识别模型
         default: gpt-5.5
         options:
+          - value: deepseek-official-v4-flash-vision-exp
+            label: DeepSeek 官方 · V4 Flash Vision Exp
+          - value: deepseek-official-v4-flash
+            label: DeepSeek 官方 · V4 Flash
+          - value: deepseek-official-v4-pro
+            label: DeepSeek 官方 · V4 Pro
           - value: gpt-5.5
             label: GPT-5.5（评测最佳）
           - value: gpt-5.6-sol
@@ -287,8 +293,10 @@ tasks:
             label: Qwen 3.8 Max Preview
           - value: qwen3.7-plus
             label: Qwen 3.7 Plus
+          - value: deepseek-v4-flash
+            label: DeepSeek V4 Flash（网关）
           - value: deepseek-v4-pro
-            label: DeepSeek V4 Pro
+            label: DeepSeek V4 Pro（网关）
           - value: glm-5.2
             label: GLM 5.2
           - value: kimi-k2.7-code

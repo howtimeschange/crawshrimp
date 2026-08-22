@@ -48,6 +48,12 @@ tasks:
         label: 文案生成模型
         default: gemini-3.5-flash
         options:
+          - value: deepseek-official-v4-flash
+            label: DeepSeek 官方 · V4 Flash
+          - value: deepseek-official-v4-pro
+            label: DeepSeek 官方 · V4 Pro
+          - value: deepseek-official-v4-flash-vision-exp
+            label: DeepSeek 官方 · V4 Flash Vision Exp
           - value: gpt-5.6-sol
             label: 海外 · GPT-5.6 Sol
           - value: gpt-5.6-terra
@@ -68,13 +74,15 @@ tasks:
             label: 国内 · Qwen 3.8 Max Preview
           - value: qwen3.7-plus
             label: 国内 · Qwen 3.7 Plus
+          - value: deepseek-v4-flash
+            label: 国内 · DeepSeek V4 Flash（网关）
           - value: deepseek-v4-pro
-            label: 国内 · DeepSeek V4 Pro
+            label: 国内 · DeepSeek V4 Pro（网关）
           - value: glm-5.2
             label: 国内 · GLM 5.2
           - value: kimi-k2.7-code
             label: 国内 · Kimi K2.7 Code
-        hint: 默认使用 gemini-3.5-flash；切换到 Gemini 系列时商品图会自动转为 base64 传输，其他 OpenAI 兼容模型保持图片 URL 直传。海外 Claude 模型走 Anthropic 兼容地址，国内模型走百炼 CodingPlan 兼容地址。
+        hint: 默认使用 gemini-3.5-flash；DeepSeek 官方模型走独立 API Key，国内 DeepSeek 网关模型走百炼 CodingPlan 兼容地址。切换到 Gemini 系列时商品图会自动转为 base64 传输，其他 OpenAI 兼容模型保持图片 URL 直传。
       - id: output_dir
         type: directory
         label: Excel 导出目录
