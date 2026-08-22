@@ -3493,20 +3493,47 @@ def _prepare_shenhui_shoe_package_rows(
     progress=None,
 ) -> list[dict]:
     output_root = Path(runtime_artifact_dir) / "shoe-packages"
+    fallback_model_ids = [
+        str(run_params.get(f"fallback_model_{index}") or "").strip()
+        for index in range(1, 6)
+        if str(run_params.get(f"fallback_model_{index}") or "").strip()
+    ]
+    if not fallback_model_ids:
+        fallback_model_ids = (
+            run_params.get("fallback_model_ids")
+            or run_params.get("fallback_models")
+            or ""
+        )
     category_file = run_params.get("shoe_category_file")
     shoe_categories = None
     if isinstance(category_file, dict) and (
         category_file.get("path") or category_file.get("rows")
     ):
-        shoe_categories = shenhui_shoe_packaging.parse_shoe_category_rows(
-            category_file.get("rows")
+        category_rows = category_file.get("rows")
+        has_category_value = (
+            isinstance(category_rows, list)
+            and any(
+                str(row.get("品类") or "").strip()
+                for row in category_rows
+                if isinstance(row, dict)
+            )
         )
-        log(f"鞋品品类 Excel 已读取 {len(shoe_categories)} 个款号")
-    report_rows, package_roots = shenhui_shoe_packaging.prepare_shoe_packages(
+        if isinstance(category_rows, list) and not has_category_value:
+            log("鞋品品类 Excel 未填写品类，后续使用模型兜底识别品类")
+        else:
+            shoe_categories = shenhui_shoe_packaging.parse_shoe_category_rows(
+                category_rows
+            )
+            log(f"鞋品品类 Excel 已读取 {len(shoe_categories)} 个款号")
+    report_rows, package_roots = shenhui_shoe_packaging.prepare_shoe_packages_skip_failed_styles(
         data_rows=data_rows,
         output_root=output_root,
         model_id=str(run_params.get("model_id") or shenhui_shoe_packaging.SHOE_POSE_DEFAULT_MODEL).strip()
         or shenhui_shoe_packaging.SHOE_POSE_DEFAULT_MODEL,
+        fallback_model_ids=fallback_model_ids,
+        label_model_id=str(run_params.get("label_model_id") or "").strip(),
+        label_fallback_model_ids=run_params.get("label_fallback_model_ids")
+        or fallback_model_ids,
         shoe_categories=shoe_categories,
         analyze_color_label=(
             False

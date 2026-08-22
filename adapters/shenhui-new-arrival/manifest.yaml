@@ -272,23 +272,25 @@ tasks:
         template_label: 下载鞋品品类模板
       - id: model_id
         type: select
-        label: 鞋品姿势识别模型
-        default: gpt-5.5
+        label: 默认模型
+        default: gpt-5.6-terra
         options:
+          - value: multi-model
+            label: 仅按 Fallback 顺序自动尝试
+          - value: gpt-5.6-sol
+            label: GPT-5.6 Sol
+          - value: gpt-5.6-terra
+            label: GPT-5.6 Terra（推荐）
+          - value: gpt-5.6-luna
+            label: GPT-5.6 Luna
+          - value: gpt-5.5
+            label: GPT-5.5（手动对照）
           - value: deepseek-official-v4-flash-vision-exp
             label: DeepSeek 官方 · V4 Flash Vision Exp
           - value: deepseek-official-v4-flash
             label: DeepSeek 官方 · V4 Flash
           - value: deepseek-official-v4-pro
             label: DeepSeek 官方 · V4 Pro
-          - value: gpt-5.5
-            label: GPT-5.5（评测最佳）
-          - value: gpt-5.6-sol
-            label: GPT-5.6 Sol
-          - value: gpt-5.6-terra
-            label: GPT-5.6 Terra
-          - value: gpt-5.6-luna
-            label: GPT-5.6 Luna
           - value: qwen3.8-max-preview
             label: Qwen 3.8 Max Preview
           - value: qwen3.7-plus
@@ -309,7 +311,74 @@ tasks:
             label: Gemini 3.1 Pro Preview
           - value: gemini-3.5-flash
             label: Gemini 3.5 Flash
-        hint: 默认使用 2026-07-29 本地四款鞋样评测总分最高的 GPT-5.5；可手动切换其他已接入模型复核
+        hint: 先使用该模型；失败或超时后按下方 Fallback 顺序继续
+      - id: fallback_model_1
+        type: select
+        label: Fallback 1
+        default: gpt-5.6-luna
+        ui_span: half
+        options: &shoe_model_options
+          - value: ""
+            label: 不使用
+          - value: gpt-5.6-terra
+            label: GPT-5.6 Terra（推荐默认）
+          - value: gpt-5.6-luna
+            label: GPT-5.6 Luna
+          - value: gpt-5.6-sol
+            label: GPT-5.6 Sol
+          - value: gpt-5.5
+            label: GPT-5.5
+          - value: deepseek-official-v4-flash-vision-exp
+            label: DeepSeek 官方 · V4 Flash Vision Exp
+          - value: deepseek-official-v4-flash
+            label: DeepSeek 官方 · V4 Flash
+          - value: deepseek-official-v4-pro
+            label: DeepSeek 官方 · V4 Pro
+          - value: qwen3.8-max-preview
+            label: Qwen 3.8 Max Preview
+          - value: qwen3.7-plus
+            label: Qwen 3.7 Plus
+          - value: deepseek-v4-flash
+            label: DeepSeek V4 Flash（网关）
+          - value: deepseek-v4-pro
+            label: DeepSeek V4 Pro（网关）
+          - value: glm-5.2
+            label: GLM 5.2
+          - value: kimi-k2.7-code
+            label: Kimi K2.7 Code
+          - value: claude-opus-4-8
+            label: Claude Opus 4.8
+          - value: claude-sonnet-5
+            label: Claude Sonnet 5
+          - value: gemini-3.1-pro-preview
+            label: Gemini 3.1 Pro Preview
+          - value: gemini-3.5-flash
+            label: Gemini 3.5 Flash
+        hint: 失败或超时后按 Fallback 1 到 5 顺序尝试；可留空
+      - id: fallback_model_2
+        type: select
+        label: Fallback 2
+        default: gpt-5.6-sol
+        ui_span: half
+        options: *shoe_model_options
+      - id: fallback_model_3
+        type: select
+        label: Fallback 3
+        default: gpt-5.5
+        ui_span: half
+        options: *shoe_model_options
+      - id: fallback_model_4
+        type: select
+        label: Fallback 4
+        default: deepseek-official-v4-flash-vision-exp
+        ui_span: half
+        options: *shoe_model_options
+      - id: fallback_model_5
+        type: select
+        label: Fallback 5
+        default: ""
+        ui_span: half
+        options: *shoe_model_options
       - id: package_name
         type: text
         label: 导出包名称

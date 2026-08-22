@@ -59,7 +59,26 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             params["shoe_category_file"]["template_file"],
             "assets/鞋品品类映射模板.xlsx",
         )
-        self.assertEqual(params["model_id"]["default"], "gpt-5.5")
+        self.assertEqual(params["model_id"]["default"], "gpt-5.6-terra")
+        self.assertEqual(
+            params["fallback_model_1"]["default"],
+            "gpt-5.6-luna",
+        )
+        self.assertEqual(params["fallback_model_2"]["default"], "gpt-5.6-sol")
+        self.assertEqual(params["fallback_model_3"]["default"], "gpt-5.5")
+        self.assertEqual(
+            params["fallback_model_4"]["default"],
+            "deepseek-official-v4-flash-vision-exp",
+        )
+        self.assertEqual(params["fallback_model_5"]["default"], "")
+        self.assertIn("不使用", [
+            option["label"]
+            for option in params["fallback_model_1"]["options"]
+        ])
+        self.assertIn(
+            "multi-model",
+            [option["value"] for option in params["model_id"]["options"]],
+        )
         self.assertIn(
             "gpt-5.5",
             [option["value"] for option in params["model_id"]["options"]],
@@ -786,6 +805,9 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             package_root.mkdir(parents=True)
             run_params = {
                 "model_id": "qwen3.8-max-preview",
+                "fallback_model_1": "gpt-5.6-terra",
+                "fallback_model_2": "gpt-5.6-luna",
+                "fallback_model_3": "",
                 "shoe_category_file": {
                     "rows": [
                         {"款号": "208326146209", "品类": "宝宝鞋"},
@@ -823,6 +845,14 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 "qwen3.8-max-preview",
             )
             self.assertEqual(
+                prepare.call_args.kwargs["fallback_model_ids"],
+                ["gpt-5.6-terra", "gpt-5.6-luna"],
+            )
+            self.assertEqual(
+                prepare.call_args.kwargs["label_fallback_model_ids"],
+                ["gpt-5.6-terra", "gpt-5.6-luna"],
+            )
+            self.assertEqual(
                 prepare.call_args.kwargs["shoe_categories"],
                 {
                     "208326146209": "婴童",
@@ -849,6 +879,41 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 benchmark_prepare.call_args.kwargs["analyze_color_label"],
                 False,
             )
+
+    def test_prepare_shoe_rows_allows_code_only_rows_to_use_model_category(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime"
+            package_root = runtime_dir / "shoe-packages" / "204426146036"
+            package_root.mkdir(parents=True)
+            run_params = {
+                "shoe_category_file": {
+                    "rows": [
+                        {"款号": "204426146036", "品类": ""},
+                        {"款号": "204426146127"},
+                    ]
+                },
+            }
+            expected_rows = [{
+                "输入款号": "204426146036",
+                "规则槽位": "tmz5",
+                "规则告警": "",
+            }]
+            logs = []
+
+            with patch(
+                "core.api_server.shenhui_shoe_packaging.prepare_shoe_packages_skip_failed_styles",
+                return_value=(expected_rows, {"204426146036": package_root}),
+            ) as prepare:
+                result = _prepare_shenhui_shoe_package_rows(
+                    data_rows=[{"输入款号": "204426146036"}],
+                    run_params=run_params,
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=logs.append,
+                )
+
+            self.assertEqual(result, expected_rows)
+            self.assertIsNone(prepare.call_args.kwargs["shoe_categories"])
+            self.assertTrue(any("模型兜底识别品类" in item for item in logs))
 
     def test_finalize_outputs_creates_style_zips_when_auto_zip_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
