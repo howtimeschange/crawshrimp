@@ -252,6 +252,7 @@ contextBridge.exposeInMainWorld('cs', {
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate:  () => ipcRenderer.invoke('update:install'),
+  fetchUpdateReleaseNotes: () => ipcRenderer.invoke('update:fetch-release-notes'),
   onUpdateStatus: (cb) => {
     const listener = (_, data) => cb(data)
     ipcRenderer.on('update-status', listener)

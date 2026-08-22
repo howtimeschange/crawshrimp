@@ -339,6 +339,73 @@ test('requestInstall fresh-checks readiness then drains, cleans up, marks instal
   assert.deepEqual(result, { ok: true })
 })
 
+test('bypass readiness marks downloaded updates ready without querying tasks', async () => {
+  const updateService = createUpdateService({ status: 'downloaded', downloaded: true })
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    bypassReadiness: true,
+    shutdownForUpdate: async () => true,
+  })
+
+  coordinator.start()
+  await flush()
+
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+  assert.deepEqual(updateService.getStatus().blockers, [])
+})
+
+test('bypass install cancellation stops before cleanup', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    bypassReadiness: true,
+    confirmInstall: async () => {
+      events.push('confirm')
+      return false
+    },
+    shutdownForUpdate: async () => {
+      events.push('shutdown')
+      return true
+    },
+  })
+
+  const result = await coordinator.requestInstall()
+
+  assert.deepEqual(result, { ok: false, deferred: true })
+  assert.deepEqual(events, ['confirm'])
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+})
+
+test('bypass install confirms then cleans up and quits without drain', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  updateService.setInstalling = () => {
+    events.push('set-installing')
+    updateService.publish({ status: 'installing', blockers: [], error: '' })
+  }
+  updateService.quitAndInstall = () => {
+    events.push('quit-and-install')
+  }
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    bypassReadiness: true,
+    confirmInstall: async () => {
+      events.push('confirm')
+      return true
+    },
+    shutdownForUpdate: async () => {
+      events.push('shutdown')
+      return true
+    },
+  })
+
+  const result = await coordinator.requestInstall()
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(events, ['confirm', 'shutdown', 'set-installing', 'quit-and-install'])
+})
+
 test('requestInstall accepts real successful API drain response and quits only after cleanup', async () => {
   const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
   const events = []

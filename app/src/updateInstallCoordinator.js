@@ -6,6 +6,8 @@ function createUpdateInstallCoordinator({
   acquireDrain,
   releaseDrain,
   shutdownForUpdate,
+  confirmInstall = async () => true,
+  bypassReadiness = false,
   recoverAfterCleanupFailure = async () => {},
   notifyReady,
   setIntervalFn = setInterval,
@@ -14,9 +16,9 @@ function createUpdateInstallCoordinator({
   log = () => {},
 }) {
   if (!updateService) throw new Error('updateService is required')
-  if (typeof getReadiness !== 'function') throw new Error('getReadiness is required')
-  if (typeof acquireDrain !== 'function') throw new Error('acquireDrain is required')
-  if (typeof releaseDrain !== 'function') throw new Error('releaseDrain is required')
+  if (!bypassReadiness && typeof getReadiness !== 'function') throw new Error('getReadiness is required')
+  if (!bypassReadiness && typeof acquireDrain !== 'function') throw new Error('acquireDrain is required')
+  if (!bypassReadiness && typeof releaseDrain !== 'function') throw new Error('releaseDrain is required')
   if (typeof shutdownForUpdate !== 'function') throw new Error('shutdownForUpdate is required')
 
   let unsubscribe = null
@@ -45,6 +47,12 @@ function createUpdateInstallCoordinator({
 
   async function doRefreshReadiness() {
     const previous = updateService.getStatus?.() || {}
+    if (bypassReadiness) {
+      updateService.setInstallReadiness({ ready: true, blockers: [] })
+      stopPolling()
+      if (previous.status === 'waiting-for-tasks') notifyReady?.()
+      return { ready: true, blockers: [] }
+    }
     try {
       const readiness = normalizeReadiness(await getReadiness(), 'readiness')
       if (disposed) return invalidReadiness('Coordinator is disposed')
@@ -73,6 +81,11 @@ function createUpdateInstallCoordinator({
   async function requestInstall() {
     const readiness = await refreshReadiness()
     if (!readiness?.ready) return { ok: false, deferred: true }
+    if (await confirmInstall() !== true) return { ok: false, deferred: true }
+
+    if (bypassReadiness) {
+      return requestInstallWithoutDrain()
+    }
 
     let drainToken = ''
     try {
@@ -135,6 +148,34 @@ function createUpdateInstallCoordinator({
           await releaseDrainSafely(drainToken)
           updateService.setInstallReadiness({ ready: true, blockers: [] })
         }
+      }
+      throw error
+    }
+  }
+
+  async function requestInstallWithoutDrain() {
+    let cleanupCompleted = false
+    try {
+      const shutdownReady = await shutdownForUpdate()
+      if (shutdownReady !== true) {
+        updateService.setInstallReadiness({ ready: true, blockers: [] })
+        return { ok: false, deferred: true }
+      }
+      cleanupCompleted = true
+      if (disposed) {
+        return { ok: false, deferred: true }
+      }
+      try {
+        updateService.setInstalling()
+        updateService.quitAndInstall()
+      } catch (installError) {
+        await recoverAfterPostCleanupInstallFailure()
+        throw installError
+      }
+      return { ok: true }
+    } catch (error) {
+      if (!cleanupCompleted) {
+        updateService.setInstallReadiness({ ready: true, blockers: [] })
       }
       throw error
     }

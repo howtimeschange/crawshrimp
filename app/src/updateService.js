@@ -6,6 +6,9 @@ const GITHUB_FALLBACK_FEED = Object.freeze({
   owner: 'howtimeschange',
   repo: 'crawshrimp',
 })
+const GITHUB_RELEASE_API = 'https://api.github.com/repos/howtimeschange/crawshrimp/releases/latest'
+const CLOUDFLARE_RELEASE_NOTES_URL = 'https://updates.crawshrimp.com/latest-release.json'
+const UPDATE_NOTES_MIRROR = String(process.env.CRAWSHRIMP_UPDATE_NOTES_MIRROR || '').trim()
 
 function createUpdateService({
   app,
@@ -87,11 +90,12 @@ function createUpdateService({
     'update-downloaded': info => {
       rememberUpdateInfo(info)
       publish({
-        status: 'downloaded',
+        status: 'ready-to-install',
         latestVersion: state.latestVersion,
         releaseNotes: state.releaseNotes,
         progress: null,
         error: '',
+        blockers: [],
         downloaded: true,
       })
     },
@@ -213,6 +217,84 @@ function createUpdateService({
   }
 }
 
+async function fetchLatestReleaseNotes({
+  fetchImpl = fetch,
+  mirrorUrl = UPDATE_NOTES_MIRROR,
+  cloudflareUrl = CLOUDFLARE_RELEASE_NOTES_URL,
+  githubUrl = GITHUB_RELEASE_API,
+  timeoutMs = 15000,
+} = {}) {
+  const attempts = uniqueUrls([
+    githubUrl,
+    mirrorUrl,
+    cloudflareUrl,
+  ])
+  let lastError = ''
+  for (const url of attempts) {
+    try {
+      return await fetchReleaseNotesUrl(url, { fetchImpl, timeoutMs })
+    } catch (error) {
+      lastError = String(error?.message || error)
+    }
+  }
+  return { ok: false, error: lastError, url: LATEST_RELEASE_URL }
+}
+
+async function fetchReleaseNotesUrl(url, { fetchImpl, timeoutMs }) {
+  const response = await fetchImpl(url, {
+    headers: {
+      Accept: 'application/json, text/markdown, text/plain;q=0.9, application/vnd.github+json;q=0.8',
+      'User-Agent': 'crawshrimp-updater',
+    },
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+  const contentType = String(response.headers?.get?.('content-type') || '')
+  if (contentType.includes('json')) {
+    return normalizeReleaseNotePayload(await response.json(), url)
+  }
+
+  const text = await response.text()
+  const trimmed = text.trim()
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      return normalizeReleaseNotePayload(JSON.parse(trimmed), url)
+    } catch {}
+  }
+  return {
+    ok: true,
+    version: '',
+    body: text,
+    publishedAt: '',
+    url,
+  }
+}
+
+function normalizeReleaseNotePayload(payload, sourceUrl) {
+  const release = Array.isArray(payload) ? payload[0] : payload
+  const name = String(release?.version || release?.name || release?.tag_name || release?.tagName || '')
+  return {
+    ok: true,
+    version: name.replace(/^v(?=\d)/, ''),
+    body: String(release?.body || release?.notes || release?.releaseNotes || release?.changelog || ''),
+    publishedAt: String(release?.published_at || release?.publishedAt || release?.date || ''),
+    url: String(release?.html_url || release?.url || release?.releaseUrl || sourceUrl || LATEST_RELEASE_URL),
+  }
+}
+
+function uniqueUrls(urls) {
+  const seen = new Set()
+  const unique = []
+  for (const value of urls) {
+    const url = String(value || '').trim()
+    if (!url || seen.has(url)) continue
+    seen.add(url)
+    unique.push(url)
+  }
+  return unique
+}
+
 function configureUpdater(autoUpdater, updateFeedUrl, log) {
   if (!autoUpdater) throw new Error('autoUpdater is required')
   autoUpdater.autoDownload = false
@@ -281,4 +363,4 @@ function formatBytes(value) {
   return `${Math.round(amount * 10) / 10} ${units[index]}`
 }
 
-module.exports = { createUpdateService }
+module.exports = { createUpdateService, fetchLatestReleaseNotes }

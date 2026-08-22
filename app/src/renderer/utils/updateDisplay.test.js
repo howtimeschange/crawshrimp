@@ -66,7 +66,7 @@ test('downloading status rounds and clamps progress without an action', () => {
   )
 })
 
-test('waiting status reports blocker count without an action', () => {
+test('waiting status remains installable instead of blocking on task count', () => {
   assert.deepEqual(
     buildSidebarUpdatePresentation({
       status: 'waiting-for-tasks',
@@ -78,11 +78,11 @@ test('waiting status reports blocker count without an action', () => {
       ],
     }, false),
     {
-      action: null,
-      label: '等待 2 个任务结束',
+      action: 'install',
+      label: '重启安装',
       versionLabel: 'v2.0.0',
-      title: 'v2.0.1 已下载，等待 2 个任务结束后安装',
-      tone: 'waiting',
+      title: 'v2.0.1 已下载，点击重启安装',
+      tone: 'ready',
       percent: null,
     },
   )

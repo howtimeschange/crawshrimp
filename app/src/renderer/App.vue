@@ -216,6 +216,13 @@
         @theme-change="setThemePreference"
       />
     </main>
+    <UpdateChangelogModal
+      :open="changelogOpen"
+      :version="updateStatus.latestVersion"
+      :busy="updateActionBusy"
+      @close="changelogOpen = false"
+      @download="onChangelogDownload"
+    />
   </div>
 </template>
 
@@ -233,6 +240,7 @@ import LocalPromptLibrary from './views/LocalPromptLibrary.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
 import SidebarUpdateFooter from './components/SidebarUpdateFooter.vue'
+import UpdateChangelogModal from './components/UpdateChangelogModal.vue'
 import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarState.js'
@@ -278,6 +286,7 @@ const updateStatus = ref({
   downloaded: false,
 })
 const updateActionBusy = ref(false)
+const changelogOpen = ref(false)
 const systemThemeMedia = window.matchMedia?.('(prefers-color-scheme: dark)')
 const themePreference = ref(readThemePreference(window.localStorage))
 const effectiveTheme = ref(applyTheme(themePreference.value, {
@@ -492,6 +501,11 @@ function formatUpdateActionError(error) {
 }
 
 async function downloadUpdate() {
+  changelogOpen.value = true
+}
+
+async function onChangelogDownload() {
+  changelogOpen.value = false
   const result = await updateActionRunner.run(() => window.cs.downloadUpdate())
   if (result?.status) updateStatus.value = result
 }

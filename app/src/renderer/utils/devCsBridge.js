@@ -320,6 +320,7 @@ export function createDevCsBridge() {
     checkForUpdates: async () => disabledUpdateStatus(),
     downloadUpdate: async () => disabledUpdateStatus(),
     installUpdate: async () => ({ ok: false, error: '浏览器开发模式不能安装桌面更新。' }),
+    fetchUpdateReleaseNotes: async () => ({ ok: false, error: '浏览器开发模式不会获取桌面更新日志。', url: '' }),
     onUpdateStatus: () => () => {},
     launchChrome: async () => ({ ok: false, error: '浏览器开发模式不负责启动 Chrome，请使用 Electron 开发壳' }),
     checkChrome: async () => ({ ok: Boolean((await apiCall('GET', '/health'))?.chrome) }),

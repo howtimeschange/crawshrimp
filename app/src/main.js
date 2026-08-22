@@ -34,7 +34,7 @@ const { createSingleFlightRecovery, isOwnedBackendRuntime, classifyBackendHealth
 const { probeChromeCdp: probeChromeCdpHealth, prepareChromeRecovery } = require('./chromeCdp')
 const { requestBackendHealth } = require('./backendHealth')
 const { configureSingleInstance } = require('./singleInstance')
-const { createUpdateService } = require('./updateService')
+const { createUpdateService, fetchLatestReleaseNotes } = require('./updateService')
 const { createUpdateInstallCoordinator } = require('./updateInstallCoordinator')
 const { createUpdateCheckScheduler } = require('./updateCheckScheduler')
 const { evaluateUpdatePlatform, resolveUpdateFeedUrl } = require('./updatePlatform')
@@ -2555,6 +2555,21 @@ function notifyUpdateAvailable(status = {}) {
   notification.show()
 }
 
+async function confirmUpdateInstall() {
+  const version = String(updateService.getStatus?.().latestVersion || '').trim()
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['重启安装', '取消'],
+    defaultId: 0,
+    cancelId: 1,
+    title: '重启安装更新',
+    message: version ? `确认重启安装 v${version}？` : '确认重启安装更新？',
+    detail: '抓虾会退出并安装新版本。若当前仍有本地任务、AI 生图或后台操作，它们可能被中断；确认后将立即重启安装。',
+    noLink: true,
+  })
+  return result.response === 0
+}
+
 const updateService = createUpdateService({
   app,
   autoUpdater,
@@ -2585,6 +2600,8 @@ const updateCoordinator = createUpdateInstallCoordinator({
     timeoutMs: 1500,
   })),
   shutdownForUpdate: () => lifecycleController.prepareForUpdateInstall(),
+  confirmInstall: confirmUpdateInstall,
+  bypassReadiness: true,
   recoverAfterCleanupFailure: async () => {
     lifecycleController.recoverFromUpdateInstallFailure()
     await ensureDesktopServicesStarted()
@@ -2748,6 +2765,7 @@ secureHandle('update:download', async () => {
   return updateService.getStatus()
 })
 secureHandle('update:install', async () => updateCoordinator.requestInstall())
+secureHandle('update:fetch-release-notes', async () => fetchLatestReleaseNotes())
 
 secureHandle('launch-chrome', async (_, customPath) => launchChrome(customPath || ''))
 secureHandle('check-chrome', async () => ({ ok: (await probeChromeCdp()).ok }))

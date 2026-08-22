@@ -1,7 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
-const { createUpdateService } = require('./updateService')
+const { createUpdateService, fetchLatestReleaseNotes } = require('./updateService')
 
 function createUpdater() {
   const updater = new EventEmitter()
@@ -64,6 +64,7 @@ test('downloaded update becomes waiting or ready only through readiness input', 
   })
 
   updater.emit('update-downloaded', { version: '2.0.1' })
+  assert.equal(service.getStatus().status, 'ready-to-install')
   service.setInstallReadiness({
     ready: false,
     blockers: [{ kind: 'task', id: 'tmall::export', label: '导出任务', status: 'running' }],
@@ -212,8 +213,6 @@ test('quitAndInstall rejects until a downloaded update is explicitly installing'
   assert.throws(() => service.quitAndInstall(), /尚未准备好安装/)
   updater.emit('update-downloaded', { version: '2.0.1' })
   assert.throws(() => service.quitAndInstall(), /尚未准备好安装/)
-  assert.throws(() => service.setInstalling(), /尚未准备好安装/)
-  service.setInstallReadiness({ ready: true, blockers: [] })
   service.setInstalling()
   service.quitAndInstall()
   assert.equal(installs, 1)
@@ -256,3 +255,153 @@ test('Cloudflare update check falls back to GitHub when the primary feed is unav
     { provider: 'github', owner: 'howtimeschange', repo: 'crawshrimp' },
   ])
 })
+
+test('release notes prefer GitHub latest release API before Cloudflare fallbacks', async () => {
+  const calls = []
+  const fetchImpl = async url => {
+    calls.push(url)
+    return createJsonResponse({
+      tag_name: 'v2.1.0',
+      body: '- GitHub notes',
+      published_at: '2026-08-22T10:00:00Z',
+      html_url: 'https://github.test/releases/v2.1.0',
+    })
+  }
+
+  const result = await fetchLatestReleaseNotes({
+    fetchImpl,
+    mirrorUrl: 'https://mirror.test/latest-release.json',
+    cloudflareUrl: 'https://updates.crawshrimp.test/latest-release.json',
+    githubUrl: 'https://api.github.test/releases/latest',
+  })
+
+  assert.deepEqual(calls, ['https://api.github.test/releases/latest'])
+  assert.deepEqual(result, {
+    ok: true,
+    version: '2.1.0',
+    body: '- GitHub notes',
+    publishedAt: '2026-08-22T10:00:00Z',
+    url: 'https://github.test/releases/v2.1.0',
+  })
+})
+
+test('release notes fall back to the configured mirror after GitHub fails', async () => {
+  const calls = []
+  const fetchImpl = async url => {
+    calls.push(url)
+    if (url === 'https://api.github.test/releases/latest') {
+      return createTextResponse('unavailable', { status: 503 })
+    }
+    return createJsonResponse({
+      tagName: 'v2.3.0',
+      changelog: 'Mirror notes',
+      date: '2026-08-22',
+      url: 'https://mirror.test/releases/v2.3.0',
+    })
+  }
+
+  const result = await fetchLatestReleaseNotes({
+    fetchImpl,
+    mirrorUrl: 'https://mirror.test/latest-release.json',
+    cloudflareUrl: 'https://updates.crawshrimp.test/latest-release.json',
+    githubUrl: 'https://api.github.test/releases/latest',
+  })
+
+  assert.deepEqual(calls, [
+    'https://api.github.test/releases/latest',
+    'https://mirror.test/latest-release.json',
+  ])
+  assert.deepEqual(result, {
+    ok: true,
+    version: '2.3.0',
+    body: 'Mirror notes',
+    publishedAt: '2026-08-22',
+    url: 'https://mirror.test/releases/v2.3.0',
+  })
+})
+
+test('release notes fall back to Cloudflare JSON when GitHub and mirror fail', async () => {
+  const calls = []
+  const fetchImpl = async url => {
+    calls.push(url)
+    if (url !== 'https://updates.crawshrimp.test/latest-release.json') {
+      return createTextResponse('unavailable', { status: 503 })
+    }
+    return createJsonResponse({
+      version: '2.2.0',
+      notes: 'Cloudflare notes',
+      publishedAt: '2026-08-22T11:00:00Z',
+      releaseUrl: 'https://updates.crawshrimp.test/releases/2.2.0',
+    })
+  }
+
+  const result = await fetchLatestReleaseNotes({
+    fetchImpl,
+    mirrorUrl: 'https://mirror.test/latest-release.json',
+    cloudflareUrl: 'https://updates.crawshrimp.test/latest-release.json',
+    githubUrl: 'https://api.github.test/releases/latest',
+  })
+
+  assert.deepEqual(calls, [
+    'https://api.github.test/releases/latest',
+    'https://mirror.test/latest-release.json',
+    'https://updates.crawshrimp.test/latest-release.json',
+  ])
+  assert.deepEqual(result, {
+    ok: true,
+    version: '2.2.0',
+    body: 'Cloudflare notes',
+    publishedAt: '2026-08-22T11:00:00Z',
+    url: 'https://updates.crawshrimp.test/releases/2.2.0',
+  })
+})
+
+test('release notes accept Cloudflare markdown after GitHub fails', async () => {
+  const calls = []
+  const fetchImpl = async url => {
+    calls.push(url)
+    if (url === 'https://api.github.test/releases/latest') {
+      return createTextResponse('unavailable', { status: 503 })
+    }
+    return createTextResponse('# v2.4.0\n\n- Cloudflare markdown notes', { contentType: 'text/markdown' })
+  }
+
+  const result = await fetchLatestReleaseNotes({
+    fetchImpl,
+    mirrorUrl: '',
+    cloudflareUrl: 'https://updates.crawshrimp.test/latest-release.json',
+    githubUrl: 'https://api.github.test/releases/latest',
+  })
+
+  assert.deepEqual(calls, [
+    'https://api.github.test/releases/latest',
+    'https://updates.crawshrimp.test/latest-release.json',
+  ])
+  assert.deepEqual(result, {
+    ok: true,
+    version: '',
+    body: '# v2.4.0\n\n- Cloudflare markdown notes',
+    publishedAt: '',
+    url: 'https://updates.crawshrimp.test/latest-release.json',
+  })
+})
+
+function createJsonResponse(payload, { status = 200 } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: name => String(name).toLowerCase() === 'content-type' ? 'application/json' : '' },
+    json: async () => payload,
+    text: async () => JSON.stringify(payload),
+  }
+}
+
+function createTextResponse(body, { status = 200, contentType = 'text/plain' } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: name => String(name).toLowerCase() === 'content-type' ? contentType : '' },
+    json: async () => JSON.parse(body),
+    text: async () => body,
+  }
+}

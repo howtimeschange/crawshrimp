@@ -529,9 +529,40 @@ jobs:
             echo "::error::Package version ${APP_VERSION} does not match release tag ${GITHUB_REF_NAME}"
             exit 1
           fi
+          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
 
       - name: Validate release update artifacts
         run: node app/scripts/validate-update-artifacts.js release-assets --formal-release --version "${GITHUB_REF_NAME#v}"
+
+      - name: Prepare Cloudflare release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES_FILE="release-notes/v${APP_VERSION}.md"
+          if [ -f "${NOTES_FILE}" ]; then
+            cp "${NOTES_FILE}" cloudflare-release-notes.md
+          else
+            printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > cloudflare-release-notes.md
+          fi
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ["APP_VERSION"]
+          body = Path("cloudflare-release-notes.md").read_text(encoding="utf-8")
+          payload = {
+              "version": version,
+              "body": body,
+              "publishedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+              "url": f"https://github.com/howtimeschange/crawshrimp/releases/tag/v{version}",
+          }
+          Path("cloudflare-latest-release.json").write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
 
       - name: Ensure AWS CLI
         shell: bash
@@ -562,6 +593,8 @@ jobs:
             local content_type="application/octet-stream"
             case "${name}" in
               *.yml) content_type="application/x-yaml" ;;
+              *.json) content_type="application/json; charset=utf-8" ;;
+              *.md) content_type="text/markdown; charset=utf-8" ;;
               *.zip) content_type="application/zip" ;;
               *.exe) content_type="application/vnd.microsoft.portable-executable" ;;
             esac
@@ -583,6 +616,16 @@ jobs:
 
           upload_object release-assets/macos/latest-mac.yml 'no-cache, max-age=0, must-revalidate'
           upload_object release-assets/windows/latest.yml 'no-cache, max-age=0, must-revalidate'
+          aws s3 cp cloudflare-latest-release.json "s3://${CLOUDFLARE_R2_BUCKET}/latest-release.json" \
+            --endpoint-url "${CLOUDFLARE_R2_S3_ENDPOINT}" \
+            --content-type 'application/json; charset=utf-8' \
+            --cache-control 'no-cache, max-age=0, must-revalidate' \
+            --only-show-errors
+          aws s3 cp cloudflare-release-notes.md "s3://${CLOUDFLARE_R2_BUCKET}/latest-release.md" \
+            --endpoint-url "${CLOUDFLARE_R2_S3_ENDPOINT}" \
+            --content-type 'text/markdown; charset=utf-8' \
+            --cache-control 'no-cache, max-age=0, must-revalidate' \
+            --only-show-errors
 
       - name: Verify Cloudflare R2 update metadata
         shell: bash
@@ -600,6 +643,20 @@ jobs:
               --only-show-errors
             cmp --silent "${expected}" "${actual}"
           done
+          aws s3 cp "s3://${CLOUDFLARE_R2_BUCKET}/latest-release.json" actual-latest-release.json \
+            --endpoint-url "${CLOUDFLARE_R2_S3_ENDPOINT}" \
+            --only-show-errors
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path("actual-latest-release.json").read_text(encoding="utf-8"))
+          if payload.get("version") != os.environ["APP_VERSION"]:
+              raise SystemExit(f"latest-release.json version mismatch: {payload.get('version')}")
+          if not str(payload.get("body") or "").strip():
+              raise SystemExit("latest-release.json body is empty")
+          PY
 
   publish-version-release:
     name: Publish Versioned GitHub Release

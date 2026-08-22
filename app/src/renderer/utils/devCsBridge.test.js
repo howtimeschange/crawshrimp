@@ -41,5 +41,6 @@ test('dev browser bridge exposes disabled no-op desktop updater methods', () => 
   assert.match(source, /checkForUpdates: async \(\) => disabledUpdateStatus\(\)/)
   assert.match(source, /downloadUpdate: async \(\) => disabledUpdateStatus\(\)/)
   assert.match(source, /installUpdate: async \(\) => \(\{ ok: false, error: '浏览器开发模式不能安装桌面更新。' \}\)/)
+  assert.match(source, /fetchUpdateReleaseNotes: async \(\) => \(\{ ok: false, error: '浏览器开发模式不会获取桌面更新日志。', url: '' \}\)/)
   assert.match(source, /onUpdateStatus: \(\) => \(\) => \{\}/)
 })

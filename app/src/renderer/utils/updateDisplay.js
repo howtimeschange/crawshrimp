@@ -49,12 +49,12 @@ export function buildSidebarUpdatePresentation(updateStatus = {}, collapsed = fa
   }
 
   if (status === 'waiting-for-tasks') {
-    const blockerCount = Array.isArray(updateStatus.blockers) ? updateStatus.blockers.length : 0
     return {
       ...base,
-      label: blockerCount > 0 ? `等待 ${blockerCount} 个任务结束` : '等待任务结束',
-      title: `${formatFullVersion(latestVersion || currentVersion)} 已下载，等待 ${blockerCount} 个任务结束后安装`,
-      tone: 'waiting',
+      action: 'install',
+      label: '重启安装',
+      title: `${formatFullVersion(latestVersion || currentVersion)} 已下载，点击重启安装`,
+      tone: 'ready',
     }
   }
 
