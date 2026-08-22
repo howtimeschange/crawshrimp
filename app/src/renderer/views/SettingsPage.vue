@@ -513,65 +513,81 @@
 
           <div class="panel-layout">
             <div class="form-stack">
-              <div class="field">
-                <label>共享 API Key</label>
-                <input
-                  v-model="cfg[LLM_API_KEY_FIELD]"
-                  class="input"
-                  type="password"
-                  autocomplete="new-password"
-                  placeholder="输入网关 API Key"
-                  @focus="selectInputText"
-                />
-                <p class="field-hint">三个兼容网关共用同一个 Key；保存后只显示“已配置”，不会把密钥读回页面。</p>
-              </div>
-              <div class="field">
-                <label>DeepSeek 官方 API Key</label>
-                <input
-                  v-model="cfg[DEEPSEEK_API_KEY_FIELD]"
-                  class="input"
-                  type="password"
-                  autocomplete="new-password"
-                  placeholder="输入 DeepSeek 官方 API Key"
-                  @focus="selectInputText"
-                />
-                <p class="field-hint">仅用于 DeepSeek 官方 V4 Flash / Pro / Vision Exp；保存后不会把密钥读回页面。</p>
-              </div>
-              <div class="field">
-                <label>海外 OpenAI 兼容 Base URL</label>
-                <input v-model="cfg['ai.llm.overseas_openai_base_url']" class="input" />
-                <p class="field-hint">GPT 与 Gemini 模型使用此地址。</p>
-              </div>
-              <div class="field">
-                <label>海外 Anthropic 兼容 Base URL</label>
-                <input v-model="cfg['ai.llm.overseas_anthropic_base_url']" class="input" />
-                <p class="field-hint">Claude 模型使用此地址。</p>
-              </div>
-              <div class="field">
-                <label>国内 OpenAI 兼容 Base URL</label>
-                <input v-model="cfg['ai.llm.domestic_base_url']" class="input" />
-                <p class="field-hint">Qwen、DeepSeek、GLM 与 Kimi 模型使用此地址。</p>
-              </div>
-              <div class="field">
-                <label>DeepSeek 官方 Base URL</label>
-                <input v-model="cfg['ai.llm.deepseek_base_url']" class="input" />
-                <p class="field-hint">默认 https://api.deepseek.com；官方模型不走森马网关。</p>
-              </div>
-              <div class="field">
-                <label>默认模型</label>
-                <select v-model="cfg['ai.llm.default_model']" class="select">
-                  <option v-for="model in LLM_MODELS" :key="model.value" :value="model.value">
-                    {{ model.label }}
-                  </option>
-                </select>
+              <div class="llm-provider-grid">
+                <section class="llm-provider-card">
+                  <h4 class="llm-provider-title">森马网关</h4>
+                  <p class="llm-provider-sub">海外 OpenAI / 海外 Anthropic / 国内 OpenAI 三个兼容网关，共用同一个 Key。</p>
+                  <div class="field">
+                    <label>共享 API Key</label>
+                    <input
+                      v-model="cfg[LLM_API_KEY_FIELD]"
+                      class="input"
+                      type="password"
+                      autocomplete="new-password"
+                      placeholder="输入网关 API Key"
+                      @focus="selectInputText"
+                    />
+                    <p class="field-hint">保存后只显示“已配置”，不会把密钥读回页面。</p>
+                  </div>
+                  <div class="field">
+                    <label>海外 OpenAI 兼容 Base URL</label>
+                    <input v-model="cfg['ai.llm.overseas_openai_base_url']" class="input" />
+                    <p class="field-hint">GPT 与 Gemini 模型使用此地址。</p>
+                  </div>
+                  <div class="field">
+                    <label>海外 Anthropic 兼容 Base URL</label>
+                    <input v-model="cfg['ai.llm.overseas_anthropic_base_url']" class="input" />
+                    <p class="field-hint">Claude 模型使用此地址。</p>
+                  </div>
+                  <div class="field">
+                    <label>国内 OpenAI 兼容 Base URL</label>
+                    <input v-model="cfg['ai.llm.domestic_base_url']" class="input" />
+                    <p class="field-hint">Qwen、DeepSeek、GLM 与 Kimi 模型使用此地址。</p>
+                  </div>
+                  <div class="field">
+                    <label>默认模型</label>
+                    <select v-model="cfg['ai.llm.default_model']" class="select">
+                      <option v-for="model in LLM_MODELS" :key="model.value" :value="model.value">
+                        {{ model.label }}
+                      </option>
+                    </select>
+                  </div>
+                </section>
+                <section class="llm-provider-card ds">
+                  <h4 class="llm-provider-title">DeepSeek 官方</h4>
+                  <p class="llm-provider-sub">直连 api.deepseek.com，不走森马网关；官方 Key 覆盖文本与视觉模型。</p>
+                  <div class="field">
+                    <label>DeepSeek 官方 API Key</label>
+                    <input
+                      v-model="cfg[DEEPSEEK_API_KEY_FIELD]"
+                      class="input"
+                      type="password"
+                      autocomplete="new-password"
+                      placeholder="输入 DeepSeek 官方 API Key"
+                      @focus="selectInputText"
+                    />
+                    <p class="field-hint">保存后不会把密钥读回页面。</p>
+                  </div>
+                  <div class="field">
+                    <label>DeepSeek 官方 Base URL</label>
+                    <input v-model="cfg['ai.llm.deepseek_base_url']" class="input" />
+                    <p class="field-hint">默认 https://api.deepseek.com。</p>
+                  </div>
+                  <div class="field">
+                    <label>官方模型</label>
+                    <div class="llm-model-chips">
+                      <span v-for="model in DEEPSEEK_OFFICIAL_MODELS_UI" :key="model.value" class="chip">{{ model.value }}</span>
+                    </div>
+                  </div>
+                </section>
               </div>
               <PanelActions panel-id="ai-llm" @save="savePanel('ai-llm')" />
             </div>
             <div class="side-note">
               <strong>运行时路由</strong>
               <div class="key-states">
-                <span :class="['key-pill', isLlmConfigured(cfg) ? 'on' : 'off']">网关</span>
-                <span :class="['key-pill', isDeepSeekConfigured(cfg) ? 'on' : 'off']">DS</span>
+                <span :class="['key-pill', isLlmConfigured(cfg) ? 'on' : 'off']">森马网关</span>
+                <span :class="['key-pill', isDeepSeekConfigured(cfg) ? 'on' : 'off']">DS 官方</span>
                 <span class="key-pill neutral">OPENAI</span>
                 <span class="key-pill neutral">ANTHROPIC</span>
               </div>
@@ -822,6 +838,7 @@ import {
 } from '../utils/aiVideoSettings.mjs'
 import {
   DEEPSEEK_API_KEY_FIELD,
+  DEEPSEEK_OFFICIAL_MODELS_UI,
   LLM_API_KEY_FIELD,
   LLM_DEFAULTS,
   LLM_MASKED_CREDENTIAL_VALUE,
@@ -1975,6 +1992,69 @@ watch(activePanelId, panelId => {
   min-width: 0;
 }
 
+.llm-provider-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.llm-provider-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+
+.llm-provider-card.ds {
+  border-color: var(--orange-dim);
+  background: color-mix(in srgb, var(--bg2) 96%, var(--orange) 4%);
+}
+
+.llm-provider-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: 0;
+}
+
+.llm-provider-card.ds .llm-provider-title {
+  color: var(--orange-text);
+}
+
+.llm-provider-sub {
+  margin: -6px 0 0;
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.llm-model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.llm-model-chips .chip {
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg3);
+  color: var(--text2);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -2524,6 +2604,7 @@ watch(activePanelId, panelId => {
   .panel-layout,
   .guide-grid,
   .status-grid,
+  .llm-provider-grid,
   .split-fields {
     grid-template-columns: 1fr;
   }

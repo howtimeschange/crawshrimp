@@ -177,6 +177,18 @@ test('settings default model select shares the complete themed field treatment',
   assert.match(source, /\.input:focus,\s*\.select:focus\s*\{[\s\S]*?border-color:\s*var\(--orange\);/)
 })
 
+test('settings separates Semir gateway and official DeepSeek LLM providers', () => {
+  const source = readRendererFile('views/SettingsPage.vue')
+
+  assert.match(source, /class="llm-provider-grid"/)
+  assert.match(source, /class="llm-provider-card"[\s\S]*森马网关/)
+  assert.match(source, /class="llm-provider-card ds"[\s\S]*DeepSeek 官方/)
+  assert.match(source, /DEEPSEEK_OFFICIAL_MODELS_UI/)
+  assert.match(source, /class="llm-model-chips"/)
+  assert.match(cssRule(source, '.llm-provider-card'), /border-radius:\s*8px;/)
+  assert.match(cssRule(source, '.llm-provider-grid'), /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*1fr\);/)
+})
+
 test('task output dock uses a lighter light-theme surface and restrained controls', () => {
   const appSource = readRendererFile('App.vue')
   const runnerSource = readRendererFile('views/TaskRunner.vue')
