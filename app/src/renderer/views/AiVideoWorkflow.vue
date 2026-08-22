@@ -244,6 +244,14 @@
               >
                 {{ materialShowSelectedOnly ? '显示全部素材' : '只看已选素材' }}
               </button>
+              <button
+                type="button"
+                class="aiv-ghost small"
+                :disabled="!selectedMaterialCount"
+                @click="clearAllMaterialSelections"
+              >
+                清空已选
+              </button>
               <div class="aiv-material-view-switcher" role="tablist" aria-label="素材展示方式">
                 <button
                   type="button"
@@ -4987,7 +4995,9 @@ function toggleMaterialGroup(styleCode) {
 }
 
 function toggleMaterialSelection(asset) {
+  if (!asset || typeof asset !== 'object') return
   asset.selected = !asset.selected
+  if (!asset.selected) clearMaterialAssetSelections(asset)
 }
 
 function toggleVersionSelection(version) {
@@ -5037,6 +5047,53 @@ function continueEditingSource(source = {}) {
 function enterAiEditWorkspace() {
   expandAllMaterialGroups()
   activeStep.value = 'ai-edit'
+}
+
+function clearMaterialAssetSelections(asset = {}) {
+  let changed = false
+  if (asset.selected) {
+    asset.selected = false
+    changed = true
+  }
+  if (asset.editSelected) {
+    asset.editSelected = false
+    changed = true
+  }
+  for (const version of asset.versions || []) {
+    if (version?.selected) {
+      version.selected = false
+      changed = true
+    }
+    if (version?.editSelected) {
+      version.editSelected = false
+      changed = true
+    }
+  }
+  return changed
+}
+
+function clearAllMaterialSelections() {
+  let changed = false
+  for (const style of styleWorkspaces) {
+    for (const asset of workspaceImageSources(style)) {
+      if (clearMaterialAssetSelections(asset)) changed = true
+    }
+  }
+  if (!changed) return
+  selectedReviewAssetIds.clear()
+  materialShowSelectedOnly.value = false
+  updateMaterialTask({
+    status: materialTask.status === 'idle' ? 'idle' : materialTask.status,
+    error: '',
+    message: '已清空所有选图状态，可重新手动选择要进入 AI 改图和生视频的图片。',
+  })
+  updateAiTaskState({
+    status: ['running', 'queued'].includes(aiTaskState.status) ? aiTaskState.status : 'idle',
+    error: '',
+    message: '已清空选图状态，请重新选择本次要改的图片。',
+  })
+  buildVideoJobsFromReview()
+  persistAiImageWorkspaceState()
 }
 
 function visibleSourceVersions(source = {}, selectedOnly = false) {

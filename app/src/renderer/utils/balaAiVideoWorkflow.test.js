@@ -53,6 +53,103 @@ test('material panel control describes a horizontal collapse and keeps expansion
   })
 })
 
+test('AI-named recalled materials are not selected until the operator chooses them', () => {
+  const groups = balaWorkflow.normalizeBalaMaterialGroups({
+    batch: {
+      items: [{
+        style_code: '208326103208',
+        assets: [{
+          id: 'batch-ai-material',
+          source_type: 'model',
+          filename: '260510bala6811-1-AI.jpg',
+          path: '/workspace/208326103208/01_模拍原图/260510bala6811-1-AI.jpg',
+        }],
+      }],
+    },
+    rows: [{
+      输入款号: '208326103208',
+      素材来源: '模拍图',
+      文件名: '260510bala6811-2-AI.jpg',
+      本地文件: '/workspace/208326103208/01_模拍原图/260510bala6811-2-AI.jpg',
+      下载结果: '已下载',
+    }],
+  })
+
+  const assets = groups.flatMap(group => [...group.modelPhotos, ...group.detailPhotos])
+  assert.equal(assets.length, 2)
+  assert.equal(assets.every(asset => asset.selected === false), true)
+  assert.equal(balaWorkflow.summarizeBalaMaterialGroups(groups).selectedCount, 0)
+})
+
+test('workspace snapshots preserve explicit AI-version selection state', () => {
+  const styleWorkspaces = [{
+    styleCode: '208326103208',
+    modelPhotos: [{
+      id: 'source-1',
+      sourceType: 'model',
+      name: 'source.jpg',
+      path: '/workspace/208326103208/01_模拍原图/source.jpg',
+      selected: false,
+      editSelected: false,
+      versions: [
+        {
+          id: 'ai-cleared',
+          action: 'AI 换脸',
+          operationType: 'face_swap',
+          label: '手动清除的 AI 图',
+          status: 'approved',
+          previewPath: '/workspace/208326103208/AI结果/ai-cleared.png',
+          selected: false,
+          editSelected: false,
+        },
+        {
+          id: 'ai-kept',
+          action: 'AI 换脸',
+          operationType: 'face_swap',
+          label: '保留的 AI 图',
+          status: 'approved',
+          previewPath: '/workspace/208326103208/AI结果/ai-kept.png',
+          selected: true,
+          editSelected: true,
+        },
+      ],
+    }],
+    detailPhotos: [],
+  }]
+
+  const snapshot = balaWorkflow.serializeBalaImageWorkspaceState(styleWorkspaces)
+  const savedVersions = snapshot[0].modelPhotos[0].versions
+  assert.equal(savedVersions[0].selected, false)
+  assert.equal(savedVersions[0].editSelected, false)
+  assert.equal(savedVersions[1].selected, true)
+  assert.equal(savedVersions[1].editSelected, true)
+
+  const restored = [{
+    styleCode: '208326103208',
+    modelPhotos: [{
+      id: 'source-1',
+      sourceType: 'model',
+      name: 'source.jpg',
+      path: '/workspace/208326103208/01_模拍原图/source.jpg',
+      selected: false,
+      editSelected: false,
+      versions: [],
+    }],
+    detailPhotos: [],
+  }]
+  balaWorkflow.restoreBalaImageWorkspaceState(restored, snapshot)
+  const restoredVersions = restored[0].modelPhotos[0].versions
+  assert.equal(restoredVersions.find(version => version.label === '手动清除的 AI 图').selected, false)
+  assert.equal(restoredVersions.find(version => version.label === '手动清除的 AI 图').editSelected, false)
+  assert.equal(restoredVersions.find(version => version.label === '保留的 AI 图').selected, true)
+  assert.equal(restoredVersions.find(version => version.label === '保留的 AI 图').editSelected, true)
+
+  const reviewStyle = balaWorkflow.buildBalaReviewWorkspaceStyles(restored)[0]
+  const reviewAssets = reviewStyle.assets.filter(asset => asset.kind === 'ai')
+  assert.equal(reviewAssets.find(asset => asset.label === '手动清除的 AI 图').selected, false)
+  assert.equal(reviewAssets.find(asset => asset.label === '保留的 AI 图').selected, true)
+})
+
 test('material panel keeps its horizontal arrow rules free of vertical-collapse overrides', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
@@ -650,6 +747,9 @@ test('workflow preserves selected-material filtering, readable tokens, focus, an
 
   assert.match(workflowSource, /const materialShowSelectedOnly = ref\(false\)/)
   assert.match(workflowSource, /只看已选素材/)
+  assert.match(workflowSource, /清空已选/)
+  assert.match(workflowSource, /function clearAllMaterialSelections/)
+  assert.match(workflowSource, /:disabled="!selectedMaterialCount"/)
   assert.match(workflowSource, /@media \(prefers-reduced-motion: reduce\)/)
   assert.match(workflowSource, /\.aiv-workbench button:focus-visible/)
   assert.match(appSource, /--on-orange: #17131A/)

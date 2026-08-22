@@ -267,6 +267,15 @@ function compact(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
+function hasOwn(value = {}, key = '') {
+  return Boolean(value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, key))
+}
+
+function selectedBalaWorkspaceVersion(version = {}) {
+  if (hasOwn(version, 'selected')) return Boolean(version.selected)
+  return normalizeBalaReviewStatus(version.reviewStatus || version.status) === 'approved'
+}
+
 function styleCodeFromRow(row = {}, fallbackPath = '') {
   const explicit = compact(row['输入款号'] || row['款号'] || row.style_code)
   if (explicit) return explicit
@@ -507,7 +516,7 @@ function normalizeBatchAsset(asset = {}) {
     path: compact(asset.path),
     imageUrl: compact(asset.image_url || asset.imageUrl),
     thumbnailUrl: compact(asset.thumbnail_url || asset.thumbnailUrl),
-    selected: asset.selected === true || isBalaAiNamedMaterial(asset.filename || filenameFromPath(asset.path)),
+    selected: asset.selected === true,
     downloadResult: compact(asset.download_result || asset.downloadResult || '已下载'),
     action: compact(asset.action),
     note: compact(asset.note),
@@ -534,7 +543,7 @@ function downloadedAssetForMaterial(row = {}) {
     path: localPath,
     imageUrl: compact(row.image_url || row.imageUrl),
     thumbnailUrl: compact(row.thumbnail_url || row.thumbnailUrl),
-    selected: isBalaAiNamedMaterial(filename),
+    selected: false,
     downloadResult: downloadResult || '已下载',
     action: compact(row['处理动作'] || row.action),
     note: compact(row['备注'] || row.note),
@@ -588,9 +597,6 @@ export function normalizeBalaMaterialGroups({ batch = null, rows = [], fallbackC
     const group = ensure(item?.style_code || item?.styleCode)
     for (const rawAsset of item?.assets || []) {
       const asset = normalizeBatchAsset(rawAsset)
-      // AI-tagged local material is an explicit operator signal: it must stay
-      // selected on first recall as well as after a batch is restored.
-      asset.selected = Boolean(asset.selected || isBalaAiNamedMaterial(asset.filename || asset.path))
       if (!asset.id) continue
       if (asset.path) representedPaths.add(asset.path)
       if (asset.sourceType === 'model') group.modelPhotos.push(asset)
@@ -633,7 +639,6 @@ function dedupeBalaMaterialGroup(group = {}) {
   const seenFilenames = new Set()
   for (const key of ['modelPhotos', 'detailPhotos', 'otherPhotos']) {
     result[key] = result[key].filter((asset) => {
-      asset.selected = Boolean(asset.selected || isBalaAiNamedMaterial(asset.filename || asset.name || asset.path))
       const filename = materialDedupeKey(asset)
       if (!filename || !seenFilenames.has(filename)) {
         if (filename) seenFilenames.add(filename)
@@ -737,7 +742,7 @@ function materialAssetFromWorkspaceFile(file = {}) {
     sourceType,
     role: sourceType === 'model' ? '模拍' : (sourceType === 'detail' ? '细节' : '素材'),
     fileVersion: compact(file?.version),
-    selected: Boolean(file?.isAi) || isBalaAiNamedMaterial(filename),
+    selected: false,
     editSelected: false,
     versions: [],
   }
@@ -1203,7 +1208,7 @@ export function buildBalaReviewWorkspaceStyles(styleWorkspaces = []) {
           sourcePath: compact(source.path),
           sourceAssetId: compact(source.id),
           sourceType: group.sourceType,
-          selected: version.selected !== false,
+          selected: selectedBalaWorkspaceVersion(version),
           editSelected: Boolean(version.editSelected),
           jobUid: compact(version.jobUid || version.job_uid),
           runUid: compact(version.runUid || version.run_uid),
@@ -1308,6 +1313,8 @@ function persistedBalaWorkspaceVersion(version = {}) {
     jobUid: compact(version.jobUid || version.job_uid),
     runUid: compact(version.runUid || version.run_uid),
     reviewBoardUrl: compact(version.reviewBoardUrl || version.review_board_url),
+    selected: selectedBalaWorkspaceVersion(version),
+    editSelected: Boolean(version.editSelected),
   }
 }
 
