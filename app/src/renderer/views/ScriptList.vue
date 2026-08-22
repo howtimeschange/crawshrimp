@@ -2,6 +2,25 @@
   <div class="view">
     <header class="view-header">
       <h2>我的脚本</h2>
+      <label class="script-search" aria-label="搜索脚本或适配器">
+        <IconSearch class="search-icon" :size="16" :stroke-width="2" aria-hidden="true" />
+        <input
+          v-model="searchQuery"
+          type="search"
+          placeholder="搜索脚本名称或适配器名称"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button
+          v-if="searchQuery"
+          class="search-clear"
+          type="button"
+          aria-label="清空搜索"
+          @click="searchQuery = ''"
+        >
+          <IconX :size="14" :stroke-width="2.2" aria-hidden="true" />
+        </button>
+      </label>
       <div class="header-actions">
         <button class="btn-ghost" @click="openInstallModal">+ 导入脚本</button>
       </div>
@@ -19,82 +38,87 @@
 
       <template v-else>
         <p v-if="favoriteError" class="favorite-error" role="status">{{ favoriteError }}</p>
-        <section v-for="section in scriptSections" :key="section.id" class="script-section">
-          <h3 class="script-section-title">{{ section.title }}</h3>
-          <div class="script-grid">
-            <div
-              v-for="entry in section.entries" :key="entry.group.adapter_id"
-              class="script-card"
-              :class="{ disabled: !entry.group.enabled }"
-              @click="$emit('open-script', entry.group)"
-            >
-              <button
-                class="favorite-btn"
-                type="button"
-                :class="{ active: isFavorite(entry.group.adapter_id) }"
-                :aria-label="isFavorite(entry.group.adapter_id) ? `取消收藏 ${entry.group.adapter_name}` : `收藏 ${entry.group.adapter_name}`"
-                :aria-pressed="isFavorite(entry.group.adapter_id)"
-                :disabled="favoritePendingIds.has(entry.group.adapter_id)"
-                @click.stop="toggleFavorite(entry.group.adapter_id)"
+        <div v-if="!scriptSections.length" class="placeholder search-empty">
+          没有匹配的脚本
+        </div>
+        <template v-else>
+          <section v-for="section in scriptSections" :key="section.id" class="script-section">
+            <h3 class="script-section-title">{{ section.title }}</h3>
+            <div class="script-grid">
+              <div
+                v-for="entry in section.entries" :key="entry.group.adapter_id"
+                class="script-card"
+                :class="{ disabled: !entry.group.enabled }"
+                @click="$emit('open-script', entry.group)"
               >
-                <IconBookmark class="favorite-icon" :size="17" :stroke-width="2" aria-hidden="true" />
-              </button>
-              <div class="card-top">
-                <span class="card-icon">🦐</span>
-                <div class="card-info">
-                  <div class="card-title-row">
-                    <strong>{{ entry.group.adapter_name }}</strong>
-                    <span v-if="entry.group.adapter_version" class="adapter-version">v{{ entry.group.adapter_version }}</span>
-                  </div>
-                  <span class="task-count">{{ entry.group.tasks.length }} 个任务</span>
-                </div>
-              </div>
-              <div class="task-chips">
-                <div class="task-chips-list" :style="{ maxHeight: `${entry.preview.maxHeight}px` }">
-                  <span v-for="t in entry.group.tasks" :key="t.task_id" class="chip">{{ t.task_name }}</span>
-                </div>
                 <button
-                  v-if="entry.preview.isOverflowing"
-                  class="more-btn"
-                  @click.stop="$emit('open-script', entry.group)"
+                  class="favorite-btn"
+                  type="button"
+                  :class="{ active: isFavorite(entry.group.adapter_id) }"
+                  :aria-label="isFavorite(entry.group.adapter_id) ? `取消收藏 ${entry.group.adapter_name}` : `收藏 ${entry.group.adapter_name}`"
+                  :aria-pressed="isFavorite(entry.group.adapter_id)"
+                  :disabled="favoritePendingIds.has(entry.group.adapter_id)"
+                  @click.stop="toggleFavorite(entry.group.adapter_id)"
                 >
-                  还有 {{ entry.preview.hiddenTaskCount }} 个任务，点击查看
+                  <IconBookmark class="favorite-icon" :size="17" :stroke-width="2" aria-hidden="true" />
                 </button>
-              </div>
-              <div v-if="entry.isEnhancedProgress && entry.progress" class="card-progress">
-                <div class="card-progress-head">
-                  <span class="running-badge">运行中</span>
-                  <span class="card-progress-task">{{ entry.runningTask.task_name }}</span>
-                  <span class="card-progress-percent">{{ entry.progress.percentLabel }}</span>
+                <div class="card-top">
+                  <span class="card-icon">🦐</span>
+                  <div class="card-info">
+                    <div class="card-title-row">
+                      <strong>{{ entry.group.adapter_name }}</strong>
+                      <span v-if="entry.group.adapter_version" class="adapter-version">v{{ entry.group.adapter_version }}</span>
+                    </div>
+                    <span class="task-count">{{ entry.group.tasks.length }} 个任务</span>
+                  </div>
                 </div>
-                <div
-                  v-if="entry.progress.overall"
-                  class="card-progress-bar"
-                  role="progressbar"
-                  :aria-label="entry.progress.overall.ariaLabel"
-                  :aria-valuenow="entry.progress.overall.percentValue"
-                  aria-valuemin="0"
-                  aria-valuemax="100"
-                >
-                  <div class="card-progress-fill" :style="{ width: `${entry.progress.overall.percentValue}%` }"></div>
+                <div class="task-chips">
+                  <div class="task-chips-list" :style="{ maxHeight: `${entry.preview.maxHeight}px` }">
+                    <span v-for="t in entry.group.tasks" :key="t.task_id" class="chip">{{ t.task_name }}</span>
+                  </div>
+                  <button
+                    v-if="entry.preview.isOverflowing"
+                    class="more-btn"
+                    @click.stop="$emit('open-script', entry.group)"
+                  >
+                    还有 {{ entry.preview.hiddenTaskCount }} 个任务，点击查看
+                  </button>
                 </div>
-                <div v-if="entry.progress.batch" class="card-progress-sub">
-                  {{ entry.progress.batch.main }}
+                <div v-if="entry.isEnhancedProgress && entry.progress" class="card-progress">
+                  <div class="card-progress-head">
+                    <span class="running-badge">运行中</span>
+                    <span class="card-progress-task">{{ entry.runningTask.task_name }}</span>
+                    <span class="card-progress-percent">{{ entry.progress.percentLabel }}</span>
+                  </div>
+                  <div
+                    v-if="entry.progress.overall"
+                    class="card-progress-bar"
+                    role="progressbar"
+                    :aria-label="entry.progress.overall.ariaLabel"
+                    :aria-valuenow="entry.progress.overall.percentValue"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                  >
+                    <div class="card-progress-fill" :style="{ width: `${entry.progress.overall.percentValue}%` }"></div>
+                  </div>
+                  <div v-if="entry.progress.batch" class="card-progress-sub">
+                    {{ entry.progress.batch.main }}
+                  </div>
+                  <div v-if="entry.progress.metaLine" class="card-progress-sub muted">
+                    {{ entry.progress.metaLine }}
+                  </div>
                 </div>
-                <div v-if="entry.progress.metaLine" class="card-progress-sub muted">
-                  {{ entry.progress.metaLine }}
+                <div class="card-bottom">
+                  <span v-if="entry.runningTask" class="running-badge">运行中</span>
+                  <span v-else-if="lastStatus(entry.group)" :class="['status-badge', lastStatus(entry.group)]">
+                    {{ lastStatusLabel(lastStatus(entry.group)) }}
+                  </span>
+                  <button class="remove-btn" @click.stop="removeAdapter(entry.group.adapter_id)">移除</button>
                 </div>
-              </div>
-              <div class="card-bottom">
-                <span v-if="entry.runningTask" class="running-badge">运行中</span>
-                <span v-else-if="lastStatus(entry.group)" :class="['status-badge', lastStatus(entry.group)]">
-                  {{ lastStatusLabel(lastStatus(entry.group)) }}
-                </span>
-                <button class="remove-btn" @click.stop="removeAdapter(entry.group.adapter_id)">移除</button>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
+        </template>
       </template>
     </div>
 
@@ -175,9 +199,10 @@
 
 <script setup>
 import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
-import { IconBookmark } from '@tabler/icons-vue'
+import { IconBookmark, IconSearch, IconX } from '@tabler/icons-vue'
 import { getScriptCardTaskPreviewMeta } from '../utils/scriptCardPreview'
 import { partitionScriptGroups, shouldApplyScriptFavoritesSnapshot } from '../utils/scriptFavorites'
+import { matchesScriptGroupSearch } from '../utils/scriptSearch'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { formatScriptListLoadError, isCoreStartupConnectionError } from '../utils/coreStartupErrors'
 
@@ -200,6 +225,7 @@ const isDragging = ref(false)
 const dragDepth = ref(0)
 const msg = ref('')
 const msgErr = ref(false)
+const searchQuery = ref('')
 const installState = ref('idle')
 const successAdapterName = ref('')
 const successAdapterVersion = ref('')
@@ -209,6 +235,8 @@ let pollTimer = null
 let favoriteMutationVersion = 0
 
 const groups = scriptGroups
+
+const filteredGroups = computed(() => groups.value.filter(group => matchesScriptGroupSearch(group, searchQuery.value)))
 
 function buildDisplayEntry(group) {
   const runningTask = group.tasks.find(task => isTaskLiveActive(task.live?.status)) || null
@@ -227,7 +255,7 @@ function buildDisplayEntry(group) {
 }
 
 const scriptSections = computed(() => {
-  const partition = partitionScriptGroups(groups.value, favorites.value)
+  const partition = partitionScriptGroups(filteredGroups.value, favorites.value)
   const sections = []
   if (partition.favorites.length) {
     sections.push({ id: 'favorites', title: '我的收藏', entries: partition.favorites.map(buildDisplayEntry) })
@@ -560,12 +588,74 @@ onUnmounted(() => {
 <style scoped>
 .view { height: 100%; display: flex; flex-direction: column; }
 .view-header {
-  display: flex; align-items: center; padding: 20px 24px 16px;
+  display: flex; align-items: center; gap: 18px; padding: 20px 24px 16px;
   border-bottom: 1px solid var(--border);
 }
-.view-header h2 { font-size: 18px; font-weight: 700; flex: 1; }
+.view-header h2 { font-size: 18px; font-weight: 700; flex: 0 0 auto; }
+.header-actions {
+  margin-left: auto;
+}
+.script-search {
+  width: min(420px, 38vw);
+  min-width: 260px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--text3);
+  box-shadow: inset 0 1px 0 var(--soft-fill);
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.script-search:focus-within {
+  border-color: rgba(var(--orange-rgb), .48);
+  background: var(--bg3);
+  box-shadow: 0 0 0 3px rgba(var(--orange-rgb), .10), inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+.script-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.script-search input::placeholder { color: var(--text3); }
+.script-search input::-webkit-search-cancel-button { display: none; }
+.search-icon { flex: 0 0 auto; }
+.search-clear {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+}
+.search-clear:hover {
+  color: var(--text);
+  background: var(--soft-fill-hover);
+}
+@media (max-width: 760px) {
+  .view-header {
+    flex-wrap: wrap;
+  }
+  .script-search {
+    order: 3;
+    width: 100%;
+    min-width: 0;
+  }
+}
 .placeholder { color: var(--text3); text-align: center; padding: 60px; font-size: 14px; grid-column: 1/-1; }
 .placeholder-stack { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.search-empty { padding-top: 88px; }
 
 .script-content {
   flex: 1; overflow-y: auto; padding: 20px 24px;
