@@ -711,6 +711,226 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             self.assertEqual(workbook.active["C2"].value, expected_path)
             workbook.close()
 
+    def test_finalize_shoe_outputs_exports_downloaded_materials_when_recognition_failed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+
+            raw_file = runtime_dir / "downloaded-shoe.jpg"
+            raw_file.write_bytes(b"raw-shoe")
+            exported = base / "深绘鞋品上新图包整理结果.xlsx"
+            data_rows = [{
+                "输入款号": "204426146036",
+                "颜色": "60301",
+                "原文件名": "GUDO7378.jpg",
+                "云盘路径": "鞋品/204426146036/60301/GUDO7378.jpg",
+                "规则槽位": "",
+                "输出文件名": "",
+                "处理动作": "下载后识别鞋品姿势",
+                "下载结果": "已下载",
+                "本地文件": str(raw_file),
+                "压缩结果": "",
+                "规则告警": "",
+                "品类来源": "",
+                "备注": "",
+                "__shenhui_group_code": "204426146036",
+                "__shoe_color_code": "60301",
+                "__shoe_original_filename": "GUDO7378.jpg",
+            }]
+            columns = [
+                "输入款号",
+                "颜色",
+                "原文件名",
+                "云盘路径",
+                "规则槽位",
+                "输出文件名",
+                "处理动作",
+                "下载结果",
+                "本地文件",
+                "压缩结果",
+                "规则告警",
+                "品类来源",
+                "备注",
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(columns)
+            sheet.append([data_rows[0].get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="prepare_shoe_upload_package",
+                data_rows=data_rows,
+                runtime_files=[str(raw_file)],
+                exported_files=[str(exported)],
+                run_params={"export_folder": str(export_dir)},
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            fallback_dirs = [Path(path) for path in result if Path(path).is_dir()]
+            self.assertEqual(len(fallback_dirs), 1)
+            fallback_dir = fallback_dirs[0]
+            relocated = fallback_dir / "204426146036" / "60301" / "GUDO7378.jpg"
+            copied_excel = export_dir / "深绘鞋品上新图包整理结果.xlsx"
+            self.assertTrue(relocated.is_file())
+            self.assertTrue(copied_excel.is_file())
+            self.assertEqual(data_rows[0]["本地文件"], str(relocated))
+            self.assertEqual(data_rows[0]["处理动作"], "原素材兜底导出")
+            self.assertIn("正式图包", data_rows[0]["规则告警"])
+            self.assertFalse(raw_file.exists())
+            self.assertFalse(runtime_dir.exists())
+
+            workbook = load_workbook(copied_excel, read_only=True, data_only=True)
+            sheet = workbook.active
+            self.assertEqual(sheet.cell(row=2, column=7).value, "原素材兜底导出")
+            self.assertEqual(sheet.cell(row=2, column=9).value, str(relocated))
+            self.assertIn("正式图包", sheet.cell(row=2, column=11).value)
+            workbook.close()
+
+    def test_finalize_shoe_outputs_uses_cached_download_rows_when_all_styles_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+
+            raw_file = runtime_dir / "cached-download.jpg"
+            raw_file.write_bytes(b"raw-shoe")
+            exported = base / "深绘鞋品上新图包整理结果.xlsx"
+            data_rows = [{
+                "输入款号": "204426146036",
+                "颜色": "",
+                "原文件名": "",
+                "云盘路径": "",
+                "规则槽位": "整款",
+                "输出文件名": "",
+                "处理动作": "失败款跳过",
+                "下载结果": "已跳过",
+                "本地文件": "",
+                "压缩结果": "",
+                "规则告警": "204426146036 整理失败，已跳过该款",
+                "品类来源": "",
+                "备注": "鞋品姿势识别多模型均失败",
+            }]
+            cached_rows = [{
+                "输入款号": "204426146036",
+                "颜色": "00317",
+                "原文件名": "cached-original.jpg",
+                "云盘路径": "鞋品/204426146036/00317/cached-original.jpg",
+                "规则槽位": "",
+                "输出文件名": "",
+                "处理动作": "下载后识别鞋品姿势",
+                "下载结果": "已下载",
+                "本地文件": str(raw_file),
+                "压缩结果": "",
+                "规则告警": "",
+                "品类来源": "",
+                "备注": "",
+                "__shenhui_group_code": "204426146036",
+                "__shoe_color_code": "00317",
+                "__shoe_original_filename": "cached-original.jpg",
+            }]
+            columns = [
+                "输入款号",
+                "颜色",
+                "原文件名",
+                "云盘路径",
+                "规则槽位",
+                "输出文件名",
+                "处理动作",
+                "下载结果",
+                "本地文件",
+                "压缩结果",
+                "规则告警",
+                "品类来源",
+                "备注",
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(columns)
+            sheet.append([data_rows[0].get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="prepare_shoe_upload_package",
+                data_rows=data_rows,
+                runtime_files=[str(raw_file)],
+                exported_files=[str(exported)],
+                run_params={
+                    "export_folder": str(export_dir),
+                    "__shenhui_shoe_download_rows_for_fallback": cached_rows,
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            fallback_dir = next(Path(path) for path in result if Path(path).is_dir())
+            relocated = fallback_dir / "204426146036" / "00317" / "cached-original.jpg"
+            self.assertTrue(relocated.is_file())
+            self.assertEqual(len(data_rows), 2)
+            self.assertEqual(data_rows[1]["本地文件"], str(relocated))
+            self.assertEqual(data_rows[1]["处理动作"], "原素材兜底导出")
+
+            workbook = load_workbook(
+                export_dir / "深绘鞋品上新图包整理结果.xlsx",
+                read_only=True,
+                data_only=True,
+            )
+            sheet = workbook.active
+            self.assertEqual(sheet.cell(row=2, column=7).value, "失败款跳过")
+            self.assertEqual(sheet.cell(row=3, column=1).value, "204426146036")
+            self.assertEqual(sheet.cell(row=3, column=2).value, "00317")
+            self.assertEqual(sheet.cell(row=3, column=3).value, "cached-original.jpg")
+            self.assertEqual(sheet.cell(row=3, column=7).value, "原素材兜底导出")
+            self.assertEqual(sheet.cell(row=3, column=9).value, str(relocated))
+            workbook.close()
+
+    def test_finalize_shoe_outputs_creates_fallback_excel_for_runtime_files_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+
+            raw_file = runtime_dir / "orphan-downloaded.jpg"
+            raw_file.write_bytes(b"raw-shoe")
+            data_rows = []
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="prepare_shoe_upload_package",
+                data_rows=data_rows,
+                runtime_files=[str(raw_file)],
+                exported_files=[],
+                run_params={"export_folder": str(export_dir)},
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            fallback_dirs = [Path(path) for path in result if Path(path).is_dir()]
+            fallback_excels = [Path(path) for path in result if Path(path).suffix.lower() == ".xlsx"]
+            self.assertEqual(len(fallback_dirs), 1)
+            self.assertEqual(len(fallback_excels), 1)
+            self.assertEqual(len(list(export_dir.glob("深绘鞋品上新图包整理结果_*.xlsx"))), 1)
+            relocated = fallback_dirs[0] / "未分类" / "未识别颜色" / "orphan-downloaded.jpg"
+            self.assertTrue(relocated.is_file())
+            self.assertTrue(fallback_excels[0].is_file())
+            self.assertEqual(len(data_rows), 1)
+            self.assertEqual(data_rows[0]["本地文件"], str(relocated))
+            self.assertFalse(raw_file.exists())
+            self.assertFalse(runtime_dir.exists())
+
+            workbook = load_workbook(fallback_excels[0], read_only=True, data_only=True)
+            sheet = workbook.active
+            self.assertEqual(sheet.cell(row=2, column=7).value, "原素材兜底导出")
+            self.assertEqual(sheet.cell(row=2, column=9).value, str(relocated))
+            self.assertIn("任务停止", sheet.cell(row=2, column=11).value)
+            workbook.close()
+
     def test_finalize_shoe_outputs_compresses_when_style_package_exceeds_threshold(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

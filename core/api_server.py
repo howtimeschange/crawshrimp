@@ -2319,7 +2319,20 @@ def _rewrite_shenhui_shoe_summary_excels(exported_files: list, data_rows: list, 
         data_rows,
         log,
         context="Shenhui shoe package",
-        columns=("压缩结果",),
+        columns=(
+            "输入款号",
+            "颜色",
+            "原文件名",
+            "云盘路径",
+            "规则槽位",
+            "输出文件名",
+            "处理动作",
+            "下载结果",
+            "压缩结果",
+            "规则告警",
+            "品类来源",
+            "备注",
+        ),
     )
 
 
@@ -3553,6 +3566,7 @@ def _prepare_shenhui_shoe_package_rows(
 _SHENHUI_LABEL_TILE_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 _SHENHUI_LABEL_TILE_PDF_SUFFIXES = {".pdf"}
 _SHENHUI_NEW_ARRIVAL_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+_SHENHUI_SHOE_FALLBACK_MATERIAL_SUFFIXES = _SHENHUI_NEW_ARRIVAL_IMAGE_SUFFIXES | {".pdf"}
 _SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES = 30 * 1024 * 1024
 _SHENHUI_NEW_ARRIVAL_STYLE_PACKAGE_THRESHOLD_BYTES = 1024 * 1024 * 1024
 _SHENHUI_NEW_ARRIVAL_JPEG_QUALITIES = (95, 92, 90, 88)
@@ -4079,6 +4093,182 @@ def _finalize_shenhui_label_tile_download_outputs(
     return final_refs or fallback_refs
 
 
+def _append_shenhui_shoe_fallback_note(row: dict, note: str) -> None:
+    row["规则告警"] = _append_note(row.get("规则告警"), note)
+    row["备注"] = _append_note(row.get("备注"), "识别未完成时已保留原始下载素材")
+    row["处理动作"] = "原素材兜底导出"
+
+
+def _fallback_shenhui_shoe_filename(row: dict, local_path: Path) -> str:
+    return _safe_local_name(
+        row.get("__shoe_original_filename")
+        or row.get("原文件名")
+        or row.get("__package_filename")
+        or row.get("文件名")
+        or local_path.name,
+        local_path.name,
+    )
+
+
+def _fallback_export_shenhui_shoe_downloaded_materials(
+    *,
+    data_rows: list,
+    runtime_files: list,
+    runtime_dir: Path,
+    target_root: Path,
+    log,
+    fallback_rows: Optional[list] = None,
+) -> list[str]:
+    rows = data_rows if isinstance(data_rows, list) else []
+    candidates: list[tuple[dict, Path]] = []
+    seen_paths: set[Path] = set()
+
+    def add_row_candidate(row: dict) -> None:
+        if not isinstance(row, dict):
+            return
+        if str(row.get("下载结果") or "").strip() != "已下载":
+            return
+        local_text = str(row.get("本地文件") or "").strip()
+        if not local_text:
+            return
+        local_path = Path(local_text).expanduser()
+        if not local_path.is_file():
+            return
+        if local_path.suffix.lower() not in _SHENHUI_SHOE_FALLBACK_MATERIAL_SUFFIXES:
+            return
+        key = local_path.resolve(strict=False)
+        if key in seen_paths:
+            return
+        candidates.append((row, local_path))
+        seen_paths.add(key)
+
+    for row in rows:
+        add_row_candidate(row)
+
+    if not candidates and isinstance(fallback_rows, list):
+        for fallback_row in fallback_rows:
+            if not isinstance(fallback_row, dict):
+                continue
+            row = dict(fallback_row)
+            rows.append(row)
+            add_row_candidate(row)
+
+    for raw_path in runtime_files or []:
+        path_text = str(raw_path or "").strip()
+        if not path_text:
+            continue
+        local_path = Path(path_text).expanduser()
+        if not local_path.is_file():
+            continue
+        if local_path.suffix.lower() not in _SHENHUI_SHOE_FALLBACK_MATERIAL_SUFFIXES:
+            continue
+        key = local_path.resolve(strict=False)
+        if key in seen_paths:
+            continue
+        row = {
+            "输入款号": "未分类",
+            "颜色": "",
+            "原文件名": local_path.name,
+            "云盘路径": "",
+            "规则槽位": "原始素材",
+            "输出文件名": local_path.name,
+            "处理动作": "原素材兜底导出",
+            "下载结果": "已下载",
+            "本地文件": str(local_path),
+            "规则告警": "任务停止或识别失败，未完成鞋品整理",
+            "品类来源": "",
+            "备注": "未获取完整下载记录，仅导出已落地文件",
+        }
+        rows.append(row)
+        candidates.append((row, local_path))
+        seen_paths.add(key)
+
+    if not candidates:
+        return []
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_root = _ensure_unique_local_dir(target_root / f"深绘鞋品已下载素材_{timestamp}")
+    note = "鞋品整理未生成正式图包，已导出原始下载素材"
+    relocated_by_source: dict[Path, Path] = {}
+    final_refs: list[str] = []
+
+    for row, local_path in candidates:
+        source_key = local_path.resolve(strict=False)
+        relocated = relocated_by_source.get(source_key)
+        if relocated is None or not relocated.exists():
+            style_code = _safe_local_name(
+                row.get("__shenhui_group_code") or row.get("输入款号") or row.get("输入编码") or "未分类",
+                "未分类",
+            )
+            color_code = _safe_local_name(
+                row.get("__shoe_color_code") or row.get("颜色") or "未识别颜色",
+                "未识别颜色",
+            )
+            filename = _fallback_shenhui_shoe_filename(row, local_path)
+            target = package_root / style_code / color_code / filename
+            relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+            relocated_by_source[source_key] = relocated
+        row["本地文件"] = str(relocated)
+        row["输出文件名"] = str(row.get("输出文件名") or relocated.name)
+        row["规则槽位"] = str(row.get("规则槽位") or "原始素材")
+        _append_shenhui_shoe_fallback_note(row, note)
+
+    final_refs.append(str(package_root))
+    log(f"Shenhui shoe fallback raw material folder exported: {package_root}")
+    return final_refs
+
+
+def _write_shenhui_shoe_fallback_summary_excel(
+    *,
+    target_root: Path,
+    data_rows: list,
+    log,
+) -> str:
+    rows = [row for row in (data_rows or []) if isinstance(row, dict)]
+    if not rows:
+        return ""
+    try:
+        from openpyxl import Workbook
+    except Exception as exc:
+        log(f"[warn] openpyxl 不可用，无法生成鞋品兜底结果表: {exc}")
+        return ""
+
+    base_columns = [
+        "输入款号",
+        "颜色",
+        "原文件名",
+        "云盘路径",
+        "规则槽位",
+        "输出文件名",
+        "处理动作",
+        "下载结果",
+        "本地文件",
+        "压缩结果",
+        "规则告警",
+        "品类来源",
+        "备注",
+    ]
+    extra_columns: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in base_columns and key not in extra_columns and not str(key).startswith("__"):
+                extra_columns.append(str(key))
+    columns = [*base_columns, *extra_columns]
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_path = _ensure_unique_local_path(target_root / f"深绘鞋品上新图包整理结果_{timestamp}.xlsx")
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "结果"
+    sheet.append(columns)
+    for row in rows:
+        sheet.append([row.get(column, "") for column in columns])
+    workbook.save(output_path)
+    workbook.close()
+    log(f"Shenhui shoe fallback Excel exported: {output_path}")
+    return str(output_path)
+
+
 def _finalize_shenhui_new_arrival_outputs(
     task_id: str,
     data_rows: list,
@@ -4133,14 +4323,44 @@ def _finalize_shenhui_new_arrival_outputs(
             final_refs.append(str(relocated))
             log(f"Shenhui shoe package moved to output folder: {relocated}")
 
+        if export_folder and not final_refs:
+            final_refs.extend(
+                _fallback_export_shenhui_shoe_downloaded_materials(
+                    data_rows=data_rows,
+                    runtime_files=runtime_files,
+                    runtime_dir=runtime_dir,
+                    target_root=target_root,
+                    log=log,
+                    fallback_rows=run_params.get("__shenhui_shoe_download_rows_for_fallback"),
+                )
+            )
+            if final_refs and not any(
+                Path(str(path or "")).expanduser().suffix.lower() == ".xlsx"
+                for path in exported_files or []
+            ):
+                fallback_excel = _write_shenhui_shoe_fallback_summary_excel(
+                    target_root=target_root,
+                    data_rows=data_rows,
+                    log=log,
+                )
+                if fallback_excel:
+                    exported_files = [*(exported_files or []), fallback_excel]
+
         _rewrite_shenhui_shoe_summary_excels(exported_files, data_rows, log)
         for file_path in exported_files or []:
             source = Path(str(file_path or "")).expanduser()
             if not source.is_file():
                 continue
             if export_folder:
-                copied = _copy_file_to_unique_target(source, target_root / source.name)
-                final_refs.append(str(copied))
+                try:
+                    already_in_target = source.resolve(strict=False).parent == target_root.resolve(strict=False)
+                except Exception:
+                    already_in_target = False
+                if already_in_target:
+                    final_refs.append(str(source))
+                else:
+                    copied = _copy_file_to_unique_target(source, target_root / source.name)
+                    final_refs.append(str(copied))
             else:
                 final_refs.append(str(source))
 
@@ -7535,6 +7755,39 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"[warn] 短视频任务异常中断，已导出缓存结果 {len(cached_rows)} 行")
             return cached_rows, finalized_files
 
+        def recover_shenhui_shoe_partial_rows(current_rows) -> list[dict]:
+            rows = [row for row in (current_rows or []) if isinstance(row, dict)]
+            if rows or (adapter_id, task_id) != ("shenhui-new-arrival", "prepare_shoe_upload_package"):
+                return rows
+            cached_shared = {}
+            if run_control and isinstance(run_control.get('shared_progress'), dict):
+                cached_shared.update(run_control.get('shared_progress') or {})
+            runner_shared = getattr(runner, 'last_runtime_shared', None) if runner else None
+            if isinstance(runner_shared, dict):
+                cached_shared.update(runner_shared)
+            cached_rows = [
+                dict(row)
+                for row in (cached_shared.get("result_rows") or [])
+                if isinstance(row, dict)
+            ]
+            if cached_rows:
+                log(f"[warn] 鞋品任务中断，从阶段缓存恢复 {len(cached_rows)} 行下载记录用于导出")
+            return cached_rows
+
+        async def export_shenhui_shoe_partial_rows_on_error(error_message: str) -> tuple[list[dict], list[str]]:
+            if (adapter_id, task_id) != ("shenhui-new-arrival", "prepare_shoe_upload_package") or not runner:
+                return [], []
+            if not str(run_params.get("export_folder") or "").strip():
+                return [], []
+            recovered_rows = recover_shenhui_shoe_partial_rows(data)
+            recovered_rows = _apply_final_export_guards(adapter_id, task_id, recovered_rows)
+            runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
+            exported_files = await export_outputs(recovered_rows)
+            finalized_files = await finalize_output_files(recovered_rows, runtime_files, exported_files)
+            if finalized_files:
+                log(f"[warn] 鞋品任务异常中断，已导出已下载素材/结果表: {error_message}")
+            return recovered_rows, finalized_files
+
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
         if not task.skip_auth and m.auth and m.auth.check_script:
             try:
@@ -7672,6 +7925,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             raw_count = len(data)
         if (adapter_id, task_id) == ("shenhui-new-arrival", "prepare_shoe_upload_package"):
             await wait_for_control({"records": len(data), "phase": "鞋品姿势识别与命名"})
+            run_params["__shenhui_shoe_download_rows_for_fallback"] = [
+                dict(row)
+                for row in (data or [])
+                if isinstance(row, dict)
+            ]
             event_loop = asyncio.get_running_loop()
 
             def report_shoe_organize_progress(progress_payload):
@@ -7857,6 +8115,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     except RunAbortedError as e:
         err = e.reason or str(e)
         data = list(e.partial_data or data or [])
+        if 'recover_shenhui_shoe_partial_rows' in locals():
+            data = recover_shenhui_shoe_partial_rows(data)
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
         if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
@@ -7923,6 +8183,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             run_control['stop_requested'] = False
             run_control['resume_event'].set()
             run_control['pause_logged'] = False
+        if 'recover_shenhui_shoe_partial_rows' in locals():
+            data = recover_shenhui_shoe_partial_rows(data)
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
         if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
@@ -7987,6 +8249,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     output_files = recovered_files
             except Exception as export_error:
                 log(f"[warn] 短视频异常收尾导出失败: {export_error}")
+        if (adapter_id, task_id) == ("shenhui-new-arrival", "prepare_shoe_upload_package") and 'export_shenhui_shoe_partial_rows_on_error' in locals():
+            try:
+                recovered_rows, recovered_files = await export_shenhui_shoe_partial_rows_on_error(err)
+                if recovered_files:
+                    data = recovered_rows
+                    output_files = recovered_files
+            except Exception as export_error:
+                log(f"[warn] 鞋品异常收尾导出失败: {export_error}")
 
         data_sink.fail_run(run_id, err, records_count=len(data), output_files=output_files)
         error_status = {
