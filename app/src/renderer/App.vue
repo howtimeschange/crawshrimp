@@ -199,12 +199,9 @@
       <!-- 提示词库 -->
       <LocalPromptLibrary
         v-if="currentView === 'local_prompt_library'"
-        @open-cloud-approval="currentView = 'cloud_approval'"
       />
       <!-- 数据文件 -->
       <DataFiles v-if="currentView === 'files'" />
-      <!-- 云端审批 -->
-      <CloudApprovalFrame v-if="currentView === 'cloud_approval'" />
       <!-- 设置 -->
       <SettingsPage
         v-if="currentView === 'settings'"
@@ -235,7 +232,6 @@ import BuyerShowWorkflow from './views/BuyerShowWorkflow.vue'
 import LocalPromptLibrary from './views/LocalPromptLibrary.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
-import CloudApprovalFrame from './views/CloudApprovalFrame.vue'
 import SidebarUpdateFooter from './components/SidebarUpdateFooter.vue'
 import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
@@ -267,7 +263,6 @@ const activeInstanceUid = ref('')
 const taskRunnerHandoffParams = ref({})
 const taskRunnerHandoffKey = ref(0)
 const scriptGroups = ref([])
-const cloudApprovalStatus = ref(null)
 const focusSettingsPanelId = ref('')
 const sidebarCollapsed = ref(readSidebarCollapsed(window.localStorage))
 const expandedNavGroupIds = ref(new Set(['ai_workflows']))
@@ -324,18 +319,10 @@ const navItems = [
   },
   { id: 'local_prompt_library', icon: '💬', label: '提示词库' },
   { id: 'files',    icon: '📁', label: '数据文件' },
-  { id: 'cloud_approval', icon: '☁️', label: '云端审批' },
   { id: 'settings', icon: '⚙️', label: '设置' },
 ]
 
-const cloudApprovalConfigured = computed(() => {
-  const cloudStatus = cloudApprovalStatus.value || {}
-  return Boolean(cloudStatus.configured || String(cloudStatus.base_url || '').trim())
-})
-
-const filteredNavItems = computed(() =>
-  navItems.filter(item => item.id !== 'cloud_approval' || cloudApprovalConfigured.value)
-)
+const filteredNavItems = computed(() => navItems)
 
 function selectNav(item) {
   if (shouldClearActiveScriptForNav(item)) {
@@ -383,23 +370,6 @@ function openSettingsPanel(panelId) {
   activeScript.value = null
   activeTaskId.value = null
   activeInstanceUid.value = ''
-}
-
-async function refreshCloudApprovalStatus() {
-  if (typeof window.cs.getCloudApprovalStatus !== 'function') {
-    cloudApprovalStatus.value = null
-    if (currentView.value === 'cloud_approval') currentView.value = 'settings'
-    return
-  }
-  try {
-    cloudApprovalStatus.value = await window.cs.getCloudApprovalStatus()
-  } catch (error) {
-    console.error('Failed to get cloud approval status', error)
-    cloudApprovalStatus.value = null
-  }
-  if (!cloudApprovalConfigured.value && currentView.value === 'cloud_approval') {
-    currentView.value = 'settings'
-  }
 }
 
 async function loadScriptGroups(options = {}) {
@@ -565,12 +535,9 @@ onMounted(async () => {
   } catch (error) {
     console.error('Failed to load initial script groups', error)
   }
-  await refreshCloudApprovalStatus()
-
   pollTimer = setInterval(async () => {
     try {
       await refreshRuntimeStatus()
-      await refreshCloudApprovalStatus()
       await loadScriptGroups({ preserveOnShrink: true })
     } catch (error) {
       console.error('Failed to poll runtime status', error)

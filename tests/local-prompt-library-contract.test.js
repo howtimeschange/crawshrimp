@@ -18,7 +18,9 @@ test('App registers local prompt library menu below AI image and before data fil
   assert.ok(aiImage < promptLibrary, 'prompt library should sit below AI image in the sidebar')
   assert.ok(promptLibrary < files, 'prompt library should sit above data files in the sidebar')
   assert.match(app, /label: '提示词库'/)
-  assert.match(app, /<LocalPromptLibrary\s+v-if="currentView === 'local_prompt_library'"[\s\S]*@open-cloud-approval="currentView = 'cloud_approval'"/)
+  assert.match(app, /<LocalPromptLibrary\s+v-if="currentView === 'local_prompt_library'"/)
+  assert.doesNotMatch(app, /@open-cloud-approval/)
+  assert.doesNotMatch(app, /id: 'cloud_approval'/)
 })
 
 test('LocalPromptLibrary view supports import update, manual edit, and cloud sync', () => {
@@ -40,11 +42,12 @@ test('LocalPromptLibrary view supports import update, manual edit, and cloud syn
 test('LocalPromptLibrary view combines local and cloud prompt libraries with source-aware actions', () => {
   const view = read('app/src/renderer/views/LocalPromptLibrary.vue')
 
-  assert.match(view, /登录云端审批平台/)
+  assert.doesNotMatch(view, /登录云端审批平台/)
   assert.match(view, /刷新线上/)
   assert.match(view, /打开云端 Prompt 管理/)
   assert.match(view, /保存为本地副本/)
   assert.match(view, /getCloudApprovalStatus/)
+  assert.match(view, /loadCloudOnInit:\s*false/)
   assert.match(view, /listCloudPromptLibraries/)
   assert.doesNotMatch(view, /resolveCloudPromptTemplates/)
   assert.match(view, /selectedCloudLibrary\.value\.templates/)
@@ -131,31 +134,26 @@ test('LocalPromptLibrary confines long Prompt scrolling to the workspace', () =>
   assert.match(listRule, /overscroll-behavior:\s*contain/)
 })
 
-test('LocalPromptLibrary publishes local libraries while silent cloud refresh is still pending', async () => {
-  let resolveCloud
+test('LocalPromptLibrary skips cloud refresh during initial local library load by default', async () => {
   const events = []
-  const cloudPending = new Promise(resolve => { resolveCloud = resolve })
 
   const state = await loadLocalPromptLibraryViewSources({
     listLocalPromptLibraries: async () => ({ libraries: [{ library_uid: 'local-1', name: '本地库' }] }),
     loadCloudLibraries: async options => {
       events.push(['cloud-start', options])
-      return cloudPending
+      return { libraries: [{ id: 7, name: '线上库' }] }
     },
     onLocalReady: libraries => events.push(['local-ready', libraries.map(library => library.name)]),
   })
 
   assert.deepEqual(events, [
     ['local-ready', ['本地库']],
-    ['cloud-start', { silent: true }],
   ])
   assert.equal(state.localLibraries[0].source_type, 'local')
-
-  resolveCloud({ libraries: [{ id: 7, name: '线上库' }] })
-  await state.cloudRefresh
+  assert.deepEqual(await state.cloudRefresh, { ok: true, skipped: true })
 })
 
-test('LocalPromptLibrary keeps local libraries usable when silent cloud refresh fails', async () => {
+test('LocalPromptLibrary keeps opt-in silent cloud refresh available', async () => {
   const events = []
 
   const state = await loadLocalPromptLibraryViewSources({
@@ -165,6 +163,7 @@ test('LocalPromptLibrary keeps local libraries usable when silent cloud refresh 
       throw new Error('cloud offline')
     },
     onLocalReady: libraries => events.push(`local:${libraries[0].name}`),
+    loadCloudOnInit: true,
   })
 
   assert.deepEqual(events, ['local:本地库', 'cloud-start'])

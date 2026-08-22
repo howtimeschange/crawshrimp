@@ -3,6 +3,7 @@ import { normalizePromptLibrary } from './localPromptLibrary.js'
 export async function loadLocalPromptLibraryViewSources({
   listLocalPromptLibraries,
   loadCloudLibraries,
+  loadCloudOnInit = false,
   onLocalReady,
 } = {}) {
   if (typeof listLocalPromptLibraries !== 'function') {
@@ -20,11 +21,13 @@ export async function loadLocalPromptLibraryViewSources({
     await onLocalReady(localLibraries)
   }
 
-  const cloudRefresh = Promise.resolve()
-    .then(() => loadCloudLibraries({ silent: true }))
-    .then(
-      value => ({ ok: true, value }),
-      error => ({ ok: false, error }),
-    )
+  const cloudRefresh = loadCloudOnInit
+    ? Promise.resolve()
+      .then(() => loadCloudLibraries({ silent: true }))
+      .then(
+        value => ({ ok: true, value }),
+        error => ({ ok: false, error }),
+      )
+    : Promise.resolve({ ok: true, skipped: true })
   return { localLibraries, cloudRefresh }
 }
