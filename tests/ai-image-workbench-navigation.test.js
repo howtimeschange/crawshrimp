@@ -307,10 +307,10 @@ test('AI image task records keep history order while highlighting the clicked ta
 
   assert.notEqual(taskRecordsStart, -1, 'taskRecords computed should exist')
   assert.ok(
-    taskRecordsBody.indexOf('for (const job of jobs.value)') < taskRecordsBody.indexOf('if (currentJob.value?.job_uid && !seen.has(currentJob.value.job_uid) && !isAiVideoWorkflowJob(currentJob.value))'),
+    taskRecordsBody.indexOf('for (const job of jobs.value)') < taskRecordsBody.indexOf('if (currentJob.value?.job_uid && !seen.has(currentJob.value.job_uid) && !isAiImageWorkbenchHiddenJob(currentJob.value))'),
     'taskRecords should preserve jobs.value ordering before adding an unlisted current task',
   )
-  assert.match(taskRecordsBody, /if \(!jobUid \|\| seen\.has\(jobUid\) \|\| isAiVideoWorkflowJob\(job\)\) continue/)
+  assert.match(taskRecordsBody, /if \(!jobUid \|\| seen\.has\(jobUid\) \|\| isAiImageWorkbenchHiddenJob\(job\)\) continue/)
   assert.match(taskRecordsBody, /records\.unshift\(mergeJobWithDraft\(currentJob\.value, \{ includeGeneratedDrafts: false \}\)\)/)
   assert.match(workbench, /const pendingActiveJobUid = ref\(''\)/)
   assert.match(workbench, /const highlightedJobUid = computed\(\(\) => pendingActiveJobUid\.value \|\| activeJobUid\.value\)/)

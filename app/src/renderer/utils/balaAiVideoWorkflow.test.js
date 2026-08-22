@@ -511,9 +511,9 @@ test('AI video keeps local references, image tasks, and workspace snapshots isol
   assert.match(workflowSource, /Object\.assign\(materialTask, restoredMaterialTaskSnapshot\(material\.task\)\)/)
   assert.match(workflowSource, /workspace_dir: workspaceDir\.value/)
   assert.match(workflowSource, /surface: 'ai-video-workflow'/)
-  assert.match(workbenchSource, /import \{ isAiVideoWorkflowJob, selectRestorableAiImageJob \} from '\.\.\/utils\/aiImageTaskIsolation\.js'/)
-  assert.match(workbenchSource, /if \(isAiVideoWorkflowJob\(detail\)\)/)
-  assert.match(workbenchSource, /records\.filter\(job => !isAiVideoWorkflowJob\(job\)\)/)
+  assert.match(workbenchSource, /import \{ isAiImageWorkbenchHiddenJob, selectRestorableAiImageJob \} from '\.\.\/utils\/aiImageTaskIsolation\.js'/)
+  assert.match(workbenchSource, /if \(isAiImageWorkbenchHiddenJob\(detail\)\)/)
+  assert.match(workbenchSource, /records\.filter\(job => !isAiImageWorkbenchHiddenJob\(job\)\)/)
 })
 
 test('workspace restore never reopens passive results or removed review steps by default', async () => {
