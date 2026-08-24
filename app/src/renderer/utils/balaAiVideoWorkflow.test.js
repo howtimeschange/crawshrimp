@@ -120,7 +120,7 @@ test('recalled original materials collapse by content hash even when filenames d
   assert.equal(groups[0].modelPhotos[0].contentHash, 'same-original-image')
 })
 
-test('video asset pool collapses archived AI result copies by content hash', () => {
+test('video asset pool keeps archived AI-looking copies unselected when only path or filename marks AI', () => {
   const assets = balaWorkflow.buildBalaVideoAssetPool({
     materialStyle: {
       styleCode: '208426105206',
@@ -148,7 +148,7 @@ test('video asset pool collapses archived AI result copies by content hash', () 
   assert.equal(assets[0].kind, 'ai')
   assert.equal(assets[0].isAi, true)
   assert.equal(assets[0].displayKind, 'AI·模拍')
-  assert.equal(assets[0].selected, true)
+  assert.equal(assets[0].selected, false)
 })
 
 test('workspace snapshots preserve explicit AI-version selection state', () => {

@@ -2169,6 +2169,7 @@ test('video asset pool lets pending model detail and AI images be selected for v
         { id: 'approved-origin', name: '原图', sourceType: 'model', status: 'approved', path: '/tmp/source.jpg', selected: true },
         { id: 'pending-origin', name: '待审模特', sourceType: 'model', status: 'pending', path: '/tmp/pending-source.jpg' },
         { id: 'pending-detail', name: '待审细节', sourceType: 'detail', status: 'pending', path: '/tmp/pending-detail.jpg', selected: true },
+        { id: 'archived-ai-name', name: '旧归档-AI.jpg', sourceType: 'model', status: 'approved', path: '/workspace/208326102205/03_AI图/旧归档-AI.jpg' },
         { id: 'rejected-detail', name: '细节', sourceType: 'detail', status: 'rejected', path: '/tmp/detail.jpg' },
       ],
     },
@@ -2190,6 +2191,7 @@ test('video asset pool lets pending model detail and AI images be selected for v
     ['vasset-208326102205-source-approved-origin', 'origin', '模拍', '模特图', 'approved', true, true],
     ['vasset-208326102205-source-pending-origin', 'origin', '模拍', '模特图', 'pending', false, true],
     ['vasset-208326102205-source-pending-detail', 'reference', '素材', '细节图', 'pending', true, true],
+    ['vasset-208326102205-source-archived-ai-name', 'ai', '模拍', 'AI·模拍', 'approved', false, true],
   ])
   assert.equal(assets[0].thumbnailUrl, 'http://127.0.0.1:18765/thumbnail/approved-face')
 })

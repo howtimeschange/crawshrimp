@@ -1576,6 +1576,24 @@ export function resolveVideoAssetTaxonomy(asset = {}, { folderHint = '' } = {}) 
   }
 }
 
+function hasGeneratedAiEvidence(asset = {}) {
+  const kind = compact(asset?.kind).toLowerCase()
+  const sourceType = compact(asset?.sourceType || asset?.source_type).toLowerCase()
+  const rawOperation = compact(asset?.operationType || asset?.operation_type || asset?.action)
+  const operationType = rawOperation ? normalizeOperationType(rawOperation) : ''
+  const label = compact(asset?.label || asset?.name || asset?.action)
+  return Boolean(
+    kind === 'ai'
+    || sourceType === 'ai'
+    || asset?.isAi === true
+    || asset?.is_ai === true
+    || compact(asset?.jobUid || asset?.job_uid)
+    || compact(asset?.runUid || asset?.run_uid)
+    || (operationType && operationType !== 'origin')
+    || /换脸|换背景|换装|换姿势/i.test(label)
+  )
+}
+
 export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null } = {}) {
   const styleCode = compact(reviewStyle?.styleCode || reviewStyle?.style_code || materialStyle?.styleCode)
   const output = []
@@ -1583,8 +1601,8 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
   const seenContent = new Set()
   const selectedForVideo = (asset = {}, status = 'pending', taxonomy = {}) => (
     Boolean(asset?.selected || asset?.editSelected || asset?.videoSelected)
-    || (taxonomy?.isAi && !asset?.deleted)
-    || status === 'approved'
+    || (hasGeneratedAiEvidence(asset) && !asset?.deleted)
+    || (!taxonomy?.isAi && status === 'approved')
   )
   const append = (asset, { source = false, folderHint = '' } = {}) => {
     const status = reviewAssetStatus(asset?.status)
