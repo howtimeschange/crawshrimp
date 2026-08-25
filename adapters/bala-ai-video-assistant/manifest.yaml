@@ -80,6 +80,8 @@ tasks:
             label: 国内 · DeepSeek V4 Pro（网关）
           - value: glm-5.2
             label: 国内 · GLM 5.2
+          - value: kimi-k3
+            label: 国内 · Kimi K3
           - value: kimi-k2.7-code
             label: 国内 · Kimi K2.7 Code
         hint: 默认使用 gemini-3.5-flash；DeepSeek 官方模型走独立 API Key，国内 DeepSeek 网关模型走百炼 CodingPlan 兼容地址。切换到 Gemini 系列时商品图会自动转为 base64 传输，其他 OpenAI 兼容模型保持图片 URL 直传。

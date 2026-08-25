@@ -29,6 +29,7 @@ export const BALA_VIDEO_PROMPT_MODEL_OPTIONS = Object.freeze([
   { value: 'qwen3.8-max-preview', label: '森马网关 · Qwen 3.8 Max Preview', keyScope: 'gateway' },
   { value: 'qwen3.7-plus', label: '森马网关 · Qwen 3.7 Plus', keyScope: 'gateway' },
   { value: 'glm-5.2', label: '森马网关 · GLM 5.2', keyScope: 'gateway' },
+  { value: 'kimi-k3', label: '森马网关 · Kimi K3', keyScope: 'gateway' },
 ])
 
 const LEGACY_BALA_BUSINESS_MANAGER_NAME = ['软件', '管家'].join('')

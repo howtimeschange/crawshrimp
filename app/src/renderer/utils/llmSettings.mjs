@@ -30,6 +30,7 @@ export const LLM_MODELS = Object.freeze([
   { value: 'deepseek-v4-flash', label: '国内 · DeepSeek V4 Flash（网关）' },
   { value: 'deepseek-v4-pro', label: '国内 · DeepSeek V4 Pro（网关）' },
   { value: 'glm-5.2', label: '国内 · GLM 5.2' },
+  { value: 'kimi-k3', label: '国内 · Kimi K3' },
   { value: 'kimi-k2.7-code', label: '国内 · Kimi K2.7 Code' },
 ])
 

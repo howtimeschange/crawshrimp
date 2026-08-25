@@ -17,7 +17,7 @@ import {
 test('LLM settings expose all configured gateway defaults and supported model ids', () => {
   assert.equal(LLM_DEFAULTS['ai.llm.default_model'], 'gemini-3.5-flash')
   assert.equal(LLM_DEFAULTS['ai.llm.deepseek_base_url'], 'https://api.deepseek.com')
-  assert.equal(LLM_MODELS.length, 17)
+  assert.equal(LLM_MODELS.length, 18)
   assert.deepEqual(
     LLM_MODELS.map(item => item.value),
     [
@@ -37,6 +37,7 @@ test('LLM settings expose all configured gateway defaults and supported model id
       'deepseek-v4-flash',
       'deepseek-v4-pro',
       'glm-5.2',
+      'kimi-k3',
       'kimi-k2.7-code',
     ],
   )

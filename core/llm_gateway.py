@@ -86,6 +86,7 @@ BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS = (
     "qwen3.8-max-preview",
     "qwen3.7-plus",
     "glm-5.2",
+    "kimi-k3",
 )
 BALA_VIDEO_PROMPT_MODELS = (
     *BALA_VIDEO_PROMPT_DEEPSEEK_VISION_MODELS,
