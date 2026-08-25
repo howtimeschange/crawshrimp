@@ -1,0 +1,500 @@
+id: ai-mopai-fentu
+name: 上新运营助手
+version: 1.3.6
+author: bwz
+description: "生成并上传模拍/静物分图审核结果，并可从 PLM 批量下载尺码表 PDF。"
+entry_url: https://fmp.semirapp.com/web/index#/home/file
+tab_match_prefixes:
+  - https://fmp.semirapp.com/web/index
+
+auth:
+  check_script: auth_check.js
+  login_url: https://fmp.semirapp.com/web/index#/home/file
+
+tasks:
+  - id: generate_review
+    name: 1. 生成分图审核表
+    description: "扫描源批次根目录，查询一至两张上市计划表的指定 Sheet，生成固定13列审核表；本步骤不会上传。"
+    script: generate-review.js
+    entry_url: about:blank
+    skip_auth: true
+    params:
+      - id: source_mode
+        type: radio
+        label: 文件来源
+        required: true
+        default: local
+        options:
+          - value: local
+            label: 本地上传
+          - value: cloud
+            label: 云盘上传
+        hint: 本地上传读取电脑目录；云盘上传直接读取森马云盘路径，不下载到电脑。
+        ui_span: full
+      - id: mode
+        type: radio
+        label: 审核表计算页面
+        default: new
+        options:
+          - value: new
+            label: 使用独立空白页面
+        hidden: true
+      - id: source_root
+        type: directory
+        label: 源批次公共根目录
+        required: true
+        include_file_listing: true
+        placeholder: 选择包含一个或多个批次的公共根目录
+        hint: 递归扫描 JPG/JPEG/PNG/WEBP/PSD；文件夹名优先提取17位款色号，找不到时提取12位款号。
+        ui_span: full
+        visible_when:
+          field: source_mode
+          equals: local
+      - id: cloud_source_path
+        type: text
+        label: 森马云盘源路径
+        required: true
+        placeholder: "巴拉营运BU-商品//巴拉货控/.../模拍原图/待处理批次"
+        hint: 直接填写需要识别的云盘文件夹路径；程序只读取，不会在第一步复制或修改文件。
+        ui_span: full
+        visible_when:
+          field: source_mode
+          equals: cloud
+      - id: plan_files_folder
+        type: directory
+        label: 上市计划表所在文件夹
+        required: true
+        hint: 只选择文件夹，不要选择安装包；例如两个上市计划表都在桌面，就选择“桌面”。
+        ui_span: full
+      - id: plan1_filename
+        type: text
+        label: 查询计划表1文件名
+        required: true
+        default: "426上市计划表.xlsx"
+        hint: 必须包含 .xlsx 或 .xlsm 扩展名。
+        ui_span: half
+      - id: plan1_directory
+        type: text
+        label: 计划表1对应目录
+        required: true
+        default: "2026年巴拉冬"
+        placeholder: 例如：当季计划
+        hint: 不会根据计划表文件名推断。
+        ui_span: half
+      - id: plan2_filename
+        type: text
+        label: 查询计划表2文件名（选填）
+        default: ""
+        hint: 不使用第二张计划表时，请同时清空此项和“计划表2对应目录”。
+        ui_span: half
+      - id: plan2_directory
+        type: text
+        label: 计划表2对应目录（选填）
+        default: ""
+        ui_span: half
+      - id: sheet_mappings
+        type: textarea
+        label: 本次 Sheet → 云盘目录映射
+        default: "2026-线上=期货\n2026-全域=全域"
+        rows: 4
+        placeholder: "每行一条，例如：2026-线上=期货"
+        hint: 选填。填写时只查询列出的 Sheet；留空时查询计划表全部 Sheet，并省略对应云盘目录层级。
+        ui_span: full
+      - id: cloud_root
+        type: text
+        label: 云盘根路径
+        required: true
+        default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        hint: 第一项后必须保留 //，其余层级使用 /。
+        ui_span: full
+      - id: custom_path_item
+        type: text
+        label: 自定义路径项
+        default: 模拍原图
+        placeholder: 模拍原图、平拍原图或其他准确目录
+        hint: 选填。留空时云盘目标路径省略这一层。
+        ui_span: half
+      - id: keep_source_name
+        type: radio
+        label: 是否保留源文件命名
+        required: true
+        default: "no"
+        options:
+          - value: "no"
+            label: 不保留源文件命名
+          - value: "yes"
+            label: 保留源文件命名
+        hint: 选择保留后，最终文件夹名以源款式文件夹完整名称开头，再追加自定义内容和日期。
+        ui_span: full
+      - id: rename_content
+        type: text
+        label: 最终文件夹自定义内容
+        default: AI新回图
+        placeholder: 例如：AI新回图
+        hint: 选填。内容会追加在款号或保留的源款式文件夹名称之后。
+        ui_span: half
+      - id: run_date
+        type: text
+        label: 文件夹名称日期
+        hint: 选填。可填写 7.2、7.02 或 2026-7-2；留空时文件夹名称不包含日期。
+        ui_span: half
+      - id: confirm_config
+        type: radio
+        label: 运行前配置确认
+        required: true
+        default: "no"
+        options:
+          - value: "no"
+            label: 尚未确认
+          - value: "yes"
+            label: 已确认，可以开始
+        hint: 只有选择“已确认，可以开始”后才进行匹配并生成审核表。
+        ui_span: full
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "分图汇总审核表-{date}.xlsx"
+        columns:
+          - 源文件夹
+          - 款式文件夹
+          - 最终文件夹名
+          - 款色号
+          - 款号
+          - 命中计划表及对应目录
+          - 命中Sheet及对应目录
+          - 批次
+          - 图片数
+          - 云盘目标路径
+          - 状态
+          - 同款款色号数量
+          - 备注
+
+  - id: upload_approved
+    name: 2. 审核后上传云盘
+    description: "读取审核表并重新扫描原来源；本地模式上传文件/文件夹，云盘模式在服务器端复制，并保留源文件夹相对目录结构；均跳过需复核行。"
+    script: upload-approved.js
+    params:
+      - id: source_mode
+        type: radio
+        label: 文件来源
+        required: true
+        default: local
+        options:
+          - value: local
+            label: 本地上传
+          - value: cloud
+            label: 云盘上传
+        hint: 必须与第一步生成审核表时选择的来源一致。
+        ui_span: full
+      - id: mode
+        type: radio
+        label: 云盘页面打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前已登录页面
+          - value: new
+            label: 新建页面
+        hidden: true
+      - id: review_file
+        type: file_excel
+        label: 已审核的分图审核表
+        required: true
+        hint: 使用第一步生成的表；“需复核”行不会上传。
+        ui_span: full
+      - id: source_root
+        type: directory
+        label: 原源批次公共根目录
+        required: true
+        include_file_listing: true
+        hint: 必须与生成审核表时选择的源目录一致。
+        ui_span: full
+        visible_when:
+          field: source_mode
+          equals: local
+      - id: cloud_source_path
+        type: text
+        label: 原森马云盘源路径
+        required: true
+        placeholder: "巴拉营运BU-商品//巴拉货控/.../模拍原图/待处理批次"
+        hint: 必须与生成审核表时填写的云盘源路径一致；程序将重新读取并校验源文件。
+        ui_span: full
+        visible_when:
+          field: source_mode
+          equals: cloud
+      - id: approval_confirmed
+        type: radio
+        label: 上传授权
+        required: true
+        default: "no"
+        options:
+          - value: "no"
+            label: 尚未审核
+          - value: "yes"
+            label: 审核通过，允许上传
+        hint: 这是不可跳过的上传门槛；程序不会上传“需复核”行。
+        ui_span: full
+      - id: upload_wait_seconds
+        type: number
+        label: 单款执行等待秒数
+        default: 300
+        min: 30
+        max: 900
+        step: 10
+        hint: 本地模式每批最多上传4个文件；云盘模式等待服务器端复制结果，超时后转人工复核。
+        ui_span: half
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "AI分图云盘上传结果_{timestamp}.xlsx"
+        columns:
+          - 款号
+          - 款色号
+          - 云盘目标路径
+          - 本地图片数
+          - 云盘文件数
+          - 上传状态
+          - 备注
+
+  - id: still_checklist_review
+    name: 3. 静物核表分图
+    description: "粘贴一批17位款色号，按前12位在首级“摄影”库搜索；仅保留包含“12位款号-后5位色号.jpg”的文件夹，多文件夹命中时选择图片最多的一个。"
+    script: generate-still-checklist.js
+    entry_url: about:blank
+    skip_auth: true
+    params:
+      - id: style_codes
+        type: textarea
+        label: 17位款色号
+        required: true
+        rows: 8
+        placeholder: "一行一个款色号，例如：\n20842610720630183\n20242610720200001"
+        hint: 支持换行、逗号、顿号或分号分隔并自动去重；只接受完整17位数字。摄影盘按前12位款号搜索。
+        ui_span: full
+      - id: mode
+        type: radio
+        label: 审核表计算页面
+        default: new
+        options:
+          - value: new
+            label: 使用独立空白页面
+        hidden: true
+      - id: plan_files_folder
+        type: directory
+        label: 上市计划表所在文件夹
+        required: true
+        hint: 只选择文件夹；例如计划表在桌面，就选择“桌面”。
+        ui_span: full
+      - id: plan1_filename
+        type: text
+        label: 查询计划表1文件名
+        required: true
+        default: "426上市计划表.xlsx"
+        hint: 必须包含 .xlsx 或 .xlsm 扩展名。
+        ui_span: half
+      - id: plan1_directory
+        type: text
+        label: 计划表1对应目录
+        required: true
+        default: "2026年巴拉冬"
+        hint: 不会根据计划表文件名推断。
+        ui_span: half
+      - id: plan2_filename
+        type: text
+        label: 查询计划表2文件名（选填）
+        default: ""
+        hint: 不使用第二张计划表时，请同时清空此项和“计划表2对应目录”。
+        ui_span: half
+      - id: plan2_directory
+        type: text
+        label: 计划表2对应目录（选填）
+        default: ""
+        ui_span: half
+      - id: sheet_mappings
+        type: textarea
+        label: 本次 Sheet → 云盘目录映射
+        default: "2026-线上=期货\n2026-全域=全域"
+        rows: 4
+        placeholder: "每行一条，例如：2026-线上=期货"
+        hint: 选填。填写时只查询列出的 Sheet；留空时查询全部 Sheet，并省略对应目录层级。
+        ui_span: full
+      - id: cloud_root
+        type: text
+        label: 云盘目标根路径
+        required: true
+        default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        hint: 这里是推理目标路径的根目录，不是摄影源路径。
+        ui_span: full
+      - id: custom_path_item
+        type: text
+        label: 自定义路径项
+        default: 平拍原图
+        placeholder: 模拍原图、平拍原图或其他准确目录
+        hint: 选填。留空时目标路径省略这一层。
+        ui_span: half
+      - id: keep_source_name
+        type: radio
+        label: 是否保留源文件命名
+        required: true
+        default: "yes"
+        options:
+          - value: "no"
+            label: 不保留源文件命名
+          - value: "yes"
+            label: 保留源文件命名
+        hint: 选择保留后，最终文件夹名以选中的摄影文件夹完整名称开头，再追加自定义内容和日期。
+        ui_span: full
+      - id: rename_content
+        type: text
+        label: 最终文件夹自定义内容
+        default: 静物回图
+        hint: 选填。内容会追加在12位款号或保留的摄影文件夹名称之后。
+        ui_span: half
+      - id: run_date
+        type: text
+        label: 文件夹名称日期
+        hint: 选填。可填写 7.2、7.02 或 2026-7-2；留空时文件夹名称不包含日期。
+        ui_span: half
+      - id: confirm_config
+        type: radio
+        label: 运行前配置确认
+        required: true
+        default: "no"
+        options:
+          - value: "no"
+            label: 尚未确认
+          - value: "yes"
+            label: 已确认，可以开始
+        hint: 本步骤只搜索摄影库、读取文件并生成审核表，不会复制或修改云盘文件。
+        ui_span: full
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "静物分图核表审核表-{date}.xlsx"
+        columns:
+          - 款色号
+          - 款号
+          - 对应JPG文件名
+          - 摄影文件夹名称
+          - 摄影源路径
+          - 候选摄影文件夹数
+          - 命中款色文件夹数
+          - 摄影文件夹数
+          - 文件数
+          - 最终文件夹名
+          - 命中计划表及对应目录
+          - 命中Sheet及对应目录
+          - 批次
+          - 云盘目标路径
+          - 状态
+          - 备注
+
+  - id: upload_still_checklist
+    name: 4. 静物核表上传
+    description: "只读取静物分图核表审核表；重新核对17位款色号、对应JPG和已选摄影路径后，将摄影文件夹内容按原相对目录结构复制到目标目录。"
+    script: upload-still-checklist.js
+    params:
+      - id: mode
+        type: radio
+        label: 云盘页面打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前已登录页面
+          - value: new
+            label: 新建页面
+        hidden: true
+      - id: review_file
+        type: file_excel
+        label: 已审核的静物分图核表
+        required: true
+        hint: 只需上传第3步生成并人工审核后的表格，不需要填写摄影源根目录。
+        ui_span: full
+      - id: approval_confirmed
+        type: radio
+        label: 上传授权
+        required: true
+        default: "no"
+        options:
+          - value: "no"
+            label: 尚未审核
+          - value: "yes"
+            label: 审核通过，允许上传
+        hint: “需复核”行不会复制；执行时会重新读取摄影源路径并确认对应JPG仍然存在。
+        ui_span: full
+      - id: upload_wait_seconds
+        type: number
+        label: 单款复制等待秒数
+        default: 300
+        min: 30
+        max: 900
+        step: 10
+        hint: 等待服务器端复制和文件级核验；超时不会重复提交复制。
+        ui_span: half
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "静物分图核表上传结果_{timestamp}.xlsx"
+        columns:
+          - 款色号
+          - 款号
+          - 对应JPG文件名
+          - 摄影源路径
+          - 摄影文件夹数
+          - 源文件数
+          - 云盘目标路径
+          - 云盘文件数
+          - 上传状态
+          - 备注
+
+  - id: size_chart_pdf_downloader
+    name: 5. 尺码表PDF下载
+    description: 按款号搜索产品，按“大货→订货→试销单→内评→初版”选择最优尺码表，下载 PDF 到指定文件夹并生成结果 Excel。
+    script: size-chart-pdf-download.js
+    entry_url: http://plm.balabala.com/WebAccess/home.html
+    tab_match_prefixes:
+      - http://plm.balabala.com/WebAccess/
+      - https://plm.balabala.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前登录页（推荐）
+          - value: new
+            label: 新开 PLM 页面
+      - id: style_codes
+        type: textarea
+        label: 款号
+        rows: 8
+        required: true
+        placeholder: "一行一个款号，也可以直接从 Excel 粘贴"
+        hint: 脚本会去重后逐款处理；搜索结果最长等待 10 秒。
+      - id: output_dir
+        type: directory
+        label: 保存文件夹
+        required: true
+        placeholder: "请选择 PDF 和结果 Excel 的保存文件夹"
+        hint: PDF 文件名为“货号”两字＋款号＋空格＋“尺码表.pdf”；结果 Excel 会在任务完成后生成。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "尺码表PDF下载结果_{timestamp}.xlsx"
+        columns:
+          - 款号
+          - 货号
+          - 尺码表阶段
+          - 下载状态
+          - 文件名
+          - 保存路径
+          - 运行时路径
+          - 备注
+          - 处理时间
