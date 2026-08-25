@@ -246,6 +246,29 @@ class AiImageServiceTests(unittest.TestCase):
             "data:image/png;base64,back",
         ])
 
+    def test_build_payload_converts_local_mask_path_to_data_url(self):
+        job = {
+            "prompt": "make a local edit",
+            "params": {
+                "size": "1024x1024",
+                "main_image_path": "/tmp/main.png",
+                "reference_image_paths": ["/tmp/ref.png"],
+                "mask": "/tmp/mask.png",
+            },
+        }
+
+        payload = ai_image_service.build_one_xm_payload(
+            job,
+            [],
+            file_to_data_url_fn=lambda path: f"data:image/png;base64,{Path(path).stem}",
+        )
+
+        self.assertEqual(payload["mask"], "data:image/png;base64,mask")
+        self.assertEqual(payload["image"], [
+            "data:image/png;base64,main",
+            "data:image/png;base64,ref",
+        ])
+
     def test_build_payload_allows_text_to_image_without_reference_assets(self):
         job = {
             "prompt": "make a dragon dance on the great wall",

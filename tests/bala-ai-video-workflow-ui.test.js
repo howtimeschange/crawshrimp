@@ -1486,6 +1486,7 @@ test('video task dialog can write prompt from selected images with a vision LLM 
     'qwen3.8-max-preview',
     'qwen3.7-plus',
     'glm-5.2',
+    'kimi-k3',
   ])
   assert.match(balaWorkflow.BALA_VIDEO_PROMPT_TEMPLATE, /根据图 1-5 的模拍图/)
   assert.match(balaWorkflow.BALA_VIDEO_PROMPT_TEMPLATE, /下摆设计和面料/)
@@ -1848,6 +1849,9 @@ test('precise image edit modal keeps the same operation boundaries as batch AI e
   assert.match(templateSource, /@click="setPreviewEditAction\(action\.id\)"/)
   assert.match(templateSource, /{{ previewEditPromptLabel }}/)
   assert.match(templateSource, /:placeholder="previewEditPromptPlaceholder"/)
+  assert.match(templateSource, /<span>品质<\/span>[\s\S]*v-model="selectedAiImageQuality"[\s\S]*AI_IMAGE_QUALITY_LABELS/)
+  assert.match(source, /const selectedAiImageQuality = ref\('high'\)/)
+  assert.match(source, /const aiImageQualityOptions = computed\(\(\) => qualityOptionsForModel\(selectedAiImageModel\.value\?\.id\)\)/)
   assert.match(source, /const previewEditActionPrompts = reactive\(\{ \.\.\.AI_ACTION_PROMPT_DEFAULTS \}\)/)
   assert.match(actionSource, /previewEditActionPrompts\[previewEditAction\.value\] = String\(previewEditPrompt\.value \|\| ''\)/)
   assert.match(actionSource, /previewEditPrompt\.value = previewPromptForAction\(previewEditAction\.value\)/)
@@ -1855,7 +1859,9 @@ test('precise image edit modal keeps the same operation boundaries as batch AI e
   assert.match(openSource, /const assetPrompt = previewAssetPrompt\(asset, operationType\)/)
   assert.doesNotMatch(openSource, /asset\?\.meta \|\| aiPrompt\.value/)
 
-  assert.match(promptSource, /face_swap:[\s\S]*编辑范围只限人物脸部区域[\s\S]*禁止替换背景或场景/)
+  assert.match(promptSource, /face_swap:[\s\S]*软过渡区域[\s\S]*头身比例[\s\S]*不得继承参考头像的棚拍柔光[\s\S]*唯一光照模板[\s\S]*鼻梁\/眼窝\/脸颊\/下巴投影[\s\S]*避免把新脸做成均匀柔光[\s\S]*脸部边缘必须与原图头发、耳朵、脖颈和脸颊阴影柔和融合[\s\S]*禁止替换背景或场景/)
+  assert.doesNotMatch(promptSource, /光影遮罩和曝光层级/)
+  assert.doesNotMatch(promptSource, /禁止自动补光、美颜、统一提亮皮肤/)
   assert.match(promptSource, /background_swap:[\s\S]*编辑范围只限背景\/场景[\s\S]*禁止改脸、换衣服、改变姿势/)
   assert.match(promptSource, /outfit_swap:[\s\S]*编辑范围只限服装商品区域[\s\S]*禁止换脸、替换背景、改变姿势/)
   assert.match(promptSource, /pose_swap:[\s\S]*编辑范围以人物身体姿态为主[\s\S]*禁止换脸、换衣服、替换背景/)
@@ -1864,6 +1870,8 @@ test('precise image edit modal keeps the same operation boundaries as batch AI e
   assert.match(editSource, /if \(operationType === 'background_swap' && !promptInstruction\)/)
   assert.match(editSource, /if \(operationType === 'pose_swap' && !promptInstruction\)/)
   assert.match(editSource, /operation_type:\s*operationType/)
+  assert.match(editSource, /quality:\s*generation\.quality/)
+  assert.doesNotMatch(editSource, /quality:\s*generation\.quality \|\| 'high'/)
   assert.match(editSource, /background_prompt:\s*operationType === 'background_swap' \? promptInstruction : ''/)
   assert.match(editSource, /pose_prompt:\s*operationType === 'pose_swap' \? promptInstruction : ''/)
   assert.match(editSource, /prompt_extra:\s*promptExtra/)

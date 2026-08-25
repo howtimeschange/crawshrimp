@@ -250,9 +250,15 @@ def build_workbench_one_xm_payload(
             "output_format": output_format,
             "n": _requested_image_count(job),
         }
-    for optional_key in ("webhook_url", "webhook_secret", "mask"):
+    for optional_key in ("webhook_url", "webhook_secret"):
         if params.get(optional_key):
             payload[optional_key] = params.get(optional_key)
+    mask_value = _compact(params.get("mask"))
+    if mask_value:
+        if mask_value.startswith(("data:", "http://", "https://")):
+            payload["mask"] = mask_value
+        else:
+            payload["mask"] = file_to_data_url_fn(mask_value)
 
     input_assets = _param_input_assets(params) or list(assets or [])
     ordered_assets = sorted(input_assets, key=lambda item: (int(item.get("sort_order") or 0), int(item.get("id") or 0)))

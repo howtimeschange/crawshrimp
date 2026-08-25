@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from core import api_server, data_sink, runtime_paths
 from core.api_server import (
@@ -22,6 +22,20 @@ from core.api_server import (
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "adapters" / "bala-ai-video-assistant" / "manifest.yaml"
+
+
+def _write_face_swap_test_source(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGB", (768, 1024), (226, 218, 203))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 430, 768, 1024), fill=(238, 205, 70))
+    draw.ellipse((270, 90, 505, 360), fill=(225, 170, 130))
+    draw.pieslice((238, 58, 532, 312), 180, 360, fill=(86, 55, 36))
+    draw.rectangle((310, 330, 466, 455), fill=(214, 153, 114))
+    draw.ellipse((318, 190, 348, 218), fill=(55, 38, 28))
+    draw.ellipse((428, 190, 458, 218), fill=(55, 38, 28))
+    draw.arc((345, 236, 430, 296), 12, 168, fill=(128, 55, 52), width=5)
+    image.save(path, "JPEG", quality=92)
 
 
 class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
@@ -134,6 +148,7 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                 "deepseek-v4-flash",
                 "deepseek-v4-pro",
                 "glm-5.2",
+                "kimi-k3",
                 "kimi-k2.7-code",
             ],
         )
@@ -795,8 +810,7 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             base = Path(tmpdir)
             data_root = base / "data"
             source = base / "208326102205" / "01_模拍原图" / "model.jpg"
-            source.parent.mkdir(parents=True)
-            source.write_bytes(b"fake jpg")
+            _write_face_swap_test_source(source)
 
             with patch.dict("os.environ", {"CRAWSHRIMP_DATA": str(data_root)}, clear=False):
                 runtime_paths.reset_runtime_data_root_cache()
@@ -826,16 +840,61 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                 self.assertEqual(row["背景Prompt"], "")
                 job = data_sink.get_ai_image_job(row["AI任务UID"])
                 self.assertIsNotNone(job)
-                self.assertIn("编辑范围只限人物脸部区域", job["prompt"])
+                self.assertIn("编辑范围只限人物脸部五官与脸部皮肤的软过渡区域", job["prompt"])
+                self.assertIn("严格锁定原图人物的头部大小、头身比例", job["prompt"])
+                self.assertIn("发际线轮廓、耳朵位置、视线方向和相机透视", job["prompt"])
+                self.assertIn("不得继承第二张头像的棚拍柔光、磨皮、曝光、肤色或眼部高光", job["prompt"])
+                self.assertIn("以第一张原图为唯一光照模板", job["prompt"])
+                self.assertIn("鼻梁/眼窝/脸颊/下巴投影、头发投影、下颌到脖颈阴影", job["prompt"])
+                self.assertNotIn("保留第一张原脸区域已有的光影遮罩和曝光层级", job["prompt"])
+                self.assertNotIn("禁止自动补光、美颜、统一提亮皮肤", job["prompt"])
+                self.assertIn("避免把新脸做成均匀柔光、棚拍证件照、过亮过白", job["prompt"])
+                self.assertIn("脸部边缘必须与原图头发、耳朵、脖颈和脸颊阴影柔和融合", job["prompt"])
+                self.assertIn("避免蜡像感、塑料皮肤、过度磨皮或一眼 AI 感", job["prompt"])
                 self.assertIn("禁止替换背景或场景", job["prompt"])
                 self.assertIn("补充要求（不得改变上述只换脸范围，不得替换背景/场景）", job["prompt"])
                 self.assertNotIn("马尔代夫", job["prompt"])
                 self.assertEqual(job["params"]["main_image_path"], str(source.resolve(strict=False)))
                 self.assertEqual(job["params"]["background_prompt"], "")
                 self.assertEqual(job["params"]["model_key_tier"], "4k")
+                self.assertEqual(job["params"]["size"], "1536x2048")
                 self.assertEqual(job["params"]["reference_image_paths"][0], str((manifest_path.parent / "100女" / "标准.jpg").resolve(strict=False)))
+                self.assertNotIn("mask", job["params"])
                 assets = data_sink.list_ai_image_assets(row["AI任务UID"])
                 self.assertEqual([asset["kind"] for asset in assets], ["main", "reference"])
+
+            runtime_paths.reset_runtime_data_root_cache()
+
+    def test_apply_face_background_preserves_source_aspect_ratio_for_face_swap_size(self):
+        manifest_path = ROOT / "adapters" / "bala-ai-video-assistant" / "assets" / "model-library" / "manifest.json"
+
+        async def wait_for_control(_status=None):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            data_root = base / "data"
+            source = base / "208326102205" / "01_模拍原图" / "portrait.jpg"
+            source.parent.mkdir(parents=True)
+            Image.new("RGB", (800, 1200), (220, 180, 140)).save(source, "JPEG", quality=90)
+
+            with patch.dict("os.environ", {"CRAWSHRIMP_DATA": str(data_root)}, clear=False):
+                runtime_paths.reset_runtime_data_root_cache()
+                data_sink.init_db()
+                with patch("core.adapter_loader.resolve_adapter_file", return_value=manifest_path):
+                    rows = asyncio.run(_apply_bala_ai_face_background_generate(
+                        {
+                            "source_images": {"paths": [str(source)]},
+                            "model_ref_ids": "100女/标准.jpg",
+                            "generation_mode": "create_only",
+                            "image_size": "1536x2048",
+                        },
+                        wait_for_control,
+                        lambda _message: None,
+                    ))
+
+                job = data_sink.get_ai_image_job(rows[0]["AI任务UID"])
+                self.assertEqual(job["params"]["size"], "1360x2048")
 
             runtime_paths.reset_runtime_data_root_cache()
 
