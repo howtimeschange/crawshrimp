@@ -126,6 +126,71 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertIn("tmz1、tmz2、tmz3、tmz4、tmz5", prompt)
         self.assertIn("必须优先逐张对照这些参考图判断", prompt)
 
+    def test_prompt_marks_overview_as_context_not_returnable_candidates(self):
+        prompt = shenhui_shoe_packaging._shoe_selection_prompt(
+            "208326146209",
+            "00316",
+            {"I05": "batch-candidate.jpg"},
+            "婴童",
+            overview_sheet_count=1,
+            candidate_scope=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_BATCH_OVERVIEW,
+            main_pose_reference_count=5,
+        )
+
+        self.assertIn("第一张图是带编号的本色当前批次候选原图", prompt)
+        self.assertIn("第2张图是本色全部候选全景上下文", prompt)
+        self.assertIn("第3到第7张图是当前品类的主图位切片参考", prompt)
+        self.assertIn("返回 JSON 只能引用“候选编号”列表中的当前批次编号", prompt)
+        self.assertIn("正确姿势在其他批次，本批对应槽位必须留空", prompt)
+
+    def test_prompt_marks_single_sheet_as_global_selection(self):
+        prompt = shenhui_shoe_packaging._shoe_selection_prompt(
+            "208326146209",
+            "00316",
+            {"I01": "candidate.jpg", "I09": "other.jpg"},
+            "婴童",
+            candidate_scope=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_SINGLE_SHEET,
+        )
+
+        self.assertIn("第一张图是带编号的本色全部候选原图", prompt)
+        self.assertIn("全量候选大图一次性识别", prompt)
+        self.assertIn("必须在所有候选编号中做全局最优选择", prompt)
+
+    def test_prompt_marks_global_pages_as_candidate_fact_task(self):
+        prompt = shenhui_shoe_packaging._shoe_selection_prompt(
+            "208326146209",
+            "00316",
+            {"I01": "candidate.jpg", "I13": "other.jpg"},
+            "婴童",
+            candidate_sheet_count=2,
+            candidate_scope=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_GLOBAL_PAGES,
+            main_pose_reference_count=1,
+        )
+
+        self.assertIn("前2张图都是带编号的本色全部候选原图", prompt)
+        self.assertIn("global_pages 全局识别", prompt)
+        self.assertIn("不要直接填写完整 slots", prompt)
+        self.assertIn("逐候选返回可校验事实 candidates", prompt)
+        self.assertIn('"matched_slots"', prompt)
+
+    def test_pose_strategy_aliases_are_normalized(self):
+        self.assertEqual(
+            shenhui_shoe_packaging.SHOE_POSE_DEFAULT_STRATEGY,
+            shenhui_shoe_packaging.SHOE_POSE_STRATEGY_SINGLE_SHEET,
+        )
+        self.assertEqual(
+            shenhui_shoe_packaging.normalize_shoe_pose_strategy("global"),
+            shenhui_shoe_packaging.SHOE_POSE_STRATEGY_GLOBAL_PAGES,
+        )
+        self.assertEqual(
+            shenhui_shoe_packaging.normalize_shoe_pose_strategy("panorama"),
+            shenhui_shoe_packaging.SHOE_POSE_STRATEGY_BATCH_OVERVIEW,
+        )
+        self.assertEqual(
+            shenhui_shoe_packaging.normalize_shoe_pose_strategy("all-in-one"),
+            shenhui_shoe_packaging.SHOE_POSE_STRATEGY_SINGLE_SHEET,
+        )
+
     def test_main_pose_template_is_cut_into_category_slot_references(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -166,6 +231,28 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                     with Image.open(path) as reference:
                         self.assertLessEqual(max(reference.size), 900)
 
+    def test_global_pages_contact_inputs_use_twelve_stable_ids_per_page(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            entries = []
+            for index in range(25):
+                path = root / f"{index + 1}.jpg"
+                Image.new("RGB", (60, 40), (index, index, index)).save(path)
+                entries.append({"path": path, "filename": path.name})
+
+            sheets, candidate_ids, overview = shenhui_shoe_packaging._create_pose_contact_inputs(
+                entries,
+                root / "contact.jpg",
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_GLOBAL_PAGES,
+            )
+
+            self.assertEqual(len(sheets), 3)
+            self.assertIsNone(overview)
+            self.assertEqual(candidate_ids["I01"], "1.jpg")
+            self.assertEqual(candidate_ids["I12"], "12.jpg")
+            self.assertEqual(candidate_ids["I13"], "13.jpg")
+            self.assertEqual(candidate_ids["I25"], "25.jpg")
+
     def test_prompt_spells_out_new_shared_main_pose_one(self):
         prompt = shenhui_shoe_packaging._shoe_selection_prompt(
             "204325141014",
@@ -174,9 +261,9 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             "休闲",
         )
 
-        self.assertIn("第三张图是最新主图1姿势参考", prompt)
-        self.assertIn("第四张图是鞋品海报姿势模板", prompt)
-        self.assertIn("第五张图是 yq 三姿势参考模板", prompt)
+        self.assertIn("第二张图是鞋品主图姿势模板", prompt)
+        self.assertIn("第三张图是鞋品海报姿势模板", prompt)
+        self.assertIn("第四张图是 yq 三姿势参考模板", prompt)
         self.assertIn("tmz1/wpz1 必须匹配最新主图模板第1行", prompt)
         self.assertIn("一双鞋或双鞋 3/4 斜前方完整展示", prompt)
         self.assertIn("不能再按旧规则选择单只鞋", prompt)
@@ -730,6 +817,229 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(ruled["tmz5"], "single-white.jpg")
         self.assertEqual(ruled["wpz"][4], "single-gray.jpg")
         self.assertTrue(any("主图5白底单鞋" in item for item in corrections))
+
+    def test_quality_rules_keeps_white_pose_five_and_repairs_duplicate_pose_three(self):
+        pose5_mask = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(pose5_mask).rounded_rectangle((45, 18, 83, 112), 12, fill=1)
+        pose3_mask = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(pose3_mask).polygon(
+            [(58, 7), (78, 18), (74, 112), (47, 119), (45, 27)],
+            fill=1,
+        )
+        features = {
+            "pose5.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=pose5_mask.copy(),
+                aspect_ratio=0.58,
+                bounding_coverage=0.160,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose5 拷贝.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=pose5_mask.copy(),
+                aspect_ratio=0.58,
+                bounding_coverage=0.160,
+                background_luma=255.0,
+                valid=True,
+            ),
+            "pose3-gray.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=pose3_mask.copy(),
+                aspect_ratio=0.66,
+                bounding_coverage=0.153,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "pose5 拷贝.jpg",
+            "tmz5": "pose3-gray.jpg",
+            "wpz": [
+                "slot1.jpg",
+                "slot2.jpg",
+                "pose5 拷贝.jpg",
+                "slot4.jpg",
+                "pose3-gray.jpg",
+                "box.jpg",
+            ],
+            "yq": [],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "休闲",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz5"], "pose5 拷贝.jpg")
+        self.assertEqual(ruled["wpz"][4], "pose5.jpg")
+        self.assertEqual(ruled["tmz3"], "pose3-gray.jpg")
+        self.assertEqual(ruled["wpz"][2], "pose3-gray.jpg")
+        self.assertTrue(any("主图5白底单鞋" in item for item in corrections))
+        self.assertTrue(any("主图3与其他主图姿势重复" in item for item in corrections))
+
+    def test_quality_rules_accepts_close_pose_three_replacement_for_locked_pose_five(self):
+        pose5_mask = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(pose5_mask).rounded_rectangle((50, 22, 78, 106), 10, fill=1)
+        close_pose3_mask = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(close_pose3_mask).polygon(
+            [(54, 12), (78, 20), (75, 100), (50, 111), (45, 31)],
+            fill=1,
+        )
+        features = {
+            "pose5.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=pose5_mask.copy(),
+                aspect_ratio=0.573,
+                bounding_coverage=0.088,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose5 拷贝.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=pose5_mask.copy(),
+                aspect_ratio=0.573,
+                bounding_coverage=0.088,
+                background_luma=255.0,
+                valid=True,
+            ),
+            "pose3-close.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=close_pose3_mask.copy(),
+                aspect_ratio=0.600,
+                bounding_coverage=0.095,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "slot1.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=Image.new("1", (128, 128), 1),
+                aspect_ratio=1.08,
+                bounding_coverage=0.150,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "slot2.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=Image.new("1", (128, 128), 1),
+                aspect_ratio=0.78,
+                bounding_coverage=0.160,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "slot4.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=Image.new("1", (128, 128), 1),
+                aspect_ratio=1.22,
+                bounding_coverage=0.120,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "pose5.jpg",
+            "tmz5": "pose5 拷贝.jpg",
+            "wpz": [
+                "slot1.jpg",
+                "slot2.jpg",
+                "pose5.jpg",
+                "slot4.jpg",
+                "pose5.jpg",
+                "box.jpg",
+            ],
+            "yq": [],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "婴童",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz5"], "pose5 拷贝.jpg")
+        self.assertEqual(ruled["wpz"][4], "pose5.jpg")
+        self.assertEqual(ruled["tmz3"], "pose3-close.jpg")
+        self.assertEqual(ruled["wpz"][2], "pose3-close.jpg")
+        self.assertTrue(any("主图3与其他主图姿势重复" in item for item in corrections))
+
+    def test_quality_rules_prefer_gray_source_for_standard_main_slots(self):
+        mask = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((22, 38, 110, 90), 18, fill=1)
+        features = {
+            "pose1.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=mask.copy(),
+                aspect_ratio=1.06,
+                bounding_coverage=0.205,
+                background_luma=242.0,
+                valid=True,
+                foreground_fill_ratio=0.61,
+                foreground_color_bins=31,
+                foreground_edge_mean=32.0,
+                foreground_saturation_p80=0.10,
+            ),
+            "pose1 拷贝.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=mask.copy(),
+                aspect_ratio=1.06,
+                bounding_coverage=0.205,
+                background_luma=255.0,
+                valid=True,
+                foreground_fill_ratio=0.69,
+                foreground_color_bins=34,
+                foreground_edge_mean=31.0,
+                foreground_saturation_p80=0.10,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz1": "pose1 拷贝.jpg",
+            "tmz5": "",
+            "wpz": [
+                "pose1 拷贝.jpg",
+                "slot2.jpg",
+                "slot3.jpg",
+                "slot4.jpg",
+                "",
+                "box.jpg",
+            ],
+            "yq": [],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "休闲",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz1"], "pose1.jpg")
+        self.assertEqual(ruled["wpz"][0], "pose1.jpg")
+        self.assertTrue(any("同姿势灰底原图" in item for item in corrections))
 
     def test_quality_rules_drop_closeup_without_function_card_from_yx(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1735,6 +2045,60 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertTrue(any("yq1" in item for item in corrections))
         self.assertTrue(any("yq2" in item for item in corrections))
 
+    def test_quality_rules_fills_missing_pose_two_before_syncing_yq_one(self):
+        features = {
+            "pose2-front-and-sole.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.38,
+                bounding_coverage=0.16,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "wrong-yq1.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=None,
+                aspect_ratio=1.05,
+                bounding_coverage=0.17,
+                background_luma=242.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz2": "",
+            "wpz": [
+                "pose1.jpg",
+                "",
+                "pose3.jpg",
+                "pose4.jpg",
+                "pose5.jpg",
+                "box.jpg",
+            ],
+            "yq": ["wrong-yq1.jpg", "", ""],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features.get(Path(path).name),
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "婴童",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz2"], "pose2-front-and-sole.jpg")
+        self.assertEqual(ruled["wpz"][1], "pose2-front-and-sole.jpg")
+        self.assertEqual(ruled["yq"][0], "pose2-front-and-sole.jpg")
+        self.assertTrue(any("主图2" in item for item in corrections))
+        self.assertTrue(any("yq1" in item for item in corrections))
+
     def test_quality_rules_repair_baby_pose_three_from_flat_side_view(self):
         empty = Image.new("1", (128, 128), 0)
         vertical = Image.new("1", (128, 128), 0)
@@ -1810,6 +2174,96 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(ruled["tmz3"], "vertical.jpg")
         self.assertEqual(ruled["wpz"][2], "vertical.jpg")
         self.assertTrue(any("第3姿势" in item for item in corrections))
+
+    def test_quality_rules_keep_baby_side_pose_three_when_pose_five_pair_exists(self):
+        side_pose3 = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(side_pose3).polygon(
+            [
+                (30, 28),
+                (77, 13),
+                (100, 34),
+                (93, 87),
+                (64, 117),
+                (35, 95),
+            ],
+            fill=1,
+        )
+        front_pose5 = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(front_pose5).rounded_rectangle((45, 18, 83, 112), 12, fill=1)
+        two_shoe_pair = Image.new("1", (128, 128), 0)
+        ImageDraw.Draw(two_shoe_pair).ellipse((38, 15, 92, 64), fill=1)
+        ImageDraw.Draw(two_shoe_pair).ellipse((26, 62, 102, 116), fill=1)
+        features = {
+            "pose3-side-gray.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=side_pose3,
+                aspect_ratio=0.89,
+                bounding_coverage=0.127,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "two-shoe-pair.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=two_shoe_pair,
+                aspect_ratio=0.78,
+                bounding_coverage=0.159,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose5-gray.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=front_pose5,
+                aspect_ratio=0.57,
+                bounding_coverage=0.092,
+                background_luma=242.0,
+                valid=True,
+            ),
+            "pose5-white.jpg": shenhui_shoe_packaging._BinaryPoseFeature(
+                mask=front_pose5.copy(),
+                aspect_ratio=0.57,
+                bounding_coverage=0.092,
+                background_luma=255.0,
+                valid=True,
+            ),
+        }
+        entries = {
+            name: {"filename": name, "path": name}
+            for name in features
+        }
+        slots = {
+            "tmz3": "pose5-gray.jpg",
+            "tmz5": "pose5-white.jpg",
+            "wpz": [
+                "slot1.jpg",
+                "slot2.jpg",
+                "pose5-gray.jpg",
+                "slot4.jpg",
+                "pose3-side-gray.jpg",
+                "box.jpg",
+            ],
+            "yq": ["slot2.jpg", "pose3-side-gray.jpg", ""],
+            "yx": "",
+        }
+
+        with patch.object(
+            shenhui_shoe_packaging,
+            "_binary_pose_feature",
+            side_effect=lambda path: features[Path(path).name],
+        ):
+            ruled, corrections = (
+                shenhui_shoe_packaging._apply_selection_quality_rules(
+                    "婴童",
+                    slots,
+                    entries,
+                )
+            )
+
+        self.assertEqual(ruled["tmz3"], "pose3-side-gray.jpg")
+        self.assertEqual(ruled["wpz"][2], "pose3-side-gray.jpg")
+        self.assertEqual(ruled["yq"][1], "")
+        self.assertEqual(ruled["tmz5"], "pose5-white.jpg")
+        self.assertEqual(ruled["wpz"][4], "pose5-gray.jpg")
+        self.assertTrue(any("yq2 不是完整鞋底" in item for item in corrections))
+        self.assertFalse(
+            any("主图3与其他主图姿势重复" in item for item in corrections)
+        )
 
     def test_quality_rules_choose_side_vertical_pose_over_front_vertical_pose(self):
         side_vertical = Image.new("1", (128, 128), 0)
@@ -2039,14 +2493,25 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
     def test_label_ocr_default_uses_auto_model_chain(self):
         self.assertEqual(
             shenhui_shoe_packaging.SHOE_LABEL_OCR_MODEL,
-            shenhui_shoe_packaging.SHOE_POSE_MULTI_MODEL_ID,
+            "gpt-5.6-sol",
+        )
+        self.assertEqual(
+            shenhui_shoe_packaging.SHOE_LABEL_OCR_DEFAULT_MODEL_CHAIN,
+            (
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5",
+                "deepseek-official-v4-flash-vision-exp",
+                "kimi-k2.7-code",
+            ),
         )
         self.assertEqual(
             shenhui_shoe_packaging._shoe_label_model_ids(
                 "",
                 {"ai": {"llm": {"api_key": "gateway-key"}}},
             ),
-            [],
+            list(shenhui_shoe_packaging.SHOE_LABEL_OCR_DEFAULT_MODEL_CHAIN),
         )
         self.assertEqual(
             shenhui_shoe_packaging._shoe_label_model_ids(
@@ -2059,6 +2524,126 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 "gpt-5.6-luna",
             ],
         )
+
+    def test_auto_pose_model_uses_evaluated_default_chain(self):
+        self.assertEqual(
+            shenhui_shoe_packaging._shoe_pose_model_ids(
+                "multi-model",
+                {"ai": {"llm": {"api_key": "gateway-key"}}},
+            ),
+            [
+                shenhui_shoe_packaging.SHOE_POSE_DEFAULT_MODEL,
+                *shenhui_shoe_packaging.SHOE_POSE_DEFAULT_FALLBACK_MODELS,
+            ],
+        )
+
+    def test_blank_label_model_uses_primary_model_before_fallbacks(self):
+        calls = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append(kwargs["model_id"])
+            return (
+                {
+                    "product_name": "儿童休闲鞋",
+                    "color_name": "黑红色调00396",
+                    "color_code": "00396",
+                    "label_bbox": [100, 100, 900, 800],
+                    "style_code_bbox": [180, 520, 520, 580],
+                },
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color_label(
+                style_code="204426140034",
+                color_code="00396",
+                label_image="data:image/jpeg;base64,/9j/2Q==",
+                model_id="gpt-5.6-terra",
+                label_model_id="",
+                fallback_model_ids=["gpt-5.6-luna", "gpt-5.6-sol"],
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+            )
+
+        self.assertEqual(calls, ["gpt-5.6-terra"])
+        self.assertEqual(payload["_model_id"], "gpt-5.6-terra")
+
+    def test_label_ocr_falls_back_when_model_returns_wrong_color_code(self):
+        calls = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append(kwargs["model_id"])
+            color_code = "00392" if kwargs["model_id"] == "gpt-5.6-sol" else "00396"
+            return (
+                {
+                    "product_name": "儿童运动鞋",
+                    "color_name": f"黑红色调{color_code}",
+                    "color_code": color_code,
+                    "label_bbox": [100, 100, 900, 800],
+                    "style_code_bbox": [180, 520, 520, 580],
+                },
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        logs = []
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color_label(
+                style_code="204426140034",
+                color_code="00396",
+                label_image="data:image/jpeg;base64,/9j/2Q==",
+                label_model_id="gpt-5.6-sol",
+                fallback_model_ids=["gpt-5.6-terra"],
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+                log=logs.append,
+            )
+
+        self.assertEqual(calls, ["gpt-5.6-sol", "gpt-5.6-terra"])
+        self.assertEqual(payload["_model_id"], "gpt-5.6-terra")
+        self.assertIn("色码不一致", payload["_model_attempt_warnings"])
+        self.assertTrue(any("色码不一致" in item for item in logs))
+
+    def test_label_ocr_falls_back_when_model_omits_style_bbox(self):
+        calls = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append(kwargs["model_id"])
+            payload = {
+                "product_name": "儿童运动鞋",
+                "color_name": "黑红色调00396",
+                "color_code": "00396",
+                "label_bbox": [100, 100, 900, 800],
+            }
+            if kwargs["model_id"] == "gpt-5.6-terra":
+                payload["style_code_bbox"] = [180, 520, 520, 580]
+            return (
+                payload,
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color_label(
+                style_code="204426140034",
+                color_code="00396",
+                label_image="data:image/jpeg;base64,/9j/2Q==",
+                label_model_id="gpt-5.6-sol",
+                fallback_model_ids=["gpt-5.6-terra"],
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+            )
+
+        self.assertEqual(calls, ["gpt-5.6-sol", "gpt-5.6-terra"])
+        self.assertEqual(payload["_model_id"], "gpt-5.6-terra")
+        self.assertIn("款号文字坐标", payload["_model_attempt_warnings"])
 
     def test_missing_label_color_falls_back_to_pose_color_with_warning(self):
         color_name, warning = shenhui_shoe_packaging._resolve_label_color_name(
@@ -2326,9 +2911,9 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
         self.assertIn("前2张图都是带编号的本色候选原图", prompt)
         self.assertIn("第3张图是鞋品主图姿势模板", prompt)
-        self.assertIn("第4张图是最新主图1姿势参考", prompt)
-        self.assertIn("第5张图是鞋品海报姿势模板", prompt)
-        self.assertIn("第6张图是 yq 三姿势参考模板", prompt)
+        self.assertIn("第4张图是鞋品海报姿势模板", prompt)
+        self.assertIn("第5张图是 yq 三姿势参考模板", prompt)
+        self.assertNotIn("最新主图1姿势参考", prompt)
 
     def test_yk_sources_remain_eligible_for_matching_pose_slots(self):
         self.assertTrue(shenhui_shoe_packaging._is_yk_source_filename("1.jpg"))
@@ -2898,7 +3483,8 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 self.assertGreaterEqual(len(kwargs["contact_sheets"]), 2)
                 self.assertTrue(Path(kwargs["reference_image"]).is_file())
                 self.assertTrue(Path(kwargs["poster_reference_image"]).is_file())
-                self.assertTrue(Path(kwargs["pose1_reference_image"]).is_file())
+                self.assertNotIn("pose1_reference_image", kwargs)
+                self.assertTrue(Path(kwargs["main_pose_reference_sheet"]).is_file())
                 self.assertTrue(Path(kwargs["yq_reference_image"]).is_file())
                 self.assertEqual(len(kwargs["main_pose_reference_images"]), 5)
                 for path in kwargs["main_pose_reference_images"]:
@@ -2906,7 +3492,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 for reference_key in (
                     "reference_image",
                     "poster_reference_image",
-                    "pose1_reference_image",
+                    "main_pose_reference_sheet",
                     "yq_reference_image",
                 ):
                     with Image.open(kwargs[reference_key]) as reference:
@@ -2954,6 +3540,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 data_rows=rows,
                 output_root=output_root,
                 model_id="qwen3.8-max-preview",
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_BATCH_OVERVIEW,
                 shoe_categories={"204326141005": "婴童"},
                 analyze_color=fake_analyzer,
                 analyze_color_label=fake_label_analyzer,
@@ -3078,7 +3665,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             )
             self.assertIn("允许缺少 yx.jpg", warning_rows[0]["规则告警"])
 
-    def test_prepare_packages_skips_missing_channel_and_tmq_slots(self):
+    def test_prepare_packages_falls_back_tmq_when_ocr_lacks_style_bbox(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source_root = root / "source"
@@ -3144,7 +3731,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             self.assertFalse((package_root / "jdt.浅卡其50301.png").exists())
             self.assertFalse((package_root / "wpt30.浅卡其50301.png").exists())
             self.assertFalse((package_root / "tmt.png").exists())
-            self.assertFalse((package_root / "tmq.jpg").exists())
+            self.assertTrue((package_root / "tmq.jpg").is_file())
 
             skipped_by_slot = {
                 row["规则槽位"]: row
@@ -3154,9 +3741,21 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             self.assertIn("jdt", skipped_by_slot)
             self.assertIn("wpt30", skipped_by_slot)
             self.assertIn("tmt", skipped_by_slot)
-            self.assertIn("tmq", skipped_by_slot)
             self.assertIn("缺少 Ai角度图1", skipped_by_slot["jdt"]["规则告警"])
-            self.assertIn("OCR 未返回款号文字坐标", skipped_by_slot["tmq"]["规则告警"])
+            tmq_rows = [
+                row
+                for row in report_rows
+                if row.get("规则槽位") == "tmq"
+            ]
+            self.assertEqual(len(tmq_rows), 1)
+            self.assertEqual(tmq_rows[0]["处理动作"], "鞋盒标签裁切并本地框选款号")
+            warning_rows = [
+                row
+                for row in report_rows
+                if row.get("规则槽位") == "鞋盒OCR"
+            ]
+            self.assertEqual(len(warning_rows), 1)
+            self.assertIn("本地几何框选款号", warning_rows[0]["规则告警"])
 
     def test_prepare_packages_skips_missing_tms_without_failing_style(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3503,15 +4102,306 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             calls,
             [
                 "qwen3.7-plus",
+                "qwen3.7-plus",
                 "gpt-5.6-sol",
             ],
         )
         self.assertEqual(payload["_model_id"], "gpt-5.6-sol")
         self.assertIn("qwen3.7-plus", payload["_model_attempt_warnings"])
-        self.assertTrue(any("超时，快速 fallback" in item for item in logs))
+        self.assertTrue(any("单次耐心复测" in item for item in logs))
+        self.assertTrue(any("快速 fallback" in item for item in logs))
         self.assertTrue(any("鞋盒标签 OCR gpt-5.6-sol" in item[0] for item in progress_events))
 
-    def test_auto_pose_model_starts_sol_then_falls_back_after_timeout(self):
+    def test_pose_timeout_runs_single_batch_probe_before_fallback(self):
+        calls = []
+        logs = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append((kwargs["model_id"], kwargs["timeout_seconds"]))
+            if len(calls) == 1:
+                raise shenhui_shoe_packaging.llm_gateway.LlmGatewayError(
+                    "文本模型接口连接失败：请求超过总时长 60 秒"
+                )
+            return (
+                {
+                    "color_name": "白紫色调00317",
+                    "shoe_category": "婴童",
+                    "slots": {
+                        "tmz1": "1.jpg",
+                        "tmz2": "2.jpg",
+                        "tmz3": "3.jpg",
+                        "tmz4": "4.jpg",
+                        "tmz5": "4.jpg",
+                    },
+                },
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color(
+                style_code="204426146036",
+                color_code="00317",
+                contact_sheet="contact-1.jpg",
+                contact_sheets=["contact-1.jpg"],
+                reference_image="main-template.jpg",
+                poster_reference_image="poster-template.jpg",
+                pose1_reference_image="pose1-template.jpg",
+                yq_reference_image="yq-template.jpg",
+                candidate_ids={str(index): f"{index}.jpg" for index in range(1, 5)},
+                candidate_names=[f"{index}.jpg" for index in range(1, 5)],
+                shoe_category="",
+                model_id="multi-model",
+                fallback_model_ids=["gpt-5.6-sol", "gpt-5.6-terra"],
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+                log=logs.append,
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("gpt-5.6-sol", shenhui_shoe_packaging.SHOE_POSE_MODEL_TIMEOUT_SECONDS),
+                ("gpt-5.6-sol", shenhui_shoe_packaging.SHOE_POSE_TIMEOUT_PROBE_SECONDS),
+            ],
+        )
+        self.assertEqual(payload["_model_id"], "gpt-5.6-sol")
+        self.assertNotIn("_model_attempt_warnings", payload)
+        self.assertTrue(any("60 秒软超时" in item for item in logs))
+        self.assertTrue(any("单批耐心复测通过" in item for item in logs))
+
+    def test_batch_overview_strategy_attaches_global_context_image(self):
+        calls = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append(kwargs)
+            return (
+                {
+                    "color_name": "白紫色调00317",
+                    "shoe_category": "婴童",
+                    "slots": {
+                        "tmz1": "I01",
+                        "tmz2": "",
+                        "tmz3": "",
+                        "tmz4": "",
+                        "tmz5": "",
+                        "wpz": ["I01", "", "", "", "", ""],
+                        "yq": ["", "", ""],
+                    },
+                },
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color(
+                style_code="204426146036",
+                color_code="00317",
+                contact_sheet="batch-1.jpg",
+                contact_sheets=["batch-1.jpg"],
+                overview_contact_sheet="overview.jpg",
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_BATCH_OVERVIEW,
+                reference_image="main-template.jpg",
+                poster_reference_image="poster-template.jpg",
+                pose1_reference_image="pose1-template.jpg",
+                yq_reference_image="yq-template.jpg",
+                candidate_ids={"I01": "1.jpg", "I02": "2.jpg"},
+                candidate_names=["1.jpg", "2.jpg"],
+                shoe_category="婴童",
+                model_id="gpt-5.6-sol",
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+            )
+
+        self.assertEqual(payload["_model_id"], "gpt-5.6-sol")
+        self.assertEqual(calls[0]["image_inputs"][0:2], ["batch-1.jpg", "overview.jpg"])
+        self.assertIn("全景上下文", calls[0]["user_prompt"])
+        self.assertIn("只能引用“候选编号”列表中的当前批次编号", calls[0]["user_prompt"])
+
+    def test_single_sheet_strategy_uses_one_global_batch_with_all_candidates(self):
+        calls = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append(kwargs)
+            return (
+                {
+                    "color_name": "白紫色调00317",
+                    "shoe_category": "婴童",
+                    "slots": {
+                        "tmz1": "I01",
+                        "tmz2": "I07",
+                        "tmz3": "",
+                        "tmz4": "",
+                        "tmz5": "",
+                        "wpz": ["I01", "I07", "", "", "", ""],
+                        "yq": ["", "", ""],
+                    },
+                },
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        candidate_ids = {f"I{index:02d}": f"{index}.jpg" for index in range(1, 9)}
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color(
+                style_code="204426146036",
+                color_code="00317",
+                contact_sheet="all.jpg",
+                contact_sheets=["all.jpg"],
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_SINGLE_SHEET,
+                reference_image="main-template.jpg",
+                poster_reference_image="poster-template.jpg",
+                pose1_reference_image="pose1-template.jpg",
+                yq_reference_image="yq-template.jpg",
+                candidate_ids=candidate_ids,
+                candidate_names=list(candidate_ids.values()),
+                shoe_category="婴童",
+                model_id="gpt-5.6-sol",
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["image_inputs"][0], "all.jpg")
+        self.assertIn("I07=7.jpg", calls[0]["user_prompt"])
+        self.assertIn("全量候选大图一次性识别", calls[0]["user_prompt"])
+        self.assertEqual(payload["slots"]["tmz2"], "I07")
+
+    def test_global_pages_strategy_converts_candidate_facts_to_slots(self):
+        calls = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append(kwargs)
+            return (
+                {
+                    "color_name": "白紫色调00317",
+                    "shoe_category": "婴童",
+                    "candidates": [
+                        {"candidate_id": "I01", "matched_slots": ["tmz1"], "confidence": 0.96},
+                        {"candidate_id": "I02", "matched_slots": ["tmz2", "yq1"], "confidence": 0.95},
+                        {"candidate_id": "I03", "matched_slots": ["tmz3"], "confidence": 0.95},
+                        {"candidate_id": "I04", "matched_slots": ["tmz4"], "confidence": 0.95},
+                        {"candidate_id": "I05", "matched_slots": ["tmz5"], "confidence": 0.95},
+                        {"candidate_id": "I06", "matched_slots": ["wpz5"], "confidence": 0.95},
+                        {"candidate_id": "I07", "matched_slots": ["wpz6"], "confidence": 0.95},
+                        {"candidate_id": "I08", "matched_slots": ["yq2"], "confidence": 0.95},
+                        {"candidate_id": "I09", "matched_slots": ["yq3"], "confidence": 0.95},
+                    ],
+                },
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        candidate_ids = {f"I{index:02d}": f"{index}.jpg" for index in range(1, 10)}
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color(
+                style_code="204426146036",
+                color_code="00317",
+                contact_sheet="global-1.jpg",
+                contact_sheets=["global-1.jpg", "global-2.jpg"],
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_GLOBAL_PAGES,
+                reference_image="main-template.jpg",
+                main_pose_reference_sheet="main-pose-sheet.jpg",
+                poster_reference_image="poster-template.jpg",
+                pose1_reference_image="pose1-template.jpg",
+                yq_reference_image="yq-template.jpg",
+                candidate_ids=candidate_ids,
+                candidate_names=list(candidate_ids.values()),
+                shoe_category="婴童",
+                model_id="gpt-5.6-sol",
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0]["image_inputs"],
+            ["global-1.jpg", "global-2.jpg", "main-pose-sheet.jpg", "yq-template.jpg"],
+        )
+        self.assertNotIn("pose1-template.jpg", calls[0]["image_inputs"])
+        self.assertIn("逐候选返回可校验事实 candidates", calls[0]["user_prompt"])
+        self.assertEqual(payload["slots"]["tmz1"], "I01")
+        self.assertEqual(payload["slots"]["tmz2"], "I02")
+        self.assertEqual(payload["slots"]["wpz"], ["I01", "I02", "I03", "I04", "I06", "I07"])
+        self.assertEqual(payload["slots"]["yq"], ["I02", "I08", "I09"])
+        self.assertEqual(payload["_ruleset"], "shoe-slot-rules.v2")
+
+    def test_global_pages_fallback_retries_whole_color_pages(self):
+        calls = []
+
+        def fake_multimodal_json(**kwargs):
+            calls.append((kwargs["model_id"], list(kwargs["image_inputs"])))
+            if kwargs["model_id"] == "gpt-5.6-sol":
+                raise shenhui_shoe_packaging.llm_gateway.LlmGatewayError("timeout")
+            return (
+                {
+                    "color_name": "白紫色调00317",
+                    "shoe_category": "婴童",
+                    "candidates": [
+                        {"candidate_id": "I01", "matched_slots": ["tmz1"], "confidence": 0.95},
+                    ],
+                },
+                type("Route", (), {"model_id": kwargs["model_id"]})(),
+            )
+
+        with patch.object(
+            shenhui_shoe_packaging.llm_gateway,
+            "generate_multimodal_json",
+            side_effect=fake_multimodal_json,
+        ):
+            payload = shenhui_shoe_packaging._default_analyze_color(
+                style_code="204426146036",
+                color_code="00317",
+                contact_sheet="global-1.jpg",
+                contact_sheets=["global-1.jpg", "global-2.jpg"],
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_GLOBAL_PAGES,
+                reference_image="main-template.jpg",
+                main_pose_reference_sheet="main-pose-sheet.jpg",
+                poster_reference_image="poster-template.jpg",
+                yq_reference_image="yq-template.jpg",
+                candidate_ids={"I01": "1.jpg", "I13": "13.jpg"},
+                candidate_names=["1.jpg", "13.jpg"],
+                shoe_category="婴童",
+                model_id="multi-model",
+                fallback_model_ids=["gpt-5.6-sol", "gpt-5.6-terra"],
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+            )
+
+        self.assertEqual(calls[0][0], "gpt-5.6-sol")
+        self.assertEqual(calls[1][0], "gpt-5.6-sol")
+        self.assertEqual(calls[2][0], "gpt-5.6-terra")
+        self.assertEqual(calls[0][1], ["global-1.jpg", "global-2.jpg", "main-pose-sheet.jpg", "yq-template.jpg"])
+        self.assertEqual(calls[2][1], ["global-1.jpg", "global-2.jpg", "main-pose-sheet.jpg", "yq-template.jpg"])
+        self.assertEqual(payload["_model_id"], "gpt-5.6-terra")
+
+    def test_global_pages_rejects_inputs_that_would_be_silently_truncated(self):
+        with self.assertRaisesRegex(shenhui_shoe_packaging.ShoeSelectionError, "静默截断"):
+            shenhui_shoe_packaging._default_analyze_color(
+                style_code="204426146036",
+                color_code="00317",
+                contact_sheet="global-1.jpg",
+                contact_sheets=[f"global-{index}.jpg" for index in range(1, 10)],
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_GLOBAL_PAGES,
+                reference_image="main-template.jpg",
+                main_pose_reference_sheet="main-pose-sheet.jpg",
+                poster_reference_image="poster-template.jpg",
+                yq_reference_image="yq-template.jpg",
+                candidate_ids={"I01": "1.jpg"},
+                candidate_names=["1.jpg"],
+                shoe_category="婴童",
+                model_id="gpt-5.6-sol",
+                config={"ai": {"llm": {"api_key": "gateway-key"}}},
+            )
+
+    def test_auto_pose_model_starts_kimi_code_then_falls_back_after_timeout(self):
         calls = []
         logs = []
         progress_events = []
@@ -3520,7 +4410,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             self.assertEqual(kwargs["fallback_model_ids"], [])
             self.assertFalse(kwargs["retry_same_model"])
             calls.append(kwargs["model_id"])
-            if kwargs["model_id"] == "gpt-5.6-sol":
+            if kwargs["model_id"] == "kimi-k2.7-code":
                 raise shenhui_shoe_packaging.llm_gateway.LlmGatewayError(
                     "文本模型接口连接失败：请求超过总时长 60 秒"
                 )
@@ -3557,26 +4447,43 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 candidate_names=[f"{index}.jpg" for index in range(1, 6)],
                 shoe_category="",
                 model_id="multi-model",
-                fallback_model_ids=["gpt-5.6-sol", "gpt-5.6-terra"],
+                fallback_model_ids=["kimi-k2.7-code", "deepseek-official-v4-flash-vision-exp"],
                 config={"ai": {"llm": {"api_key": "gateway-key", "deepseek_api_key": "deepseek-key"}}},
                 log=logs.append,
                 progress=lambda stage, **kwargs: progress_events.append((stage, kwargs)),
             )
 
         self.assertEqual(
-            calls[:2],
+            calls[:3],
             [
-                "gpt-5.6-sol",
-                "gpt-5.6-terra",
+                "kimi-k2.7-code",
+                "kimi-k2.7-code",
+                "deepseek-official-v4-flash-vision-exp",
             ],
         )
         self.assertEqual(
             payload["_model_id"],
-            "gpt-5.6-terra",
+            "deepseek-official-v4-flash-vision-exp",
         )
-        self.assertIn("gpt-5.6-sol", payload["_model_attempt_warnings"])
-        self.assertTrue(any("超时，快速 fallback" in item for item in logs))
-        self.assertTrue(any("姿势识别 gpt-5.6-terra" in item[0] for item in progress_events))
+        self.assertIn("kimi-k2.7-code", payload["_model_attempt_warnings"])
+        self.assertTrue(any("单批耐心复测仍超时" in item for item in logs))
+        self.assertTrue(any("姿势识别 deepseek-official-v4-flash-vision-exp" in item[0] for item in progress_events))
+
+    def test_default_pose_chain_uses_gpt_then_domestic_fallback_order(self):
+        self.assertEqual(
+            shenhui_shoe_packaging._shoe_pose_model_ids(
+                "multi-model",
+                {"ai": {"llm": {"api_key": "gateway-key", "deepseek_api_key": "deepseek-key"}}},
+            ),
+            [
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5",
+                "deepseek-official-v4-flash-vision-exp",
+                "kimi-k2.7-code",
+            ],
+        )
 
     def test_pose_model_fallback_skips_official_deepseek_when_key_is_not_configured(self):
         self.assertEqual(
@@ -3656,6 +4563,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 color_code="00317",
                 contact_sheet="contact-1.jpg",
                 contact_sheets=["contact-1.jpg", "contact-2.jpg"],
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_BATCH,
                 reference_image="main-template.jpg",
                 poster_reference_image="poster-template.jpg",
                 pose1_reference_image="pose1-template.jpg",
@@ -3673,7 +4581,8 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][1][0], "contact-1.jpg")
         self.assertEqual(calls[1][1][0], "contact-2.jpg")
-        self.assertEqual(len(calls[0][1]), 5)
+        self.assertEqual(len(calls[0][1]), 4)
+        self.assertNotIn("pose1-template.jpg", calls[0][1])
         self.assertEqual(payload["slots"]["tmz1"], "1.jpg")
 
     def test_default_pose_model_uses_main_pose_reference_cells(self):
@@ -3705,6 +4614,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 color_code="00317",
                 contact_sheet="contact-1.jpg",
                 contact_sheets=["contact-1.jpg"],
+                pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_BATCH,
                 reference_image="main-template.jpg",
                 main_pose_reference_images=references,
                 poster_reference_image="poster-template.jpg",

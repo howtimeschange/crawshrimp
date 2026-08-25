@@ -56,6 +56,7 @@ class LlmGatewayTests(unittest.TestCase):
         anthropic = llm_gateway.route_for_model("claude-sonnet-5", self.config())
         domestic_flash = llm_gateway.route_for_model("deepseek-v4-flash", self.config())
         domestic_pro = llm_gateway.route_for_model("deepseek-v4-pro", self.config())
+        domestic_kimi = llm_gateway.route_for_model("kimi-k3", self.config())
 
         self.assertEqual(overseas.protocol, "openai")
         self.assertEqual(overseas.base_url, "https://openai.example/v1")
@@ -67,6 +68,9 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(domestic_pro.protocol, "openai")
         self.assertEqual(domestic_pro.base_url, "https://domestic.example/v1")
         self.assertEqual(domestic_pro.model_id, "deepseek-v4-pro")
+        self.assertEqual(domestic_kimi.protocol, "openai")
+        self.assertEqual(domestic_kimi.base_url, "https://domestic.example/v1")
+        self.assertEqual(domestic_kimi.model_id, "kimi-k3")
 
     def test_deepseek_official_routes_use_dedicated_key_and_real_model_names(self):
         config = self.config()

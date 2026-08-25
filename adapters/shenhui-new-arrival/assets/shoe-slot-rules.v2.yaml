@@ -1,0 +1,39 @@
+version: shoe-slot-rules.v2
+description: DeepDraw shoe package slot locking rules for global candidate pages.
+lock:
+  min_score: 0.80
+  min_gap: 0.15
+slots:
+  tmz1:
+    relation: main_image_1
+    rule: two shoes complete 3/4 display for the configured category template
+  tmz2:
+    relation: main_image_2_and_yq1
+    rule: front shoe normal display plus rear shoe outsole facing camera
+  tmz3:
+    relation: main_image_3
+    rule: single complete outer-side vertical shoe, not toe-facing front view
+  tmz4:
+    relation: main_image_4
+    rule: snow uses shoe opening/inner lining; other categories use rear or side-rear complete shoe
+  tmz5:
+    relation: main_image_5
+    rule: white-background single complete diagonal shoe; gray fallback only when no qualified white source exists
+  wpz1_wpz4:
+    relation: deterministic
+    rule: reuse tmz1..tmz4 source files
+  wpz5:
+    relation: paired_background
+    rule: gray-background source matching tmz5 pose when available
+  wpz6:
+    relation: ocr_required
+    rule: shoe box label image whose style code and color code pass OCR
+  o:
+    relation: promoted_color_only
+    rule: sports uses tmz2; snow, baby, and leisure use tmz1
+  yq:
+    relation: fixed_three
+    rule: yq1 equals tmz2, yq2 is complete outsole, yq3 is complete outer side
+  yk_yx_tms:
+    relation: deterministic_or_semantic
+    rule: yk and tms follow source naming; yx requires shoe plus feature card or tag in one complete image

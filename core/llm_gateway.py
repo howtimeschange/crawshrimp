@@ -57,6 +57,7 @@ DOMESTIC_OPENAI_MODELS = (
     "deepseek-v4-flash",
     "deepseek-v4-pro",
     "glm-5.2",
+    "kimi-k3",
     "kimi-k2.7-code",
 )
 SUPPORTED_MODELS = (

@@ -277,14 +277,14 @@ tasks:
         default_model:
           id: model_id
           label: 默认模型
-          default: gpt-5.6-terra
+          default: gpt-5.6-sol
           options:
             - value: multi-model
               label: 仅按备选模型顺序自动尝试
             - value: gpt-5.6-sol
-              label: GPT-5.6 Sol
+              label: GPT-5.6 Sol（推荐默认）
             - value: gpt-5.6-terra
-              label: GPT-5.6 Terra（推荐）
+              label: GPT-5.6 Terra
             - value: gpt-5.6-luna
               label: GPT-5.6 Luna
             - value: gpt-5.5
@@ -305,6 +305,8 @@ tasks:
               label: DeepSeek V4 Pro（网关）
             - value: glm-5.2
               label: GLM 5.2
+            - value: kimi-k3
+              label: Kimi K3
             - value: kimi-k2.7-code
               label: Kimi K2.7 Code
             - value: claude-opus-4-8
@@ -318,16 +320,16 @@ tasks:
         fallback_models:
           - id: fallback_model_1
             label: 备选模型 1
-            default: gpt-5.6-luna
+            default: gpt-5.6-terra
             options: &shoe_fallback_model_options
               - value: ""
                 label: 不使用
               - value: gpt-5.6-terra
-                label: GPT-5.6 Terra（推荐默认）
+                label: GPT-5.6 Terra
               - value: gpt-5.6-luna
                 label: GPT-5.6 Luna
               - value: gpt-5.6-sol
-                label: GPT-5.6 Sol
+                label: GPT-5.6 Sol（默认）
               - value: gpt-5.5
                 label: GPT-5.5
               - value: deepseek-official-v4-flash-vision-exp
@@ -346,6 +348,8 @@ tasks:
                 label: DeepSeek V4 Pro（网关）
               - value: glm-5.2
                 label: GLM 5.2
+              - value: kimi-k3
+                label: Kimi K3
               - value: kimi-k2.7-code
                 label: Kimi K2.7 Code
               - value: claude-opus-4-8
@@ -358,7 +362,7 @@ tasks:
                 label: Gemini 3.5 Flash
           - id: fallback_model_2
             label: 备选模型 2
-            default: gpt-5.6-sol
+            default: gpt-5.6-luna
             options: *shoe_fallback_model_options
           - id: fallback_model_3
             label: 备选模型 3
@@ -370,9 +374,24 @@ tasks:
             options: *shoe_fallback_model_options
           - id: fallback_model_5
             label: 备选模型 5
-            default: ""
+            default: kimi-k2.7-code
             options: *shoe_fallback_model_options
         hint: 先使用默认模型；失败或超时后按备选模型 1 到 5 顺序尝试，可留空
+      - id: shoe_pose_strategy
+        type: select
+        label: 候选图识别策略
+        default: single_sheet
+        ui_span: full
+        options:
+          - value: single_sheet
+            label: 全部候选拼一张大图（推荐）
+          - value: global_pages
+            label: 全局分页识别 + 规则锁槽
+          - value: batch_overview
+            label: 少图多批次 + 全景上下文
+          - value: batch
+            label: 少图多批次
+        hint: 用于鞋品姿势识别。实测优先级：单张大图、全局分页规则锁槽、少图多批次全景上下文、少图多批次应急
       - id: package_name
         type: text
         label: 导出包名称
