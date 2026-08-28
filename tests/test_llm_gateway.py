@@ -46,6 +46,8 @@ class LlmGatewayTests(unittest.TestCase):
                     "overseas_openai_base_url": "https://openai.example/v1",
                     "overseas_anthropic_base_url": "https://anthropic.example",
                     "domestic_base_url": "https://domestic.example/v1",
+                    "glm_api_key": "glm-unit-key",
+                    "glm_base_url": "https://glm.example/api/paas/v4",
                     "default_model": "gemini-3.5-flash",
                 }
             }
@@ -57,6 +59,8 @@ class LlmGatewayTests(unittest.TestCase):
         domestic_flash = llm_gateway.route_for_model("deepseek-v4-flash", self.config())
         domestic_pro = llm_gateway.route_for_model("deepseek-v4-pro", self.config())
         domestic_kimi = llm_gateway.route_for_model("kimi-k3", self.config())
+        glm_flash = llm_gateway.route_for_model("glm-official-5.3-flash", self.config())
+        glm = llm_gateway.route_for_model("glm-official-5.3", self.config())
 
         self.assertEqual(overseas.protocol, "openai")
         self.assertEqual(overseas.base_url, "https://openai.example/v1")
@@ -71,6 +75,11 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(domestic_kimi.protocol, "openai")
         self.assertEqual(domestic_kimi.base_url, "https://domestic.example/v1")
         self.assertEqual(domestic_kimi.model_id, "kimi-k3")
+        self.assertEqual(glm_flash.protocol, "openai")
+        self.assertEqual(glm_flash.base_url, "https://glm.example/api/paas/v4")
+        self.assertEqual(glm_flash.model_id, "glm-5.3-flash")
+        self.assertEqual(glm.protocol, "openai")
+        self.assertEqual(glm.model_id, "glm-5.3")
 
     def test_deepseek_official_routes_use_dedicated_key_and_real_model_names(self):
         config = self.config()
@@ -107,10 +116,53 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(route.api_key, "runtime-ds-key")
         self.assertEqual(route.model_id, "deepseek-v4-flash")
 
+    def test_glm_official_routes_use_dedicated_key_and_real_model_names(self):
+        config = self.config()
+        config["ai"]["llm"]["glm_api_key"] = "glm-official-unit"
+        config["ai"]["llm"]["glm_base_url"] = "https://open.bigmodel.example/api/paas/v4"
+
+        flash = llm_gateway.route_for_model("glm-official-5.3-flash", config)
+        standard = llm_gateway.route_for_model("glm-official-5.3", config)
+        previous = llm_gateway.route_for_model("glm-official-5.2", config)
+
+        self.assertEqual(flash.model_id, "glm-5.3-flash")
+        self.assertEqual(flash.base_url, "https://open.bigmodel.example/api/paas/v4")
+        self.assertEqual(flash.api_key, "glm-official-unit")
+        self.assertEqual(flash.protocol, "openai")
+        self.assertEqual(standard.model_id, "glm-5.3")
+        self.assertEqual(previous.model_id, "glm-5.2")
+
+    def test_glm_official_requires_dedicated_key(self):
+        config = self.config()
+        config["ai"]["llm"].pop("glm_api_key", None)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(llm_gateway.LlmConfigurationError):
+                llm_gateway.route_for_model("glm-official-5.3-flash", config)
+
+    def test_glm_official_key_can_come_from_runtime_environment(self):
+        config = self.config()
+        config["ai"]["llm"].pop("glm_api_key", None)
+        config["ai"]["llm"]["api_key"] = ""
+        config["ai"]["llm"]["glm_base_url"] = ""
+        with patch.dict(os.environ, {"CRAWSHRIMP_GLM_API_KEY": "runtime-glm-key"}):
+            route = llm_gateway.route_for_model("glm-official-5.3-flash", config)
+        self.assertEqual(route.api_key, "runtime-glm-key")
+        self.assertEqual(route.model_id, "glm-5.3-flash")
+        self.assertEqual(route.base_url, llm_gateway.GLM_OFFICIAL_BASE_URL)
+
     def test_saved_official_default_falls_back_to_gateway_when_deepseek_key_is_missing(self):
         config = self.config()
         config["ai"]["llm"]["default_model"] = "deepseek-official-v4-flash"
         config["ai"]["llm"].pop("deepseek_api_key", None)
+        with patch.dict(os.environ, {}, clear=True):
+            route = llm_gateway.route_for_model("", config)
+        self.assertEqual(route.model_id, "gemini-3.5-flash")
+        self.assertEqual(route.api_key, "unit-key")
+
+    def test_saved_glm_official_default_falls_back_to_gateway_when_glm_key_is_missing(self):
+        config = self.config()
+        config["ai"]["llm"]["default_model"] = "glm-official-5.3-flash"
+        config["ai"]["llm"].pop("glm_api_key", None)
         with patch.dict(os.environ, {}, clear=True):
             route = llm_gateway.route_for_model("", config)
         self.assertEqual(route.model_id, "gemini-3.5-flash")
@@ -189,6 +241,34 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertIn("图 1-2", calls[0][2])
         self.assertIn("下摆设计和面料", calls[0][2])
         self.assertEqual(calls[0][4], 77)
+
+    def test_bala_video_prompt_generation_supports_glm_flash_vision_route(self):
+        calls = []
+
+        def fake_openai(route, system_prompt, user_prompt, images, *, timeout_seconds=None):
+            calls.append((route, system_prompt, user_prompt, images, timeout_seconds))
+            return {
+                "choices": [{
+                    "message": {
+                        "content": "竖屏9:16，20秒高清写实短视频，严格复刻图1模特穿搭。\n\n精准分镜时序：0-20s 外景自然光展示。\n\n负面提示词：人体畸变，衣服颜色改变。"
+                    }
+                }]
+            }
+
+        prompt, route = llm_gateway.generate_bala_video_prompt(
+            image_inputs=["data:image/jpeg;base64,/9j/2Q=="],
+            model_id="glm-official-5.3-flash",
+            template_prompt=llm_gateway.BALA_VIDEO_PROMPT_TEMPLATE,
+            config=self.config(),
+            request_openai=fake_openai,
+            timeout_seconds=88,
+        )
+
+        self.assertIn("竖屏9:16", prompt)
+        self.assertEqual(route.model_id, "glm-5.3-flash")
+        self.assertEqual(route.base_url, "https://glm.example/api/paas/v4")
+        self.assertEqual(calls[0][3], ["data:image/jpeg;base64,/9j/2Q=="])
+        self.assertEqual(calls[0][4], 88)
 
     def test_bala_video_prompt_generation_rejects_non_vision_prompt_model(self):
         with self.assertRaisesRegex(llm_gateway.LlmConfigurationError, "不支持的视频 Prompt 视觉模型"):

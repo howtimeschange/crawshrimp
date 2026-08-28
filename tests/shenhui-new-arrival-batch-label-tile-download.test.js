@@ -94,7 +94,7 @@ test('selectLabelItems prefers yq1 and yq2 over descriptive label filenames', as
   )
 })
 
-test('selectLabelItems falls back to code-only PDF as wash label when yq2 is absent', async () => {
+test('selectLabelItems does not treat code-only PDF as wash label without explicit marker', async () => {
   const helpers = await loadExports()
   const items = [
     {
@@ -119,7 +119,46 @@ test('selectLabelItems falls back to code-only PDF as wash label when yq2 is abs
   )
   assert.deepEqual(
     Array.from(helpers.selectLabelItems(items, 'wash_label', '208426107013').map(item => item.filename)),
-    ['20842610701311781059940298_3301.pdf'],
+    [],
+  )
+})
+
+test('label tile plan preserves label filenames and filters waste markers', async () => {
+  const helpers = await loadExports()
+  const items = [
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: '208426108223吊牌.jpg',
+      fullpath: '平拍原图/208426108223/208426108223吊牌.jpg',
+    },
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: '208426108223无水洗废图.jpg',
+      fullpath: '平拍原图/208426108223/208426108223无水洗废图.jpg',
+    },
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: '208426108223平铺图.jpg',
+      fullpath: '平拍原图/208426108223/208426108223无吊牌/208426108223平铺图.jpg',
+    },
+  ]
+
+  assert.equal(helpers.hasWasteLabelMarker(items[1]), true)
+  assert.equal(helpers.inferLabelKind(items[1], '208426108223'), '')
+  assert.deepEqual(
+    Array.from(helpers.selectLabelItems(items, 'hang_tag', '208426108223').map(item => item.filename)),
+    ['208426108223吊牌.jpg'],
+  )
+  assert.equal(
+    helpers.buildPackageFilename('208426108223', 'hang_tag', items[0]),
+    '208426108223吊牌.jpg',
+  )
+  assert.deepEqual(
+    Array.from(helpers.selectTileItems([], items, '208426108223').items.map(item => item.filename)),
+    [],
   )
 })
 
@@ -228,7 +267,9 @@ test('buildCodePlan downloads model-path tile first and appends 有模拍 to fil
   assert.equal(tileRows.some(row => row['云盘路径'].includes('208426103211')), false)
   assert.equal(tileRows[0]['模拍路径命中'], '是')
   assert.equal(plan.rows.find(row => row['素材类型'] === '吊牌')['匹配策略'], '优先命中 yq1')
+  assert.equal(plan.rows.find(row => row['素材类型'] === '吊牌')['文件名'], 'yq1.jpg')
   assert.equal(plan.rows.find(row => row['素材类型'] === '洗唛')['匹配策略'], '优先命中 yq2')
+  assert.equal(plan.rows.find(row => row['素材类型'] === '洗唛')['文件名'], 'yq2.jpg')
   assert.equal(plan.downloadItems.length, 3)
 })
 

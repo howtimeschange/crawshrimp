@@ -89,30 +89,39 @@ class AiVideoGenerationSecurityApiTests(unittest.TestCase):
             "ai.llm.api_key": "llm-secret",
             "ai.llm.deepseek_api_key": "deepseek-secret",
             "ai.llm.deepseek_base_url": "https://api.deepseek.example",
+            "ai.llm.glm_api_key": "glm-secret",
+            "ai.llm.glm_base_url": "https://open.bigmodel.example/api/paas/v4",
             "ai.llm.default_model": "claude-sonnet-5",
         })
 
         settings = api_server.get_settings()
         self.assertNotIn("api_key", settings["ai"]["llm"])
         self.assertNotIn("deepseek_api_key", settings["ai"]["llm"])
+        self.assertNotIn("glm_api_key", settings["ai"]["llm"])
         self.assertEqual(settings["ai"]["llm"]["configured"], True)
         self.assertEqual(settings["ai"]["llm"]["deepseek_configured"], True)
+        self.assertEqual(settings["ai"]["llm"]["glm_configured"], True)
         self.assertEqual(settings["ai"]["llm"]["deepseek_base_url"], "https://api.deepseek.example")
+        self.assertEqual(settings["ai"]["llm"]["glm_base_url"], "https://open.bigmodel.example/api/paas/v4")
         self.assertEqual(settings["ai"]["llm"]["default_model"], "claude-sonnet-5")
 
         api_server.patch_settings({
             "ai.llm.api_key": "",
             "ai.llm.deepseek_api_key": "",
+            "ai.llm.glm_api_key": "",
             "ai.llm.configured": True,
             "ai.llm.deepseek_configured": True,
+            "ai.llm.glm_configured": True,
             "ai.llm.default_model": "gpt-5.6-terra",
         })
         llm = load_config()["ai"]["llm"]
         self.assertEqual(llm["api_key"], "llm-secret")
         self.assertEqual(llm["deepseek_api_key"], "deepseek-secret")
+        self.assertEqual(llm["glm_api_key"], "glm-secret")
         self.assertEqual(llm["default_model"], "gpt-5.6-terra")
         self.assertNotIn("configured", llm)
         self.assertNotIn("deepseek_configured", llm)
+        self.assertNotIn("glm_configured", llm)
 
     def test_non_owner_backend_rejects_every_ai_video_mutation_route(self):
         previous = getattr(api_server.app.state, "owns_backend_instance", None)

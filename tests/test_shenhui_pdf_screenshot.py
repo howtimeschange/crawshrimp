@@ -12,6 +12,7 @@ from core.shenhui_pdf_screenshot import (
     crop_boxes_for_pdf_type,
     extract_style_color_code,
     finalize_pdf_batch_screenshot_outputs,
+    infer_pdf_type,
     parse_style_color_overrides,
     render_pdf_pages_with_pymupdf_result,
 )
@@ -71,6 +72,48 @@ class ShenhuiPdfScreenshotTests(unittest.TestCase):
             crop_boxes_for_pdf_type("hang_tag", {}),
             [(0.0113, 0.2352, 0.1535, 0.5058)],
         )
+
+    def test_infer_pdf_type_reads_pdf_text_and_skips_unknown_or_waste(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            unknown = root / "208226103201资料.pdf"
+            unknown.write_bytes(b"%PDF-fake")
+
+            with patch(
+                "core.shenhui_pdf_screenshot.extract_pdf_text",
+                return_value="成分信息\n洗唛\n尺码 120",
+            ):
+                self.assertEqual(infer_pdf_type(unknown, {}, {}), "wash_label")
+
+            with patch(
+                "core.shenhui_pdf_screenshot.extract_pdf_text",
+                return_value="产品货号 208226103201\n商品标签",
+            ):
+                self.assertEqual(infer_pdf_type(unknown, {}, {}), "hang_tag")
+
+            with patch(
+                "core.shenhui_pdf_screenshot.extract_pdf_text",
+                return_value="",
+            ):
+                self.assertEqual(infer_pdf_type(root / "208226103201-label.pdf", {}, {}), "hang_tag")
+
+            with patch(
+                "core.shenhui_pdf_screenshot.extract_pdf_text",
+                return_value="",
+            ):
+                self.assertEqual(infer_pdf_type(unknown, {}, {}), "")
+
+            with patch(
+                "core.shenhui_pdf_screenshot.extract_pdf_text",
+                return_value="无水洗，无吊牌，不要",
+            ):
+                self.assertEqual(infer_pdf_type(unknown, {}, {}), "")
+
+            with patch(
+                "core.shenhui_pdf_screenshot.extract_pdf_text",
+                return_value="洗唛\n请不要长时间浸泡",
+            ):
+                self.assertEqual(infer_pdf_type(unknown, {}, {}), "wash_label")
 
     def test_convert_pdf_to_yq_images_crops_every_rendered_page(self):
         with tempfile.TemporaryDirectory() as tmpdir:

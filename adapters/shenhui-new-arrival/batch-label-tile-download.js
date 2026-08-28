@@ -18,6 +18,7 @@
   const WASH_LABEL_PATTERNS = Object.freeze([/水洗|洗唛|洗标|洗水/])
   const LABEL_IMAGE_PATTERNS = Object.freeze([...HANG_TAG_PATTERNS, ...WASH_LABEL_PATTERNS])
   const CARD_PAPER_PATTERNS = Object.freeze([/卡纸|手写/])
+  const WASTE_LABEL_PATTERNS = Object.freeze([/无水洗|无洗唛|无洗标|无洗水|无吊牌|无吊卡|无挂牌|无合格证|废图|不要|作废|无效/])
   const TILE_IMAGE_PATTERNS = Object.freeze([/平铺|平拍|静物|白底|平面|铺拍/])
   const SOURCE_LABELS = Object.freeze({
     model: '模拍路径',
@@ -153,6 +154,10 @@
     if (!isChatUploadImageFilename(item?.filename || item?.name || '')) return false
     const parent = parentPathSegment(item?.fullpath || item?.path || '')
     return isStatusNoteFolderName(parent) && hasAny(parent, LABEL_IMAGE_PATTERNS)
+  }
+
+  function hasWasteLabelMarker(item) {
+    return hasFilenameOrExplicitParentMarker(item, WASTE_LABEL_PATTERNS)
   }
 
   function escapeRegExp(value) {
@@ -308,12 +313,12 @@
   }
 
   function inferLabelKind(item, code = '') {
+    if (hasWasteLabelMarker(item)) return ''
     const yqKind = yqKindFromFilename(item?.filename || item?.name || '')
     if (yqKind) return yqKind
     const text = `${item?.filename || item?.name || ''} ${item?.fullpath || item?.path || ''}`
     if (hasAny(text, WASH_LABEL_PATTERNS)) return 'wash_label'
     if (hasAny(text, HANG_TAG_PATTERNS) || hasLabelStatusParentMarker(item)) return 'hang_tag'
-    if (isCodeOnlyWashPdfItem(item, code)) return 'wash_label'
     return ''
   }
 
@@ -321,13 +326,13 @@
     if (yqKindFromFilename(item?.filename || item?.name || '') === kind) return 0
     if (hasFilenameOrExplicitParentMarker(item, kind === 'wash_label' ? WASH_LABEL_PATTERNS : HANG_TAG_PATTERNS)) return 20
     if (hasLabelStatusParentMarker(item)) return 30
-    if (kind === 'wash_label' && isCodeOnlyWashPdfItem(item, code)) return 40
     return 90
   }
 
   function selectLabelItems(items, kind, code = '') {
     const candidates = dedupeItemsByFullpath(items)
       .filter(isSupportedAssetItem)
+      .filter(item => !hasWasteLabelMarker(item))
       .filter(item => inferLabelKind(item, code) === kind)
       .sort((left, right) => labelPriority(left, kind, code) - labelPriority(right, kind, code))
     const yqNamed = candidates.filter(item => yqKindFromFilename(item?.filename || item?.name || '') === kind)
@@ -440,6 +445,7 @@
   function isTileCandidate(item, sourceType, code) {
     if (!isImageItem(item)) return false
     if (isPackagingItem(item)) return false
+    if (hasWasteLabelMarker(item)) return false
     if (hasFilenameOrExplicitParentMarker(item, CARD_PAPER_PATTERNS)) return false
     if (inferLabelKind(item, code)) return false
     if (isBacksideStyleColorFilename(item?.filename || item?.name || '', code)) return false
@@ -487,7 +493,7 @@
       const raw = filenameWithSuffix(`${originalStem}${suffix}`, options.modelMatched ? '有模拍' : '')
       return ensureFilenameStylePrefix(raw, styleCode)
     }
-    return toSafeFilename(`${styleCode}_${kindLabel}_${originalStem}${suffix}`, `${styleCode}_${kindLabel}${suffix || '.jpg'}`)
+    return toSafeFilename(item?.filename || item?.name || `${kindLabel}${suffix}`, `${styleCode}_${kindLabel}${suffix || '.jpg'}`)
   }
 
   function rowForAsset(inputCode, kind, item, options = {}) {
@@ -950,6 +956,7 @@
       buildSearchHashRoute,
       yqKindFromFilename,
       isCodeOnlyWashPdfItem,
+      hasWasteLabelMarker,
       inferLabelKind,
       selectLabelItems,
       isModelWhiteBackgroundFilename,

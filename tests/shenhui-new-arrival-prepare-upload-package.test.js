@@ -372,7 +372,29 @@ test('classifySopAsset applies the deep-draw SOP filtering and yq naming rules',
   })
   assert.equal(stillWash.keep, true)
   assert.equal(stillWash.role, 'yq')
-  assert.equal(stillWash.packageFilename, 'yq.jpg')
+  assert.equal(stillWash.action, '保留吊牌/水洗原图')
+  assert.equal(stillWash.packageFilename, '208226103201水洗.jpg')
+
+  const stillYq1 = helpers.classifySopAsset('still', {
+    ext: 'jpg',
+    filename: 'yq1.jpg',
+    fullpath: '平拍原图/208226103201/yq1.jpg',
+  })
+  assert.equal(stillYq1.keep, true)
+  assert.equal(stillYq1.role, 'yq')
+  assert.equal(stillYq1.yqKind, 'hang_tag')
+  assert.equal(stillYq1.action, '保留吊牌/水洗原图')
+  assert.equal(stillYq1.packageFilename, 'yq1.jpg')
+
+  const stillYq2 = helpers.classifySopAsset('still', {
+    ext: 'jpg',
+    filename: 'yq2.jpg',
+    fullpath: '平拍原图/208226103201/yq2.jpg',
+  })
+  assert.equal(stillYq2.keep, true)
+  assert.equal(stillYq2.role, 'yq')
+  assert.equal(stillYq2.yqKind, 'wash_label')
+  assert.equal(stillYq2.packageFilename, 'yq2.jpg')
 
   const stillPdf = helpers.classifySopAsset('still', {
     ext: 'pdf',
@@ -398,9 +420,19 @@ test('classifySopAsset applies the deep-draw SOP filtering and yq naming rules',
     filename: '208226103201尺码表.pdf',
     fullpath: '平拍原图/208226103201尺码表.pdf',
   })
-  assert.equal(sizePdf.keep, false)
-  assert.equal(sizePdf.role, 'skip')
-  assert.match(sizePdf.reason, /非洗唛\/吊牌 PDF/)
+  assert.equal(sizePdf.keep, true)
+  assert.equal(sizePdf.role, 'pdf_yq')
+  assert.equal(sizePdf.pdfType, '')
+  assert.match(sizePdf.reason, /识别不出按反馈规则跳过/)
+
+  const wasteImage = helpers.classifySopAsset('still', {
+    ext: 'jpg',
+    filename: '208226103201无水洗废图.jpg',
+    fullpath: '平拍原图/208226103201无水洗废图.jpg',
+  })
+  assert.equal(wasteImage.keep, false)
+  assert.equal(wasteImage.role, 'skip')
+  assert.match(wasteImage.reason, /废图/)
 })
 
 test('classifySopAsset does not treat style folder status notes as yq markers', async () => {
@@ -431,7 +463,7 @@ test('classifySopAsset does not treat style folder status notes as yq markers', 
   })
   assert.equal(tagImage.keep, true)
   assert.equal(tagImage.role, 'yq')
-  assert.equal(tagImage.packageFilename, 'yq.jpg')
+  assert.equal(tagImage.packageFilename, '商品标签(3)_1 (1).jpg')
 })
 
 test('classifySopAsset treats lQLP label composites in tag status folders as yq', async () => {
@@ -444,7 +476,7 @@ test('classifySopAsset treats lQLP label composites in tag status folders as yq'
   })
   assert.equal(tagComposite.keep, true)
   assert.equal(tagComposite.role, 'yq')
-  assert.equal(tagComposite.packageFilename, 'yq.png')
+  assert.equal(tagComposite.packageFilename, 'lQLPJwNKCjsjyT3NAQrNA0-wDefRtyoCp4wJ0LgLV-VkAQ_847_266.png')
 
   const regularChatNamedImage = helpers.classifySopAsset('still', {
     ext: 'png',
@@ -623,9 +655,9 @@ test('finalizeRows maps download results only onto rows that were scheduled for 
       '输入款号': '208226103201',
       '输入编码': '208226103201',
       '素材来源': '静物图',
-      '文件名': 'yq.jpg',
+      '文件名': 'yq2.jpg',
       '下载结果': '',
-      '备注': '吊牌/水洗图片按 SOP 命名为 yq',
+      '备注': '洗唛图片按 yq 模板名识别并保留原名',
     },
   ]
 

@@ -506,8 +506,8 @@
               <p class="panel-kicker">AI 文本与多模态</p>
               <h3>文本大模型网关</h3>
             </div>
-            <span :class="['badge', (isLlmConfigured(cfg) || isDeepSeekConfigured(cfg)) ? 'on' : 'off']">
-              {{ (isLlmConfigured(cfg) || isDeepSeekConfigured(cfg)) ? '已配置' : '未配置' }}
+            <span :class="['badge', (isLlmConfigured(cfg) || isDeepSeekConfigured(cfg) || isGlmConfigured(cfg)) ? 'on' : 'off']">
+              {{ (isLlmConfigured(cfg) || isDeepSeekConfigured(cfg) || isGlmConfigured(cfg)) ? '已配置' : '未配置' }}
             </span>
           </div>
 
@@ -580,6 +580,41 @@
                     </div>
                   </div>
                 </section>
+                <section class="llm-provider-card glm">
+                  <h4 class="llm-provider-title">GLM 官方</h4>
+                  <p class="llm-provider-sub">直连 BigModel 官方 OpenAI 兼容接口；GLM-5.3-Flash、GLM-5.3 和 GLM-5.2 可作为文本模型选择。</p>
+                  <div class="field">
+                    <label>GLM 官方 API Key</label>
+                    <input
+                      v-model="cfg[GLM_API_KEY_FIELD]"
+                      class="input"
+                      type="password"
+                      autocomplete="new-password"
+                      placeholder="输入 BigModel API Key"
+                      @focus="selectInputText"
+                    />
+                    <p class="field-hint">保存后不会把密钥读回页面。</p>
+                  </div>
+                  <div class="field">
+                    <label>GLM 官方 Base URL</label>
+                    <input v-model="cfg['ai.llm.glm_base_url']" class="input" />
+                    <p class="field-hint">默认 {{ GLM_OFFICIAL_BASE_URL_DEFAULT }}。</p>
+                  </div>
+                  <div class="field">
+                    <label>官方模型清单</label>
+                    <div class="llm-model-chips glm-models">
+                      <span
+                        v-for="model in GLM_OFFICIAL_MODELS_UI"
+                        :key="model.value"
+                        class="chip"
+                        :title="model.value"
+                      >
+                        {{ model.label }}
+                        <small>{{ model.type }}</small>
+                      </span>
+                    </div>
+                  </div>
+                </section>
               </div>
               <PanelActions panel-id="ai-llm" @save="savePanel('ai-llm')" />
             </div>
@@ -588,6 +623,7 @@
               <div class="key-states">
                 <span :class="['key-pill', isLlmConfigured(cfg) ? 'on' : 'off']">森马网关</span>
                 <span :class="['key-pill', isDeepSeekConfigured(cfg) ? 'on' : 'off']">DS 官方</span>
+                <span :class="['key-pill', isGlmConfigured(cfg) ? 'on' : 'off']">GLM 官方</span>
                 <span class="key-pill neutral">OPENAI</span>
                 <span class="key-pill neutral">ANTHROPIC</span>
               </div>
@@ -839,6 +875,9 @@ import {
 import {
   DEEPSEEK_API_KEY_FIELD,
   DEEPSEEK_OFFICIAL_MODELS_UI,
+  GLM_API_KEY_FIELD,
+  GLM_OFFICIAL_BASE_URL_DEFAULT,
+  GLM_OFFICIAL_MODELS_UI,
   LLM_API_KEY_FIELD,
   LLM_DEFAULTS,
   LLM_MASKED_CREDENTIAL_VALUE,
@@ -847,6 +886,7 @@ import {
   buildLlmSettingsPatch,
   clearWrittenLlmSettings,
   isDeepSeekConfigured,
+  isGlmConfigured,
   isLlmConfigured,
 } from '../utils/llmSettings.mjs'
 
@@ -906,7 +946,7 @@ const aiVideoKeyFields = [
   'ai.video.bailian_api_key',
   'ai.video.bailian_upload_api_key',
 ]
-const llmKeyFields = [LLM_API_KEY_FIELD, DEEPSEEK_API_KEY_FIELD]
+const llmKeyFields = [LLM_API_KEY_FIELD, DEEPSEEK_API_KEY_FIELD, GLM_API_KEY_FIELD]
 const aiVideoConnectionHints = {
   'ai.video.seedance_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.seedance_base_url']}；森马网关可填 https://ai-aigw.semir.com/doubao-seedance/api/v3。`,
   'ai.video.bailian_region': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_region']}；输入新值才会覆盖。`,
@@ -1117,6 +1157,7 @@ function normalizedSettings(raw) {
   }
   flat[LLM_API_KEY_FIELD] = isLlmConfigured(flat) ? LLM_MASKED_CREDENTIAL_VALUE : ''
   flat[DEEPSEEK_API_KEY_FIELD] = isDeepSeekConfigured(flat) ? LLM_MASKED_CREDENTIAL_VALUE : ''
+  flat[GLM_API_KEY_FIELD] = isGlmConfigured(flat) ? LLM_MASKED_CREDENTIAL_VALUE : ''
   // Provider connection fields are write-only. Never retain a value returned
   // by an older backend, and never synthesize defaults that could overwrite it.
   for (const key of AI_VIDEO_WRITE_ONLY_FIELDS) flat[key] = ''
@@ -1166,6 +1207,7 @@ function isFieldConfigured(key) {
   if (aiVideoKeyFields.includes(key)) return isAiVideoCredentialConfigured(cfg.value, key)
   if (key === LLM_API_KEY_FIELD) return isLlmConfigured(cfg.value)
   if (key === DEEPSEEK_API_KEY_FIELD) return isDeepSeekConfigured(cfg.value)
+  if (key === GLM_API_KEY_FIELD) return isGlmConfigured(cfg.value)
   return String(cfg.value[key] || '').trim().length > 0
 }
 
@@ -2015,6 +2057,11 @@ watch(activePanelId, panelId => {
   background: color-mix(in srgb, var(--bg2) 96%, var(--orange) 4%);
 }
 
+.llm-provider-card.glm {
+  border-color: color-mix(in srgb, var(--green) 38%, var(--border));
+  background: color-mix(in srgb, var(--bg2) 96%, var(--green) 4%);
+}
+
 .llm-provider-title {
   margin: 0;
   color: var(--text);
@@ -2025,6 +2072,10 @@ watch(activePanelId, panelId => {
 
 .llm-provider-card.ds .llm-provider-title {
   color: var(--orange-text);
+}
+
+.llm-provider-card.glm .llm-provider-title {
+  color: var(--green);
 }
 
 .llm-provider-sub {
@@ -2053,6 +2104,18 @@ watch(activePanelId, panelId => {
   font-size: 11px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.llm-model-chips.glm-models .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.llm-model-chips .chip small {
+  color: var(--text3);
+  font-family: inherit;
+  font-size: 10px;
 }
 
 .field {

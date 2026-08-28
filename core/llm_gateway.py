@@ -39,6 +39,23 @@ _DEEPSEEK_OFFICIAL_REAL_MODELS = {
 def deepseek_official_real_model(model_id: str) -> str:
     return _DEEPSEEK_OFFICIAL_REAL_MODELS.get(model_id, model_id)
 
+
+GLM_OFFICIAL_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+GLM_OFFICIAL_CHAT_MODELS = (
+    "glm-official-5.3-flash",
+    "glm-official-5.3",
+    "glm-official-5.2",
+)
+_GLM_OFFICIAL_REAL_MODELS = {
+    "glm-official-5.3-flash": "glm-5.3-flash",
+    "glm-official-5.3": "glm-5.3",
+    "glm-official-5.2": "glm-5.2",
+}
+
+
+def glm_official_real_model(model_id: str) -> str:
+    return _GLM_OFFICIAL_REAL_MODELS.get(model_id, model_id)
+
 OVERSEAS_OPENAI_MODELS = (
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -65,6 +82,7 @@ SUPPORTED_MODELS = (
     *OVERSEAS_ANTHROPIC_MODELS,
     *DOMESTIC_OPENAI_MODELS,
     *DEEPSEEK_OFFICIAL_MODELS,
+    *GLM_OFFICIAL_CHAT_MODELS,
 )
 DEFAULT_MODEL = "gemini-3.5-flash"
 GATEWAY_FALLBACK_MODEL = "gpt-5.6-terra"
@@ -88,9 +106,13 @@ BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS = (
     "glm-5.2",
     "kimi-k3",
 )
+BALA_VIDEO_PROMPT_GLM_OFFICIAL_VISION_MODELS = (
+    "glm-official-5.3-flash",
+)
 BALA_VIDEO_PROMPT_MODELS = (
     *BALA_VIDEO_PROMPT_DEEPSEEK_VISION_MODELS,
     *BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS,
+    *BALA_VIDEO_PROMPT_GLM_OFFICIAL_VISION_MODELS,
 )
 
 VIDEO_COPY_SYSTEM_PROMPT = """你是一个小红书童装穿搭账号的资深短视频运营。你要为童装或童鞋商品编写像真实妈妈/店主分享的种草视频标题和文案。
@@ -177,10 +199,20 @@ def deepseek_api_key_configured(config: dict | None = None) -> bool:
     )
 
 
+def glm_api_key_configured(config: dict | None = None) -> bool:
+    llm = _llm_settings(config)
+    return bool(
+        _compact(os.environ.get("CRAWSHRIMP_GLM_API_KEY"))
+        or _compact(llm.get("glm_api_key"))
+    )
+
+
 def model_has_configured_key(model_id: str, config: dict | None = None) -> bool:
     selected = _compact(model_id)
     if selected in DEEPSEEK_OFFICIAL_MODELS:
         return deepseek_api_key_configured(config)
+    if selected in GLM_OFFICIAL_CHAT_MODELS:
+        return glm_api_key_configured(config)
     if (
         selected in OVERSEAS_OPENAI_MODELS
         or selected in OVERSEAS_ANTHROPIC_MODELS
@@ -225,6 +257,24 @@ def route_for_model(model_id: str, config: dict | None = None) -> LlmRoute:
                 _compact(os.environ.get("CRAWSHRIMP_DEEPSEEK_BASE_URL"))
                 or _compact(llm.get("deepseek_base_url"))
                 or DEEPSEEK_OFFICIAL_BASE_URL
+            ),
+            api_key=api_key,
+        )
+
+    if selected in GLM_OFFICIAL_CHAT_MODELS:
+        api_key = (
+            _compact(os.environ.get("CRAWSHRIMP_GLM_API_KEY"))
+            or _compact(llm.get("glm_api_key"))
+        )
+        if not api_key:
+            raise LlmConfigurationError("GLM 官方模型需要独立 API Key，请先在设置 → AI 能力 → 文本大模型中配置")
+        return LlmRoute(
+            model_id=glm_official_real_model(selected),
+            protocol="openai",
+            base_url=(
+                _compact(os.environ.get("CRAWSHRIMP_GLM_BASE_URL"))
+                or _compact(llm.get("glm_base_url"))
+                or GLM_OFFICIAL_BASE_URL
             ),
             api_key=api_key,
         )

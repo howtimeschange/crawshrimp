@@ -535,16 +535,50 @@ def extract_pdf_text(pdf_path: Path) -> str:
         return ""
 
 
+LABEL_WASTE_MARKERS = (
+    "无水洗",
+    "无洗唛",
+    "无洗标",
+    "无洗水",
+    "无吊牌",
+    "无吊卡",
+    "无挂牌",
+    "无合格证",
+    "废图",
+    "不要",
+    "作废",
+    "无效",
+)
+
+PDF_TEXT_WASTE_MARKERS = tuple(
+    marker for marker in LABEL_WASTE_MARKERS if marker != "不要"
+)
+
+
+def _has_any_marker(value: str, markers: tuple[str, ...]) -> bool:
+    text = str(value or "")
+    return any(token in text for token in markers)
+
+
 def infer_pdf_type(pdf_path: Path, row: dict, run_params: dict) -> str:
     requested = str(run_params.get("pdf_type") or row.get("__pdf_type") or "").strip().lower()
     if requested in {"wash_label", "hang_tag"}:
         return requested
     name = f"{pdf_path.name} {row.get('PDF类型') or ''}"
-    if any(token in name for token in ("洗唛", "洗标", "水洗")):
+    text = extract_pdf_text(pdf_path)
+    combined = f"{name}\n{text}"
+    combined_lower = combined.lower()
+    if _has_any_marker(name, LABEL_WASTE_MARKERS) or _has_any_marker(text, PDF_TEXT_WASTE_MARKERS):
+        return ""
+    if any(token in combined for token in ("洗唛", "洗标", "水洗")) or any(
+        token in combined_lower for token in ("wash label", "wash-label", "care label")
+    ):
         return "wash_label"
-    if any(token in name for token in ("吊牌", "合格证")):
+    if any(token in combined for token in ("吊牌", "合格证", "合格", "商品标签")) or any(
+        token in combined_lower for token in ("hang tag", "hang-tag", "-label.pdf", "_label.pdf")
+    ):
         return "hang_tag"
-    return "auto"
+    return ""
 
 
 def crop_boxes_for_pdf_type(pdf_type: str, run_params: dict) -> list[tuple[float, float, float, float]]:
@@ -665,6 +699,12 @@ def convert_pdf_rows_to_yq_output_root(
             continue
 
         pdf_type = infer_pdf_type(pdf_path, row, run_params or {})
+        if not pdf_type:
+            log(f"[warn] PDF 未识别为吊牌或洗唛，按反馈规则跳过截图: {pdf_path.name}")
+            row["处理动作"] = "已过滤"
+            row["下载结果"] = row.get("下载结果") or "已跳过"
+            row["备注"] = "PDF 文本/文件名未识别为吊牌或洗唛，按反馈规则跳过"
+            continue
         style_code, color_code = _style_color_for_row(row, pdf_path, run_params or {})
         style_folder = safe_local_name(style_code or row.get("__shenhui_group_code") or pdf_path.stem, "pdf")
         if style_code and color_code:

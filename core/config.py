@@ -47,6 +47,8 @@ DEFAULT_CONFIG = {
             "domestic_base_url": "https://ai-aigw.semir.com/bailian-codingplan/v1",
             "deepseek_api_key": "",
             "deepseek_base_url": "https://api.deepseek.com",
+            "glm_api_key": "",
+            "glm_base_url": "https://open.bigmodel.cn/api/paas/v4",
             "default_model": "gemini-3.5-flash",
         },
     },

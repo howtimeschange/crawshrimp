@@ -295,6 +295,8 @@ tasks:
               label: DeepSeek 官方 · V4 Flash
             - value: deepseek-official-v4-pro
               label: DeepSeek 官方 · V4 Pro
+            - value: glm-official-5.3-flash
+              label: GLM 官方 · GLM-5.3-Flash
             - value: qwen3.8-max-preview
               label: Qwen 3.8 Max Preview
             - value: qwen3.7-plus
@@ -338,6 +340,8 @@ tasks:
                 label: DeepSeek 官方 · V4 Flash
               - value: deepseek-official-v4-pro
                 label: DeepSeek 官方 · V4 Pro
+              - value: glm-official-5.3-flash
+                label: GLM 官方 · GLM-5.3-Flash
               - value: qwen3.8-max-preview
                 label: Qwen 3.8 Max Preview
               - value: qwen3.7-plus

@@ -110,6 +110,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 "deepseek-official-v4-flash-vision-exp",
                 "deepseek-official-v4-flash",
                 "deepseek-official-v4-pro",
+                "glm-official-5.3-flash",
                 "deepseek-v4-flash",
                 "deepseek-v4-pro",
                 "glm-5.2",
