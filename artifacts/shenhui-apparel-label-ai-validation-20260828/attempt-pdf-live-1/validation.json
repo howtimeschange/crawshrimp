@@ -1,0 +1,124 @@
+{
+  "generated_count": 2,
+  "accepted_existing": [],
+  "rejected_paths": [],
+  "missing_roles": [],
+  "outputs": [
+    {
+      "path": "/Users/xingyicheng/Documents/crawshrimp/.worktrees/shenhui-apparel-label-ai-20260828/artifacts/shenhui-apparel-label-ai-validation-20260828/attempt-pdf-live-1/package/202426107206/202426107206-70013_yq1.jpg",
+      "name": "202426107206-70013_yq1.jpg",
+      "size": [
+        800,
+        800
+      ],
+      "mode": "RGB",
+      "corners": [
+        [
+          255,
+          255,
+          255
+        ],
+        [
+          255,
+          255,
+          255
+        ],
+        [
+          255,
+          255,
+          255
+        ],
+        [
+          255,
+          255,
+          255
+        ]
+      ]
+    },
+    {
+      "path": "/Users/xingyicheng/Documents/crawshrimp/.worktrees/shenhui-apparel-label-ai-20260828/artifacts/shenhui-apparel-label-ai-validation-20260828/attempt-pdf-live-1/package/202426107206/202426107206-81322_yq1.jpg",
+      "name": "202426107206-81322_yq1.jpg",
+      "size": [
+        800,
+        800
+      ],
+      "mode": "RGB",
+      "corners": [
+        [
+          255,
+          255,
+          255
+        ],
+        [
+          255,
+          255,
+          255
+        ],
+        [
+          255,
+          255,
+          255
+        ],
+        [
+          255,
+          255,
+          255
+        ]
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "输入款号": "202426107206",
+      "输入编码": "202426107206",
+      "素材来源": "静物图",
+      "文件名": "101冬季414更新K228044904合格证-日常RFID 202426107206腾亚.pdf",
+      "云盘路径": "真实历史样例",
+      "下载结果": "已生成",
+      "本地文件": "/Users/xingyicheng/Downloads/深绘服饰反馈修复验证-20260828-configured/深绘服饰反馈修复验证-202426107206-标签平铺-rerun-yqclass/202426107206/101冬季414更新K228044904合格证-日常RFID 202426107206腾亚.pdf",
+      "处理动作": "AI 识别裁图完成",
+      "标签判定": "通过",
+      "标签证据": "生成 2 张有效 yq",
+      "备注": "AI 识别并生成 2 张 yq"
+    },
+    {
+      "输入款号": "202426107206",
+      "输入编码": "202426107206",
+      "素材来源": "静物图",
+      "文件名": "202426107206-70013_yq1.jpg",
+      "云盘路径": "真实历史样例",
+      "处理动作": "AI 识别裁图",
+      "下载结果": "已生成",
+      "本地文件": "artifacts/shenhui-apparel-label-ai-validation-20260828/attempt-pdf-live-1/package/202426107206/202426107206-70013_yq1.jpg",
+      "备注": "本地 OCR 不可用，双模型高置信共识通过",
+      "标签角色": "吊牌",
+      "识别模型": "gpt-5.6-luna+gpt-5.6-terra",
+      "识别款号": "202426107206",
+      "识别色号": "70013",
+      "识别尺码": "110",
+      "标签判定": "通过",
+      "标签证据": "本地 OCR 不可用，双模型高置信共识通过",
+      "最终裁图": "artifacts/shenhui-apparel-label-ai-validation-20260828/attempt-pdf-live-1/package/202426107206/202426107206-70013_yq1.jpg"
+    },
+    {
+      "输入款号": "202426107206",
+      "输入编码": "202426107206",
+      "素材来源": "静物图",
+      "文件名": "202426107206-81322_yq1.jpg",
+      "云盘路径": "真实历史样例",
+      "处理动作": "AI 识别裁图",
+      "下载结果": "已生成",
+      "本地文件": "artifacts/shenhui-apparel-label-ai-validation-20260828/attempt-pdf-live-1/package/202426107206/202426107206-81322_yq1.jpg",
+      "备注": "本地 OCR 不可用，双模型高置信共识通过",
+      "标签角色": "吊牌",
+      "识别模型": "gpt-5.6-luna+gpt-5.6-terra",
+      "识别款号": "202426107206",
+      "识别色号": "81322",
+      "识别尺码": "110",
+      "标签判定": "通过",
+      "标签证据": "本地 OCR 不可用，双模型高置信共识通过",
+      "最终裁图": "artifacts/shenhui-apparel-label-ai-validation-20260828/attempt-pdf-live-1/package/202426107206/202426107206-81322_yq1.jpg"
+    }
+  ],
+  "logs": []
+}

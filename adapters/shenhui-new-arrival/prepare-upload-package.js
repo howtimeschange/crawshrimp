@@ -516,6 +516,7 @@
       '__shenhui_group_code': groupCode,
       '__shenhui_source_type': sourceType,
       '__shenhui_asset_role': classification.role,
+      '__yq_kind': classification.yqKind || '',
       '__package_filename': classification.packageFilename || String(item?.filename || ''),
       '__pdf_type': classification.pdfType || '',
       '__style_code': groupCode,
@@ -1019,6 +1020,7 @@
       collectCandidateAssets,
       buildCodePlan,
       buildRuntimeFilename,
+      rowForAsset,
       finalizeRows,
       summarizeDownloadResult,
     })

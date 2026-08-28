@@ -435,6 +435,47 @@ test('classifySopAsset applies the deep-draw SOP filtering and yq naming rules',
   assert.match(wasteImage.reason, /废图/)
 })
 
+test('rowForAsset carries bounded yq role and style-color scope metadata', async () => {
+  const helpers = await loadExports()
+  const yq1 = helpers.classifySopAsset('still', {
+    ext: 'jpg',
+    filename: 'yq1.jpg',
+    fullpath: '平拍原图/202426107206/yq1.jpg',
+  })
+  const yq2 = helpers.classifySopAsset('still', {
+    ext: 'jpg',
+    filename: '202426107206-70013_yq2.jpg',
+    fullpath: '平拍原图/202426107206/202426107206-70013_yq2.jpg',
+  })
+  const unrelated = helpers.classifySopAsset('still', {
+    ext: 'jpg',
+    filename: 'yq20.jpg',
+    fullpath: '平拍原图/202426107206/yq20.jpg',
+  })
+
+  const styleRow = helpers.rowForAsset(
+    '202426107206',
+    'still',
+    { filename: 'yq1.jpg', fullpath: '平拍原图/202426107206/yq1.jpg' },
+    yq1,
+  )
+  const colorRow = helpers.rowForAsset(
+    '202426107206-70013',
+    'still',
+    {
+      filename: '202426107206-70013_yq2.jpg',
+      fullpath: '平拍原图/202426107206/202426107206-70013_yq2.jpg',
+    },
+    yq2,
+  )
+
+  assert.equal(styleRow.__yq_kind, 'hang_tag')
+  assert.equal(styleRow.__style_color_code, '')
+  assert.equal(colorRow.__yq_kind, 'wash_label')
+  assert.equal(colorRow.__style_color_code, '202426107206-70013')
+  assert.equal(unrelated.yqKind, undefined)
+})
+
 test('classifySopAsset does not treat style folder status notes as yq markers', async () => {
   const helpers = await loadExports()
 

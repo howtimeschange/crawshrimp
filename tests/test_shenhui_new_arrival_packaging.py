@@ -16,6 +16,7 @@ from core.api_server import (
     _serialize_task_param,
 )
 from core.models import AdapterManifest
+from core.shenhui_apparel_label_processing import ApparelLabelProcessingResult
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "adapters" / "shenhui-new-arrival" / "manifest.yaml"
@@ -23,6 +24,66 @@ SHOE_PACKAGING_PATH = ROOT / "core" / "shenhui_shoe_packaging.py"
 
 
 class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
+    def test_apparel_label_processor_is_called_only_for_prepare_upload_package(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            calls = []
+
+            def fake_processor(**kwargs):
+                calls.append(kwargs)
+                return ApparelLabelProcessingResult(0, (), (), (), ())
+
+            prepare_runtime = base / "prepare-runtime"
+            prepare_runtime.mkdir()
+            source = prepare_runtime / "model.jpg"
+            Image.new("RGB", (20, 20), "white").save(source)
+            with patch(
+                "core.api_server.process_prepare_upload_package_labels",
+                side_effect=fake_processor,
+            ), patch(
+                "core.api_server.finalize_pdf_batch_screenshot_outputs",
+                return_value=[],
+            ):
+                _finalize_shenhui_new_arrival_outputs(
+                    task_id="prepare_upload_package",
+                    data_rows=[{
+                        "输入款号": "202426107206",
+                        "输入编码": "202426107206",
+                        "文件名": "model.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(source),
+                        "__shenhui_group_code": "202426107206",
+                        "__shenhui_asset_role": "image",
+                        "__package_filename": "model.jpg",
+                    }],
+                    runtime_files=[str(source)],
+                    exported_files=[],
+                    run_params={"package_name": "prepare-only"},
+                    runtime_artifact_dir=str(prepare_runtime),
+                    log=lambda _message: None,
+                )
+
+                for task_id in (
+                    "batch_label_tile_download",
+                    "pdf_batch_screenshot",
+                    "prepare_shoe_upload_package",
+                    "unrelated_task",
+                ):
+                    runtime = base / f"runtime-{task_id}"
+                    runtime.mkdir(exist_ok=True)
+                    _finalize_shenhui_new_arrival_outputs(
+                        task_id=task_id,
+                        data_rows=[],
+                        runtime_files=[],
+                        exported_files=[],
+                        run_params={},
+                        runtime_artifact_dir=str(runtime),
+                        log=lambda _message: None,
+                    )
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["package_root"].name, "prepare-only")
+
     def test_new_arrival_compression_single_image_threshold_is_30mb(self):
         self.assertEqual(
             _SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES,
@@ -282,7 +343,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                         "下载结果": "已下载",
                         "本地文件": str(yq_file),
                         "__shenhui_group_code": "208226103201",
-                        "__shenhui_asset_role": "yq",
+                        "__shenhui_asset_role": "image",
                         "__package_filename": "yq.jpg",
                     },
                 ],
@@ -1213,7 +1274,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                         "下载结果": "已下载",
                         "本地文件": str(yq_file),
                         "__shenhui_group_code": "208226103201",
-                        "__shenhui_asset_role": "yq",
+                        "__shenhui_asset_role": "image",
                         "__package_filename": "yq.jpg",
                     },
                 ],
@@ -1415,49 +1476,53 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
 
             model_file = runtime_dir / "runtime-model.jpg"
             pdf_file = runtime_dir / "runtime-tag.pdf"
-            rendered = base / "tag.png"
             exported = base / "summary.xlsx"
             model_file.write_bytes(b"model")
             pdf_file.write_bytes(b"%PDF-fake")
-            rendered.write_bytes(b"tag")
             exported.write_bytes(b"excel")
 
+            def fake_processor(**kwargs):
+                output = kwargs["package_root"] / "208226103201" / "yq1.jpg"
+                output.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (800, 800), "white").save(output)
+                kwargs["pdf_rows"][0][0]["处理动作"] = "AI 识别裁图完成"
+                return ApparelLabelProcessingResult(1, (), (), (), ())
+
+            rows = [
+                {
+                    "输入款号": "208226103201",
+                    "输入编码": "208226103201",
+                    "素材来源": "模特图",
+                    "文件名": "balaBR05106-72904_P.jpg",
+                    "下载结果": "已下载",
+                    "本地文件": str(model_file),
+                    "__shenhui_group_code": "208226103201",
+                    "__shenhui_asset_role": "image",
+                    "__package_filename": "balaBR05106-72904_P.jpg",
+                },
+                {
+                    "输入款号": "208226103201",
+                    "输入编码": "208226103201",
+                    "素材来源": "静物图",
+                    "文件名": "208226103201吊牌.pdf",
+                    "下载结果": "已下载",
+                    "本地文件": str(pdf_file),
+                    "__shenhui_group_code": "208226103201",
+                    "__shenhui_asset_role": "pdf_yq",
+                    "__package_filename": "208226103201吊牌.pdf",
+                    "__pdf_path": str(pdf_file),
+                    "__pdf_type": "hang_tag",
+                    "__style_code": "208226103201",
+                },
+            ]
+
             with patch(
-                "core.shenhui_pdf_screenshot.convert_pdf_to_yq_images",
-                return_value=[rendered],
-            ), patch(
-                "core.shenhui_pdf_screenshot.extract_pdf_text",
-                return_value="",
+                "core.api_server.process_prepare_upload_package_labels",
+                side_effect=fake_processor,
             ):
                 result = _finalize_shenhui_new_arrival_outputs(
                     task_id="prepare_upload_package",
-                    data_rows=[
-                        {
-                            "输入款号": "208226103201",
-                            "输入编码": "208226103201",
-                            "素材来源": "模特图",
-                            "文件名": "balaBR05106-72904_P.jpg",
-                            "下载结果": "已下载",
-                            "本地文件": str(model_file),
-                            "__shenhui_group_code": "208226103201",
-                            "__shenhui_asset_role": "image",
-                            "__package_filename": "balaBR05106-72904_P.jpg",
-                        },
-                        {
-                            "输入款号": "208226103201",
-                            "输入编码": "208226103201",
-                            "素材来源": "静物图",
-                            "文件名": "208226103201吊牌.pdf",
-                            "下载结果": "已下载",
-                            "本地文件": str(pdf_file),
-                            "__shenhui_group_code": "208226103201",
-                            "__shenhui_asset_role": "pdf_yq",
-                            "__package_filename": "208226103201吊牌.pdf",
-                            "__pdf_path": str(pdf_file),
-                            "__pdf_type": "hang_tag",
-                            "__style_code": "208226103201",
-                        },
-                    ],
+                    data_rows=rows,
                     runtime_files=[str(model_file), str(pdf_file)],
                     exported_files=[str(exported)],
                     run_params={
@@ -1474,8 +1539,221 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             with zipfile.ZipFile(style_zip_path) as archive:
                 names = archive.namelist()
                 self.assertIn("balaBR05106-72904_P.jpg", names)
-                self.assertIn("yq(1).png", names)
+                self.assertIn("yq1.jpg", names)
                 self.assertNotIn("_PDF待裁图/runtime-tag.pdf", names)
+            self.assertEqual(rows[1]["本地文件"], "")
+            self.assertEqual(rows[1]["最终裁图"], "")
+
+    def test_finalize_prepare_upload_package_rewrites_generated_crop_paths_in_exported_workbook(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+            export_dir.mkdir()
+
+            pdf_file = runtime_dir / "runtime-tag.pdf"
+            pdf_file.write_bytes(b"%PDF-fake")
+            external_crop = base / "outside" / "external-yq1.jpg"
+            external_crop.parent.mkdir()
+            Image.new("RGB", (800, 800), "white").save(external_crop)
+            exported = base / "summary.xlsx"
+            columns = [
+                "输入款号",
+                "文件名",
+                "下载结果",
+                "本地文件",
+                "处理动作",
+                "最终裁图",
+            ]
+            data_rows = [
+                {
+                    "输入款号": "208226103201",
+                    "输入编码": "208226103201",
+                    "文件名": "208226103201吊牌.pdf",
+                    "下载结果": "已下载",
+                    "本地文件": str(pdf_file),
+                    "处理动作": "",
+                    "最终裁图": "",
+                    "__shenhui_group_code": "208226103201",
+                    "__shenhui_asset_role": "pdf_yq",
+                    "__package_filename": "208226103201吊牌.pdf",
+                    "__pdf_type": "hang_tag",
+                    "__style_code": "208226103201",
+                },
+                {
+                    "输入款号": "999999999999",
+                    "文件名": "external-yq1.jpg",
+                    "下载结果": "已跳过",
+                    "本地文件": str(external_crop),
+                    "处理动作": "外部素材保留",
+                    "最终裁图": str(external_crop),
+                },
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(columns)
+            for row in data_rows:
+                sheet.append([row.get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            def fake_processor(**kwargs):
+                output = kwargs["package_root"] / "208226103201" / "yq1.jpg"
+                output.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (800, 800), "white").save(output)
+                generated_row = kwargs["data_rows"][0]
+                generated_row["文件名"] = "yq1.jpg"
+                generated_row["处理动作"] = "AI 识别裁图完成"
+                generated_row["本地文件"] = str(output)
+                generated_row["最终裁图"] = str(output)
+                return ApparelLabelProcessingResult(1, (), (), (), ())
+
+            with patch(
+                "core.api_server.process_prepare_upload_package_labels",
+                side_effect=fake_processor,
+            ):
+                result = _finalize_shenhui_new_arrival_outputs(
+                    task_id="prepare_upload_package",
+                    data_rows=data_rows,
+                    runtime_files=[str(pdf_file)],
+                    exported_files=[str(exported)],
+                    run_params={
+                        "package_name": "深绘测试图包",
+                        "export_folder": str(export_dir),
+                    },
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+            package_dir = export_dir / "深绘测试图包"
+            final_crop = package_dir / "208226103201" / "yq1.jpg"
+            copied_workbook = export_dir / "summary.xlsx"
+            self.assertIn(str(package_dir), result)
+            self.assertTrue(final_crop.is_file())
+            self.assertEqual(data_rows[0]["本地文件"], str(final_crop))
+            self.assertEqual(data_rows[0]["最终裁图"], str(final_crop))
+            self.assertEqual(data_rows[1]["本地文件"], str(external_crop))
+            self.assertEqual(data_rows[1]["最终裁图"], str(external_crop))
+            self.assertFalse(runtime_dir.exists())
+
+            workbook = load_workbook(copied_workbook, read_only=True, data_only=True)
+            sheet = workbook.active
+            self.assertEqual(sheet.cell(row=2, column=2).value, "yq1.jpg")
+            self.assertEqual(sheet.cell(row=2, column=4).value, str(final_crop))
+            self.assertEqual(sheet.cell(row=2, column=6).value, str(final_crop))
+            self.assertEqual(sheet.cell(row=3, column=4).value, str(external_crop))
+            self.assertEqual(sheet.cell(row=3, column=6).value, str(external_crop))
+            workbook.close()
+
+    def test_finalize_prepare_upload_package_clears_zip_packaged_crop_paths_in_exported_workbook(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+            export_dir.mkdir()
+
+            pdf_file = runtime_dir / "runtime-tag.pdf"
+            pdf_file.write_bytes(b"%PDF-fake")
+            external_crop = base / "outside" / "external-yq1.jpg"
+            external_crop.parent.mkdir()
+            Image.new("RGB", (800, 800), "white").save(external_crop)
+            exported = base / "summary.xlsx"
+            columns = [
+                "输入款号",
+                "文件名",
+                "下载结果",
+                "本地文件",
+                "处理动作",
+                "最终裁图",
+                "备注",
+            ]
+            data_rows = [
+                {
+                    "输入款号": "208226103201",
+                    "输入编码": "208226103201",
+                    "文件名": "208226103201吊牌.pdf",
+                    "下载结果": "已下载",
+                    "本地文件": str(pdf_file),
+                    "处理动作": "",
+                    "最终裁图": "",
+                    "备注": "原备注",
+                    "__shenhui_group_code": "208226103201",
+                    "__shenhui_asset_role": "pdf_yq",
+                    "__package_filename": "208226103201吊牌.pdf",
+                    "__pdf_type": "hang_tag",
+                    "__style_code": "208226103201",
+                },
+                {
+                    "输入款号": "999999999999",
+                    "文件名": "external-yq1.jpg",
+                    "下载结果": "已跳过",
+                    "本地文件": str(external_crop),
+                    "处理动作": "外部素材保留",
+                    "最终裁图": str(external_crop),
+                    "备注": "外部备注",
+                },
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(columns)
+            for row in data_rows:
+                sheet.append([row.get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+            runtime_crop_paths = []
+
+            def fake_processor(**kwargs):
+                output = kwargs["package_root"] / "208226103201" / "yq1.jpg"
+                output.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (800, 800), "white").save(output)
+                runtime_crop_paths.append(str(output))
+                generated_row = kwargs["data_rows"][0]
+                generated_row["处理动作"] = "AI 识别裁图完成"
+                generated_row["本地文件"] = str(output)
+                generated_row["最终裁图"] = str(output)
+                return ApparelLabelProcessingResult(1, (), (), (), ())
+
+            with patch(
+                "core.api_server.process_prepare_upload_package_labels",
+                side_effect=fake_processor,
+            ):
+                result = _finalize_shenhui_new_arrival_outputs(
+                    task_id="prepare_upload_package",
+                    data_rows=data_rows,
+                    runtime_files=[str(pdf_file)],
+                    exported_files=[str(exported)],
+                    run_params={
+                        "package_name": "深绘测试图包",
+                        "export_folder": str(export_dir),
+                        "auto_zip_package": True,
+                    },
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+            zip_path = export_dir / "208226103201.zip"
+            copied_workbook = export_dir / "summary.xlsx"
+            self.assertIn(str(zip_path), result)
+            self.assertTrue(zip_path.is_file())
+            self.assertFalse(Path(runtime_crop_paths[0]).exists())
+            self.assertEqual(data_rows[0]["最终裁图"], "")
+            self.assertIn("原备注", data_rows[0]["备注"])
+            self.assertIn("最终裁图已打包至款号 ZIP", data_rows[0]["备注"])
+            self.assertIn("208226103201.zip", data_rows[0]["备注"])
+            self.assertEqual(data_rows[1]["最终裁图"], str(external_crop))
+            self.assertEqual(data_rows[1]["备注"], "外部备注")
+
+            workbook = load_workbook(copied_workbook, read_only=True, data_only=True)
+            sheet = workbook.active
+            self.assertNotEqual(sheet.cell(row=2, column=6).value, runtime_crop_paths[0])
+            self.assertIsNone(sheet.cell(row=2, column=6).value)
+            self.assertIn("最终裁图已打包至款号 ZIP", sheet.cell(row=2, column=7).value)
+            self.assertIn("208226103201.zip", sheet.cell(row=2, column=7).value)
+            self.assertEqual(sheet.cell(row=3, column=6).value, str(external_crop))
+            self.assertEqual(sheet.cell(row=3, column=7).value, "外部备注")
+            workbook.close()
 
     def test_finalize_prepare_upload_package_uses_short_pdf_work_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1484,23 +1762,18 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             runtime_dir.mkdir()
 
             pdf_file = runtime_dir / "runtime-tag.pdf"
-            rendered = base / "tag.png"
             exported = base / "summary.xlsx"
             pdf_file.write_bytes(b"%PDF-fake")
-            rendered.write_bytes(b"tag")
             exported.write_bytes(b"excel")
             work_dirs = []
 
-            def fake_convert(pdf_path, work_dir, log, *, crop_boxes=None):
-                work_dirs.append(Path(work_dir))
-                return [rendered]
+            def fake_processor(**kwargs):
+                work_dirs.append(Path(kwargs["work_dir"]))
+                return ApparelLabelProcessingResult(0, (), (), (), ())
 
             with patch(
-                "core.shenhui_pdf_screenshot.convert_pdf_to_yq_images",
-                side_effect=fake_convert,
-            ), patch(
-                "core.shenhui_pdf_screenshot.extract_pdf_text",
-                return_value="",
+                "core.api_server.process_prepare_upload_package_labels",
+                side_effect=fake_processor,
             ):
                 _finalize_shenhui_new_arrival_outputs(
                     task_id="prepare_upload_package",
@@ -1528,7 +1801,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                     log=lambda _: None,
                 )
 
-            self.assertEqual(work_dirs, [runtime_dir / "_pdf_work" / "pdf_001"])
+            self.assertEqual(work_dirs, [runtime_dir / "_pdf_work"])
 
     def test_finalize_prepare_upload_package_preserves_pdf_when_screenshot_unavailable(self):
         with tempfile.TemporaryDirectory() as tmpdir:

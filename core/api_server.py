@@ -70,7 +70,8 @@ from core.one_xm_image import OneXMImageClient, file_to_data_url, run_image_task
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
 from core.runtime_install_guard import InstallRuntimeBusy, RuntimeInstallGuard, UpdateDrainActive
-from core.shenhui_pdf_screenshot import finalize_pdf_batch_screenshot_outputs, convert_pdf_rows_to_yq_output_root
+from core.shenhui_pdf_screenshot import finalize_pdf_batch_screenshot_outputs
+from core.shenhui_apparel_label_processing import process_prepare_upload_package_labels
 from core.amazon_label_splitter import (
     copy_amazon_label_outputs_to_export_folder,
     split_amazon_label_rows,
@@ -2353,19 +2354,47 @@ def _try_rewrite_shenhui_package_summary_excels(
     except Exception as exc:
         if log:
             log(f"[warn] Shenhui package Excel paths refresh skipped: {exc}")
-    if not include_compression:
-        return
     try:
+        columns = (
+            "文件名",
+            "处理动作",
+            "下载结果",
+            "备注",
+            "标签角色",
+            "识别模型",
+            "识别款号",
+            "识别色号",
+            "识别尺码",
+            "标签判定",
+            "标签证据",
+            "最终裁图",
+        )
+        if include_compression:
+            columns = (*columns, "压缩结果")
         _rewrite_summary_excel_row_columns(
             exported_files,
             data_rows,
             log,
             context="Shenhui package",
-            columns=("压缩结果",),
+            columns=columns,
         )
     except Exception as exc:
         if log:
             log(f"[warn] Shenhui package Excel compression column refresh skipped: {exc}")
+
+
+_MOVED_DIRECTORY_ROW_PATH_FIELDS = ("本地文件", "最终裁图")
+
+
+def _rewrite_path_under_moved_directory(value: object, source_root: Path, target_root: Path) -> str:
+    raw_path = str(value or "").strip()
+    if not raw_path:
+        return raw_path
+    try:
+        relative = Path(raw_path).expanduser().resolve(strict=False).relative_to(source_root)
+    except Exception:
+        return raw_path
+    return str(target_root / relative)
 
 
 def _rewrite_rows_under_moved_directory(
@@ -2377,14 +2406,35 @@ def _rewrite_rows_under_moved_directory(
     for row in data_rows or []:
         if not isinstance(row, dict):
             continue
-        raw_path = str(row.get("本地文件") or "").strip()
+        for field in _MOVED_DIRECTORY_ROW_PATH_FIELDS:
+            if field not in row:
+                continue
+            row[field] = _rewrite_path_under_moved_directory(row.get(field), source_root, target_root)
+
+
+def _clear_zip_packaged_final_crop_paths(
+    data_rows: list,
+    package_root: Path,
+    zip_filenames_by_style: dict[str, str],
+) -> int:
+    package_root = package_root.resolve(strict=False)
+    changed = 0
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        raw_path = str(row.get("最终裁图") or "").strip()
         if not raw_path:
             continue
         try:
-            relative = Path(raw_path).expanduser().resolve(strict=False).relative_to(source_root)
+            relative = Path(raw_path).expanduser().resolve(strict=False).relative_to(package_root)
         except Exception:
             continue
-        row["本地文件"] = str(target_root / relative)
+        style_name = relative.parts[0] if relative.parts else ""
+        zip_filename = zip_filenames_by_style.get(style_name) or f"{style_name}.zip"
+        row["最终裁图"] = ""
+        row["备注"] = _append_note(row.get("备注"), f"最终裁图已打包至款号 ZIP：{zip_filename}")
+        changed += 1
+    return changed
 
 
 def _cleanup_shenhui_runtime_artifacts(runtime_files: list, package_root: Optional[Path], work_dir: Optional[Path]) -> None:
@@ -4448,6 +4498,7 @@ def _finalize_shenhui_new_arrival_outputs(
         f"深绘上新图包_{timestamp}",
     )
     package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+    package_root.mkdir(parents=True, exist_ok=True)
     pdf_work_dir = _ensure_unique_local_dir(runtime_dir / "_pdf_work")
     auto_zip_package = _shenhui_auto_zip_enabled(run_params)
 
@@ -4500,20 +4551,27 @@ def _finalize_shenhui_new_arrival_outputs(
             f"{time.monotonic() - finalize_started_at:.1f}s"
         )
 
+        label_started_at = time.monotonic()
+        label_result = process_prepare_upload_package_labels(
+            data_rows=data_rows,
+            package_root=package_root,
+            pdf_rows=pdf_rows,
+            work_dir=pdf_work_dir,
+            run_params=run_params or {},
+            log=log,
+        )
         if pdf_rows:
-            pdf_data_rows = [row for row, _local_path, _group_code in pdf_rows]
-            pdf_started_at = time.monotonic()
-            converted_count = convert_pdf_rows_to_yq_output_root(
-                data_rows=pdf_data_rows,
-                output_root=package_root,
-                pdf_work_dir=pdf_work_dir,
-                run_params=run_params or {},
-                log=log,
-            )
-            if converted_count:
-                log(f"Shenhui downloaded PDF screenshots added to style packages: {converted_count}")
             for row, local_path, group_code in pdf_rows:
                 if str(row.get("处理动作") or "").strip() != "截图失败":
+                    # Successfully handled or intentionally skipped PDFs remain
+                    # runtime-only sources and are removed during final cleanup.
+                    # Do not export a stale path in the result workbook. Keep a
+                    # processor-provided replacement only when it is a real file
+                    # distinct from the original runtime PDF.
+                    replacement = Path(str(row.get("本地文件") or "")).expanduser()
+                    if replacement == local_path or not replacement.is_file():
+                        row["本地文件"] = ""
+                        row["最终裁图"] = ""
                     continue
                 pending_target = package_root / group_code / "_PDF待裁图" / _safe_local_name(
                     row.get("__package_filename") or row.get("文件名") or local_path.name,
@@ -4523,11 +4581,14 @@ def _finalize_shenhui_new_arrival_outputs(
                     preserved = _copy_file_to_unique_target(local_path, pending_target)
                     row["本地文件"] = str(preserved)
                     row["备注"] = _append_note(row.get("备注"), f"原 PDF 已保留：{preserved.name}")
-            log(
-                "Shenhui package PDF processing finished: "
-                f"{converted_count} generated images from {len(pdf_rows)} PDF files, "
-                f"{time.monotonic() - pdf_started_at:.1f}s"
-            )
+        log(
+            "Shenhui apparel label processing finished: "
+            f"generated={label_result.generated_count}, "
+            f"existing={len(label_result.accepted_existing)}, "
+            f"rejected={len(label_result.rejected_paths)}, "
+            f"missing={len(label_result.missing_roles)}, "
+            f"{time.monotonic() - label_started_at:.1f}s"
+        )
 
         style_dirs = [
             path
@@ -4584,11 +4645,20 @@ def _finalize_shenhui_new_arrival_outputs(
         external_refs = []
 
         if successful_rows and auto_zip_package:
+            zip_filenames_by_style = {}
             for style_zip_path in style_zip_paths:
                 if style_zip_path.exists():
                     copied_style_zip = _copy_file_to_unique_target(style_zip_path, target_root / style_zip_path.name)
                     external_refs.append(str(copied_style_zip))
+                    zip_filenames_by_style[style_zip_path.stem] = copied_style_zip.name
             if style_zip_paths:
+                if _clear_zip_packaged_final_crop_paths(data_rows, package_root, zip_filenames_by_style):
+                    _try_rewrite_shenhui_package_summary_excels(
+                        exported_files,
+                        data_rows,
+                        log,
+                        include_compression=bool(compression_changed_rows),
+                    )
                 log(f"Shenhui style ZIPs copied to export folder: {target_root}")
         elif successful_rows and package_root.exists():
             external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
@@ -4615,11 +4685,20 @@ def _finalize_shenhui_new_arrival_outputs(
         target_root = _default_output_root_for_runtime(runtime_dir, exported_files)
         target_root.mkdir(parents=True, exist_ok=True)
         default_refs = []
+        zip_filenames_by_style = {}
         for style_zip_path in style_zip_paths:
             if style_zip_path.exists():
                 copied_style_zip = _copy_file_to_unique_target(style_zip_path, target_root / style_zip_path.name)
                 default_refs.append(str(copied_style_zip))
+                zip_filenames_by_style[style_zip_path.stem] = copied_style_zip.name
         if default_refs:
+            if _clear_zip_packaged_final_crop_paths(data_rows, package_root, zip_filenames_by_style):
+                _try_rewrite_shenhui_package_summary_excels(
+                    exported_files,
+                    data_rows,
+                    log,
+                    include_compression=bool(compression_changed_rows),
+                )
             log(f"Shenhui style ZIPs moved to default output folder: {target_root}")
             final_refs = [*default_refs, *exported_refs]
     elif successful_rows and package_root.exists():
