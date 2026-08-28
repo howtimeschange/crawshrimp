@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -214,15 +215,99 @@ def parse_candidate_facts(
 def _slot_aliases(slot: str) -> set[str]:
     aliases = {slot}
     if slot == "tmz2":
-        aliases.update({"wpz2", "yq1"})
-    elif slot.startswith("tmz"):
+        aliases.add("wpz2")
+    elif slot in {"tmz1", "tmz3", "tmz4"}:
         aliases.add(f"wpz{slot[-1]}")
-    elif slot == "yq1":
-        aliases.update({"tmz2", "wpz2"})
     return aliases
 
 
-def _candidate_score(fact: CandidateFacts, slot: str) -> float:
+def _semantic_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", _lower(value)).strip("_")
+
+
+def candidate_is_valid_for_slot(
+    fact: CandidateFacts,
+    slot: str,
+    shoe_category: str = "",
+) -> tuple[bool, str]:
+    """Apply fail-closed semantic gates before a model hint can score a slot."""
+
+    slot = normalize_slot_name(slot)
+    category = _text(shoe_category)
+    asset_type = _semantic_token(fact.asset_type)
+    shoe_count = _semantic_token(fact.shoe_count)
+    pose = _semantic_token(fact.pose)
+    side = _semantic_token(fact.side)
+    box_asset = any(token in asset_type for token in ("shoe_box", "box", "label", "鞋盒", "标签"))
+    shoe_asset = asset_type in {"shoe", "footwear", "鞋", "鞋子", "shoe_with_card"}
+
+    unobstructed_shoe_slots = {
+        "tmz1",
+        "tmz2",
+        "tmz3",
+        "tmz4",
+        "tmz5",
+        "wpz5",
+        "yq1",
+        "yq2",
+        "yq3",
+    }
+    if slot in unobstructed_shoe_slots:
+        if not fact.complete:
+            return False, "requires complete shoe"
+        if fact.feature_card:
+            return False, "feature card obscures a clean shoe slot"
+        if box_asset or (asset_type and not shoe_asset):
+            return False, "requires a shoe image"
+
+    if slot == "tmz4" and category != "雪地":
+        rear_sides = {
+            "rear",
+            "back",
+            "heel",
+            "side_rear",
+            "rear_side",
+            "rear_three_quarter",
+            "side_rear_three_quarter",
+            "后侧",
+            "侧后",
+            "后跟",
+        }
+        if side not in rear_sides:
+            return False, "requires rear or side-rear semantics"
+
+    if slot == "yq3":
+        if side not in {"outer", "outside", "outer_side", "外侧", "外侧面"}:
+            return False, "requires an unobstructed outer side"
+
+    if slot == "yx":
+        if not fact.complete or not fact.feature_card:
+            return False, "requires complete shoe plus feature card"
+        if box_asset or (asset_type and not shoe_asset):
+            return False, "requires shoe and feature card in one image"
+
+    if slot == "wpz6" and not box_asset:
+        return False, "requires a shoe box or label image"
+
+    if slot == "wpz5" and shoe_count not in {"single", "one", "单只", "单鞋"}:
+        return False, "requires one complete shoe"
+
+    if slot == "yq2" and not (
+        fact.outsole_visible or side in {"sole", "outsole", "鞋底"} or pose == "yq2"
+    ):
+        return False, "requires a complete outsole"
+
+    return True, ""
+
+
+def _candidate_score(
+    fact: CandidateFacts,
+    slot: str,
+    shoe_category: str = "",
+) -> float:
+    valid, _reason = candidate_is_valid_for_slot(fact, slot, shoe_category)
+    if not valid:
+        return 0.0
     hints = set(fact.matched_slots)
     if hints & _slot_aliases(slot):
         return 0.82 + 0.15 * (fact.confidence or 0.85)
@@ -257,7 +342,10 @@ def _candidate_score(fact: CandidateFacts, slot: str) -> float:
             score = 0.62
     elif slot == "wpz6":
         if any(value in text for value in ("box", "label", "shoe_box", "鞋盒", "标签")):
-            score = 0.72
+            score = 0.78
+    elif slot == "yq1":
+        if fact.complete and any(value in text for value in ("front", "oblique", "three_quarter", "side", "斜前", "侧")):
+            score = 0.62
     elif slot == "yq2":
         if fact.outsole_visible or any(value in text for value in ("outsole", "sole", "鞋底")):
             score = 0.68
@@ -269,6 +357,8 @@ def _candidate_score(fact: CandidateFacts, slot: str) -> float:
             score = 0.72
     if score:
         score += min(fact.confidence, 1.0) * 0.08
+        if slot == "wpz6":
+            return min(score, 0.86)
     return min(score, 0.79)
 
 
@@ -277,16 +367,28 @@ def _candidate_order(candidate_id: str) -> int:
     return int(match.group(1)) if match else 99999
 
 
+def _candidate_family_key(filename: str) -> str:
+    stem = Path(_text(filename)).stem
+    return re.sub(
+        r"\s*(?:拷贝|[-－]?\s*副本)$",
+        "",
+        stem,
+        flags=re.IGNORECASE,
+    ).strip().lower()
+
+
 def _choose_slot(
     facts: list[CandidateFacts],
     slot: str,
     *,
     used_filenames: set[str],
+    shoe_category: str = "",
 ) -> SlotDecision:
+    used_family_keys = {_candidate_family_key(filename) for filename in used_filenames}
     scored = [
-        (_candidate_score(fact, slot), fact)
+        (_candidate_score(fact, slot, shoe_category), fact)
         for fact in facts
-        if fact.filename not in used_filenames
+        if _candidate_family_key(fact.filename) not in used_family_keys
     ]
     scored = [item for item in scored if item[0] > 0.0]
     if not scored:
@@ -299,8 +401,14 @@ def _choose_slot(
             item[1].filename.lower(),
         )
     )
-    best_score, best_fact = scored[0]
-    second_score = scored[1][0] if len(scored) > 1 else 0.0
+    family_best: dict[str, tuple[float, CandidateFacts]] = {}
+    for score, fact in scored:
+        family_key = _candidate_family_key(fact.filename)
+        if family_key not in family_best:
+            family_best[family_key] = (score, fact)
+    ranked_families = list(family_best.values())
+    best_score, best_fact = ranked_families[0]
+    second_score = ranked_families[1][0] if len(ranked_families) > 1 else 0.0
     gap = best_score - second_score
     if best_score >= LOCK_SCORE_THRESHOLD and (not second_score or gap >= LOCK_SCORE_GAP):
         return SlotDecision(
@@ -330,25 +438,35 @@ def slot_payload_from_candidate_facts(
     shoe_category: str = "",
 ) -> dict[str, Any]:
     facts = parse_candidate_facts(payload, candidate_ids)
+    effective_category = _text(shoe_category) or _text(payload.get("shoe_category"))
     used: set[str] = set()
     decisions: list[SlotDecision] = []
     selected: dict[str, str] = {}
 
     for slot in ("tmz1", "tmz2", "tmz3", "tmz4", "tmz5"):
-        decision = _choose_slot(facts, slot, used_filenames=used)
+        decision = _choose_slot(
+            facts,
+            slot,
+            used_filenames=used,
+            shoe_category=effective_category,
+        )
         decisions.append(decision)
         if decision.status == "locked":
             selected[slot] = decision.candidate_id
-            used.add(decision.filename)
+            used.add(_candidate_family_key(decision.filename))
 
-    yq1 = selected.get("tmz2", "")
-    for slot in ("yq2", "yq3", "wpz5", "wpz6", "yx"):
-        decision = _choose_slot(facts, slot, used_filenames=used)
+    for slot in ("yq1", "yq2", "yq3", "wpz5", "wpz6", "yx"):
+        decision = _choose_slot(
+            facts,
+            slot,
+            used_filenames=used,
+            shoe_category=effective_category,
+        )
         decisions.append(decision)
         if decision.status == "locked":
             selected[slot] = decision.candidate_id
             if slot != "yx":
-                used.add(decision.filename)
+                used.add(_candidate_family_key(decision.filename))
 
     slots: dict[str, Any] = {
         "tmz1": selected.get("tmz1", ""),
@@ -366,7 +484,7 @@ def slot_payload_from_candidate_facts(
             selected.get("wpz6", ""),
         ],
         "yq": [
-            yq1,
+            selected.get("yq1", ""),
             selected.get("yq2", ""),
             selected.get("yq3", ""),
         ],

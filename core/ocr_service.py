@@ -7,6 +7,8 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -529,3 +531,167 @@ def recognize_image_with_tesseract_js(
         if isinstance(word, dict)
     ]
     return data
+
+
+def _compact_label_ocr_line(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", _text(value))
+    return re.sub(r"\s+", "", normalized)
+
+
+def _explicit_label_field(
+    text: Any,
+    *,
+    field_names: tuple[str, ...],
+    expected_suffix: str = "",
+) -> str:
+    expected_suffix = _compact_label_ocr_line(expected_suffix)
+    for raw_line in _text(text).splitlines():
+        line = _compact_label_ocr_line(raw_line)
+        if not line or (expected_suffix and expected_suffix not in line):
+            continue
+        for field_name in field_names:
+            marker = _compact_label_ocr_line(field_name)
+            marker_index = line.find(marker)
+            if marker_index < 0:
+                continue
+            value = line[marker_index + len(marker):].lstrip(":：|丨;；,，")
+            if expected_suffix:
+                suffix_index = value.find(expected_suffix)
+                if suffix_index < 0:
+                    continue
+                value = value[:suffix_index + len(expected_suffix)]
+            value = value.strip(":：|丨;；,，[]【】()（）")
+            if not value:
+                continue
+            if expected_suffix and not value.endswith(expected_suffix):
+                continue
+            prefix = value[:-len(expected_suffix)] if expected_suffix else value
+            if expected_suffix and not re.search(r"[A-Za-z\u3400-\u9fff]", prefix):
+                continue
+            return value
+    return ""
+
+
+def extract_shoe_label_fields(
+    image_path: Path | str,
+    *,
+    label_bbox: Any,
+    expected_color_code: str,
+    timeout_seconds: float = 45.0,
+) -> dict[str, Any]:
+    """Transcribe explicit product/color rows from a shoe-box label.
+
+    The multimodal model supplies the label bounds. Local OCR then reads focused
+    subregions so marketing color names such as ``梦幻粉`` are not normalized to
+    a generic color such as ``粉色``. A color is accepted only when the explicit
+    ``颜色`` row contains the expected five-digit code.
+    """
+
+    from PIL import Image, ImageOps
+
+    source = Path(image_path)
+    if not source.is_file():
+        raise RuntimeError(f"shoe label source image does not exist: {source}")
+    normalized = normalized_bbox(label_bbox)
+    if normalized is None:
+        raise RuntimeError("shoe label bbox is invalid")
+    expected_color_code = _digits(expected_color_code)
+    if len(expected_color_code) != 5:
+        raise RuntimeError("shoe label expected color code must contain five digits")
+
+    with Image.open(source) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
+    width, height = image.size
+    x1, y1, x2, y2 = normalized
+    pad_x = (x2 - x1) * 0.025
+    pad_y = (y2 - y1) * 0.025
+    label = image.crop((
+        round(max(0.0, x1 - pad_x) * width),
+        round(max(0.0, y1 - pad_y) * height),
+        round(min(1.0, x2 + pad_x) * width),
+        round(min(1.0, y2 + pad_y) * height),
+    ))
+    if label.width <= 0 or label.height <= 0:
+        raise RuntimeError("shoe label crop is empty")
+
+    regions = (
+        ("left-color-row", (0.03, 0.53, 0.48, 0.77)),
+        ("left-lower", (0.00, 0.38, 0.74, 0.88)),
+        ("left-middle", (0.00, 0.27, 0.80, 0.78)),
+        ("lower", (0.00, 0.42, 1.00, 0.96)),
+        ("full", (0.00, 0.00, 1.00, 1.00)),
+    )
+    fallback_results: list[dict[str, Any]] = []
+    errors: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="crawshrimp-shoe-label-") as tmpdir:
+        temporary_root = Path(tmpdir)
+        for region_name, region in regions:
+            rx1, ry1, rx2, ry2 = region
+            crop = label.crop((
+                round(rx1 * label.width),
+                round(ry1 * label.height),
+                round(rx2 * label.width),
+                round(ry2 * label.height),
+            ))
+            if crop.width < 800:
+                scale = min(3.0, 800 / max(1, crop.width))
+                crop = crop.resize((
+                    max(1, round(crop.width * scale)),
+                    max(1, round(crop.height * scale)),
+                ), Image.Resampling.LANCZOS)
+            crop_path = temporary_root / f"{region_name}.png"
+            crop.save(crop_path, format="PNG")
+            try:
+                result = recognize_image_with_tesseract_js(
+                    crop_path,
+                    lang="chi_sim+eng",
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception as exc:
+                errors.append(f"{region_name}: {exc}")
+                continue
+            result_text = _text(result.get("text"))
+            confidence = float(result.get("confidence") or 0.0)
+            color_name = _explicit_label_field(
+                result_text,
+                field_names=("颜色",),
+                expected_suffix=expected_color_code,
+            )
+            product_name = _explicit_label_field(
+                result_text,
+                field_names=("产品名称", "品名"),
+            )
+            if not color_name:
+                continue
+            evidence = {
+                "color_name": color_name,
+                "product_name": product_name,
+                "confidence": confidence,
+                "source": "local_tesseract_explicit_label_field",
+                "region": region_name,
+            }
+            if confidence >= 70.0:
+                return evidence
+            fallback_results.append(evidence)
+
+    if fallback_results:
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for item in fallback_results:
+            by_name.setdefault(_text(item.get("color_name")), []).append(item)
+        agreed = [items for items in by_name.values() if len(items) >= 2]
+        if agreed:
+            best_group = max(
+                agreed,
+                key=lambda items: max(float(item.get("confidence") or 0) for item in items),
+            )
+            return max(
+                best_group,
+                key=lambda item: float(item.get("confidence") or 0),
+            )
+    return {
+        "color_name": "",
+        "product_name": "",
+        "confidence": 0.0,
+        "source": "local_tesseract_explicit_label_field",
+        "errors": errors,
+    }

@@ -22,6 +22,7 @@
   const WASH_LABEL_PATTERNS = Object.freeze([/水洗|洗唛|洗标|洗水/])
   const LABEL_IMAGE_PATTERNS = Object.freeze([...HANG_TAG_PATTERNS, ...WASH_LABEL_PATTERNS])
   const CARD_PAPER_PATTERNS = Object.freeze([/卡纸|手写/])
+  const WASTE_LABEL_PATTERNS = Object.freeze([/无水洗|无洗唛|无洗标|无洗水|无吊牌|无吊卡|无挂牌|无合格证|废图|不要|作废|无效/])
   const MODEL_REMOVABLE_LABEL_PATTERNS = Object.freeze([...LABEL_IMAGE_PATTERNS, /卡头|卡纸/])
   const SOURCE_LABELS = Object.freeze({ shoe: '鞋品原图' })
 
@@ -412,9 +413,14 @@
     return isStatusNoteFolderName(parent) && hasAny(parent, LABEL_IMAGE_PATTERNS)
   }
 
+  function hasWasteLabelMarker(item) {
+    return hasFilenameOrExplicitParentMarker(item, WASTE_LABEL_PATTERNS)
+  }
+
   function inferSopPdfType(item) {
-    if (hasFilenameOrExplicitParentMarker(item, WASH_LABEL_PATTERNS)) return 'wash_label'
-    if (hasFilenameOrExplicitParentMarker(item, [...HANG_TAG_PATTERNS, /合格证/])) return 'hang_tag'
+    const text = `${item?.filename || ''} ${item?.fullpath || ''}`.toLowerCase()
+    if (hasFilenameOrExplicitParentMarker(item, WASH_LABEL_PATTERNS) || /(?:wash|care)[\s_-]*label/.test(text)) return 'wash_label'
+    if (hasFilenameOrExplicitParentMarker(item, [...HANG_TAG_PATTERNS, /合格证/]) || /hang[\s_-]*tag|[\s_-]label\.pdf$/.test(text)) return 'hang_tag'
     return ''
   }
 
@@ -433,18 +439,23 @@
       return { ...base, reason: '.psd 文件按 SOP 删除' }
     }
 
+    if (hasWasteLabelMarker(item)) {
+      return { ...base, reason: '无水洗/无吊牌等废图按反馈规则跳过' }
+    }
+
     if (isPdfExt(ext)) {
       const pdfType = inferSopPdfType(item)
-      if (!pdfType) {
-        return { ...base, reason: '非洗唛/吊牌 PDF 按 SOP 跳过' }
-      }
       return {
         role: 'pdf_yq',
         keep: true,
-        action: '保留PDF并自动截图',
-        reason: pdfType === 'wash_label'
-          ? '洗唛 PDF 将按截图模板自动生成 yq(2)'
-          : '吊牌 PDF 将按截图模板自动生成 yq(1)',
+        action: '保留PDF并自动截图识别',
+        reason: pdfType
+          ? (
+              pdfType === 'wash_label'
+                ? '洗唛 PDF 将按截图模板自动生成 yq(2)'
+                : '吊牌 PDF 将按截图模板自动生成 yq(1)'
+            )
+          : 'PDF 下载后由文本/规则识别吊牌或洗唛，识别不出按反馈规则跳过',
         packageFilename: toSafeFilename(item?.filename || `label.${ext}`, `label.${ext || 'pdf'}`),
         pdfType,
       }
@@ -489,9 +500,9 @@
       return {
         role: 'yq',
         keep: true,
-        action: '保留并命名为yq',
-        reason: '吊牌/水洗图片按 SOP 命名为 yq',
-        packageFilename: ext ? `yq.${ext}` : 'yq.jpg',
+        action: '保留吊牌/水洗原图',
+        reason: '吊牌/水洗图片按反馈保留原名，不再命名为 yq',
+        packageFilename: toSafeFilename(item?.filename || `label.${ext}`, `label.${ext || 'jpg'}`),
       }
     }
 
