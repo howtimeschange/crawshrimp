@@ -515,6 +515,7 @@ SHOE_LABEL_OCR_TIMEOUT_SECONDS = 60
 SHOE_POSE_TIMEOUT_PROBE_SECONDS = 180
 SHOE_LABEL_OCR_TIMEOUT_PROBE_SECONDS = 180
 SHOE_POSE_BATCH_PARALLELISM = 2
+SHOE_POSE_MAX_CONCURRENT_CALLS = 4
 SHOE_POSE_CONSENSUS_REQUIRED_VOTES = 2
 SHOE_POSE_STRATEGY_GLOBAL_PAGES = "global_pages"
 SHOE_POSE_STRATEGY_BATCH = "batch"
@@ -534,6 +535,33 @@ SHOE_FULL_POSE_REQUIRED_CONSENSUS_SLOTS = (
     "yq2",
     "yq3",
 )
+
+
+def _run_pose_model_wave(
+    model_ids: list[Any] | tuple[Any, ...],
+    invoke: Any,
+    *,
+    max_workers: int = SHOE_POSE_MAX_CONCURRENT_CALLS,
+) -> list[Any]:
+    """Run one independent scoring wave concurrently and preserve model order."""
+
+    ordered_models = list(model_ids)
+    if not ordered_models:
+        return []
+    results: list[Any] = [None] * len(ordered_models)
+    with ThreadPoolExecutor(
+        max_workers=min(max(1, int(max_workers)), len(ordered_models)),
+        thread_name_prefix="shoe-pose-model",
+    ) as executor:
+        future_to_index = {
+            executor.submit(invoke, model_id): index
+            for index, model_id in enumerate(ordered_models)
+        }
+        for future in as_completed(future_to_index):
+            results[future_to_index[future]] = future.result()
+    return results
+
+
 SHOE_MANDATORY_TARGETED_SLOTS = (
     "tmz3",
     "wpz5",
@@ -4413,6 +4441,140 @@ def _replace_consensus_slot_value(
         slots["wpz"] = wpz_values
 
 
+def _cross_page_conflict_slots(
+    page_payloads: list[dict[str, Any]],
+) -> list[str]:
+    """Return slots whose independently locked winners differ across pages.
+
+    Candidate disagreement inside one page is not a cross-page conflict. It is
+    resolved by the focused round at the normal quorum instead of being
+    promoted to a three-vote targeted round.
+    """
+
+    locked_families_by_slot: dict[str, set[str]] = {}
+    for page_payload in page_payloads:
+        page_votes = page_payload.get("_model_votes") or {}
+        for slot in SHOE_FULL_POSE_REQUIRED_CONSENSUS_SLOTS:
+            vote = page_votes.get(slot)
+            if not isinstance(vote, dict) or vote.get("status") != "locked":
+                continue
+            family = _text(vote.get("selected_family"))
+            if not family:
+                selected = _text(vote.get("selected"))
+                family = _copy_variant_key(selected) if selected else ""
+            if family:
+                locked_families_by_slot.setdefault(slot, set()).add(family)
+    return sorted(
+        slot
+        for slot, families in locked_families_by_slot.items()
+        if len(families) > 1
+    )
+
+
+def _lock_verified_exact_tms_contract(
+    payload: dict[str, Any],
+    *,
+    candidate_ids: dict[str, str],
+    entries_by_name: dict[str, dict[str, Any]],
+    style_code: str,
+    color_code: str,
+    required_votes: int,
+    candidate_facts_by_model: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Lock the exact ``style-color.jpg`` white single-shoe asset before targeting."""
+
+    exact_stem = f"{_text(style_code)}-{_text(color_code)}".replace(" ", "")
+
+    def is_exact_filename(filename: Any) -> bool:
+        return Path(_text(filename)).stem.replace(" ", "") == exact_stem
+
+    exact_entries = sorted(
+        filename
+        for filename in entries_by_name
+        if is_exact_filename(filename)
+    )
+    if len(exact_entries) != 1:
+        return False
+    exact_filename = exact_entries[0]
+    exact_candidate_ids = sorted(
+        candidate_id
+        for candidate_id, filename in candidate_ids.items()
+        if _text(filename) == exact_filename
+    )
+    if len(exact_candidate_ids) != 1:
+        return False
+    exact_candidate_id = exact_candidate_ids[0]
+
+    supporting_models: set[str] = set()
+    evidence_items = (
+        candidate_facts_by_model
+        if candidate_facts_by_model is not None
+        else list(payload.get("_candidate_facts_by_model") or [])
+    )
+    for model_evidence in evidence_items:
+        if not isinstance(model_evidence, dict):
+            continue
+        model_id = _text(model_evidence.get("model_id"))
+        if not model_id:
+            continue
+        for fact in model_evidence.get("candidate_facts") or []:
+            if not isinstance(fact, dict) or not is_exact_filename(fact.get("filename")):
+                continue
+            asset_type = _text(fact.get("asset_type")).lower()
+            shoe_count = _text(fact.get("shoe_count")).lower()
+            background = _text(fact.get("background")).lower()
+            pose = _text(fact.get("pose")).lower()
+            matched_slots = {
+                shenhui_shoe_rules.normalize_slot_name(slot)
+                for slot in (fact.get("matched_slots") or [])
+            }
+            complete = fact.get("complete") is True or _text(
+                fact.get("complete")
+            ).lower() in {"1", "true", "yes", "是", "完整"}
+            feature_card = fact.get("feature_card") is True or _text(
+                fact.get("feature_card")
+            ).lower() in {"1", "true", "yes", "是", "有"}
+            if (
+                asset_type in {"shoe", "footwear", "鞋", "鞋子"}
+                and shoe_count in {"single", "one", "单只", "单鞋"}
+                and background in {"white", "白", "白底"}
+                and complete
+                and not feature_card
+                and (pose == "tmz5" or "tmz5" in matched_slots)
+            ):
+                supporting_models.add(model_id)
+                break
+
+    required_votes = max(1, int(required_votes))
+    if len(supporting_models) < required_votes:
+        return False
+    slots = payload.get("slots")
+    if not isinstance(slots, dict):
+        return False
+    _replace_consensus_slot_value(slots, "tmz5", exact_candidate_id)
+    payload.setdefault("_model_votes", {})["tmz5"] = {
+        "status": "locked",
+        "selected": exact_candidate_id,
+        "selected_family": _copy_variant_key(exact_filename),
+        "votes": len(supporting_models),
+        "required_votes": required_votes,
+        "models": sorted(supporting_models),
+        "candidates": {
+            _copy_variant_key(exact_filename): sorted(supporting_models),
+        },
+        "source": "verified_exact_tms_contract",
+    }
+    payload["_consensus_issues"] = [
+        issue
+        for issue in (payload.get("_consensus_issues") or [])
+        if _text(issue.get("slot")) != "tmz5"
+    ]
+    locked_slots = set(payload.get("_exact_contract_locked_slots") or [])
+    locked_slots.add("tmz5")
+    payload["_exact_contract_locked_slots"] = sorted(locked_slots)
+    return True
+
+
 def _restrict_pose_payload_to_target_slot(
     payload: dict[str, Any],
     candidate_ids: dict[str, str],
@@ -5189,7 +5351,9 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
             route_model_ids.append(route_model_id)
         flush_pose_evidence("partial")
 
-    for current_model_id in model_ids:
+    remaining_model_ids = list(model_ids)
+    first_model_wave = True
+    while remaining_model_ids:
         pending_batches = [
             item
             for item in batch_inputs
@@ -5197,94 +5361,132 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
         ]
         if not pending_batches:
             break
-        if current_model_id in disabled_models:
+        available_models = [
+            model_id
+            for model_id in remaining_model_ids
+            if model_id not in disabled_models
+        ]
+        if not available_models:
+            break
+        wave_size = (
+            min(required_model_votes, len(available_models))
+            if first_model_wave
+            else 1
+        )
+        model_wave = available_models[:wave_size]
+        remaining_model_ids = [
+            model_id
+            for model_id in remaining_model_ids
+            if model_id not in model_wave
+        ]
+        first_model_wave = False
+        work_items = [
+            (current_model_id, batch_input)
+            for current_model_id in model_wave
+            for batch_input in pending_batches
+            if current_model_id
+            not in routes_by_batch.get(int(batch_input["batch_index"]), set())
+        ]
+        if not work_items:
             continue
-        model_errors: list[str] = []
-        model_should_stop = False
-        while pending_batches:
-            chunk = pending_batches[:SHOE_POSE_BATCH_PARALLELISM]
-            pending_batches = pending_batches[SHOE_POSE_BATCH_PARALLELISM:]
-            log(
-                f"鞋品姿势识别调度：{style_code}-{color_code}，"
-                f"模型 {current_model_id} 并发处理 {len(chunk)} 个批次"
+        log(
+            f"鞋品姿势识别智能并发调度：{style_code}-{color_code}，"
+            f"模型 {','.join(model_wave)}，批次任务 {len(work_items)} 个，"
+            f"并发上限 {min(SHOE_POSE_MAX_CONCURRENT_CALLS, len(work_items))}"
+        )
+
+        def invoke_pose_work_item(work_item: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+            current_model_id, batch_input = work_item
+            return analyze_batch_with_model(batch_input, current_model_id)
+
+        results = _run_pose_model_wave(
+            work_items,
+            invoke_pose_work_item,
+            max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
+        )
+        timeout_probe_items: list[tuple[str, dict[str, Any]]] = []
+        for (current_model_id, batch_input), result in zip(work_items, results):
+            if result.get("ok"):
+                record_success(result)
+                continue
+            batch_index = int(result.get("batch_index") or batch_input["batch_index"])
+            error_text = _text(result.get("error")) or "未返回可用结果"
+            if result.get("configuration_error"):
+                errors.append(
+                    f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
+                )
+                disabled_models.add(current_model_id)
+            elif result.get("timeout_like"):
+                has_fresh_fallback = any(
+                    model_id not in disabled_models
+                    for model_id in remaining_model_ids
+                )
+                if has_fresh_fallback:
+                    errors.append(
+                        f"{current_model_id}: 批次{batch_index}/{total_batches} "
+                        f"{error_text}；已切换独立 fallback"
+                    )
+                    disabled_models.add(current_model_id)
+                    log(
+                        f"[warn] 鞋品姿势识别模型超时，优先切换独立 fallback："
+                        f"{style_code}-{color_code}，模型 {current_model_id}，"
+                        f"批次 {batch_index}/{total_batches}"
+                    )
+                else:
+                    timeout_probe_items.append((current_model_id, batch_input))
+                    log(
+                        f"[warn] 鞋品姿势识别模型 60 秒软超时："
+                        f"{style_code}-{color_code}，模型 {current_model_id}，"
+                        f"批次 {batch_index}/{total_batches}；进入并发耐心复测，"
+                        f"硬上限 {float(SHOE_POSE_TIMEOUT_PROBE_SECONDS):g} 秒"
+                    )
+            else:
+                errors.append(
+                    f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
+                )
+
+        def invoke_probe_work_item(work_item: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+            current_model_id, batch_input = work_item
+            return analyze_batch_with_model(
+                batch_input,
+                current_model_id,
+                timeout_seconds=SHOE_POSE_TIMEOUT_PROBE_SECONDS,
+                max_attempts=1,
+                timeout_probe=True,
             )
-            with ThreadPoolExecutor(
-                max_workers=min(SHOE_POSE_BATCH_PARALLELISM, len(chunk)),
-                thread_name_prefix="shoe-pose-batch",
-            ) as executor:
-                future_to_batch = {
-                    executor.submit(analyze_batch_with_model, batch_input, current_model_id): batch_input
-                    for batch_input in chunk
-                }
-                timeout_probe_batches: list[dict[str, Any]] = []
-                for future in as_completed(future_to_batch):
-                    batch_input = future_to_batch[future]
-                    result = future.result()
-                    if result.get("ok"):
-                        record_success(result)
-                        continue
-                    batch_index = int(result.get("batch_index") or batch_input["batch_index"])
-                    error_text = _text(result.get("error")) or "未返回可用结果"
-                    if result.get("configuration_error"):
-                        model_errors.append(
-                            f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
-                        )
-                        disabled_models.add(current_model_id)
-                        model_should_stop = True
-                    elif result.get("timeout_like"):
-                        timeout_probe_batches.append(batch_input)
-                        log(
-                            f"[warn] 鞋品姿势识别模型 60 秒软超时："
-                            f"{style_code}-{color_code}，模型 {current_model_id}，"
-                            f"批次 {batch_index}/{total_batches}；进入单批耐心复测，"
-                            f"硬上限 {float(SHOE_POSE_TIMEOUT_PROBE_SECONDS):g} 秒"
-                        )
-                    else:
-                        model_errors.append(
-                            f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
-                        )
-                for batch_input in sorted(
-                    timeout_probe_batches,
-                    key=lambda item: int(item.get("batch_index") or 0),
-                ):
-                    if model_should_stop:
-                        continue
-                    probe_result = analyze_batch_with_model(
-                        batch_input,
-                        current_model_id,
-                        timeout_seconds=SHOE_POSE_TIMEOUT_PROBE_SECONDS,
-                        max_attempts=1,
-                        timeout_probe=True,
+
+        probe_results = _run_pose_model_wave(
+            timeout_probe_items,
+            invoke_probe_work_item,
+            max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
+        )
+        for (current_model_id, batch_input), probe_result in zip(
+            timeout_probe_items,
+            probe_results,
+        ):
+            batch_index = int(
+                probe_result.get("batch_index") or batch_input["batch_index"]
+            )
+            if probe_result.get("ok"):
+                record_success(probe_result)
+                log(
+                    f"鞋品姿势识别模型单批耐心复测通过："
+                    f"{style_code}-{color_code}，模型 {current_model_id}，"
+                    f"批次 {batch_index}/{total_batches}"
+                )
+                continue
+            error_text = _text(probe_result.get("error")) or "未返回可用结果"
+            errors.append(
+                f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
+            )
+            if probe_result.get("configuration_error") or probe_result.get("timeout_like"):
+                disabled_models.add(current_model_id)
+                if probe_result.get("timeout_like"):
+                    log(
+                        f"[warn] 鞋品姿势识别模型单批耐心复测仍超时，快速 fallback："
+                        f"{style_code}-{color_code}，模型 {current_model_id}，"
+                        f"批次 {batch_index}/{total_batches}"
                     )
-                    batch_index = int(probe_result.get("batch_index") or batch_input["batch_index"])
-                    if probe_result.get("ok"):
-                        record_success(probe_result)
-                        log(
-                            f"鞋品姿势识别模型单批耐心复测通过："
-                            f"{style_code}-{color_code}，模型 {current_model_id}，"
-                            f"批次 {batch_index}/{total_batches}"
-                        )
-                        continue
-                    error_text = _text(probe_result.get("error")) or "未返回可用结果"
-                    model_errors.append(
-                        f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
-                    )
-                    if probe_result.get("configuration_error"):
-                        disabled_models.add(current_model_id)
-                        model_should_stop = True
-                    elif probe_result.get("timeout_like"):
-                        disabled_models.add(current_model_id)
-                        model_should_stop = True
-                        log(
-                            f"[warn] 鞋品姿势识别模型单批耐心复测仍超时，快速 fallback："
-                            f"{style_code}-{color_code}，模型 {current_model_id}，"
-                            f"批次 {batch_index}/{total_batches}"
-                        )
-            if model_should_stop:
-                pending_batches = []
-                break
-        if model_errors:
-            errors.extend(model_errors)
 
     pending_batches = [
         item
@@ -5364,30 +5566,7 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
             raise ShoeSelectionError(f"{style_code}-{color_code} {message}")
         should_run_focused = requires_focused
         if should_run_focused:
-            page_conflict_families: dict[str, set[str]] = {}
-            for page_payload in consensus_payloads:
-                page_votes = page_payload.get("_model_votes") or {}
-                for slot in SHOE_FULL_POSE_REQUIRED_CONSENSUS_SLOTS:
-                    vote = page_votes.get(slot)
-                    if not isinstance(vote, dict):
-                        continue
-                    for family in (vote.get("candidates") or {}):
-                        family = _text(family)
-                        if family:
-                            page_conflict_families.setdefault(slot, set()).add(family)
-                    if vote.get("status") != "locked":
-                        continue
-                    selected = _text(vote.get("selected"))
-                    family = _text(vote.get("selected_family"))
-                    if not family and selected:
-                        family = _copy_variant_key(candidate_ids.get(selected, selected))
-                    if family:
-                        page_conflict_families.setdefault(slot, set()).add(family)
-            page_conflict_slots = sorted(
-                slot
-                for slot, families in page_conflict_families.items()
-                if len(families) > 1
-            )
+            page_conflict_slots = _cross_page_conflict_slots(consensus_payloads)
             focused_candidate_ids = _focused_candidate_ids_from_page_payloads(
                 payloads_by_batch=payloads_by_batch,
                 batch_inputs=batch_inputs,
@@ -5466,6 +5645,13 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                 )
 
             def elevated_required_votes(slot: str) -> int:
+                if (
+                    focused_payload is not None
+                    and slot in set(
+                        focused_payload.get("_exact_contract_locked_slots") or []
+                    )
+                ):
+                    return required_model_votes
                 return (
                     max(required_model_votes, min(3, available_model_count()))
                     if slot in page_conflict_slots
@@ -5541,60 +5727,158 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
 
             available_mandatory_targeted_slots = tuple(SHOE_MANDATORY_TARGETED_SLOTS)
 
+            def try_lock_exact_tms_contract() -> bool:
+                if focused_payload is None:
+                    return False
+                exact_contract_evidence = [
+                    *list(focused_payload.get("_candidate_facts_by_model") or []),
+                    *[
+                        evidence
+                        for page_payload in consensus_payloads
+                        for evidence in (
+                            page_payload.get("_candidate_facts_by_model") or []
+                        )
+                    ],
+                ]
+                return _lock_verified_exact_tms_contract(
+                    focused_payload,
+                    candidate_ids=focused_candidate_ids,
+                    entries_by_name=entries_by_name,
+                    style_code=style_code,
+                    color_code=color_code,
+                    required_votes=required_model_votes,
+                    candidate_facts_by_model=exact_contract_evidence,
+                )
+
             log(
                 f"鞋品 focused finalist 复核：{style_code}-{color_code}，"
                     f"{len(focused_candidate_ids)} 个候选族，{len(focused_sheets)} 张候选图"
             )
-            for current_model_id in model_ids:
-                if current_model_id in disabled_models:
-                    continue
-                result = analyze_batch_with_model(focused_batch, current_model_id)
-                used_timeout_probe = False
-                if not result.get("ok") and result.get("timeout_like"):
-                    used_timeout_probe = True
-                    result = analyze_batch_with_model(
+            focused_remaining_models = list(model_ids)
+            while focused_remaining_models:
+                available_models = [
+                    model_id
+                    for model_id in focused_remaining_models
+                    if model_id not in disabled_models
+                ]
+                if not available_models:
+                    break
+                needed_routes = max(
+                    1,
+                    focused_required_route_count() - len(focused_routes),
+                )
+                focused_wave = available_models[:needed_routes]
+                focused_remaining_models = [
+                    model_id
+                    for model_id in focused_remaining_models
+                    if model_id not in focused_wave
+                ]
+                log(
+                    f"鞋品 focused 智能并发评分：{style_code}-{color_code}，"
+                    f"模型 {','.join(focused_wave)}"
+                )
+                focused_results = _run_pose_model_wave(
+                    focused_wave,
+                    lambda current_model_id: analyze_batch_with_model(
+                        focused_batch,
+                        current_model_id,
+                    ),
+                    max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
+                )
+                timed_out_focused_models = [
+                    current_model_id
+                    for current_model_id, result in zip(
+                        focused_wave,
+                        focused_results,
+                    )
+                    if not result.get("ok") and result.get("timeout_like")
+                ]
+                has_fresh_focused_fallback = any(
+                    model_id not in disabled_models
+                    for model_id in focused_remaining_models
+                )
+                if timed_out_focused_models and has_fresh_focused_fallback:
+                    disabled_models.update(timed_out_focused_models)
+                    for current_model_id in timed_out_focused_models:
+                        log(
+                            f"[warn] 鞋品 focused 模型超时，优先切换独立 fallback："
+                            f"{style_code}-{color_code}，模型 {current_model_id}"
+                        )
+                    focused_probe_models: list[str] = []
+                else:
+                    focused_probe_models = timed_out_focused_models
+                focused_probe_results = _run_pose_model_wave(
+                    focused_probe_models,
+                    lambda current_model_id: analyze_batch_with_model(
                         focused_batch,
                         current_model_id,
                         timeout_seconds=SHOE_POSE_TIMEOUT_PROBE_SECONDS,
                         max_attempts=1,
                         timeout_probe=True,
-                    )
-                if not result.get("ok"):
-                    focused_errors.append(
-                        f"{current_model_id}: {_text(result.get('error')) or '未返回可用结果'}"
-                    )
-                    if result.get("configuration_error"):
-                        disabled_models.add(current_model_id)
-                    elif used_timeout_probe and result.get("timeout_like"):
-                        disabled_models.add(current_model_id)
-                        log(
-                            f"[warn] 鞋品 focused finalist 耐心复测仍超时，快速 fallback："
-                            f"{style_code}-{color_code}，模型 {current_model_id}"
-                        )
-                        update_focused_evidence()
-                        flush_pose_evidence("partial")
-                    continue
-                route_model_id = _text(result.get("route_model_id"))
-                if not route_model_id or route_model_id in focused_routes:
-                    continue
-                focused_routes.add(route_model_id)
-                focused_result = dict(result["payload"])
-                focused_result["_model_id"] = route_model_id
-                focused_payloads.append(focused_result)
-                focused_payload = _consensus_pose_payload(
-                    focused_payloads,
-                    focused_candidate_ids,
-                    kwargs.get("shoe_category") or "",
-                    required_votes=required_model_votes,
+                    ),
+                    max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
                 )
-                focused_missing = focused_missing_slots(focused_payload)
+                probe_by_model = dict(zip(focused_probe_models, focused_probe_results))
+                for current_model_id, initial_result in zip(
+                    focused_wave,
+                    focused_results,
+                ):
+                    result = probe_by_model.get(current_model_id, initial_result)
+                    used_timeout_probe = current_model_id in probe_by_model
+                    if not result.get("ok"):
+                        focused_errors.append(
+                            f"{current_model_id}: "
+                            f"{_text(result.get('error')) or '未返回可用结果'}"
+                        )
+                        if result.get("configuration_error"):
+                            disabled_models.add(current_model_id)
+                        elif used_timeout_probe and result.get("timeout_like"):
+                            disabled_models.add(current_model_id)
+                            log(
+                                f"[warn] 鞋品 focused finalist 耐心复测仍超时，快速 fallback："
+                                f"{style_code}-{color_code}，模型 {current_model_id}"
+                            )
+                        continue
+                    route_model_id = _text(result.get("route_model_id"))
+                    if not route_model_id or route_model_id in focused_routes:
+                        continue
+                    focused_routes.add(route_model_id)
+                    focused_result = dict(result["payload"])
+                    focused_result["_model_id"] = route_model_id
+                    focused_payloads.append(focused_result)
+                if focused_payloads:
+                    focused_payload = _consensus_pose_payload(
+                        focused_payloads,
+                        focused_candidate_ids,
+                        kwargs.get("shoe_category") or "",
+                        required_votes=required_model_votes,
+                    )
+                    exact_contract_locked = try_lock_exact_tms_contract()
+                    focused_missing = focused_missing_slots(focused_payload)
+                    if exact_contract_locked:
+                        log(
+                            f"鞋品精确白底契约提前锁定：{style_code}-{color_code}，"
+                            "tmz5 跳过后续模型和 targeted 二次投票"
+                        )
                 update_focused_evidence()
                 flush_pose_evidence("partial")
-                if (
-                    not focused_missing
-                    and len(focused_routes) >= focused_required_route_count()
-                ):
+                if len(focused_routes) >= focused_required_route_count():
+                    if focused_missing:
+                        log(
+                            f"鞋品 focused 已达到独立路由法定数，转精确单槽位审核："
+                            f"{style_code}-{color_code}，待裁决 {','.join(focused_missing)}"
+                        )
                     break
+
+            if focused_payload is not None and try_lock_exact_tms_contract():
+                focused_missing = focused_missing_slots(focused_payload)
+                if "tmz5" not in focused_missing:
+                    log(
+                        f"鞋品精确白底契约提前锁定：{style_code}-{color_code}，"
+                        "tmz5 跳过 targeted 二次投票"
+                    )
+                update_focused_evidence()
+                flush_pose_evidence("partial")
 
             focused_targets = list(focused_missing)
             for mandatory_slot in available_mandatory_targeted_slots:
@@ -5742,94 +6026,160 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                             f"{len(current_candidate_ids)} 个候选，要求 "
                             f"{target_required_votes} 个独立路由同票"
                         )
-                        for current_model_id in model_ids:
-                            if current_model_id in disabled_models:
-                                continue
-                            result = analyze_batch_with_model(target_batch, current_model_id)
-                            used_timeout_probe = False
-                            if not result.get("ok") and result.get("timeout_like"):
-                                used_timeout_probe = True
-                                result = analyze_batch_with_model(
+                        target_remaining_models = list(model_ids)
+                        while target_remaining_models:
+                            available_models = [
+                                model_id
+                                for model_id in target_remaining_models
+                                if model_id not in disabled_models
+                            ]
+                            if not available_models:
+                                break
+                            needed_routes = max(
+                                1,
+                                target_required_votes - len(target_routes),
+                            )
+                            target_wave = available_models[:needed_routes]
+                            target_remaining_models = [
+                                model_id
+                                for model_id in target_remaining_models
+                                if model_id not in target_wave
+                            ]
+                            log(
+                                f"鞋品 focused 单槽位智能并发评分："
+                                f"{style_code}-{color_code}，槽位 {target_slot}，"
+                                f"第 {round_index} 轮，模型 {','.join(target_wave)}"
+                            )
+                            target_results = _run_pose_model_wave(
+                                target_wave,
+                                lambda current_model_id: analyze_batch_with_model(
+                                    target_batch,
+                                    current_model_id,
+                                ),
+                                max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
+                            )
+                            timed_out_target_models = [
+                                current_model_id
+                                for current_model_id, result in zip(
+                                    target_wave,
+                                    target_results,
+                                )
+                                if not result.get("ok") and result.get("timeout_like")
+                            ]
+                            has_fresh_target_fallback = any(
+                                model_id not in disabled_models
+                                for model_id in target_remaining_models
+                            )
+                            if timed_out_target_models and has_fresh_target_fallback:
+                                disabled_models.update(timed_out_target_models)
+                                for current_model_id in timed_out_target_models:
+                                    log(
+                                        f"[warn] 鞋品 focused 单槽位模型超时，"
+                                        f"优先切换独立 fallback：{style_code}-{color_code}，"
+                                        f"模型 {current_model_id}，槽位 {target_slot}，"
+                                        f"第 {round_index} 轮"
+                                    )
+                                probe_models: list[str] = []
+                            else:
+                                probe_models = timed_out_target_models
+                            probe_results = _run_pose_model_wave(
+                                probe_models,
+                                lambda current_model_id: analyze_batch_with_model(
                                     target_batch,
                                     current_model_id,
                                     timeout_seconds=SHOE_POSE_TIMEOUT_PROBE_SECONDS,
                                     max_attempts=1,
                                     timeout_probe=True,
+                                ),
+                                max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
+                            )
+                            probe_by_model = dict(zip(probe_models, probe_results))
+                            for current_model_id, initial_result in zip(
+                                target_wave,
+                                target_results,
+                            ):
+                                result = probe_by_model.get(
+                                    current_model_id,
+                                    initial_result,
                                 )
-                            if not result.get("ok"):
-                                error_text = (
-                                    f"第{round_index}轮 {current_model_id}: "
-                                    f"{_text(result.get('error')) or '未返回可用结果'}"
-                                )
-                                round_errors.append(error_text)
-                                target_errors.append(error_text)
-                                if result.get("configuration_error"):
-                                    disabled_models.add(current_model_id)
-                                elif used_timeout_probe and result.get("timeout_like"):
-                                    disabled_models.add(current_model_id)
-                                    log(
-                                        f"[warn] 鞋品 focused 单槽位耐心复测仍超时，快速 fallback："
-                                        f"{style_code}-{color_code}，模型 {current_model_id}，"
-                                        f"槽位 {target_slot}，第 {round_index} 轮"
+                                used_timeout_probe = current_model_id in probe_by_model
+                                if not result.get("ok"):
+                                    error_text = (
+                                        f"第{round_index}轮 {current_model_id}: "
+                                        f"{_text(result.get('error')) or '未返回可用结果'}"
                                     )
-                                continue
-                            route_model_id = _text(result.get("route_model_id"))
-                            if not route_model_id or route_model_id in target_routes:
-                                continue
-                            target_routes.add(route_model_id)
-                            all_target_routes.add(route_model_id)
-                            target_result = _restrict_pose_payload_to_target_slot(
-                                dict(result["payload"]),
-                                current_candidate_ids,
-                                target_slot,
-                            )
-                            target_result["_model_id"] = route_model_id
-                            target_payloads.append(target_result)
-                            target_payload = _consensus_pose_payload(
-                                target_payloads,
-                                current_candidate_ids,
-                                kwargs.get("shoe_category") or "",
-                                required_votes=target_required_votes,
-                            )
-                            target_vote = dict(
-                                (target_payload.get("_model_votes") or {}).get(target_slot)
-                                or {}
-                            )
-                            round_evidence.update({
-                                "routes": sorted(target_routes),
-                                "status": (
-                                    "locked"
-                                    if target_vote.get("status") == "locked"
-                                    else "partial"
-                                ),
-                                "model_votes": target_payload.get("_model_votes") or {},
-                                "consensus_issues": (
-                                    target_payload.get("_consensus_issues") or []
-                                ),
-                                "candidate_facts_by_model": (
-                                    target_payload.get("_candidate_facts_by_model") or []
-                                ),
-                            })
-                            targeted_slot_consensus[target_slot] = {
-                                "status": round_evidence["status"],
-                                "reference_image": reference_image,
-                                "routes": sorted(target_routes),
-                                "required_votes": target_required_votes,
-                                "model_votes": target_payload.get("_model_votes") or {},
-                                "consensus_issues": (
-                                    target_payload.get("_consensus_issues") or []
-                                ),
-                                "candidate_facts_by_model": (
-                                    target_payload.get("_candidate_facts_by_model") or []
-                                ),
-                                "candidate_ids": dict(target_candidate_ids),
-                                "excluded_candidates": excluded_candidates,
-                                "contact_sheets": list(target_contact_sheets),
-                                "rounds": target_rounds,
-                                "errors": target_errors,
-                            }
-                            update_focused_evidence()
-                            flush_pose_evidence("partial")
+                                    round_errors.append(error_text)
+                                    target_errors.append(error_text)
+                                    if result.get("configuration_error"):
+                                        disabled_models.add(current_model_id)
+                                    elif used_timeout_probe and result.get("timeout_like"):
+                                        disabled_models.add(current_model_id)
+                                        log(
+                                            f"[warn] 鞋品 focused 单槽位耐心复测仍超时，快速 fallback："
+                                            f"{style_code}-{color_code}，模型 {current_model_id}，"
+                                            f"槽位 {target_slot}，第 {round_index} 轮"
+                                        )
+                                    continue
+                                route_model_id = _text(result.get("route_model_id"))
+                                if not route_model_id or route_model_id in target_routes:
+                                    continue
+                                target_routes.add(route_model_id)
+                                all_target_routes.add(route_model_id)
+                                target_result = _restrict_pose_payload_to_target_slot(
+                                    dict(result["payload"]),
+                                    current_candidate_ids,
+                                    target_slot,
+                                )
+                                target_result["_model_id"] = route_model_id
+                                target_payloads.append(target_result)
+                            if target_payloads:
+                                target_payload = _consensus_pose_payload(
+                                    target_payloads,
+                                    current_candidate_ids,
+                                    kwargs.get("shoe_category") or "",
+                                    required_votes=target_required_votes,
+                                )
+                                target_vote = dict(
+                                    (target_payload.get("_model_votes") or {}).get(
+                                        target_slot
+                                    )
+                                    or {}
+                                )
+                                round_evidence.update({
+                                    "routes": sorted(target_routes),
+                                    "status": (
+                                        "locked"
+                                        if target_vote.get("status") == "locked"
+                                        else "partial"
+                                    ),
+                                    "model_votes": target_payload.get("_model_votes") or {},
+                                    "consensus_issues": (
+                                        target_payload.get("_consensus_issues") or []
+                                    ),
+                                    "candidate_facts_by_model": (
+                                        target_payload.get("_candidate_facts_by_model") or []
+                                    ),
+                                })
+                                targeted_slot_consensus[target_slot] = {
+                                    "status": round_evidence["status"],
+                                    "reference_image": reference_image,
+                                    "routes": sorted(target_routes),
+                                    "required_votes": target_required_votes,
+                                    "model_votes": target_payload.get("_model_votes") or {},
+                                    "consensus_issues": (
+                                        target_payload.get("_consensus_issues") or []
+                                    ),
+                                    "candidate_facts_by_model": (
+                                        target_payload.get("_candidate_facts_by_model") or []
+                                    ),
+                                    "candidate_ids": dict(target_candidate_ids),
+                                    "excluded_candidates": excluded_candidates,
+                                    "contact_sheets": list(target_contact_sheets),
+                                    "rounds": target_rounds,
+                                    "errors": target_errors,
+                                }
+                                update_focused_evidence()
+                                flush_pose_evidence("partial")
                             if (
                                 target_vote.get("status") == "locked"
                                 and int(target_vote.get("votes") or 0)
@@ -6386,29 +6736,42 @@ def _semantic_report_fields(
     if vote is None:
         return {}
 
-    voting_models = {
+    voting_models = list(dict.fromkeys(
         _text(model_id)
         for model_id in (vote.get("models") or [])
         if _text(model_id)
-    }
+    ))
     model_facts: list[dict[str, Any]] = []
-    for model_evidence in selection.get("_candidate_facts_by_model") or []:
-        if not isinstance(model_evidence, dict):
-            continue
-        model_id = _text(model_evidence.get("model_id"))
-        if model_id not in voting_models:
-            continue
-        matching_fact = next(
-            (
-                fact
-                for fact in (model_evidence.get("candidate_facts") or [])
-                if isinstance(fact, dict)
-                and _copy_variant_key(_text(fact.get("filename"))) == source_family
-            ),
-            None,
-        )
-        if matching_fact is not None:
-            model_facts.append({"model_id": model_id, "fact": matching_fact})
+    for model_id in voting_models:
+        matching_facts = [
+            fact
+            for model_evidence in (
+                selection.get("_candidate_facts_by_model") or []
+            )
+            if isinstance(model_evidence, dict)
+            and _text(model_evidence.get("model_id")) == model_id
+            for fact in (model_evidence.get("candidate_facts") or [])
+            if isinstance(fact, dict)
+            and _copy_variant_key(_text(fact.get("filename"))) == source_family
+        ]
+        supporting_fact = None
+        for fact in matching_facts:
+            candidate_id = _text(fact.get("candidate_id"))
+            parsed_facts = shenhui_shoe_rules.parse_candidate_facts(
+                {"candidates": [fact]},
+                ({candidate_id: _text(fact.get("filename"))} if candidate_id else {}),
+            )
+            if parsed_facts and shenhui_shoe_rules.candidate_is_valid_for_slot(
+                parsed_facts[0],
+                vote_slot,
+                _text(selection.get("shoe_category")),
+            )[0]:
+                supporting_fact = fact
+                break
+        if supporting_fact is None and matching_facts:
+            supporting_fact = matching_facts[0]
+        if supporting_fact is not None:
+            model_facts.append({"model_id": model_id, "fact": supporting_fact})
 
     return {
         "语义属性": json.dumps(

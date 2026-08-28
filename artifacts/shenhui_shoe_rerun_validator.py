@@ -53,7 +53,10 @@ def summarize_logs(logs: list[Any]) -> dict[str, Any]:
         "ocr_model_attempts": sum("鞋盒标签 OCR 模型尝试" in line for line in lines),
         "soft_timeout_count": sum("60 秒软超时" in line for line in lines),
         "timeout_probe_count": sum("单批耐心复测" in line or "单次耐心复测" in line for line in lines),
-        "fallback_count": sum("快速 fallback" in line for line in lines),
+        "fallback_count": sum(
+            "快速 fallback" in line or "优先切换独立 fallback" in line
+            for line in lines
+        ),
         "strategy_lines": [line for line in lines if "鞋品姿势识别策略：" in line],
     }
 
@@ -911,7 +914,7 @@ def validate_semantic_rows(
                 f"selected={selected_family or 'empty'} actual={source_family or 'empty'}"
             )
             continue
-        valid_models: set[str] = set()
+        facts_by_model: dict[str, list[shoe_rules.CandidateFacts]] = {}
         for item in evidence.get("models") or []:
             if not isinstance(item, dict):
                 continue
@@ -921,21 +924,40 @@ def validate_semantic_rows(
                 continue
             if model_id not in model_ids:
                 continue
-            if shoe._copy_variant_key(fact.filename) != source_family:
+            facts_by_model.setdefault(model_id, []).append(fact)
+
+        valid_models: set[str] = set()
+        for model_id in sorted(model_ids):
+            facts = facts_by_model.get(model_id) or []
+            source_facts = [
+                fact
+                for fact in facts
+                if shoe._copy_variant_key(fact.filename) == source_family
+            ]
+            if not source_facts:
                 issues.append(
                     f"{slot} model {model_id} facts do not match actual source: "
-                    f"{fact.filename} != {text(row.get('原文件名'))}"
+                    f"{facts[0].filename if facts else 'empty'} != "
+                    f"{text(row.get('原文件名'))}"
                 )
                 continue
-            valid, reason = shoe_rules.candidate_is_valid_for_slot(
-                fact,
-                evidence_slot,
-                category,
-            )
-            if not valid:
-                issues.append(f"{slot} model {model_id} invalid semantics: {reason}")
-                continue
-            valid_models.add(model_id)
+            reasons: list[str] = []
+            for fact in source_facts:
+                valid, reason = shoe_rules.candidate_is_valid_for_slot(
+                    fact,
+                    evidence_slot,
+                    category,
+                )
+                if valid:
+                    valid_models.add(model_id)
+                    break
+                if reason:
+                    reasons.append(reason)
+            if model_id not in valid_models:
+                issues.append(
+                    f"{slot} model {model_id} invalid semantics: "
+                    f"{reasons[0] if reasons else 'no valid supporting fact'}"
+                )
         if len(valid_models) < required_votes:
             issues.append(
                 f"{slot} valid semantic facts insufficient "
@@ -1168,7 +1190,11 @@ def main() -> int:
         default="gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5",
         help="Comma-separated model chain for OCR; first is primary.",
     )
-    parser.add_argument("--pose-parallelism", type=int, default=shoe.SHOE_POSE_BATCH_PARALLELISM)
+    parser.add_argument(
+        "--pose-parallelism",
+        type=int,
+        default=shoe.SHOE_POSE_MAX_CONCURRENT_CALLS,
+    )
     parser.add_argument("--pose-timeout", type=float, default=shoe.SHOE_POSE_MODEL_TIMEOUT_SECONDS)
     parser.add_argument(
         "--pose-strategy",
@@ -1220,7 +1246,9 @@ def main() -> int:
         pose_models = ["gpt-5.6-sol"]
     if not label_models:
         label_models = ["gpt-5.6-sol"]
-    shoe.SHOE_POSE_BATCH_PARALLELISM = max(1, int(args.pose_parallelism))
+    pose_parallelism = max(1, int(args.pose_parallelism))
+    shoe.SHOE_POSE_BATCH_PARALLELISM = pose_parallelism
+    shoe.SHOE_POSE_MAX_CONCURRENT_CALLS = pose_parallelism
     shoe.SHOE_POSE_MODEL_TIMEOUT_SECONDS = max(1.0, float(args.pose_timeout))
     shoe.SHOE_LABEL_OCR_TIMEOUT_SECONDS = max(1.0, float(args.label_timeout))
 
@@ -1248,7 +1276,7 @@ def main() -> int:
             "pose_models": pose_models,
             "pose_strategy": args.pose_strategy,
             "label_models": label_models,
-            "pose_parallelism": shoe.SHOE_POSE_BATCH_PARALLELISM,
+            "pose_parallelism": shoe.SHOE_POSE_MAX_CONCURRENT_CALLS,
             "pose_timeout": shoe.SHOE_POSE_MODEL_TIMEOUT_SECONDS,
             "label_timeout": shoe.SHOE_LABEL_OCR_TIMEOUT_SECONDS,
             "issues": [f"{type(exc).__name__}: {text(exc)}"],
@@ -1309,7 +1337,7 @@ def main() -> int:
         "pose_models": pose_models,
         "pose_strategy": args.pose_strategy,
         "label_models": label_models,
-        "pose_parallelism": shoe.SHOE_POSE_BATCH_PARALLELISM,
+        "pose_parallelism": shoe.SHOE_POSE_MAX_CONCURRENT_CALLS,
         "pose_timeout": shoe.SHOE_POSE_MODEL_TIMEOUT_SECONDS,
         "label_timeout": shoe.SHOE_LABEL_OCR_TIMEOUT_SECONDS,
         "issues": issues,

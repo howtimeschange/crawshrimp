@@ -106,6 +106,41 @@ def test_validator_accepts_two_valid_yq3_model_facts():
     assert issues == []
 
 
+def test_validator_ignores_stale_invalid_fact_when_same_model_has_valid_support():
+    valid = fact("outer.jpg")
+    stale = fact(
+        "outer.jpg",
+        pose="other",
+        side="side_rear",
+        matched_slots=[],
+    )
+    row = semantic_row("yq3", [valid, valid])
+    row["语义属性"] = json.dumps(
+        {
+            "slot": "yq3",
+            "models": [
+                {"model_id": "model-1", "fact": stale},
+                {"model_id": "model-1", "fact": valid},
+                {"model_id": "model-2", "fact": valid},
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    issues = validator.validate_semantic_rows([row], category="婴童")
+
+    assert issues == []
+
+
+def test_log_summary_counts_fresh_independent_fallback_switches():
+    metrics = validator.summarize_logs([
+        "[warn] 鞋品 focused 单槽位模型超时，优先切换独立 fallback：204426146036-00317",
+        "[warn] 鞋品 focused 单槽位模型超时，优先切换独立 fallback：204426146036-00317",
+    ])
+
+    assert metrics["fallback_count"] == 2
+
+
 def test_validator_rejects_semantic_evidence_for_a_different_source_image():
     valid = fact("voted-outer.jpg")
     row = semantic_row("yq3", [valid, valid])
