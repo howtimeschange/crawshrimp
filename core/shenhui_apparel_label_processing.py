@@ -129,6 +129,14 @@ def detect_yq_role(filename: str) -> str:
     return YQ_HANG_TAG if marker in {"1", "一"} else YQ_WASH_LABEL
 
 
+def _is_exact_yq_filename(filename: str, role: str) -> bool:
+    stem = Path(_compact(filename)).stem.lower()
+    stem = stem.replace("（", "(").replace("）", ")")
+    stem = re.sub(r"\s+", "", stem)
+    marker = "1" if role == YQ_HANG_TAG else "2"
+    return bool(re.fullmatch(rf"yq(?:{marker}|\({marker}\))(?:-\d+)?", stem))
+
+
 def extract_scope(
     style_code: str,
     row: Mapping[str, object],
@@ -144,18 +152,6 @@ def extract_scope(
         if match:
             return style, match.group(1)
     return style, ""
-
-
-def _extract_color_scope(style_code: str, *values: object) -> str:
-    style = _compact(style_code)
-    if not style:
-        return ""
-    pattern = _STYLE_COLOR_PATTERN_TEMPLATE.format(style=re.escape(style))
-    for value in values:
-        match = re.search(pattern, _compact(value))
-        if match:
-            return match.group(1)
-    return ""
 
 
 def _primary_size(value: object) -> int | None:
@@ -346,11 +342,19 @@ def _decision_from_candidate(
     expected_role: str,
     style_code: str,
     color_code: str,
+    allow_related_style: bool = False,
 ) -> str:
-    reason = candidate_rejection_reason(candidate, style_code)
+    recognized_style = _compact(candidate.style_code)
+    rejection_style = recognized_style if allow_related_style else style_code
+    reason = candidate_rejection_reason(candidate, rejection_style)
     if reason:
         return reason
-    if color_code and candidate.color_code and candidate.color_code != color_code:
+    if (
+        color_code
+        and candidate.color_code
+        and candidate.color_code != color_code
+        and (not recognized_style or recognized_style == _compact(style_code))
+    ):
         return f"识别色号与当前款色不一致：{candidate.color_code}"
     return ""
 
@@ -373,18 +377,39 @@ def validate_existing_yq(
             expected_role=expected_role,
             style_code=style_code,
             color_code=color_code,
+            allow_related_style=True,
         )
     ]
+    expected_scoped_votes = [
+        candidate
+        for candidate in valid
+        if candidate.kind == expected_role
+        and _compact(candidate.style_code) == _compact(style_code)
+    ]
+    competing_scoped_roles = {
+        candidate.kind
+        for candidate in valid
+        if candidate.kind != expected_role
+        and _compact(candidate.style_code)
+    }
+    if expected_scoped_votes and not competing_scoped_roles:
+        valid = expected_scoped_votes
     model_ids = {candidate.model_id for candidate in valid if candidate.model_id}
     semantic_keys = {_semantic_key(candidate) for candidate in valid}
     if len(model_ids) >= 2 and len(semantic_keys) == 1:
         candidate = valid[0]
+        recognized_style = _compact(candidate.style_code) or _compact(style_code)
+        related = recognized_style != _compact(style_code)
         return ExistingYqDecision(
             True,
             candidate.kind,
-            style_code,
+            recognized_style,
             color_code,
-            "两个视觉模型一致确认现成 yq 有效",
+            (
+                f"两个视觉模型一致确认关联部件标签有效：{recognized_style}"
+                if related
+                else "两个视觉模型一致确认现成 yq 有效"
+            ),
             tuple(sorted(model_ids)),
         )
 
@@ -404,6 +429,7 @@ def validate_existing_yq(
                 expected_role=expected_role,
                 style_code=style_code,
                 color_code=color_code,
+                allow_related_style=True,
             )
         ]
         if len(sol_valid) == 1:
@@ -420,11 +446,59 @@ def validate_existing_yq(
                 return ExistingYqDecision(
                     True,
                     candidate.kind,
-                    style_code,
+                    _compact(candidate.style_code) or _compact(style_code),
                     color_code,
-                    "初审模型分歧，一初审模型与 Sol 复核一致确认现成 yq 有效",
+                    (
+                        f"初审模型分歧，一初审模型与 Sol 复核一致确认关联部件标签有效："
+                        f"{_compact(candidate.style_code)}"
+                        if _compact(candidate.style_code)
+                        and _compact(candidate.style_code) != _compact(style_code)
+                        else "初审模型分歧，一初审模型与 Sol 复核一致确认现成 yq 有效"
+                    ),
                     tuple(sorted(model_id for model_id in model_ids if model_id)),
                 )
+
+    exact_name_votes = [
+        candidate
+        for candidate in valid
+        if candidate.kind == expected_role
+        and candidate.confidence >= 0.85
+        and (
+            not _compact(candidate.style_code)
+            or _compact(candidate.style_code) == _compact(style_code)
+        )
+    ]
+    conflicting_valid_roles = {
+        candidate.kind
+        for candidate in valid
+        if candidate.kind in VALID_YQ_ROLES and candidate.kind != expected_role
+    }
+    waste_or_handwritten_models = {
+        candidate.model_id
+        for candidate in reviews
+        if candidate.model_id
+        and (
+            candidate.handwritten_placeholder
+            or _negative_label_semantic(candidate.negative_text)
+        )
+    }
+    if (
+        has_disagreement
+        and len(reviews) >= 2
+        and _is_exact_yq_filename(path.name, expected_role)
+        and exact_name_votes
+        and not conflicting_valid_roles
+        and len(waste_or_handwritten_models) < 2
+    ):
+        candidate = max(exact_name_votes, key=lambda item: item.confidence)
+        return ExistingYqDecision(
+            True,
+            expected_role,
+            _compact(candidate.style_code) or _compact(style_code),
+            color_code,
+            "精确 yq 命名与单模型高置信内容证据一致，保留现成 yq",
+            tuple(sorted({item.model_id for item in exact_name_votes if item.model_id})),
+        )
 
     invalid_reasons = [
         _decision_from_candidate(
@@ -432,6 +506,7 @@ def validate_existing_yq(
             expected_role=expected_role,
             style_code=style_code,
             color_code=color_code,
+            allow_related_style=True,
         )
         for candidate in reviews
     ]
@@ -632,15 +707,14 @@ def _size_rank(candidate: LabelCandidate) -> tuple[int, int, float]:
 def select_candidates(
     candidates: Sequence[LabelCandidate],
     style_code: str,
-    missing_scopes: set[tuple[str, str]],
+    missing_roles: set[str],
 ) -> list[LabelCandidate]:
     selected: list[LabelCandidate] = []
-    for color_code, role in sorted(missing_scopes):
+    for role in sorted(missing_roles):
         scoped = [
             item
             for item in candidates
             if item.style_code == style_code
-            and item.color_code == color_code
             and item.kind == role
             and not candidate_rejection_reason(item, style_code)
         ]
@@ -822,12 +896,12 @@ def _role_label(role: str) -> str:
     return "吊牌" if role == YQ_HANG_TAG else "洗唛"
 
 
-def _canonical_yq_filename(style_code: str, color_code: str, role: str, suffix: str = ".jpg") -> str:
-    marker = "yq1" if role == YQ_HANG_TAG else "yq2"
+def _canonical_yq_filename(role: str, suffix: str = ".jpg", sequence: int = 1) -> str:
+    marker = "yq(1)" if role == YQ_HANG_TAG else "yq(2)"
     extension = suffix.lower() if suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} else ".jpg"
-    if color_code:
-        return f"{style_code}-{color_code}_{marker}{extension}"
-    return f"{marker}{extension}"
+    index = max(1, int(sequence or 1))
+    tail = "" if index == 1 else f"-{index}"
+    return f"{marker}{tail}{extension}"
 
 
 def _existing_plan_preference(plan: ExistingYqRenamePlan) -> tuple[int, int, int, str]:
@@ -933,16 +1007,25 @@ def _reject_existing_row(
         path.unlink(missing_ok=True)
 
 
-def _existing_audit_fields(row: dict, decision: ExistingYqDecision, path: Path) -> None:
+def _existing_audit_fields(
+    row: dict,
+    decision: ExistingYqDecision,
+    path: Path,
+    expected_style_code: str,
+) -> None:
+    related = bool(
+        _compact(decision.style_code)
+        and _compact(decision.style_code) != _compact(expected_style_code)
+    )
     row["标签角色"] = _role_label(decision.role)
     row["识别模型"] = "+".join(decision.model_ids)
     row["识别款号"] = decision.style_code
     row["识别色号"] = decision.color_code
     row["识别尺码"] = ""
-    row["标签判定"] = "现成 yq 有效"
+    row["标签判定"] = "关联部件标签有效" if related else "现成 yq 有效"
     row["标签证据"] = decision.reason
     row["最终裁图"] = str(path)
-    row["处理动作"] = "现成 yq 已锁定"
+    row["处理动作"] = "关联部件 yq 已保留" if related else "现成 yq 已锁定"
     row["备注"] = _append_note(row.get("备注"), decision.reason)
 
 
@@ -967,9 +1050,29 @@ def process_prepare_upload_package_labels(
     rejected_paths: list[Path] = []
     audit_rows: list[dict] = []
     global_locks: set[tuple[str, str]] = set()
-    color_locks: set[tuple[str, str, str]] = set()
     observed_styles: set[str] = set()
-    observed_color_scopes: set[tuple[str, str]] = set()
+    style_color_hints: dict[str, set[str]] = {}
+
+    for source_row in data_rows or []:
+        if not isinstance(source_row, dict):
+            continue
+        group_style = _compact(
+            source_row.get("__shenhui_group_code")
+            or source_row.get("输入款号")
+            or source_row.get("输入编码")
+        )
+        if not group_style:
+            continue
+        pattern = _STYLE_COLOR_PATTERN_TEMPLATE.format(style=re.escape(group_style))
+        for value in (
+            source_row.get("__style_color_code"),
+            source_row.get("输入编码"),
+            source_row.get("文件名"),
+            source_row.get("云盘路径"),
+        ):
+            match = re.search(pattern, _compact(value))
+            if match:
+                style_color_hints.setdefault(group_style, set()).add(match.group(1))
 
     existing_jobs: list[ReviewJob] = []
     existing_by_job: dict[str, tuple[dict, Path, str]] = {}
@@ -984,13 +1087,6 @@ def process_prepare_upload_package_labels(
         style_code = _compact(row.get("__shenhui_group_code") or row.get("输入款号") or row.get("输入编码"))
         if style_code:
             observed_styles.add(style_code)
-            color_scope = _extract_color_scope(
-                style_code,
-                row.get("__style_color_code"),
-                row.get("输入编码"),
-            )
-            if color_scope:
-                observed_color_scopes.add((style_code, color_scope))
         expected_role = _compact(row.get("__yq_kind")) or detect_yq_role(path.name)
         if not path.is_file() or not _image_is_openable(path):
             reason = "现成 yq 文件损坏或无法打开"
@@ -1038,11 +1134,11 @@ def process_prepare_upload_package_labels(
     for _job, row, path, style_code, decision in existing_decisions:
         if not decision.accepted:
             continue
+        is_primary_style = _compact(decision.style_code) == _compact(style_code)
         target = path.parent / _canonical_yq_filename(
-            style_code,
-            decision.color_code,
             decision.role,
             path.suffix,
+            1 if is_primary_style else 2,
         )
         accepted_plans.append(
             ExistingYqRenamePlan(row, path, style_code, decision, target, path)
@@ -1050,17 +1146,19 @@ def process_prepare_upload_package_labels(
 
     plans_by_scope: dict[tuple[str, str, str], list[ExistingYqRenamePlan]] = {}
     for plan in accepted_plans:
-        lock_key = (plan.style_code, plan.decision.color_code, plan.decision.role)
+        recognized_style = _compact(plan.decision.style_code) or plan.style_code
+        lock_key = (plan.style_code, plan.decision.role, recognized_style)
         plans_by_scope.setdefault(lock_key, []).append(plan)
     deduplicated_plans: list[ExistingYqRenamePlan] = []
-    for (_style_code, _color_code, role), scoped_plans in plans_by_scope.items():
+    for (_style_code, role, recognized_style), scoped_plans in plans_by_scope.items():
         ordered_plans = sorted(scoped_plans, key=_existing_plan_preference)
         winner = ordered_plans[0]
         deduplicated_plans.append(winner)
-        role_marker = "yq1" if role == YQ_HANG_TAG else "yq2"
+        role_marker = "yq(1)" if role == YQ_HANG_TAG else "yq(2)"
         for duplicate in ordered_plans[1:]:
             reason = (
-                f"同款色已有明确 {role_marker} 命名图 {winner.source.name}，"
+                f"同款同标签款号 {recognized_style} 已有明确 {role_marker} 命名图 "
+                f"{winner.source.name}，"
                 f"重复{_role_label(role)}已剔除"
             )
             _reject_existing_row(
@@ -1071,6 +1169,30 @@ def process_prepare_upload_package_labels(
             )
             rejected_paths.append(duplicate.source)
     accepted_plans = deduplicated_plans
+
+    plans_by_role: dict[tuple[str, str], list[ExistingYqRenamePlan]] = {}
+    for plan in accepted_plans:
+        plans_by_role.setdefault((plan.style_code, plan.decision.role), []).append(plan)
+    for (group_style, _role), scoped_plans in plans_by_role.items():
+        ordered = sorted(
+            scoped_plans,
+            key=lambda item: (
+                0 if _compact(item.decision.style_code) == _compact(group_style) else 1,
+                _compact(item.decision.style_code),
+                _existing_plan_preference(item),
+            ),
+        )
+        related_sequence = 2
+        for plan in ordered:
+            is_primary_style = _compact(plan.decision.style_code) == _compact(group_style)
+            sequence = 1 if is_primary_style else related_sequence
+            if not is_primary_style:
+                related_sequence += 1
+            plan.target = plan.source.parent / _canonical_yq_filename(
+                plan.decision.role,
+                plan.source.suffix,
+                sequence,
+            )
 
     source_paths = {plan.source for plan in accepted_plans}
     target_counts: dict[Path, int] = {}
@@ -1111,7 +1233,7 @@ def process_prepare_upload_package_labels(
                 for part in str(row.get("备注") or "").split("；")
                 if part.strip() and part.strip() != stale_note
             )
-        _existing_audit_fields(row, decision, path)
+        _existing_audit_fields(row, decision, path, style_code)
         if plan.source.name != path.name:
             row["备注"] = _append_note(
                 row.get("备注"),
@@ -1119,10 +1241,7 @@ def process_prepare_upload_package_labels(
             )
         accepted_existing.append(path)
         audit_rows.append(row)
-        if decision.color_code:
-            color_locks.add((style_code, decision.color_code, decision.role))
-            observed_color_scopes.add((style_code, decision.color_code))
-        else:
+        if _compact(decision.style_code) == _compact(style_code):
             global_locks.add((style_code, decision.role))
 
     page_jobs: list[ReviewJob] = []
@@ -1216,8 +1335,6 @@ def process_prepare_upload_package_labels(
         for candidate in merged:
             if expected_role and candidate.kind != expected_role:
                 continue
-            if candidate.color_code:
-                observed_color_scopes.add((style_code, candidate.color_code))
             candidates_by_pdf[pdf_index].append(candidate)
 
     generated_count = 0
@@ -1231,16 +1348,13 @@ def process_prepare_upload_package_labels(
             for item in candidates_by_pdf.get(pdf_index, [])
             if item.style_code == style_code
             and (style_code, item.kind) not in global_locks
-            and (style_code, item.color_code, item.kind) not in color_locks
             and (not role_hint or item.kind == role_hint)
         ]
-        scopes = {(item.color_code, item.kind) for item in candidates if item.kind in VALID_YQ_ROLES}
-        selected = select_candidates(candidates, style_code, scopes)
+        roles = {item.kind for item in candidates if item.kind in VALID_YQ_ROLES}
+        selected = select_candidates(candidates, style_code, roles)
         generated_for_pdf = 0
         for candidate in selected:
             output_path = package_root / style_code / _canonical_yq_filename(
-                style_code,
-                candidate.color_code,
                 candidate.kind,
                 ".jpg",
             )
@@ -1255,9 +1369,18 @@ def process_prepare_upload_package_labels(
                 output_path.unlink(missing_ok=True)
                 row["备注"] = _append_note(row.get("备注"), verification.reason)
                 continue
-            color_locks.add((style_code, candidate.color_code, candidate.kind))
+            global_locks.add((style_code, candidate.kind))
             generated_count += 1
             generated_for_pdf += 1
+            recognized_color = _compact(candidate.color_code)
+            evidence = verification.reason
+            hints = style_color_hints.get(style_code, set())
+            if not recognized_color and len(hints) == 1:
+                recognized_color = next(iter(hints))
+                evidence = _append_note(
+                    evidence,
+                    f"模型未返回色号，按目录唯一款色文件名证据补齐：{recognized_color}",
+                )
             generated_row = {
                 "输入款号": style_code,
                 "输入编码": row.get("输入编码") or style_code,
@@ -1267,14 +1390,14 @@ def process_prepare_upload_package_labels(
                 "处理动作": "AI 识别裁图",
                 "下载结果": "已生成",
                 "本地文件": str(output_path),
-                "备注": verification.reason,
+                "备注": evidence,
                 "标签角色": _role_label(candidate.kind),
                 "识别模型": candidate.model_id,
                 "识别款号": candidate.style_code,
-                "识别色号": candidate.color_code,
+                "识别色号": recognized_color,
                 "识别尺码": str(preferred_size(candidate.sizes) or ""),
                 "标签判定": "通过",
-                "标签证据": verification.reason,
+                "标签证据": evidence,
                 "最终裁图": str(output_path),
                 "__shenhui_group_code": style_code,
                 "__shenhui_asset_role": "yq",
@@ -1299,18 +1422,7 @@ def process_prepare_upload_package_labels(
 
     for style_code in sorted(observed_styles):
         for role in sorted(VALID_YQ_ROLES):
-            if (style_code, role) in global_locks:
-                continue
-            observed_colors = sorted(
-                color
-                for observed_style, color in observed_color_scopes
-                if observed_style == style_code
-            )
-            if observed_colors:
-                for color_code in observed_colors:
-                    if (style_code, color_code, role) not in color_locks:
-                        missing_roles.append(f"{style_code}-{color_code}:{role}")
-            else:
+            if (style_code, role) not in global_locks:
                 missing_roles.append(f"{style_code}:{role}")
 
     return ApparelLabelProcessingResult(

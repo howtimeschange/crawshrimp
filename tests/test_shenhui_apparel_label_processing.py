@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 
 from core.shenhui_apparel_label_processing import (
     _candidate_from_payload,
+    _canonical_yq_filename,
     LabelCandidate,
     ApparelLabelProcessingResult,
     RenderedPage,
@@ -35,10 +36,12 @@ from core.shenhui_apparel_label_processing import (
     ("filename", "expected"),
     [
         ("yq1.jpg", "hang_tag"),
+        ("yq(1)-2.jpg", "hang_tag"),
         ("yq(1).png", "hang_tag"),
         ("yq 1.jpeg", "hang_tag"),
         ("yq一.webp", "hang_tag"),
         ("202426107206-70013_yq2.jpg", "wash_label"),
+        ("yq(2)-2.jpg", "wash_label"),
         ("202426107206-70013-yq(2).png", "wash_label"),
         ("yq二.jpg", "wash_label"),
         ("yq20.jpg", ""),
@@ -48,6 +51,19 @@ from core.shenhui_apparel_label_processing import (
 )
 def test_detect_yq_role_uses_complete_marker_boundaries(filename, expected):
     assert detect_yq_role(filename) == expected
+
+
+@pytest.mark.parametrize(
+    ("role", "sequence", "expected"),
+    [
+        ("hang_tag", 1, "yq(1).jpg"),
+        ("hang_tag", 2, "yq(1)-2.jpg"),
+        ("wash_label", 1, "yq(2).jpg"),
+        ("wash_label", 2, "yq(2)-2.jpg"),
+    ],
+)
+def test_canonical_yq_filename_numbers_related_styles_after_the_role(role, sequence, expected):
+    assert _canonical_yq_filename(role, sequence=sequence) == expected
 
 
 def test_extract_scope_distinguishes_style_and_style_color_locks():
@@ -249,6 +265,39 @@ def test_validate_existing_yq_treats_blank_and_wash_care_text_as_same_semantics(
     assert decision.role == "wash_label"
 
 
+def test_validate_existing_yq_ignores_unscoped_name_strip_role_distractor():
+    reviews = []
+    for model_id in ("gpt-5.6-terra", "gpt-5.6-luna"):
+        reviews.extend([
+            _candidate(
+                model_id,
+                kind="wash_label",
+                style_code="202426107206",
+                color_code="",
+                sizes=(),
+            ),
+            _candidate(
+                model_id,
+                kind="hang_tag",
+                style_code="",
+                color_code="",
+                sizes=(),
+            ),
+        ])
+
+    decision = validate_existing_yq(
+        {"__yq_kind": "wash_label"},
+        Path("yq2.jpg"),
+        "202426107206",
+        reviews=reviews,
+    )
+
+    assert decision.accepted
+    assert decision.role == "wash_label"
+    assert decision.style_code == "202426107206"
+    assert decision.model_ids == ("gpt-5.6-luna", "gpt-5.6-terra")
+
+
 def test_validate_existing_yq_keeps_true_waste_text_fail_closed():
     decision = validate_existing_yq(
         {"__yq_kind": "wash_label", "__style_color_code": "201426105102-00415"},
@@ -276,16 +325,40 @@ def test_validate_existing_yq_keeps_true_waste_text_fail_closed():
     assert "否定" in decision.reason
 
 
+def test_validate_existing_yq_accepts_two_matching_related_component_votes():
+    decision = validate_existing_yq(
+        {"__yq_kind": "wash_label"},
+        Path("yq2.jpg"),
+        "201426105102",
+        reviews=[
+            _candidate(
+                "gpt-5.6-terra",
+                kind="wash_label",
+                style_code="201426122101",
+                color_code="",
+                sizes=(),
+            ),
+            _candidate(
+                "gpt-5.6-luna",
+                kind="wash_label",
+                style_code="201426122101",
+                color_code="",
+                sizes=(),
+            ),
+        ],
+    )
+
+    assert decision.accepted
+    assert decision.style_code == "201426122101"
+    assert "关联部件" in decision.reason
+
+
 @pytest.mark.parametrize(
     ("reviews", "reason_fragment"),
     [
         (
             [_candidate("gpt-5.6-terra"), _candidate("gpt-5.6-luna", kind="wash_label")],
             "分歧",
-        ),
-        (
-            [_candidate("gpt-5.6-terra", style_code="201426122101"), _candidate("gpt-5.6-luna", style_code="201426122101")],
-            "款号",
         ),
         (
             [_candidate("gpt-5.6-terra", handwritten_placeholder=True), _candidate("gpt-5.6-luna", handwritten_placeholder=True)],
@@ -358,6 +431,96 @@ def test_validate_existing_yq_accepts_only_when_sol_matches_one_initial_vote():
     assert calls == [("existing:yq1.jpg", "gpt-5.6-sol")]
     assert decision.role == "wash_label"
     assert decision.model_ids == ("gpt-5.6-luna", "gpt-5.6-sol")
+
+
+def test_validate_existing_yq_uses_exact_yq_name_as_guarded_tiebreaker():
+    decision = validate_existing_yq(
+        {"__yq_kind": "wash_label"},
+        Path("yq2.jpg"),
+        "202426107206",
+        reviews=[
+            _candidate(
+                "gpt-5.6-terra",
+                kind="wash_label",
+                style_code="202426107206",
+                color_code="",
+                sizes=(),
+            ),
+            _candidate(
+                "gpt-5.6-luna",
+                kind="non_label",
+                style_code="",
+                color_code="",
+                sizes=(),
+                printed_label=False,
+                negative_text="无水洗",
+            ),
+        ],
+        sol_reviewer=lambda *_args, **_kwargs: [],
+    )
+
+    assert decision.accepted
+    assert decision.role == "wash_label"
+    assert decision.style_code == "202426107206"
+    assert "精确 yq" in decision.reason
+
+
+def test_validate_existing_yq_exact_name_still_rejects_two_waste_votes():
+    decision = validate_existing_yq(
+        {"__yq_kind": "wash_label"},
+        Path("yq2.jpg"),
+        "202426107206",
+        reviews=[
+            _candidate(
+                "gpt-5.6-terra",
+                kind="wash_label",
+                style_code="202426107206",
+                color_code="",
+                sizes=(),
+                negative_text="无水洗",
+            ),
+            _candidate(
+                "gpt-5.6-luna",
+                kind="wash_label",
+                style_code="202426107206",
+                color_code="",
+                sizes=(),
+                negative_text="无水洗",
+            ),
+        ],
+    )
+
+    assert not decision.accepted
+    assert "否定" in decision.reason
+
+
+def test_validate_existing_yq_does_not_use_filename_tiebreaker_for_descriptive_name():
+    decision = validate_existing_yq(
+        {"__yq_kind": "wash_label"},
+        Path("202426107206 洗唛.png"),
+        "202426107206",
+        reviews=[
+            _candidate(
+                "gpt-5.6-terra",
+                kind="wash_label",
+                style_code="202426107206",
+                color_code="",
+                sizes=(),
+            ),
+            _candidate(
+                "gpt-5.6-luna",
+                kind="non_label",
+                style_code="",
+                color_code="",
+                sizes=(),
+                printed_label=False,
+            ),
+        ],
+        sol_reviewer=lambda *_args, **_kwargs: [],
+    )
+
+    assert not decision.accepted
+    assert "分歧" in decision.reason
 
 
 def test_validate_existing_yq_rejects_when_sol_matches_no_initial_vote():
@@ -569,7 +732,7 @@ def test_recover_page_reviews_with_sol_skips_sol_when_initial_agreement_complete
     assert all(candidate.model_id == "gpt-5.6-luna+gpt-5.6-terra" for candidate in recovered)
 
 
-def test_select_candidates_groups_by_color_and_applies_110_fallback_order():
+def test_select_candidates_keeps_one_best_hang_tag_per_style_across_colors():
     candidates = [
         _candidate("m1+m2", color_code="70013", sizes=("90/52",), page_index=0),
         _candidate("m1+m2", color_code="70013", sizes=("110/56",), page_index=0),
@@ -582,13 +745,11 @@ def test_select_candidates_groups_by_color_and_applies_110_fallback_order():
     selected = select_candidates(
         candidates,
         "202426107206",
-        {("70013", "hang_tag"), ("81322", "hang_tag"), ("99999", "hang_tag")},
+        {"hang_tag"},
     )
 
     assert [(item.color_code, preferred_size(item.sizes)) for item in selected] == [
         ("70013", 110),
-        ("81322", 120),
-        ("99999", 100),
     ]
 
 
@@ -666,7 +827,7 @@ def _save_label_image(path: Path, color: str = "black") -> None:
     image.save(path)
 
 
-def test_process_labels_recovers_multiple_unresolved_pdf_pages_with_sol_concurrently(tmp_path):
+def test_process_labels_recovers_pages_concurrently_but_outputs_one_style_level_yq1(tmp_path):
     style = "202426107206"
     package_root = tmp_path / "package"
     pdf = tmp_path / "tag.pdf"
@@ -728,8 +889,10 @@ def test_process_labels_recovers_multiple_unresolved_pdf_pages_with_sol_concurre
         ocr_fn=None,
     )
 
-    assert result.generated_count == 2
+    assert result.generated_count == 1
     assert max_active == 2
+    assert (package_root / style / "yq(1).jpg").is_file()
+    assert not list((package_root / style).glob(f"{style}-*_yq1.jpg"))
 
 
 def test_prepare_review_image_bounds_large_source_without_modifying_original(tmp_path):
@@ -808,7 +971,7 @@ def test_process_labels_skips_all_pdf_work_when_valid_yq1_and_yq2_exist(tmp_path
 
     assert isinstance(result, ApparelLabelProcessingResult)
     assert result.generated_count == 0
-    assert {path.name for path in result.accepted_existing} == {"yq1.jpg", "yq2.jpg"}
+    assert {path.name for path in result.accepted_existing} == {"yq(1).jpg", "yq(2).jpg"}
     assert pdf_row["处理动作"] == "现成 yq 已锁定，跳过对应 PDF"
 
 
@@ -895,20 +1058,29 @@ def test_process_labels_corrects_existing_yq_role_after_deleting_invalid_collisi
         ocr_fn=None,
     )
 
-    assert [path.name for path in result.accepted_existing] == ["yq2.jpg"]
+    assert [path.name for path in result.accepted_existing] == [
+        "yq(2).jpg",
+        "yq(2)-2.jpg",
+    ]
     assert result.rejected_paths == ()
     assert not yq1.exists()
-    assert yq2.is_file()
-    assert rows[0]["本地文件"] == str(yq2)
-    assert rows[0]["文件名"] == "yq2.jpg"
+    assert not yq2.exists()
+    main_wash = style_dir / "yq(2).jpg"
+    related_wash = style_dir / "yq(2)-2.jpg"
+    assert main_wash.is_file()
+    assert related_wash.is_file()
+    assert rows[0]["本地文件"] == str(main_wash)
+    assert rows[0]["文件名"] == "yq(2).jpg"
     assert rows[0]["__yq_kind"] == "wash_label"
     assert rows[0]["标签角色"] == "洗唛"
-    assert "已从 yq1.jpg 更正为 yq2.jpg" in rows[0]["备注"]
+    assert "已从 yq1.jpg 更正为 yq(2).jpg" in rows[0]["备注"]
     assert "吊牌图片" not in rows[0]["备注"]
-    assert rows[1]["下载结果"] == "已剔除"
-    assert rows[1]["本地文件"] == ""
-    assert rows[1].get("最终裁图", "") == ""
-    assert "款号" in rows[1]["标签证据"]
+    assert rows[1]["下载结果"] == "已下载"
+    assert rows[1]["本地文件"] == str(related_wash)
+    assert rows[1]["最终裁图"] == str(related_wash)
+    assert rows[1]["识别款号"] == "201426122101"
+    assert rows[1]["标签判定"] == "关联部件标签有效"
+    assert "关联部件" in rows[1]["标签证据"]
     assert rendered_pdfs == [pdf]
     assert result.missing_roles == (f"{style}:hang_tag",)
 
@@ -967,12 +1139,13 @@ def test_process_labels_prefers_explicit_yq_name_over_duplicate_descriptive_labe
         ocr_fn=None,
     )
 
-    assert result.accepted_existing == (explicit,)
+    canonical = style_dir / "yq(2).jpg"
+    assert result.accepted_existing == (canonical,)
     assert not descriptive.exists()
-    assert explicit.is_file()
+    assert canonical.is_file()
     assert rows[0]["下载结果"] == "已剔除"
     assert rows[0]["本地文件"] == ""
-    assert "明确 yq2" in rows[0]["标签证据"]
+    assert "明确 yq(2)" in rows[0]["标签证据"]
     assert rows[1]["标签角色"] == "洗唛"
 
 
@@ -1020,8 +1193,9 @@ def test_process_labels_deduplicates_rows_sharing_one_physical_yq_without_deleti
         ocr_fn=None,
     )
 
-    assert result.accepted_existing == (yq2,)
-    assert yq2.is_file()
+    canonical = style_dir / "yq(2).jpg"
+    assert result.accepted_existing == (canonical,)
+    assert canonical.is_file()
     assert sorted(row["下载结果"] for row in rows) == ["已下载", "已剔除"]
 
 
@@ -1079,14 +1253,16 @@ def test_process_labels_preserves_two_valid_yq_files_when_roles_swap(tmp_path):
         ocr_fn=None,
     )
 
-    assert sorted(path.name for path in result.accepted_existing) == ["yq1.jpg", "yq2.jpg"]
+    assert sorted(path.name for path in result.accepted_existing) == ["yq(1).jpg", "yq(2).jpg"]
     assert result.rejected_paths == ()
-    assert yq1.is_file()
-    assert yq2.is_file()
-    assert rows[0]["本地文件"] == str(yq2)
+    assert not yq1.exists()
+    assert not yq2.exists()
+    assert (style_dir / "yq(1).jpg").is_file()
+    assert (style_dir / "yq(2).jpg").is_file()
+    assert rows[0]["本地文件"] == str(style_dir / "yq(2).jpg")
     assert rows[0]["__yq_kind"] == "wash_label"
     assert rows[0]["标签角色"] == "洗唛"
-    assert rows[1]["本地文件"] == str(yq1)
+    assert rows[1]["本地文件"] == str(style_dir / "yq(1).jpg")
     assert rows[1]["__yq_kind"] == "hang_tag"
     assert rows[1]["标签角色"] == "吊牌"
 
@@ -1205,7 +1381,7 @@ def test_process_labels_rolls_back_visible_files_when_second_stage_rename_fails(
         if (
             not failed
             and self.name.startswith(".yq2.jpg.shenhui-tmp-")
-            and target_path == yq1
+            and target_path.name == "yq(1).jpg"
         ):
             failed = True
             raise OSError("injected second-stage rename failure")
@@ -1249,6 +1425,12 @@ def test_process_labels_only_fills_missing_hang_tag_with_110_crop(tmp_path):
         "__shenhui_group_code": style,
         "__shenhui_asset_role": "yq",
         "__yq_kind": "wash_label",
+    }, {
+        "输入款号": style,
+        "文件名": f"{style}-70013.jpg",
+        "下载结果": "已下载",
+        "__shenhui_group_code": style,
+        "__shenhui_asset_role": "product",
     }]
     pdf_row = {
         "输入款号": style,
@@ -1271,9 +1453,9 @@ def test_process_labels_only_fills_missing_hang_tag_with_110_crop(tmp_path):
             ]
         return [
             _candidate(
-                model_id,
-                kind="hang_tag",
-                color_code="70013",
+                    model_id,
+                    kind="hang_tag",
+                    color_code="",
                 sizes=("110/56",),
                 bbox=(0.1, 0.05, 0.9, 0.95),
                 source_path=job.image_path,
@@ -1296,15 +1478,18 @@ def test_process_labels_only_fills_missing_hang_tag_with_110_crop(tmp_path):
         ocr_fn=None,
     )
 
-    output = style_dir / f"{style}-70013_yq1.jpg"
+    output = style_dir / "yq(1).jpg"
     assert result.generated_count == 1
     assert output.is_file()
     with Image.open(output) as image:
         assert image.size == (800, 800)
         assert image.mode == "RGB"
-    assert yq2.is_file()
+    assert not yq2.exists()
+    assert (style_dir / "yq(2).jpg").is_file()
     assert pdf_row["处理动作"] == "AI 识别裁图完成"
     generated_row = next(row for row in rows if row.get("最终裁图") == str(output))
+    assert generated_row["识别色号"] == "70013"
+    assert "唯一款色文件名证据" in generated_row["标签证据"]
     assert generated_row["识别尺码"] == "110"
     assert generated_row["标签角色"] == "吊牌"
 
@@ -1378,11 +1563,11 @@ def test_process_labels_reports_missing_wash_label_when_only_hang_tag_succeeds(t
     )
 
     assert result.generated_count == 1
-    assert (style_dir / f"{style}-00415_yq1.jpg").is_file()
-    assert result.missing_roles == (f"{style}-00415:wash_label",)
+    assert (style_dir / "yq(1).jpg").is_file()
+    assert result.missing_roles == (f"{style}:wash_label",)
 
 
-def test_process_labels_reports_missing_role_per_observed_color_scope(tmp_path):
+def test_process_labels_one_valid_color_scoped_wash_label_satisfies_style(tmp_path):
     style = "202426107206"
     package_root = tmp_path / "package"
     style_dir = package_root / style
@@ -1453,13 +1638,14 @@ def test_process_labels_reports_missing_role_per_observed_color_scope(tmp_path):
     )
 
     assert sorted(path.name for path in result.accepted_existing) == [
-        f"{style}-70013_yq2.jpg",
-        "yq1.jpg",
+        "yq(1).jpg",
+        "yq(2).jpg",
     ]
-    assert result.missing_roles == (f"{style}-81322:wash_label",)
+    assert result.missing_roles == ()
+    assert not yq2_81322.exists()
 
 
-def test_process_labels_global_wash_label_satisfies_all_observed_colors(tmp_path):
+def test_process_labels_deduplicates_color_scoped_hang_tags_to_one_style_yq1(tmp_path):
     style = "202426107206"
     package_root = tmp_path / "package"
     style_dir = package_root / style
@@ -1527,6 +1713,10 @@ def test_process_labels_global_wash_label_satisfies_all_observed_colors(tmp_path
         ocr_fn=None,
     )
 
+    assert sorted(path.name for path in result.accepted_existing) == ["yq(1).jpg", "yq(2).jpg"]
+    assert sorted(row["下载结果"] for row in rows) == ["已下载", "已下载", "已剔除"]
+    assert (style_dir / "yq(1).jpg").is_file()
+    assert not list(style_dir.glob(f"{style}-*_yq1.jpg"))
     assert result.missing_roles == ()
 
 
@@ -1563,7 +1753,7 @@ def test_process_labels_does_not_report_missing_roles_for_plain_product_images(t
     assert result.missing_roles == ()
 
 
-def test_process_labels_uses_only_color_scoped_missing_when_pdf_candidate_verification_fails(tmp_path):
+def test_process_labels_reports_style_scoped_missing_when_pdf_candidate_verification_fails(tmp_path):
     style = "202426107206"
     package_root = tmp_path / "package"
     style_dir = package_root / style
@@ -1614,6 +1804,6 @@ def test_process_labels_uses_only_color_scoped_missing_when_pdf_candidate_verifi
     assert pdf_row["标签判定"] == "待人工确认"
     assert "款号" in pdf_row["备注"]
     assert result.missing_roles == (
-        f"{style}-00415:hang_tag",
-        f"{style}-00415:wash_label",
+        f"{style}:hang_tag",
+        f"{style}:wash_label",
     )
