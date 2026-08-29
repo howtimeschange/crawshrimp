@@ -11,6 +11,7 @@
   const DOWNLOAD_RETRY_ATTEMPTS = 5
   const DOWNLOAD_RETRY_DELAY_MS = 2000
   const DOWNLOAD_TIMEOUT_SECONDS = 120
+  const SHOE_LABEL_GENERIC_CANDIDATE_LIMIT_PER_COLOR = 8
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tif', 'tiff'])
   const PDF_EXTS = new Set(['pdf'])
   const ASSET_EXTS = new Set([...IMAGE_EXTS, ...PDF_EXTS])
@@ -20,6 +21,8 @@
   const CARD_PAPER_PATTERNS = Object.freeze([/卡纸|手写/])
   const WASTE_LABEL_PATTERNS = Object.freeze([/无水洗|无洗唛|无洗标|无洗水|无吊牌|无吊卡|无挂牌|无合格证|废图|不要|作废|无效/])
   const TILE_IMAGE_PATTERNS = Object.freeze([/平铺|平拍|静物|白底|平面|铺拍/])
+  const SHOE_LABEL_PATTERNS = Object.freeze([/鞋盒标签|鞋盒贴|鞋盒标|鞋盒图|盒标|内盒标|外盒标|电子吊牌|电商吊牌|电吊牌|商品标签|吊牌|吊卡|挂牌|合格证|标签|标贴|贴纸/])
+  const SHOE_NEGATIVE_LABEL_PATTERNS = Object.freeze([/无标签|无鞋盒|无吊牌|缺标签|缺鞋盒|缺吊牌|无材质/])
   const SOURCE_LABELS = Object.freeze({
     model: '模拍路径',
     still: '平拍路径',
@@ -28,6 +31,8 @@
     hang_tag: '吊牌',
     wash_label: '洗唛',
     tile: '平铺图',
+    shoe_style_color: '款色图',
+    shoe_label: '鞋盒标签图/电子吊牌图',
   })
 
   function compact(value) {
@@ -104,8 +109,19 @@
     return dir === 1 || dir === '1' || dir === true
   }
 
+  function isJunkAssetItem(item) {
+    const filename = compact(item?.filename || item?.name || lastPathSegment(item?.fullpath || item?.path || ''))
+    const lowered = filename.toLowerCase()
+    if (lowered.startsWith('._') || ['.ds_store', 'desktop.ini', 'thumbs.db'].includes(lowered)) return true
+    return pathSegments(item?.fullpath || item?.path || filename).some(segment => {
+      const text = compact(segment)
+      const lower = text.toLowerCase()
+      return text === '__MACOSX' || text.startsWith('._') || ['.ds_store', 'desktop.ini', 'thumbs.db'].includes(lower)
+    })
+  }
+
   function isSupportedAssetItem(item) {
-    return !isDirectoryItem(item) && ASSET_EXTS.has(getExt(item))
+    return !isDirectoryItem(item) && !isJunkAssetItem(item) && ASSET_EXTS.has(getExt(item))
   }
 
   function isImageItem(item) {
@@ -231,6 +247,24 @@
     const prefix = String(sourceConfig?.broadRelativePath || '').trim()
     if (prefix && !(normalized === prefix || normalized.startsWith(`${prefix}/`))) return false
     return pathSegments(normalized).includes(getSourceMarker(sourceType))
+  }
+
+  function isShoePathValue(value) {
+    return pathSegments(value).some(segment => /鞋品/.test(segment))
+  }
+
+  function isShoeItem(item) {
+    return isShoePathValue(item?.fullpath || item?.path || '')
+  }
+
+  function isShoeSourceConfig(sourceConfig) {
+    return isShoePathValue(sourceConfig?.relativePath || sourceConfig?.cloudPath || '')
+      || isShoePathValue(sourceConfig?.broadRelativePath || '')
+  }
+
+  function isShoeCodePlan(sourceConfigs, items) {
+    if (Object.values(sourceConfigs || {}).some(isShoeSourceConfig)) return true
+    return (Array.isArray(items) ? items : []).some(isShoeItem)
   }
 
   function normalizeFolderScanDepth(rawValue) {
@@ -374,6 +408,182 @@
     return `${target}-${String(match[1] || '').toUpperCase()}`
   }
 
+  function getShoeColorCodeFromInput(inputCode) {
+    const value = compact(inputCode)
+    if (!value.includes('-')) return ''
+    const color = compact(value.split('-').slice(1).join('-'))
+    return /^[0-9A-Za-z]{3,6}$/.test(color) ? color.toUpperCase() : ''
+  }
+
+  function getShoeColorCodeFromPathValue(value) {
+    for (const segment of pathSegments(value).slice(0, -1).reverse()) {
+      const text = compact(segment)
+      if (/^\d{5}$/.test(text)) return text
+    }
+    return ''
+  }
+
+  function getShoeColorCodeFromItem(item, code = '') {
+    const requestedColor = getShoeColorCodeFromInput(code)
+    const styleColorKey = extractShoeStyleColorKeyFromFilename(item?.filename || item?.name || '', code)
+    const actualColor = styleColorKey && styleColorKey.includes('-')
+      ? styleColorKey.split('-').slice(1).join('-')
+      : getShoeColorCodeFromPathValue(item?.fullpath || item?.path || '')
+    if (requestedColor) {
+      if (actualColor && actualColor !== requestedColor) return ''
+      return requestedColor
+    }
+    return actualColor
+  }
+
+  function extractShoeStyleColorKeyFromFilename(filename, code) {
+    const target = compact(getGroupCode(code))
+    if (!target) return ''
+    const stem = stripModelFilenamePrefix(getFileStem(filename)).replace(/\s+/g, '')
+    const matcher = new RegExp(`^${escapeRegExp(target)}[-_+]([0-9A-Za-z]{3,6})(?:$|[+_\\-（(\\s].*)`, 'i')
+    const match = matcher.exec(stem)
+    if (!match) return ''
+    const color = String(match[1] || '').toUpperCase()
+    const requestedColor = getShoeColorCodeFromInput(code)
+    if (requestedColor && color !== requestedColor) return ''
+    return `${target}-${color}`
+  }
+
+  function isShoeStyleColorImage(item, code) {
+    if (!isImageItem(item) || !isShoeItem(item)) return false
+    if (hasWasteLabelMarker(item)) return false
+    if (hasShoeNegativeLabelMarker(item)) return false
+    if (isShoeLabelItem(item, code)) return false
+    return !!extractShoeStyleColorKeyFromFilename(item?.filename || item?.name || '', code)
+  }
+
+  function shoeStyleColorPriority(item, code) {
+    const filename = compact(item?.filename || item?.name || '')
+    const stem = stripModelFilenamePrefix(getFileStem(filename)).replace(/\s+/g, '')
+    const styleColorKey = extractShoeStyleColorKeyFromFilename(filename, code)
+    const exactPattern = styleColorKey
+      ? new RegExp(`^${escapeRegExp(styleColorKey)}$`, 'i')
+      : null
+    let score = 0
+    if (exactPattern && exactPattern.test(stem)) score -= 20
+    if (/\+Ai角度图/i.test(stem)) score += 10
+    if (/\(\d+\)|（\d+）|拷贝|copy/i.test(stem)) score += 3
+    if (getExt(item) === 'jpg' || getExt(item) === 'jpeg') score -= 1
+    return score
+  }
+
+  function selectShoeStyleColorItems(items, code) {
+    const groups = new Map()
+    for (const item of dedupeItemsByFullpath(items).filter(candidate => isShoeStyleColorImage(candidate, code))) {
+      const key = extractShoeStyleColorKeyFromFilename(item?.filename || item?.name || '', code)
+      if (!key) continue
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(item)
+    }
+    return Array.from(groups.values()).map(groupItems => groupItems
+      .slice()
+      .sort((left, right) => (
+        shoeStyleColorPriority(left, code) - shoeStyleColorPriority(right, code)
+        || String(left?.filename || '').localeCompare(String(right?.filename || ''), 'zh-Hans-CN')
+        || String(left?.fullpath || '').localeCompare(String(right?.fullpath || ''), 'zh-Hans-CN')
+      ))[0])
+  }
+
+  function hasShoeNegativeLabelMarker(item) {
+    const text = `${item?.filename || item?.name || ''} ${item?.fullpath || item?.path || ''}`
+    return hasAny(text, SHOE_NEGATIVE_LABEL_PATTERNS)
+  }
+
+  function isShoeLabelItem(item, code = '') {
+    if (!isSupportedAssetItem(item) || !isShoeItem(item)) return false
+    if (hasWasteLabelMarker(item)) return false
+    if (hasShoeNegativeLabelMarker(item)) return false
+    const filename = item?.filename || item?.name || ''
+    if (hasAny(filename, SHOE_LABEL_PATTERNS)) return true
+    return hasLabelStatusParentMarker(item)
+  }
+
+  function isShoeYkFilename(filename) {
+    return /^yk\s*[\d(（]/i.test(compact(getFileStem(filename)).replace(/\s+/g, ''))
+  }
+
+  function isGenericShoeLabelCandidateItem(item, code = '') {
+    if (!isImageItem(item) || !isShoeItem(item)) return false
+    if (hasWasteLabelMarker(item)) return false
+    if (hasShoeNegativeLabelMarker(item)) return false
+    const filename = item?.filename || item?.name || ''
+    const stem = stripModelFilenamePrefix(getFileStem(filename)).replace(/\s+/g, '')
+    if (!stem) return false
+    if (isShoeLabelItem(item, code)) return false
+    if (isShoeStyleColorImage(item, code)) return false
+    if (isShoeYkFilename(filename)) return false
+    if (/\+Ai角度图/i.test(stem)) return false
+    if (/拷贝|copy|副本/i.test(stem)) return false
+    if (!/^(?:GUDO|IMG|DSC|DSCF|DSCN|_MG|PXL)[-_]?\d+/i.test(stem)) return false
+    return !!getShoeColorCodeFromItem(item, code)
+  }
+
+  function shoeGenericLabelCandidateNumber(item) {
+    const stem = getFileStem(item?.filename || item?.name || '')
+    const match = /(?:GUDO|IMG|DSC|DSCF|DSCN|_MG|PXL)[-_]?(\d+)/i.exec(stem)
+    return match ? Number(match[1]) : 0
+  }
+
+  function shoeLabelPriority(item) {
+    const filename = compact(item?.filename || item?.name || '')
+    if (hasAny(filename, [/鞋盒标签|鞋盒标|鞋盒图|盒标|内盒标|外盒标/])) return 0
+    if (hasAny(filename, [/电子吊牌|电商吊牌|电吊牌|商品标签|吊牌|吊卡|挂牌|合格证/])) return 10
+    if (hasLabelStatusParentMarker(item)) return 20
+    return 90
+  }
+
+  function selectShoeLabelItems(items, code = '') {
+    const explicit = dedupeItemsByFullpath(items)
+      .filter(item => isShoeLabelItem(item, code))
+      .map(item => ({
+        ...item,
+        __shoe_color_code: getShoeColorCodeFromItem(item, code),
+        __shoe_label_candidate_kind: 'explicit',
+      }))
+      .sort((left, right) => (
+        shoeLabelPriority(left) - shoeLabelPriority(right)
+        || String(left?.filename || '').localeCompare(String(right?.filename || ''), 'zh-Hans-CN')
+        || String(left?.fullpath || '').localeCompare(String(right?.fullpath || ''), 'zh-Hans-CN')
+      ))
+
+    const genericByColor = new Map()
+    for (const item of dedupeItemsByFullpath(items).filter(candidate => isGenericShoeLabelCandidateItem(candidate, code))) {
+      const colorCode = getShoeColorCodeFromItem(item, code)
+      if (!colorCode) continue
+      if (!genericByColor.has(colorCode)) genericByColor.set(colorCode, [])
+      genericByColor.get(colorCode).push(item)
+    }
+    const generic = []
+    for (const [colorCode, colorItems] of genericByColor.entries()) {
+      const capped = colorItems
+        .slice()
+        .sort((left, right) => (
+          shoeGenericLabelCandidateNumber(left) - shoeGenericLabelCandidateNumber(right)
+          || String(left?.filename || '').localeCompare(String(right?.filename || ''), 'zh-Hans-CN')
+          || String(left?.fullpath || '').localeCompare(String(right?.fullpath || ''), 'zh-Hans-CN')
+        ))
+        .slice(-SHOE_LABEL_GENERIC_CANDIDATE_LIMIT_PER_COLOR)
+        .map(item => ({
+          ...item,
+          __shoe_color_code: colorCode,
+          __shoe_label_candidate_kind: 'generic_ocr',
+        }))
+      generic.push(...capped)
+    }
+
+    return [...explicit, ...generic].sort((left, right) => (
+      shoeLabelPriority(left) - shoeLabelPriority(right)
+      || String(left.__shoe_color_code || '').localeCompare(String(right.__shoe_color_code || ''), 'zh-Hans-CN')
+      || String(left?.filename || '').localeCompare(String(right?.filename || ''), 'zh-Hans-CN')
+      || String(left?.fullpath || '').localeCompare(String(right?.fullpath || ''), 'zh-Hans-CN')
+    ))
+  }
+
   function tileFolderKey(item, code) {
     const target = compact(getGroupCode(code))
     if (!target) return ''
@@ -500,6 +710,10 @@
     const groupCode = getGroupCode(inputCode)
     const sourceType = item?.__source_type || options.sourceType || ''
     const packageFilename = buildPackageFilename(groupCode, kind, item, options)
+    const shoeColorCode = /^shoe_/.test(kind)
+      ? (item?.__shoe_color_code || getShoeColorCodeFromItem(item, inputCode))
+      : ''
+    const shoeCandidateKind = item?.__shoe_label_candidate_kind || ''
     return {
       '输入款号': groupCode,
       '输入编码': inputCode,
@@ -516,6 +730,8 @@
       '__shenhui_asset_role': kind,
       '__shenhui_source_type': sourceType,
       '__package_filename': packageFilename,
+      '__shoe_color_code': shoeColorCode,
+      '__shoe_label_candidate_kind': shoeCandidateKind,
     }
   }
 
@@ -799,6 +1015,31 @@
     const stillItems = stillResult?.items || []
     const modelItems = modelResult?.items || []
     const allLabelItems = [...stillItems, ...modelItems]
+    if (isShoeCodePlan(sourceConfigs, allLabelItems)) {
+      const shoeItems = allLabelItems.filter(item => isShoeItem(item) || isShoeSourceConfig(sourceConfigs?.[item?.__source_type || '']))
+      const styleColorItems = selectShoeStyleColorItems(shoeItems, inputCode)
+      const shoeLabelItems = selectShoeLabelItems(shoeItems, inputCode)
+      const statsNote = [
+        resultStats(stillResult, '平拍路径'),
+        resultStats(modelResult, '模拍路径'),
+      ].join('；')
+
+      await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'shoe_style_color', styleColorItems, {
+        strategy: '鞋品仅保留每个款色的款色命名图',
+        missingNote: statsNote,
+      })
+      await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'shoe_label', shoeLabelItems, {
+        strategy: shoeLabelItems.some(item => item.__shoe_label_candidate_kind === 'generic_ocr')
+          ? '鞋品下载少量无语义候选，后端 OCR 识别鞋盒标签'
+          : '鞋品仅保留显式鞋盒标签/电子吊牌图',
+        missingNote: statsNote,
+      })
+      for (const error of [...(stillResult?.folderErrors || []), ...(modelResult?.folderErrors || [])].slice(0, 6)) {
+        rows.push(rowForNotice(inputCode, 'shoe_style_color', '已跳过', error))
+      }
+      return { rows, downloadItems }
+    }
+
     const modelMatched = !!(modelResult && (modelResult.folderCount > 0 || modelItems.length > 0))
     const hangTags = selectLabelItems(allLabelItems, 'hang_tag', inputCode)
     const washLabels = selectLabelItems(allLabelItems, 'wash_label', inputCode)
@@ -942,6 +1183,7 @@
       getGroupCode,
       getExt,
       isSupportedAssetItem,
+      isJunkAssetItem,
       startsWithCodeToken,
       matchesFilenameCode,
       pathContainsCode,
@@ -961,6 +1203,16 @@
       selectLabelItems,
       isModelWhiteBackgroundFilename,
       modelFilenameMatchesCode,
+      isShoePathValue,
+      isShoeCodePlan,
+      getShoeColorCodeFromInput,
+      getShoeColorCodeFromItem,
+      extractShoeStyleColorKeyFromFilename,
+      isShoeStyleColorImage,
+      selectShoeStyleColorItems,
+      isShoeLabelItem,
+      isGenericShoeLabelCandidateItem,
+      selectShoeLabelItems,
       isBacksideStyleColorFilename,
       extractStyleColorKeyFromValue,
       tileColorGroup,

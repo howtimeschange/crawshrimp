@@ -11,9 +11,11 @@ from PIL import Image
 from core.api_server import (
     _SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES,
     _cleanup_orphaned_runtime_artifacts,
+    _compress_shenhui_label_tile_image_if_beneficial,
     _finalize_shenhui_new_arrival_outputs,
     _prepare_shenhui_shoe_package_rows,
     _serialize_task_param,
+    _shenhui_shoe_box_label_candidate_result,
 )
 from core.models import AdapterManifest
 from core.shenhui_apparel_label_processing import ApparelLabelProcessingResult
@@ -550,6 +552,266 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             )
             workbook.close()
 
+    def test_finalize_batch_label_tile_download_keeps_only_ocr_selected_shoe_label_candidate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "downloads"
+            runtime_dir.mkdir()
+            export_dir.mkdir()
+
+            style_file = runtime_dir / "runtime-style.jpg"
+            box_file = runtime_dir / "runtime-box.jpg"
+            detail_file = runtime_dir / "runtime-detail.jpg"
+            for path in (style_file, box_file, detail_file):
+                Image.new("RGB", (20, 20), "white").save(path)
+
+            exported = base / "summary.xlsx"
+            data_rows = [
+                {
+                    "输入款号": "204426141122",
+                    "输入编码": "204426141122",
+                    "素材类型": "款色图",
+                    "素材来源": "平拍路径",
+                    "文件名": "204426141122-00322.jpg",
+                    "云盘路径": "鞋品/204426141122-已写/00322/36/204426141122-00322.jpg",
+                    "匹配策略": "鞋品仅保留每个款色的款色命名图",
+                    "模拍路径命中": "否",
+                    "下载结果": "已下载",
+                    "本地文件": str(style_file),
+                    "备注": "",
+                    "__shenhui_group_code": "204426141122",
+                    "__shenhui_asset_role": "shoe_style_color",
+                    "__package_filename": "204426141122-00322.jpg",
+                    "__shoe_color_code": "00322",
+                },
+                {
+                    "输入款号": "204426141122",
+                    "输入编码": "204426141122",
+                    "素材类型": "鞋盒标签图/电子吊牌图",
+                    "素材来源": "平拍路径",
+                    "文件名": "GUDO6815.jpg",
+                    "云盘路径": "鞋品/204426141122-已写/00322/36/GUDO6815.jpg",
+                    "匹配策略": "鞋品下载少量无语义候选，后端 OCR 识别鞋盒标签",
+                    "模拍路径命中": "否",
+                    "下载结果": "已下载",
+                    "本地文件": str(box_file),
+                    "备注": "",
+                    "__shenhui_group_code": "204426141122",
+                    "__shenhui_asset_role": "shoe_label",
+                    "__package_filename": "GUDO6815.jpg",
+                    "__shoe_color_code": "00322",
+                    "__shoe_label_candidate_kind": "generic_ocr",
+                },
+                {
+                    "输入款号": "204426141122",
+                    "输入编码": "204426141122",
+                    "素材类型": "鞋盒标签图/电子吊牌图",
+                    "素材来源": "平拍路径",
+                    "文件名": "GUDO6811.jpg",
+                    "云盘路径": "鞋品/204426141122-已写/00322/36/GUDO6811.jpg",
+                    "匹配策略": "鞋品下载少量无语义候选，后端 OCR 识别鞋盒标签",
+                    "模拍路径命中": "否",
+                    "下载结果": "已下载",
+                    "本地文件": str(detail_file),
+                    "备注": "",
+                    "__shenhui_group_code": "204426141122",
+                    "__shenhui_asset_role": "shoe_label",
+                    "__package_filename": "GUDO6811.jpg",
+                    "__shoe_color_code": "00322",
+                    "__shoe_label_candidate_kind": "generic_ocr",
+                },
+            ]
+            columns = [
+                "输入款号",
+                "输入编码",
+                "素材类型",
+                "素材来源",
+                "文件名",
+                "云盘路径",
+                "匹配策略",
+                "模拍路径命中",
+                "下载结果",
+                "本地文件",
+                "备注",
+            ]
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(columns)
+            for row in data_rows:
+                sheet.append([row.get(column, "") for column in columns])
+            workbook.save(exported)
+            workbook.close()
+
+            def fake_detect(row, _local_path, _log):
+                if row["文件名"] == "GUDO6815.jpg":
+                    return {
+                        "accepted": True,
+                        "score": 0.56,
+                        "confidence": 64,
+                        "note": "OCR确认鞋盒标签：款号 204426141122 色号 00322",
+                    }
+                return {
+                    "accepted": False,
+                    "score": 0.08,
+                    "confidence": 31,
+                    "note": "鞋盒标签候选 OCR 未读到当前款号：204426141122",
+                }
+
+            with patch("core.api_server._shenhui_shoe_box_label_candidate_result", side_effect=fake_detect):
+                _finalize_shenhui_new_arrival_outputs(
+                    task_id="batch_label_tile_download",
+                    data_rows=data_rows,
+                    runtime_files=[str(style_file), str(box_file), str(detail_file)],
+                    exported_files=[str(exported)],
+                    run_params={
+                        "package_name": "测试鞋品标签下载",
+                        "export_folder": str(export_dir),
+                    },
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+            package_dir = export_dir / "测试鞋品标签下载"
+            final_style = package_dir / "204426141122" / "204426141122-00322.jpg"
+            final_box = package_dir / "204426141122" / "GUDO6815.jpg"
+            final_detail = package_dir / "204426141122" / "GUDO6811.jpg"
+            copied_excel = package_dir / "summary.xlsx"
+
+            self.assertTrue(final_style.is_file())
+            self.assertTrue(final_box.is_file())
+            self.assertFalse(final_detail.exists())
+            self.assertEqual(data_rows[1]["下载结果"], "已下载")
+            self.assertIn("OCR确认鞋盒标签", data_rows[1]["备注"])
+            self.assertEqual(data_rows[2]["下载结果"], "已跳过")
+            self.assertEqual(data_rows[2]["本地文件"], "")
+            self.assertIn("未读到当前款号", data_rows[2]["备注"])
+
+            workbook = load_workbook(copied_excel, read_only=True, data_only=True)
+            rows = list(workbook.active.iter_rows(values_only=True))
+            workbook.close()
+            header = list(rows[0])
+            download_result_index = header.index("下载结果")
+            local_file_index = header.index("本地文件")
+            note_index = header.index("备注")
+            self.assertEqual(rows[2][download_result_index], "已下载")
+            self.assertIn("GUDO6815.jpg", rows[2][local_file_index])
+            self.assertEqual(rows[3][download_result_index], "已跳过")
+            self.assertEqual(rows[3][local_file_index], None)
+            self.assertIn("未读到当前款号", rows[3][note_index])
+
+    def test_shoe_box_label_ocr_accepts_structured_label_without_title_words(self):
+        row = {
+            "输入款号": "204426141046",
+            "__shenhui_group_code": "204426141046",
+            "__shoe_color_code": "50301",
+        }
+        normalized_text = (
+            "coobola204426141046GB30585-2024"
+            "33-38合成革+织物691467871180620260530"
+        )
+        with patch(
+            "core.api_server._shenhui_shoe_label_visual_metrics",
+            return_value={
+                "score": 0.612,
+                "brown_ratio": 0.234,
+                "white_ratio": 0.703,
+                "dark_ratio": 0.007,
+            },
+        ), patch(
+            "core.api_server._shenhui_shoe_label_ocr_text",
+            return_value=(normalized_text, 46.0, normalized_text),
+        ):
+            result = _shenhui_shoe_box_label_candidate_result(row, Path("GUDO8190.jpg"), None)
+
+        self.assertTrue(result["accepted"])
+        self.assertIn("standard", result["note"])
+        self.assertIn("barcode", result["note"])
+
+    def test_shoe_box_label_ocr_uses_crop_when_full_image_misses_small_label(self):
+        row = {
+            "输入款号": "204426141124",
+            "__shenhui_group_code": "204426141124",
+            "__shoe_color_code": "20301",
+        }
+        full_text = "random shoe box background noise"
+        crop_text = "balabala204426141124合格证执行标准QB/T4331-2021GB30585-2024"
+        with patch(
+            "core.api_server._shenhui_shoe_label_visual_metrics",
+            return_value={
+                "score": 0.679,
+                "brown_ratio": 0.271,
+                "white_ratio": 0.665,
+                "dark_ratio": 0.007,
+            },
+        ), patch(
+            "core.api_server._shenhui_shoe_label_ocr_text",
+            return_value=(full_text, 29.0, full_text),
+        ), patch(
+            "core.api_server._shenhui_shoe_label_crop_ocr_text",
+            return_value=(crop_text, 77.0, crop_text),
+        ):
+            result = _shenhui_shoe_box_label_candidate_result(row, Path("GUDO8513.jpg"), None)
+
+        self.assertTrue(result["accepted"])
+        self.assertIn("OCR裁剪确认", result["note"])
+        self.assertEqual(result["confidence"], 77.0)
+
+    def test_shoe_box_label_ocr_uses_style_digit_crop_when_crop_misreads_style(self):
+        row = {
+            "输入款号": "204426141124",
+            "__shenhui_group_code": "204426141124",
+            "__shoe_color_code": "90001",
+        }
+        full_text = "random shoe box background noise"
+        crop_text = "balabala204424141124合格证执行标准QB/T4331-2021GB30585-2024"
+        with patch(
+            "core.api_server._shenhui_shoe_label_visual_metrics",
+            return_value={
+                "score": 0.649,
+                "brown_ratio": 0.252,
+                "white_ratio": 0.670,
+                "dark_ratio": 0.008,
+            },
+        ), patch(
+            "core.api_server._shenhui_shoe_label_ocr_text",
+            return_value=(full_text, 29.0, full_text),
+        ), patch(
+            "core.api_server._shenhui_shoe_label_crop_ocr_text",
+            return_value=(crop_text, 35.0, crop_text),
+        ), patch(
+            "core.api_server._shenhui_shoe_label_crop_style_code_text",
+            return_value=("204426141124", 12.0, "204426141124"),
+        ):
+            result = _shenhui_shoe_box_label_candidate_result(row, Path("GUDO8526.jpg"), None)
+
+        self.assertTrue(result["accepted"])
+        self.assertIn("style_digit_crop", result["note"])
+        self.assertEqual(result["confidence"], 35.0)
+
+    def test_shoe_box_label_ocr_rejects_style_code_without_label_structure(self):
+        row = {
+            "输入款号": "204426141046",
+            "__shenhui_group_code": "204426141046",
+            "__shoe_color_code": "50301",
+        }
+        with patch(
+            "core.api_server._shenhui_shoe_label_visual_metrics",
+            return_value={
+                "score": 0.612,
+                "brown_ratio": 0.234,
+                "white_ratio": 0.703,
+                "dark_ratio": 0.007,
+            },
+        ), patch(
+            "core.api_server._shenhui_shoe_label_ocr_text",
+            return_value=("204426141046", 46.0, "204426141046"),
+        ):
+            result = _shenhui_shoe_box_label_candidate_result(row, Path("GUDO8190.jpg"), None)
+
+        self.assertFalse(result["accepted"])
+        self.assertIn("结构证据", result["note"])
+
     def test_finalize_batch_label_tile_download_compresses_images_and_updates_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
@@ -626,10 +888,39 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             with Image.open(final_image) as compressed:
                 self.assertEqual(compressed.size, (256, 256))
             self.assertIn("已压缩", data_rows[0]["备注"])
+            self.assertIn("高保真", data_rows[0]["备注"])
 
             workbook = load_workbook(copied_excel, read_only=True, data_only=True)
             self.assertIn("已压缩", workbook.active["K2"].value)
             workbook.close()
+
+    def test_label_tile_image_compression_selects_smallest_quality_that_preserves_detail(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_file = Path(tmpdir) / "label-tile-source.jpg"
+            image = Image.new("RGB", (320, 240), "white")
+            pixels = image.load()
+            for y in range(image.height):
+                for x in range(image.width):
+                    pixels[x, y] = (
+                        90 + (x * 110 // image.width),
+                        110 + (y * 80 // image.height),
+                        130 + ((x + y) * 60 // (image.width + image.height)),
+                    )
+            image.save(image_file, format="JPEG", quality=100)
+
+            with patch(
+                "core.api_server._shenhui_label_tile_candidate_preserves_detail",
+                return_value=(True, {"pixel_rms": 0.12, "edge_rms": 0.34}),
+            ):
+                note, before_size, after_size = _compress_shenhui_label_tile_image_if_beneficial(
+                    image_file,
+                    None,
+                )
+
+            self.assertIn("q70", note)
+            self.assertLess(after_size, before_size)
+            with Image.open(image_file) as compressed:
+                self.assertEqual(compressed.size, (320, 240))
 
     def test_finalize_batch_label_tile_download_compresses_pdfs_and_updates_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:

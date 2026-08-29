@@ -337,3 +337,68 @@ test('selectTileItems keeps a single folder fallback tile when no style color is
   assert.equal(selection.items.length, 1)
   assert.equal(selection.items[0].filename, 'IMG_2240.jpg')
 })
+
+test('selectShoeLabelItems keeps only a small OCR candidate tail for unnamed shoe box photos', async () => {
+  const helpers = await loadExports()
+  const basePath = '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/平拍原图/全域/7p/鞋品/204426141122-已写/00322/36'
+  const items = [
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: '204426141122-00322.jpg',
+      fullpath: `${basePath}/204426141122-00322.jpg`,
+    },
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: 'yk1.jpg',
+      fullpath: `${basePath}/yk1.jpg`,
+    },
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: 'GUDO6700 拷贝.jpg',
+      fullpath: `${basePath}/GUDO6700 拷贝.jpg`,
+    },
+    ...Array.from({ length: 12 }, (_unused, index) => {
+      const number = 6800 + index
+      return {
+        dir: '0',
+        ext: 'jpg',
+        filename: `GUDO${number}.jpg`,
+        fullpath: `${basePath}/GUDO${number}.jpg`,
+      }
+    }),
+  ]
+
+  const selected = helpers.selectShoeLabelItems(items, '204426141122')
+
+  assert.equal(selected.length, 8)
+  assert.deepEqual(
+    Array.from(selected, item => item.filename),
+    Array.from({ length: 8 }, (_unused, index) => `GUDO${6804 + index}.jpg`),
+  )
+  assert.equal(selected.every(item => item.__shoe_color_code === '00322'), true)
+  assert.equal(selected.every(item => item.__shoe_label_candidate_kind === 'generic_ocr'), true)
+})
+
+test('selectShoeLabelItems respects requested shoe color for OCR candidates', async () => {
+  const helpers = await loadExports()
+  const itemForColor = (color, filename) => ({
+    dir: '0',
+    ext: 'jpg',
+    filename,
+    fullpath: `巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/平拍原图/全域/7p/鞋品/204426141129 2-已写/${color}/27/${filename}`,
+  })
+  const items = [
+    itemForColor('00322', 'GUDO7015.jpg'),
+    itemForColor('00322', 'GUDO7016.jpg'),
+    itemForColor('00415', 'GUDO7035.jpg'),
+    itemForColor('00415', 'GUDO7036.jpg'),
+  ]
+
+  const selected = helpers.selectShoeLabelItems(items, '204426141129-00322')
+
+  assert.deepEqual(Array.from(selected, item => item.filename), ['GUDO7015.jpg', 'GUDO7016.jpg'])
+  assert.equal(selected.every(item => item.__shoe_color_code === '00322'), true)
+})
