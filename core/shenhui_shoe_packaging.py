@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import warnings
@@ -12,6 +13,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from core import llm_gateway, ocr_service, shenhui_shoe_rules
+
+
+logger = logging.getLogger(__name__)
 
 
 class ShoeSelectionError(ValueError):
@@ -467,11 +471,11 @@ SHOE_POSE_DEFAULT_FALLBACK_MODELS: tuple[str, ...] = (
 )
 SHOE_LABEL_OCR_DEFAULT_MODEL_CHAIN: tuple[str, ...] = (
     "gpt-5.6-sol",
+    "gemini-3.5-flash",
+    "qwen3.7-plus",
     "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "deepseek-official-v4-flash-vision-exp",
     "kimi-k2.7-code",
+    "deepseek-official-v4-flash-vision-exp",
 )
 SHOE_FALLBACK_MODEL_LIMIT = 5
 SHOE_POSE_MODEL_CANDIDATES = (
@@ -501,6 +505,10 @@ SHOE_POSE3_SIDE_ASYMMETRY_MARGIN = 0.006
 SHOE_POSE1_MIN_SCORE_IMPROVEMENT = 0.08
 SHOE_MAIN_SLOT_DUPLICATE_MAX_DISTANCE = 0.045
 SHOE_BACKGROUND_PAIR_MAX_DISTANCE = 0.06
+SHOE_VISUAL_VARIANT_MAX_DISTANCE = 0.025
+SHOE_SAME_BACKGROUND_VISUAL_VARIANT_MAX_DISTANCE = 0.003
+SHOE_SAME_BACKGROUND_VISUAL_MIN_PIXEL_MATCH = 0.70
+SHOE_SAME_BACKGROUND_VISUAL_MAX_PIXEL_DELTA = 3
 SHOE_GRAY_BACKGROUND_RGB = (242, 242, 242)
 SHOE_MODEL_INPUT_MAX_SIDE = 900
 SHOE_MODEL_INPUT_JPEG_QUALITY = 72
@@ -562,9 +570,26 @@ def _run_pose_model_wave(
     return results
 
 
+def _interleaved_pose_work_items(
+    model_wave: list[str],
+    pending_batches: list[dict[str, Any]],
+    routes_by_batch: dict[int, set[str]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Queue each batch's independent models together for real concurrent scoring."""
+
+    return [
+        (model_id, batch_input)
+        for batch_input in pending_batches
+        for model_id in model_wave
+        if model_id
+        not in routes_by_batch.get(int(batch_input["batch_index"]), set())
+    ]
+
+
 SHOE_MANDATORY_TARGETED_SLOTS = (
     "tmz3",
     "wpz5",
+    "yq3",
 )
 SHOE_FOCUSED_POSE_SLOTS = (
     *SHOE_FULL_POSE_REQUIRED_CONSENSUS_SLOTS,
@@ -1009,6 +1034,7 @@ class _BinaryPoseFeature:
     foreground_fill_ratio: float = 0.0
     foreground_color_bins: int = 0
     foreground_edge_mean: float = 0.0
+    foreground_saturation_mean: float = 0.0
     foreground_saturation_p80: float = 0.0
 
 
@@ -1164,6 +1190,7 @@ def _binary_pose_feature(path: Path | str) -> _BinaryPoseFeature:
             for red, green, blue in foreground_colors
         )
         saturation_index = min(int(len(saturations) * 0.80), len(saturations) - 1)
+        foreground_saturation_mean = sum(saturations) / len(saturations)
         foreground_saturation_p80 = saturations[saturation_index]
         edge_image = (
             ImageOps.grayscale(image.crop(bbox))
@@ -1181,6 +1208,7 @@ def _binary_pose_feature(path: Path | str) -> _BinaryPoseFeature:
         )
     else:
         foreground_color_bins = 0
+        foreground_saturation_mean = 0.0
         foreground_saturation_p80 = 0.0
         foreground_edge_mean = 0.0
 
@@ -1202,6 +1230,7 @@ def _binary_pose_feature(path: Path | str) -> _BinaryPoseFeature:
         foreground_fill_ratio=foreground_fill_ratio,
         foreground_color_bins=foreground_color_bins,
         foreground_edge_mean=foreground_edge_mean,
+        foreground_saturation_mean=foreground_saturation_mean,
         foreground_saturation_p80=foreground_saturation_p80,
     )
 
@@ -1437,6 +1466,16 @@ def _rank_shoe_box_matches(
 
 def _copy_variant_key(filename: str) -> str:
     return shenhui_shoe_rules._candidate_family_key(filename)
+
+
+def _is_copy_variant_filename(filename: str) -> bool:
+    return bool(
+        re.search(
+            r"\s*(?:拷贝|[-－]?\s*副本)$",
+            Path(_text(filename)).stem,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _is_snow_lining_detail_feature(pose: _BinaryPoseFeature | None) -> bool:
@@ -3225,6 +3264,79 @@ def _apply_post_selection_quality_rules(
                     f"tmz5 已按双模型验证的款号-色号白底单鞋纠正："
                     f"{previous_tmz5 or '空'} -> {filename}"
                 )
+        # Models vote on a pose family, while the source often contains a white
+        # ``拷贝`` export and its gray-background original under the same family
+        # key.  Keep the semantic vote authoritative, but normalize main poses
+        # 1-4 to the original gray variant required by the output contract.
+        gray_originals_by_family: dict[str, list[str]] = {}
+        for candidate_name, entry in entries_by_name.items():
+            if _is_copy_variant_filename(candidate_name):
+                continue
+            candidate_path = entry.get("path") if isinstance(entry, dict) else None
+            if not candidate_path or not Path(candidate_path).is_file():
+                continue
+            candidate_feature = _binary_pose_feature(candidate_path)
+            if not (
+                candidate_feature.valid
+                and 235.0
+                <= candidate_feature.background_luma
+                < SHOE_WHITE_BACKGROUND_LUMA
+            ):
+                continue
+            gray_originals_by_family.setdefault(
+                _copy_variant_key(candidate_name),
+                [],
+            ).append(candidate_name)
+
+        normalized_families: set[str] = set()
+        for index in range(1, 5):
+            slot = f"tmz{index}"
+            selected = _text(ruled.get(slot))
+            if not selected or not _is_copy_variant_filename(selected):
+                continue
+            selected_entry = entries_by_name.get(selected) or {}
+            selected_path = selected_entry.get("path")
+            if not selected_path or not Path(selected_path).is_file():
+                continue
+            selected_feature = _binary_pose_feature(selected_path)
+            if not (
+                selected_feature.valid
+                and selected_feature.background_luma >= SHOE_WHITE_BACKGROUND_LUMA
+            ):
+                continue
+            family = _copy_variant_key(selected)
+            gray_candidates = gray_originals_by_family.get(family) or []
+            if not gray_candidates:
+                continue
+            replacement = min(
+                gray_candidates,
+                key=lambda candidate_name: (
+                    abs(
+                        _binary_pose_feature(
+                            entries_by_name[candidate_name]["path"]
+                        ).background_luma
+                        - 242.0
+                    ),
+                    candidate_name.lower(),
+                ),
+            )
+            _replace_consensus_slot_value(ruled, slot, replacement)
+            model_votes = dict(ruled.get("_model_votes") or {})
+            vote = dict(model_votes.get(slot) or {})
+            vote.update({
+                "selected": replacement,
+                "selected_family": family,
+                "variant_source": "verified_gray_copy_variant",
+                "voted_variant": selected,
+            })
+            model_votes[slot] = vote
+            ruled["_model_votes"] = model_votes
+            if family not in normalized_families:
+                corrections.append(
+                    f"{slot}/wpz{index} 已保留双模型姿势族并改用灰底原图："
+                    f"{selected} -> {replacement}"
+                )
+                normalized_families.add(family)
         return ruled, corrections
     return _apply_selection_quality_rules(
         category,
@@ -4285,6 +4397,11 @@ def _verify_label_payload_with_local_ocr(
     style_code: str,
     color_code: str,
 ) -> dict[str, Any]:
+    _validate_label_ocr_payload(
+        payload,
+        style_code=style_code,
+        color_code=color_code,
+    )
     label_bbox = _normalized_bbox(payload.get("label_bbox"))
     if label_bbox is None:
         raise llm_gateway.LlmResponseError("鞋盒标签 OCR 未返回有效标签坐标")
@@ -4298,16 +4415,124 @@ def _verify_label_payload_with_local_ocr(
         raise llm_gateway.LlmResponseError(
             f"鞋盒标签本地 OCR 失败：{_text(exc)}"
         ) from exc
-    exact_color_name = _text(transcription.get("color_name"))
-    if not exact_color_name:
-        raise llm_gateway.LlmResponseError(
-            "鞋盒标签本地 OCR 未读到包含当前5位色号的完整“颜色”字段"
+    refined = dict(payload)
+    exact_style_bbox_source = ""
+    try:
+        exact_style_bbox = ocr_service.locate_exact_style_code_bbox(
+            label_source_image,
+            style_code=style_code,
+            label_bbox=label_bbox,
         )
+    except Exception:
+        exact_style_bbox = None
+    if exact_style_bbox is not None:
+        refined["style_code_bbox"] = [value * 1000.0 for value in exact_style_bbox]
+        exact_style_bbox_source = "local_tesseract_exact_style_code"
+    exact_color_name = _text(transcription.get("color_name"))
+    recovered_label_bbox: tuple[float, float, float, float] | None = None
+    if not exact_color_name:
+        style_bbox = _normalized_bbox(payload.get("style_code_bbox"))
+        if style_bbox is not None:
+            sx1, sy1, sx2, sy2 = style_bbox
+            style_width = sx2 - sx1
+            style_height = sy2 - sy1
+            recovered_label_bbox = (
+                max(0.0, sx1 - style_width * 0.70),
+                max(0.0, sy1 - style_height * 0.50),
+                min(1.0, sx2 + style_width * 0.50),
+                min(
+                    1.0,
+                    max(0.0, sy1 - style_height * 0.50)
+                    + max(style_height * 6.0, style_width * 2.15),
+                ),
+            )
+            if recovered_label_bbox != label_bbox:
+                try:
+                    recovered = ocr_service.extract_shoe_label_fields(
+                        label_source_image,
+                        label_bbox=recovered_label_bbox,
+                        expected_color_code=color_code,
+                    )
+                except Exception:
+                    recovered = {}
+                if _text(recovered.get("color_name")):
+                    transcription = dict(recovered)
+                    transcription["source"] = "local_tesseract_style_anchor_recovery"
+                    exact_color_name = _text(transcription.get("color_name"))
+    if not exact_color_name:
+        # Some vision routes return a box that follows the printed border too
+        # tightly.  On small shoe-box labels this can clip the left field name
+        # or the final color digits after the OCR subregion is calculated.  A
+        # bounded expansion preserves the model's label location while giving
+        # local OCR enough context; acceptance still requires the exact
+        # expected five-digit color code.
+        x1, y1, x2, y2 = label_bbox
+        width = x2 - x1
+        height = y2 - y1
+        expanded_label_bbox = (
+            max(0.0, x1 - width * 0.20),
+            max(0.0, y1 - height * 0.20),
+            min(1.0, x2 + width * 0.20),
+            min(1.0, y2 + height * 0.20),
+        )
+        if expanded_label_bbox not in {label_bbox, recovered_label_bbox}:
+            try:
+                expanded = ocr_service.extract_shoe_label_fields(
+                    label_source_image,
+                    label_bbox=expanded_label_bbox,
+                    expected_color_code=color_code,
+                )
+            except Exception:
+                expanded = {}
+            if _text(expanded.get("color_name")):
+                transcription = dict(expanded)
+                transcription["source"] = "local_tesseract_expanded_label_recovery"
+                exact_color_name = _text(transcription.get("color_name"))
+                recovered_label_bbox = expanded_label_bbox
+    if not exact_color_name:
+        observed_text = _text(transcription.get("observed_text"))
+        observed_digits = re.sub(r"\D", "", observed_text)
+        if _text(style_code) not in observed_digits:
+            raise llm_gateway.LlmResponseError(
+                "鞋盒标签本地 OCR 未读到包含当前5位色号的完整“颜色”字段，"
+                "且未确认当前完整款号"
+            )
+        model_color_name = _text(payload.get("color_name"))
+        model_product_name = _text(payload.get("product_name"))
+        local_product_name = _text(transcription.get("product_name"))
+        if local_product_name and not model_product_name:
+            refined["product_name"] = local_product_name
+        refined["_label_transcription"] = {
+            "source": "local_tesseract_style_identity_ai_color_fallback",
+            "confidence": float(transcription.get("confidence") or 0.0),
+            "region": _text(transcription.get("region")),
+            "color_name": "",
+            "product_name": local_product_name,
+            "model_color_name": model_color_name,
+            "model_product_name": model_product_name,
+            "corrected_model_color_name": False,
+            "style_identity_verified": True,
+            "observed_text": observed_text,
+        }
+        if exact_style_bbox_source:
+            refined["_label_transcription"]["style_code_bbox_source"] = (
+                exact_style_bbox_source
+            )
+        _validate_label_ocr_payload(
+            refined,
+            style_code=style_code,
+            color_code=color_code,
+        )
+        return refined
     if _text(color_code) not in exact_color_name:
         raise llm_gateway.LlmResponseError(
             f"鞋盒标签本地 OCR 色码不一致：{exact_color_name}"
         )
-    refined = dict(payload)
+    if recovered_label_bbox is not None:
+        # Model payload bboxes use the public 0..1000 contract, while local
+        # OCR helpers operate on normalized 0..1 coordinates. Keep the payload
+        # unit stable when writing a recovered box back for tmq generation.
+        refined["label_bbox"] = [value * 1000.0 for value in recovered_label_bbox]
     model_color_name = _text(payload.get("color_name"))
     model_product_name = _text(payload.get("product_name"))
     refined["color_name"] = exact_color_name
@@ -4324,6 +4549,10 @@ def _verify_label_payload_with_local_ocr(
         "model_product_name": model_product_name,
         "corrected_model_color_name": model_color_name != exact_color_name,
     }
+    if exact_style_bbox_source:
+        refined["_label_transcription"]["style_code_bbox_source"] = (
+            exact_style_bbox_source
+        )
     _validate_label_ocr_payload(
         refined,
         style_code=style_code,
@@ -4401,6 +4630,116 @@ def _merge_pose_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
         "shoe_category": category,
         "slots": merged_slots,
     }
+
+
+def _merge_batch_consensus_payloads(
+    payloads: list[dict[str, Any]],
+    *,
+    required_votes: int,
+) -> dict[str, Any]:
+    """Merge batch winners without treating an unresolved batch vote as a winner.
+
+    ``batch_overview`` shows each model one small candidate batch plus a global
+    thumbnail.  A slot is safe to carry forward only when the independently
+    locked batch winners agree.  Missing or differing winners remain empty and
+    are sent to the exact single-slot targeted review.
+    """
+
+    merged = _merge_pose_payloads(payloads)
+    merged_slots = merged["slots"]
+    model_votes: dict[str, dict[str, Any]] = {}
+    consensus_issues: list[dict[str, Any]] = []
+    routes: set[str] = set()
+    facts_by_model: list[dict[str, Any]] = []
+    required_votes = max(1, int(required_votes or 1))
+
+    for payload in payloads:
+        routes.update(
+            _text(route)
+            for route in (payload.get("_consensus_routes") or [])
+            if _text(route)
+        )
+        facts_by_model.extend(payload.get("_candidate_facts_by_model") or [])
+
+    for slot in SHOE_FULL_POSE_REQUIRED_CONSENSUS_SLOTS:
+        locked_by_family: dict[str, list[dict[str, Any]]] = {}
+        candidates: dict[str, set[str]] = {}
+        for payload in payloads:
+            vote = (payload.get("_model_votes") or {}).get(slot)
+            if not isinstance(vote, dict):
+                continue
+            for family, models in (vote.get("candidates") or {}).items():
+                candidates.setdefault(_text(family), set()).update(
+                    _text(model) for model in models if _text(model)
+                )
+            if vote.get("status") != "locked":
+                continue
+            family = _text(vote.get("selected_family"))
+            selected = _text(vote.get("selected"))
+            if not family and selected:
+                family = _copy_variant_key(selected)
+            if family and selected:
+                locked_by_family.setdefault(family, []).append(vote)
+
+        status = "insufficient_votes"
+        selected = ""
+        selected_family = ""
+        selected_models: list[str] = []
+        votes = max((len(models) for models in candidates.values()), default=0)
+        if len(locked_by_family) == 1:
+            selected_family, locked_votes = next(iter(locked_by_family.items()))
+            winner = sorted(
+                locked_votes,
+                key=lambda item: (
+                    -int(item.get("votes") or 0),
+                    _text(item.get("selected")),
+                ),
+            )[0]
+            selected = _text(winner.get("selected"))
+            selected_models = sorted({
+                _text(model)
+                for vote in locked_votes
+                for model in (vote.get("models") or [])
+                if _text(model)
+            })
+            votes = max(int(vote.get("votes") or 0) for vote in locked_votes)
+            status = "locked"
+            _replace_consensus_slot_value(merged_slots, slot, selected)
+        else:
+            _replace_consensus_slot_value(merged_slots, slot, "")
+            if len(locked_by_family) > 1:
+                status = "cross_batch_conflict"
+
+        model_votes[slot] = {
+            "status": status,
+            "selected": selected,
+            "selected_family": selected_family,
+            "votes": votes,
+            "required_votes": required_votes,
+            "models": selected_models,
+            "candidates": {
+                family: sorted(models)
+                for family, models in sorted(candidates.items())
+                if family
+            },
+        }
+        if status != "locked" and candidates:
+            consensus_issues.append({
+                "slot": slot,
+                "status": status,
+                "votes": votes,
+                "required_votes": required_votes,
+                "candidates": model_votes[slot]["candidates"],
+            })
+
+    merged.update({
+        "_model_id": "+".join(sorted(routes)),
+        "_consensus_routes": sorted(routes),
+        "_model_votes": model_votes,
+        "_consensus_issues": consensus_issues,
+        "_candidate_facts_by_model": facts_by_model,
+    })
+    return merged
 
 
 def _consensus_slot_value(slots: dict[str, Any], slot: str) -> str:
@@ -4506,6 +4845,8 @@ def _lock_verified_exact_tms_contract(
     exact_candidate_id = exact_candidate_ids[0]
 
     supporting_models: set[str] = set()
+    identity_models: set[str] = set()
+    pose_models: set[str] = set()
     evidence_items = (
         candidate_facts_by_model
         if candidate_facts_by_model is not None
@@ -4534,20 +4875,53 @@ def _lock_verified_exact_tms_contract(
             feature_card = fact.get("feature_card") is True or _text(
                 fact.get("feature_card")
             ).lower() in {"1", "true", "yes", "是", "有"}
-            if (
+            identity_verified = (
                 asset_type in {"shoe", "footwear", "鞋", "鞋子"}
                 and shoe_count in {"single", "one", "单只", "单鞋"}
-                and background in {"white", "白", "白底"}
                 and complete
                 and not feature_card
+            )
+            if identity_verified:
+                identity_models.add(model_id)
+                if pose == "tmz5" or "tmz5" in matched_slots:
+                    pose_models.add(model_id)
+            if (
+                identity_verified
+                and background in {"white", "白", "白底"}
                 and (pose == "tmz5" or "tmz5" in matched_slots)
             ):
                 supporting_models.add(model_id)
                 break
 
     required_votes = max(1, int(required_votes))
-    if len(supporting_models) < required_votes:
-        return False
+    verification = "strict_multimodal"
+    contract_models = set(supporting_models)
+    if len(contract_models) < required_votes:
+        exact_entry = entries_by_name.get(exact_filename) or {}
+        exact_path = exact_entry.get("path") if isinstance(exact_entry, dict) else None
+        local_white_verified = False
+        if exact_path and Path(exact_path).is_file():
+            exact_feature = _binary_pose_feature(Path(exact_path))
+            local_white_verified = bool(
+                exact_feature.valid
+                and exact_feature.background_luma >= SHOE_WHITE_BACKGROUND_LUMA
+                and 0.02 <= exact_feature.bounding_coverage <= 0.85
+            )
+        # Models are reliable at the coarse identity facts (shoe, single,
+        # complete, no feature card) but may disagree on a near-white studio
+        # background or call the exact front pose ``other``.  The filename is a
+        # producer contract and local pixels can verify the white background;
+        # require two independent identity routes plus at least one explicit
+        # tmz5 nomination before skipping targeted voting.
+        if (
+            local_white_verified
+            and len(identity_models) >= required_votes
+            and pose_models
+        ):
+            contract_models = set(identity_models)
+            verification = "independent_identity_local_white"
+        else:
+            return False
     slots = payload.get("slots")
     if not isinstance(slots, dict):
         return False
@@ -4556,13 +4930,14 @@ def _lock_verified_exact_tms_contract(
         "status": "locked",
         "selected": exact_candidate_id,
         "selected_family": _copy_variant_key(exact_filename),
-        "votes": len(supporting_models),
+        "votes": len(contract_models),
         "required_votes": required_votes,
-        "models": sorted(supporting_models),
+        "models": sorted(contract_models),
         "candidates": {
-            _copy_variant_key(exact_filename): sorted(supporting_models),
+            _copy_variant_key(exact_filename): sorted(contract_models),
         },
         "source": "verified_exact_tms_contract",
+        "verification": verification,
     }
     payload["_consensus_issues"] = [
         issue
@@ -4627,12 +5002,31 @@ def _targeted_slot_candidate_ids(
     required_votes: int,
     entries_by_name: dict[str, dict[str, Any]] | None = None,
     shoe_category: str = "",
+    prefer_prior_slot_nominations: bool = False,
+    prefer_exact_tmz5_visual_pair: bool = False,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Apply cross-slot and historical-fact gates before targeted voting."""
 
     target_slot = shenhui_shoe_rules.normalize_slot_name(target_slot)
     exclusions: dict[str, str] = {}
     blocked_families: dict[str, str] = {}
+    nominated_candidate_ids: set[str] = set()
+    if prefer_prior_slot_nominations:
+        current_selected = _consensus_slot_value(focused_slots, target_slot)
+        if current_selected in candidate_ids:
+            nominated_candidate_ids.add(current_selected)
+        for model_evidence in candidate_facts_by_model or []:
+            if not isinstance(model_evidence, dict):
+                continue
+            payload = {"candidates": model_evidence.get("candidate_facts") or []}
+            for fact in shenhui_shoe_rules.parse_candidate_facts(payload, candidate_ids):
+                fact_slots = {
+                    shenhui_shoe_rules.normalize_slot_name(slot)
+                    for slot in fact.matched_slots
+                }
+                fact_pose = shenhui_shoe_rules.normalize_slot_name(fact.pose)
+                if target_slot in fact_slots or fact_pose == target_slot:
+                    nominated_candidate_ids.add(fact.candidate_id)
     compatible_slot_pairs = {
         frozenset(("tmz2", "yq1")),
         frozenset(("tmz5", "wpz5")),
@@ -4694,15 +5088,8 @@ def _targeted_slot_candidate_ids(
             exclusions[candidate_id] = f"occupied by incompatible slot {occupied_slot}"
             continue
         pair_routes = pair_routes_by_family.get(family, set())
-        if len(pair_routes) >= required_votes:
-            exclusions[candidate_id] = (
-                f"pair evidence from {len(pair_routes)} independent routes"
-            )
-            continue
+        verified_pose5_geometry = False
         if pose5_rule and entries_by_name:
-            if re.fullmatch(r"yk\d+", Path(filename).stem, flags=re.IGNORECASE):
-                exclusions[candidate_id] = "yk detail is not eligible for wpz5"
-                continue
             entry = entries_by_name.get(filename) or {}
             path = Path(_text(entry.get("path")))
             if path.is_file():
@@ -4730,7 +5117,69 @@ def _targeted_slot_candidate_ids(
                             "wpz5 requires an original gray background candidate"
                         )
                         continue
+                    verified_pose5_geometry = True
+        if len(pair_routes) >= required_votes and not verified_pose5_geometry:
+            exclusions[candidate_id] = (
+                f"pair evidence from {len(pair_routes)} independent routes"
+            )
+            continue
         filtered[candidate_id] = filename
+    if (
+        target_slot == "wpz5"
+        and prefer_exact_tmz5_visual_pair
+        and entries_by_name
+        and filtered
+    ):
+        tmz5_candidate_id = _consensus_slot_value(focused_slots, "tmz5")
+        tmz5_filename = _text(candidate_ids.get(tmz5_candidate_id))
+        tmz5_entry = entries_by_name.get(tmz5_filename) or {}
+        tmz5_path = tmz5_entry.get("path")
+        tmz5_feature = (
+            _binary_pose_feature(Path(tmz5_path))
+            if tmz5_path and Path(tmz5_path).is_file()
+            else None
+        )
+        visual_pair_ids: set[str] = set()
+        if (
+            tmz5_feature is not None
+            and tmz5_feature.mask is not None
+            and tmz5_feature.background_luma >= SHOE_WHITE_BACKGROUND_LUMA
+        ):
+            for candidate_id, filename in filtered.items():
+                entry = entries_by_name.get(filename) or {}
+                candidate_path = entry.get("path")
+                if not candidate_path or not Path(candidate_path).is_file():
+                    continue
+                candidate_feature = _binary_pose_feature(Path(candidate_path))
+                if (
+                    candidate_feature.mask is None
+                    or not (
+                        235.0
+                        <= candidate_feature.background_luma
+                        < SHOE_WHITE_BACKGROUND_LUMA
+                    )
+                ):
+                    continue
+                if (
+                    _binary_pose_distance(tmz5_feature, candidate_feature)
+                    <= SHOE_BACKGROUND_PAIR_MAX_DISTANCE
+                ):
+                    visual_pair_ids.add(candidate_id)
+        if visual_pair_ids:
+            for candidate_id in list(filtered):
+                if candidate_id in visual_pair_ids:
+                    continue
+                exclusions[candidate_id] = (
+                    "not the verified gray visual pair of exact tmz5"
+                )
+                filtered.pop(candidate_id, None)
+    eligible_nominations = nominated_candidate_ids.intersection(filtered)
+    if prefer_prior_slot_nominations and eligible_nominations:
+        for candidate_id in list(filtered):
+            if candidate_id in eligible_nominations:
+                continue
+            exclusions[candidate_id] = "not nominated for target slot by prior batch models"
+            filtered.pop(candidate_id, None)
     return filtered, exclusions
 
 
@@ -4765,8 +5214,214 @@ def _targeted_round_finalist_ids(
     }
 
 
-def _consensus_vote_key(value: str, candidate_ids: dict[str, str]) -> str:
+def _same_background_visual_signature(path: Path | str) -> tuple[Any, Any]:
+    """Return aligned RGB and foreground-mask thumbnails for duplicate checks."""
+
+    from PIL import Image, ImageFilter, ImageOps
+
+    with Image.open(path) as opened:
+        image = _image_rgb_on_white(ImageOps.exif_transpose(opened)).resize(
+            (160, 160),
+            Image.Resampling.LANCZOS,
+        )
+    width, height = image.size
+    pixels = image.load()
+    border = []
+    for x in range(width):
+        border.extend((pixels[x, 0], pixels[x, height - 1]))
+    for y in range(height):
+        border.extend((pixels[0, y], pixels[width - 1, y]))
+    background = tuple(
+        sorted(pixel[channel] for pixel in border)[len(border) // 2]
+        for channel in range(3)
+    )
+    mask = Image.new("L", image.size)
+    mask_pixels = mask.load()
+    for y in range(height):
+        for x in range(width):
+            pixel = pixels[x, y]
+            mask_pixels[x, y] = (
+                255
+                if max(
+                    abs(pixel[channel] - background[channel])
+                    for channel in range(3)
+                )
+                > 22
+                else 0
+            )
+    mask = mask.filter(ImageFilter.MedianFilter(3)).filter(ImageFilter.MaxFilter(3))
+    return image, mask
+
+
+def _same_background_foreground_pixel_match(
+    first: tuple[Any, Any],
+    second: tuple[Any, Any],
+) -> float:
+    """Measure aligned unchanged foreground pixels, excluding shared background."""
+
+    from PIL import ImageChops
+
+    first_image, first_mask = first
+    second_image, second_mask = second
+    foreground_union = ImageChops.lighter(first_mask, second_mask)
+    difference = ImageChops.difference(first_image, second_image)
+    compared = 0
+    matched = 0
+    for pixel, mask_value in zip(difference.getdata(), foreground_union.getdata()):
+        if mask_value <= 0:
+            continue
+        compared += 1
+        if max(pixel) <= SHOE_SAME_BACKGROUND_VISUAL_MAX_PIXEL_DELTA:
+            matched += 1
+    return matched / compared if compared else 0.0
+
+
+def _visual_consensus_family_keys(
+    candidate_ids: dict[str, str],
+    entries_by_name: dict[str, dict[str, Any]] | None,
+    *,
+    allow_same_background_variants: bool = False,
+) -> dict[str, str]:
+    """Cluster near-identical background/export variants without adding votes."""
+
+    if not entries_by_name:
+        return {}
+    filenames = list(dict.fromkeys(candidate_ids.values()))
+    parent = {filename: filename for filename in filenames}
+    features: dict[str, _BinaryPoseFeature] = {}
+    duplicate_signatures: dict[str, tuple[Any, Any]] = {}
+
+    def find(filename: str) -> str:
+        while parent[filename] != filename:
+            parent[filename] = parent[parent[filename]]
+            filename = parent[filename]
+        return filename
+
+    def union(first: str, second: str) -> None:
+        first_root = find(first)
+        second_root = find(second)
+        if first_root != second_root:
+            parent[second_root] = first_root
+
+    for filename in filenames:
+        entry = entries_by_name.get(filename) or {}
+        path = entry.get("path")
+        if path and Path(path).is_file():
+            features[filename] = _binary_pose_feature(path)
+            if allow_same_background_variants:
+                duplicate_signatures[filename] = (
+                    _same_background_visual_signature(path)
+                )
+
+    for index, first in enumerate(filenames):
+        for second in filenames[index + 1:]:
+            if _copy_variant_key(first) == _copy_variant_key(second):
+                union(first, second)
+                continue
+            first_feature = features.get(first)
+            second_feature = features.get(second)
+            if not first_feature or not second_feature:
+                continue
+            if not (
+                first_feature.valid
+                and second_feature.valid
+                and first_feature.mask is not None
+                and second_feature.mask is not None
+                and abs(first_feature.aspect_ratio - second_feature.aspect_ratio) <= 0.05
+                and abs(
+                    first_feature.bounding_coverage
+                    - second_feature.bounding_coverage
+                )
+                <= 0.05
+            ):
+                continue
+            background_distance = abs(
+                first_feature.background_luma
+                - second_feature.background_luma
+            )
+            pose_distance = _binary_pose_distance(first_feature, second_feature)
+            is_background_export_variant = (
+                background_distance >= 5.0
+                and pose_distance <= SHOE_VISUAL_VARIANT_MAX_DISTANCE
+            )
+            is_same_background_variant = (
+                allow_same_background_variants
+                and background_distance < 5.0
+                and pose_distance
+                <= SHOE_SAME_BACKGROUND_VISUAL_VARIANT_MAX_DISTANCE
+                and first in duplicate_signatures
+                and second in duplicate_signatures
+                and _same_background_foreground_pixel_match(
+                    duplicate_signatures[first],
+                    duplicate_signatures[second],
+                )
+                >= SHOE_SAME_BACKGROUND_VISUAL_MIN_PIXEL_MATCH
+            )
+            if not (is_background_export_variant or is_same_background_variant):
+                continue
+            union(first, second)
+
+    groups: dict[str, list[str]] = {}
+    for filename in filenames:
+        groups.setdefault(find(filename), []).append(filename)
+    result: dict[str, str] = {}
+    for members in groups.values():
+        member_features = [
+            features[filename]
+            for filename in members
+            if filename in features
+        ]
+        same_background_group = bool(
+            allow_same_background_variants
+            and len(member_features) > 1
+            and max(feature.background_luma for feature in member_features)
+            - min(feature.background_luma for feature in member_features)
+            < 5.0
+        )
+
+        def representative_rank(filename: str) -> tuple[Any, ...]:
+            feature = features.get(filename)
+            if same_background_group and feature is not None:
+                # A function card commonly leaves the outer silhouette nearly
+                # unchanged but replaces colorful shoe pixels with a neutral
+                # rectangle.  Within this tightly bounded duplicate family,
+                # retain the richer unobstructed export as the output variant.
+                return (
+                    -feature.foreground_saturation_mean,
+                    -feature.foreground_saturation_p80,
+                    -feature.foreground_color_bins,
+                    _is_copy_variant_filename(filename),
+                    filename.lower(),
+                )
+            return (
+                not (
+                    feature is not None
+                    and 235.0
+                    <= feature.background_luma
+                    < SHOE_WHITE_BACKGROUND_LUMA
+                ),
+                _is_copy_variant_filename(filename),
+                filename.lower(),
+            )
+
+        representative = min(
+            members,
+            key=representative_rank,
+        )
+        family_key = _copy_variant_key(representative)
+        for filename in members:
+            result[filename] = family_key
+    return result
+
+
+def _consensus_vote_key(
+    value: str,
+    candidate_ids: dict[str, str],
+    visual_family_keys: dict[str, str] | None = None,
+) -> str:
     resolved = candidate_ids.get(_text(value), _text(value))
+    if visual_family_keys and resolved in visual_family_keys:
+        return visual_family_keys[resolved]
     return _copy_variant_key(resolved)
 
 
@@ -4776,11 +5431,22 @@ def _consensus_pose_payload(
     shoe_category: str = "",
     *,
     required_votes: int = 2,
+    entries_by_name: dict[str, dict[str, Any]] | None = None,
+    same_background_visual_slot: str = "",
 ) -> dict[str, Any]:
     """Lock a slot only when distinct model routes select the same image family."""
 
     required_votes = max(1, int(required_votes or 1))
+    same_background_visual_slot = shenhui_shoe_rules.normalize_slot_name(
+        same_background_visual_slot
+    )
+    visual_family_keys = _visual_consensus_family_keys(
+        candidate_ids,
+        entries_by_name,
+        allow_same_background_variants=(same_background_visual_slot == "yq3"),
+    )
     normalized_by_route: dict[str, dict[str, Any]] = {}
+    route_variant_deduplication: dict[str, list[str]] = {}
     facts_by_model: list[dict[str, Any]] = []
     for payload in payloads:
         if not isinstance(payload, dict):
@@ -4797,6 +5463,42 @@ def _consensus_pose_payload(
             candidate_ids,
             shoe_category=shoe_category,
         )
+        if same_background_visual_slot == "yq3":
+            nominated_facts = []
+            for fact in shenhui_shoe_rules.parse_candidate_facts(
+                payload,
+                candidate_ids,
+            ):
+                if "yq3" not in fact.matched_slots:
+                    continue
+                valid, _reason = shenhui_shoe_rules.candidate_is_valid_for_slot(
+                    fact,
+                    "yq3",
+                    shoe_category,
+                )
+                if valid:
+                    nominated_facts.append(fact)
+            nominated_ids = list(dict.fromkeys(
+                fact.candidate_id for fact in nominated_facts
+            ))
+            nominated_families = {
+                _consensus_vote_key(
+                    candidate_id,
+                    candidate_ids,
+                    visual_family_keys,
+                )
+                for candidate_id in nominated_ids
+            }
+            if nominated_ids and len(nominated_families) == 1:
+                # A route may mark both white/gray or card/no-card exports of
+                # the exact same yq3 image. Collapse that one visual family
+                # before slot scoring; this preserves one vote per route and
+                # does not resolve genuine multi-family model ambiguity.
+                slots = normalized.get("slots")
+                if isinstance(slots, dict):
+                    _replace_consensus_slot_value(slots, "yq3", nominated_ids[0])
+                    if len(nominated_ids) > 1:
+                        route_variant_deduplication[route] = sorted(nominated_ids)
         normalized["_model_id"] = route
         normalized_by_route[route] = normalized
         facts_by_model.append({
@@ -4815,6 +5517,11 @@ def _consensus_pose_payload(
     consensus_issues: list[dict[str, Any]] = []
 
     for slot in slot_names:
+        slot_visual_family_keys = (
+            visual_family_keys
+            if not same_background_visual_slot or slot == same_background_visual_slot
+            else {}
+        )
         groups: dict[str, dict[str, Any]] = {}
         for route, payload in normalized_by_route.items():
             slots = payload.get("slots")
@@ -4823,7 +5530,11 @@ def _consensus_pose_payload(
             value = _consensus_slot_value(slots, slot)
             if not value:
                 continue
-            key = _consensus_vote_key(value, candidate_ids)
+            key = _consensus_vote_key(
+                value,
+                candidate_ids,
+                slot_visual_family_keys,
+            )
             group = groups.setdefault(key, {"models": set(), "values": []})
             group["models"].add(route)
             group["values"].append(value)
@@ -4842,10 +5553,21 @@ def _consensus_pose_payload(
         ]
         representative = ""
         if best["values"]:
+            eligible_values = [
+                candidate_id
+                for candidate_id in candidate_ids
+                if _consensus_vote_key(
+                    candidate_id,
+                    candidate_ids,
+                    slot_visual_family_keys,
+                )
+                == best_key
+            ]
             representative = sorted(
-                set(best["values"]),
+                set(eligible_values or best["values"]),
                 key=lambda value: (
-                    "拷贝" in candidate_ids.get(value, value),
+                    _copy_variant_key(candidate_ids.get(value, value)) != best_key,
+                    _is_copy_variant_filename(candidate_ids.get(value, value)),
                     candidate_ids.get(value, value).lower(),
                 ),
             )[0]
@@ -4880,6 +5602,34 @@ def _consensus_pose_payload(
                 for key, group in ranked
             },
         }
+        raw_voted_families = {
+            _copy_variant_key(candidate_ids.get(value, value))
+            for value in best["values"]
+        }
+        if status == "locked" and len(raw_voted_families) > 1:
+            model_votes[slot].update({
+                "family_source": "verified_visual_duplicate_cluster",
+                "voted_variants": sorted(set(best["values"])),
+            })
+        if (
+            status == "locked"
+            and representative
+            and representative not in best["values"]
+        ):
+            model_votes[slot].update({
+                "variant_source": "verified_visual_duplicate_cluster",
+                "voted_variants": sorted(set(best["values"])),
+            })
+        if status == "locked" and slot == same_background_visual_slot:
+            applied_route_deduplication = {
+                route: variants
+                for route, variants in route_variant_deduplication.items()
+                if route in best["models"]
+            }
+            if applied_route_deduplication:
+                model_votes[slot]["route_variant_deduplication"] = (
+                    applied_route_deduplication
+                )
 
     first_payload = next(iter(normalized_by_route.values()), {})
     slots = {
@@ -5040,6 +5790,17 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
         for slot, path in (kwargs.get("yq_reference_images") or {}).items()
         if shenhui_shoe_rules.normalize_slot_name(slot) in {"yq1", "yq2", "yq3"}
         and _text(path)
+    }
+    candidate_entries = [
+        item
+        for item in (kwargs.get("candidate_entries") or [])
+        if isinstance(item, dict)
+        and _text(item.get("filename"))
+        and item.get("path")
+    ]
+    candidate_entries_by_name = {
+        _text(item.get("filename")): item
+        for item in candidate_entries
     }
 
     model_payloads: list[dict[str, Any]] = []
@@ -5380,13 +6141,11 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
             if model_id not in model_wave
         ]
         first_model_wave = False
-        work_items = [
-            (current_model_id, batch_input)
-            for current_model_id in model_wave
-            for batch_input in pending_batches
-            if current_model_id
-            not in routes_by_batch.get(int(batch_input["batch_index"]), set())
-        ]
+        work_items = _interleaved_pose_work_items(
+            model_wave,
+            pending_batches,
+            routes_by_batch,
+        )
         if not work_items:
             continue
         log(
@@ -5404,7 +6163,6 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
             invoke_pose_work_item,
             max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
         )
-        timeout_probe_items: list[tuple[str, dict[str, Any]]] = []
         for (current_model_id, batch_input), result in zip(work_items, results):
             if result.get("ok"):
                 record_success(result)
@@ -5421,72 +6179,32 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                     model_id not in disabled_models
                     for model_id in remaining_model_ids
                 )
-                if has_fresh_fallback:
-                    errors.append(
-                        f"{current_model_id}: 批次{batch_index}/{total_batches} "
-                        f"{error_text}；已切换独立 fallback"
+                errors.append(
+                    f"{current_model_id}: 批次{batch_index}/{total_batches} "
+                    f"{error_text}；"
+                    + (
+                        "已切换独立 fallback"
+                        if has_fresh_fallback
+                        else "无可用独立 fallback，已快速 fail-closed"
                     )
-                    disabled_models.add(current_model_id)
+                )
+                disabled_models.add(current_model_id)
+                if has_fresh_fallback:
                     log(
                         f"[warn] 鞋品姿势识别模型超时，优先切换独立 fallback："
                         f"{style_code}-{color_code}，模型 {current_model_id}，"
                         f"批次 {batch_index}/{total_batches}"
                     )
                 else:
-                    timeout_probe_items.append((current_model_id, batch_input))
                     log(
-                        f"[warn] 鞋品姿势识别模型 60 秒软超时："
+                        f"[warn] 鞋品姿势识别模型超时且无新 fallback，快速 fail-closed："
                         f"{style_code}-{color_code}，模型 {current_model_id}，"
-                        f"批次 {batch_index}/{total_batches}；进入并发耐心复测，"
-                        f"硬上限 {float(SHOE_POSE_TIMEOUT_PROBE_SECONDS):g} 秒"
+                        f"批次 {batch_index}/{total_batches}"
                     )
             else:
                 errors.append(
                     f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
                 )
-
-        def invoke_probe_work_item(work_item: tuple[str, dict[str, Any]]) -> dict[str, Any]:
-            current_model_id, batch_input = work_item
-            return analyze_batch_with_model(
-                batch_input,
-                current_model_id,
-                timeout_seconds=SHOE_POSE_TIMEOUT_PROBE_SECONDS,
-                max_attempts=1,
-                timeout_probe=True,
-            )
-
-        probe_results = _run_pose_model_wave(
-            timeout_probe_items,
-            invoke_probe_work_item,
-            max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
-        )
-        for (current_model_id, batch_input), probe_result in zip(
-            timeout_probe_items,
-            probe_results,
-        ):
-            batch_index = int(
-                probe_result.get("batch_index") or batch_input["batch_index"]
-            )
-            if probe_result.get("ok"):
-                record_success(probe_result)
-                log(
-                    f"鞋品姿势识别模型单批耐心复测通过："
-                    f"{style_code}-{color_code}，模型 {current_model_id}，"
-                    f"批次 {batch_index}/{total_batches}"
-                )
-                continue
-            error_text = _text(probe_result.get("error")) or "未返回可用结果"
-            errors.append(
-                f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
-            )
-            if probe_result.get("configuration_error") or probe_result.get("timeout_like"):
-                disabled_models.add(current_model_id)
-                if probe_result.get("timeout_like"):
-                    log(
-                        f"[warn] 鞋品姿势识别模型单批耐心复测仍超时，快速 fallback："
-                        f"{style_code}-{color_code}，模型 {current_model_id}，"
-                        f"批次 {batch_index}/{total_batches}"
-                    )
 
     pending_batches = [
         item
@@ -5544,19 +6262,24 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
             )
             for batch_input in batch_inputs
         ]
-        candidate_entries = [
-            item
-            for item in (kwargs.get("candidate_entries") or [])
-            if isinstance(item, dict)
-            and _text(item.get("filename"))
-            and item.get("path")
-        ]
+        targeted_from_batch_overview = bool(
+            pose_strategy == SHOE_POSE_STRATEGY_BATCH_OVERVIEW
+            and len(consensus_payloads) > 1
+        )
         requires_focused = bool(
             pose_strategy == SHOE_POSE_STRATEGY_GLOBAL_PAGES
             and len(consensus_payloads) > 1
         )
-        if requires_focused and not candidate_entries:
-            message = "global_pages focused 缺少 candidate_entries，拒绝回退旧跨页合并"
+        requires_semantic_recheck = requires_focused or targeted_from_batch_overview
+        if requires_semantic_recheck and not candidate_entries:
+            message = (
+                "global_pages focused 缺少 candidate_entries，拒绝回退旧跨页合并"
+                if requires_focused
+                else (
+                    "batch_overview 语义复核缺少 candidate_entries，"
+                    "拒绝回退旧跨批次合并"
+                )
+            )
             errors.append(message)
             focused_consensus_evidence.update({
                 "status": "failed",
@@ -5564,16 +6287,24 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
             })
             flush_pose_evidence("failed")
             raise ShoeSelectionError(f"{style_code}-{color_code} {message}")
-        should_run_focused = requires_focused
+        should_run_focused = requires_semantic_recheck
         if should_run_focused:
-            page_conflict_slots = _cross_page_conflict_slots(consensus_payloads)
-            focused_candidate_ids = _focused_candidate_ids_from_page_payloads(
-                payloads_by_batch=payloads_by_batch,
-                batch_inputs=batch_inputs,
-                candidate_ids=candidate_ids,
-                shoe_category=kwargs.get("shoe_category") or "",
-                style_code=style_code,
-                color_code=color_code,
+            page_conflict_slots = (
+                _cross_page_conflict_slots(consensus_payloads)
+                if requires_focused
+                else []
+            )
+            focused_candidate_ids = (
+                _focused_candidate_ids_from_page_payloads(
+                    payloads_by_batch=payloads_by_batch,
+                    batch_inputs=batch_inputs,
+                    candidate_ids=candidate_ids,
+                    shoe_category=kwargs.get("shoe_category") or "",
+                    style_code=style_code,
+                    color_code=color_code,
+                )
+                if requires_focused
+                else dict(candidate_ids)
             )
             entries_by_name = {
                 _text(item.get("filename")): item
@@ -5585,51 +6316,54 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                 focused_target = first_entry_path.parent / f"{color_code}-focused.jpg"
             else:
                 focused_target = first_contact.with_name(f"{color_code}-focused.jpg")
-            focused_sheets, rendered_focused_ids = _create_focused_contact_sheets(
-                focused_candidate_ids,
-                entries_by_name,
-                focused_target,
-            )
-            if rendered_focused_ids != focused_candidate_ids:
-                raise ShoeSelectionError(
-                    f"{style_code}-{color_code} global_pages focused 候选编号写入不一致"
-                )
-            if main_pose_reference_images:
-                focused_image_inputs = [
-                    *[str(path) for path in focused_sheets],
-                    *main_pose_reference_images,
-                    kwargs.get("poster_reference_image") or str(SHOE_POSTER_REFERENCE_IMAGE),
-                    kwargs["yq_reference_image"],
-                ]
-                focused_reference_count = len(main_pose_reference_images)
-            else:
-                focused_image_inputs = [
-                    *[str(path) for path in focused_sheets],
-                    main_pose_reference_sheet or kwargs["reference_image"],
-                    kwargs.get("poster_reference_image") or str(SHOE_POSTER_REFERENCE_IMAGE),
-                    kwargs["yq_reference_image"],
-                ]
-                focused_reference_count = 0
-            _ensure_pose_image_input_limit(
-                focused_image_inputs,
-                style_code=style_code,
-                color_code=color_code,
-                pose_strategy=SHOE_POSE_STRATEGY_FOCUSED,
-            )
-            focused_batch = {
-                "batch_index": 1,
-                "candidate_ids": focused_candidate_ids,
-                "user_prompt": _shoe_selection_prompt(
-                    style_code,
-                    color_code,
+            focused_sheets: list[Path] = []
+            focused_batch: dict[str, Any] = {}
+            if requires_focused:
+                focused_sheets, rendered_focused_ids = _create_focused_contact_sheets(
                     focused_candidate_ids,
-                    kwargs.get("shoe_category") or "",
-                    candidate_sheet_count=len(focused_sheets),
-                    candidate_scope=SHOE_POSE_STRATEGY_FOCUSED,
-                    main_pose_reference_count=focused_reference_count,
-                ),
-                "image_inputs": focused_image_inputs,
-            }
+                    entries_by_name,
+                    focused_target,
+                )
+                if rendered_focused_ids != focused_candidate_ids:
+                    raise ShoeSelectionError(
+                        f"{style_code}-{color_code} global_pages focused 候选编号写入不一致"
+                    )
+                if main_pose_reference_images:
+                    focused_image_inputs = [
+                        *[str(path) for path in focused_sheets],
+                        *main_pose_reference_images,
+                        kwargs.get("poster_reference_image") or str(SHOE_POSTER_REFERENCE_IMAGE),
+                        kwargs["yq_reference_image"],
+                    ]
+                    focused_reference_count = len(main_pose_reference_images)
+                else:
+                    focused_image_inputs = [
+                        *[str(path) for path in focused_sheets],
+                        main_pose_reference_sheet or kwargs["reference_image"],
+                        kwargs.get("poster_reference_image") or str(SHOE_POSTER_REFERENCE_IMAGE),
+                        kwargs["yq_reference_image"],
+                    ]
+                    focused_reference_count = 0
+                _ensure_pose_image_input_limit(
+                    focused_image_inputs,
+                    style_code=style_code,
+                    color_code=color_code,
+                    pose_strategy=SHOE_POSE_STRATEGY_FOCUSED,
+                )
+                focused_batch = {
+                    "batch_index": 1,
+                    "candidate_ids": focused_candidate_ids,
+                    "user_prompt": _shoe_selection_prompt(
+                        style_code,
+                        color_code,
+                        focused_candidate_ids,
+                        kwargs.get("shoe_category") or "",
+                        candidate_sheet_count=len(focused_sheets),
+                        candidate_scope=SHOE_POSE_STRATEGY_FOCUSED,
+                        main_pose_reference_count=focused_reference_count,
+                    ),
+                    "image_inputs": focused_image_inputs,
+                }
             focused_payloads: list[dict[str, Any]] = []
             focused_routes: set[str] = set()
             focused_errors: list[str] = []
@@ -5725,7 +6459,19 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                     return _text(yq_reference_images.get(slot))
                 return ""
 
-            available_mandatory_targeted_slots = tuple(SHOE_MANDATORY_TARGETED_SLOTS)
+            available_mandatory_targeted_slots = tuple(
+                slot
+                for slot in SHOE_MANDATORY_TARGETED_SLOTS
+                if slot != "yq3" or targeted_from_batch_overview
+            )
+
+            if targeted_from_batch_overview:
+                focused_payload = _merge_batch_consensus_payloads(
+                    consensus_payloads,
+                    required_votes=required_model_votes,
+                )
+                focused_routes.update(focused_payload.get("_consensus_routes") or [])
+                focused_missing = focused_missing_slots(focused_payload)
 
             def try_lock_exact_tms_contract() -> bool:
                 if focused_payload is None:
@@ -5750,11 +6496,20 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                     candidate_facts_by_model=exact_contract_evidence,
                 )
 
-            log(
-                f"鞋品 focused finalist 复核：{style_code}-{color_code}，"
-                    f"{len(focused_candidate_ids)} 个候选族，{len(focused_sheets)} 张候选图"
+            if targeted_from_batch_overview:
+                log(
+                    f"鞋品 batch_overview 缺槽定向复核：{style_code}-{color_code}，"
+                    f"跳过全量 focused，待锁定 {','.join(focused_missing) or '无'}"
+                )
+            else:
+                log(
+                    f"鞋品 focused finalist 复核：{style_code}-{color_code}，"
+                    f"{len(focused_candidate_ids)} 个候选族，"
+                    f"{len(focused_sheets)} 张候选图"
+                )
+            focused_remaining_models = (
+                [] if targeted_from_batch_overview else list(model_ids)
             )
-            focused_remaining_models = list(model_ids)
             while focused_remaining_models:
                 available_models = [
                     model_id
@@ -5797,34 +6552,25 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                     model_id not in disabled_models
                     for model_id in focused_remaining_models
                 )
-                if timed_out_focused_models and has_fresh_focused_fallback:
+                if timed_out_focused_models:
                     disabled_models.update(timed_out_focused_models)
                     for current_model_id in timed_out_focused_models:
-                        log(
-                            f"[warn] 鞋品 focused 模型超时，优先切换独立 fallback："
-                            f"{style_code}-{color_code}，模型 {current_model_id}"
-                        )
-                    focused_probe_models: list[str] = []
-                else:
-                    focused_probe_models = timed_out_focused_models
-                focused_probe_results = _run_pose_model_wave(
-                    focused_probe_models,
-                    lambda current_model_id: analyze_batch_with_model(
-                        focused_batch,
-                        current_model_id,
-                        timeout_seconds=SHOE_POSE_TIMEOUT_PROBE_SECONDS,
-                        max_attempts=1,
-                        timeout_probe=True,
-                    ),
-                    max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
-                )
-                probe_by_model = dict(zip(focused_probe_models, focused_probe_results))
+                        if has_fresh_focused_fallback:
+                            log(
+                                f"[warn] 鞋品 focused 模型超时，优先切换独立 fallback："
+                                f"{style_code}-{color_code}，模型 {current_model_id}"
+                            )
+                        else:
+                            log(
+                                f"[warn] 鞋品 focused 模型超时且无新 fallback，"
+                                f"快速 fail-closed：{style_code}-{color_code}，"
+                                f"模型 {current_model_id}"
+                            )
                 for current_model_id, initial_result in zip(
                     focused_wave,
                     focused_results,
                 ):
-                    result = probe_by_model.get(current_model_id, initial_result)
-                    used_timeout_probe = current_model_id in probe_by_model
+                    result = initial_result
                     if not result.get("ok"):
                         focused_errors.append(
                             f"{current_model_id}: "
@@ -5832,12 +6578,6 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                         )
                         if result.get("configuration_error"):
                             disabled_models.add(current_model_id)
-                        elif used_timeout_probe and result.get("timeout_like"):
-                            disabled_models.add(current_model_id)
-                            log(
-                                f"[warn] 鞋品 focused finalist 耐心复测仍超时，快速 fallback："
-                                f"{style_code}-{color_code}，模型 {current_model_id}"
-                            )
                         continue
                     route_model_id = _text(result.get("route_model_id"))
                     if not route_model_id or route_model_id in focused_routes:
@@ -5926,8 +6666,31 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                             required_votes=target_required_votes,
                             entries_by_name=entries_by_name,
                             shoe_category=kwargs.get("shoe_category") or "",
+                            prefer_prior_slot_nominations=targeted_from_batch_overview,
+                            prefer_exact_tmz5_visual_pair=bool(
+                                targeted_from_batch_overview
+                                and target_slot == "wpz5"
+                                and "tmz5"
+                                in (focused_payload.get("_exact_contract_locked_slots") or [])
+                            ),
                         )
                     )
+                    expanded_target_candidate_ids = dict(target_candidate_ids)
+                    if targeted_from_batch_overview:
+                        expanded_target_candidate_ids, _expanded_exclusions = (
+                            _targeted_slot_candidate_ids(
+                                target_slot,
+                                focused_candidate_ids,
+                                focused_slots=focused_slots,
+                                candidate_facts_by_model=list(
+                                    focused_payload.get("_candidate_facts_by_model") or []
+                                ),
+                                required_votes=target_required_votes,
+                                entries_by_name=entries_by_name,
+                                shoe_category=kwargs.get("shoe_category") or "",
+                                prefer_prior_slot_nominations=False,
+                            )
+                        )
                     if not target_candidate_ids:
                         target_errors.append(
                             f"{target_slot} 经过跨槽占用和历史事实门禁后无候选"
@@ -6070,39 +6833,28 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                                 model_id not in disabled_models
                                 for model_id in target_remaining_models
                             )
-                            if timed_out_target_models and has_fresh_target_fallback:
+                            if timed_out_target_models:
                                 disabled_models.update(timed_out_target_models)
                                 for current_model_id in timed_out_target_models:
-                                    log(
-                                        f"[warn] 鞋品 focused 单槽位模型超时，"
-                                        f"优先切换独立 fallback：{style_code}-{color_code}，"
-                                        f"模型 {current_model_id}，槽位 {target_slot}，"
-                                        f"第 {round_index} 轮"
-                                    )
-                                probe_models: list[str] = []
-                            else:
-                                probe_models = timed_out_target_models
-                            probe_results = _run_pose_model_wave(
-                                probe_models,
-                                lambda current_model_id: analyze_batch_with_model(
-                                    target_batch,
-                                    current_model_id,
-                                    timeout_seconds=SHOE_POSE_TIMEOUT_PROBE_SECONDS,
-                                    max_attempts=1,
-                                    timeout_probe=True,
-                                ),
-                                max_workers=SHOE_POSE_MAX_CONCURRENT_CALLS,
-                            )
-                            probe_by_model = dict(zip(probe_models, probe_results))
+                                    if has_fresh_target_fallback:
+                                        log(
+                                            f"[warn] 鞋品 focused 单槽位模型超时，"
+                                            f"优先切换独立 fallback：{style_code}-{color_code}，"
+                                            f"模型 {current_model_id}，槽位 {target_slot}，"
+                                            f"第 {round_index} 轮"
+                                        )
+                                    else:
+                                        log(
+                                            f"[warn] 鞋品 focused 单槽位模型超时且无新 "
+                                            f"fallback，快速 fail-closed："
+                                            f"{style_code}-{color_code}，模型 {current_model_id}，"
+                                            f"槽位 {target_slot}，第 {round_index} 轮"
+                                        )
                             for current_model_id, initial_result in zip(
                                 target_wave,
                                 target_results,
                             ):
-                                result = probe_by_model.get(
-                                    current_model_id,
-                                    initial_result,
-                                )
-                                used_timeout_probe = current_model_id in probe_by_model
+                                result = initial_result
                                 if not result.get("ok"):
                                     error_text = (
                                         f"第{round_index}轮 {current_model_id}: "
@@ -6112,13 +6864,6 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                                     target_errors.append(error_text)
                                     if result.get("configuration_error"):
                                         disabled_models.add(current_model_id)
-                                    elif used_timeout_probe and result.get("timeout_like"):
-                                        disabled_models.add(current_model_id)
-                                        log(
-                                            f"[warn] 鞋品 focused 单槽位耐心复测仍超时，快速 fallback："
-                                            f"{style_code}-{color_code}，模型 {current_model_id}，"
-                                            f"槽位 {target_slot}，第 {round_index} 轮"
-                                        )
                                     continue
                                 route_model_id = _text(result.get("route_model_id"))
                                 if not route_model_id or route_model_id in target_routes:
@@ -6138,6 +6883,14 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                                     current_candidate_ids,
                                     kwargs.get("shoe_category") or "",
                                     required_votes=target_required_votes,
+                                    entries_by_name=(
+                                        candidate_entries_by_name
+                                        if target_slot == "yq3"
+                                        else None
+                                    ),
+                                    same_background_visual_slot=(
+                                        "yq3" if target_slot == "yq3" else ""
+                                    ),
                                 )
                                 target_vote = dict(
                                     (target_payload.get("_model_votes") or {}).get(
@@ -6173,6 +6926,9 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                                         target_payload.get("_candidate_facts_by_model") or []
                                     ),
                                     "candidate_ids": dict(target_candidate_ids),
+                                    "expanded_candidate_ids": dict(
+                                        expanded_target_candidate_ids
+                                    ),
                                     "excluded_candidates": excluded_candidates,
                                     "contact_sheets": list(target_contact_sheets),
                                     "rounds": target_rounds,
@@ -6180,12 +6936,21 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                                 }
                                 update_focused_evidence()
                                 flush_pose_evidence("partial")
-                            if (
-                                target_vote.get("status") == "locked"
-                                and int(target_vote.get("votes") or 0)
-                                >= target_required_votes
-                            ):
-                                break
+                                if (
+                                    target_vote.get("status") == "locked"
+                                    and int(target_vote.get("votes") or 0)
+                                    >= target_required_votes
+                                ):
+                                    break
+                                if (
+                                    targeted_from_batch_overview
+                                    and round_index == 1
+                                    and len(target_routes) >= target_required_votes
+                                    and target_vote.get("status") != "locked"
+                                    and set(expanded_target_candidate_ids)
+                                    != set(current_candidate_ids)
+                                ):
+                                    break
 
                         locked = bool(
                             target_payload is not None
@@ -6195,6 +6960,22 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                         )
                         if locked:
                             break
+                        if (
+                            targeted_from_batch_overview
+                            and round_index == 1
+                            and len(target_routes) >= target_required_votes
+                            and target_vote.get("status") != "locked"
+                            and set(expanded_target_candidate_ids)
+                            != set(current_candidate_ids)
+                        ):
+                            log(
+                                f"鞋品 focused 单槽位提名未达双票，扩大候选池："
+                                f"{style_code}-{color_code}，槽位 {target_slot}，"
+                                f"{len(current_candidate_ids)} -> "
+                                f"{len(expanded_target_candidate_ids)}"
+                            )
+                            current_candidate_ids = expanded_target_candidate_ids
+                            continue
                         finalists = _targeted_round_finalist_ids(
                             target_payloads,
                             current_candidate_ids,
@@ -6227,6 +7008,9 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                             "routes": sorted(target_routes),
                             "required_votes": target_required_votes,
                             "candidate_ids": dict(target_candidate_ids),
+                            "expanded_candidate_ids": dict(
+                                expanded_target_candidate_ids
+                            ),
                             "excluded_candidates": excluded_candidates,
                             "contact_sheets": list(target_contact_sheets),
                             "rounds": target_rounds,
@@ -6287,7 +7071,12 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                     )
                 )
                 raise ShoeSelectionError(
-                    f"{style_code}-{color_code} global_pages focused 独立模型共识不足："
+                    f"{style_code}-{color_code} "
+                    + (
+                        "global_pages focused 独立模型共识不足："
+                        if requires_focused
+                        else "batch_overview 语义复核独立模型共识不足："
+                    )
                     + focused_failure
                     + (f"；{'；'.join(focused_errors[:4])}" if focused_errors else "")
                 )
@@ -6364,7 +7153,93 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
 
 
 def _create_label_preview(source: Path, target: Path) -> None:
-    _create_model_input_preview(source, target)
+    # Labels contain small printed fields. Preserve more source detail than the
+    # pose previews so the model reads the label instead of guessing from the
+    # shoe/box appearance; normalized coordinates remain valid after resizing.
+    _create_model_input_preview(source, target, max_side=1800)
+
+
+def _create_focused_label_preview(
+    source: Path,
+    target: Path,
+    label_bbox: Any,
+) -> Path:
+    from PIL import Image, ImageOps
+
+    label = _normalized_bbox(label_bbox)
+    if label is None:
+        raise ShoeSelectionError("鞋盒标签坐标无效，无法生成定向 OCR 裁片")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+        with Image.open(source) as opened:
+            image = _image_rgb_on_white(ImageOps.exif_transpose(opened))
+    width, height = image.size
+    x1, y1, x2, y2 = label
+    # Keep a little more surrounding box context than the coarse detector
+    # returns.  Besides avoiding clipped first/last characters, this keeps the
+    # printed field labels visible so vision routes distinguish look-alike
+    # glyphs such as “红” and “灰”.
+    pad_x = (x2 - x1) * 0.12
+    pad_y = (y2 - y1) * 0.12
+    crop = image.crop((
+        round(max(0.0, x1 - pad_x) * width),
+        round(max(0.0, y1 - pad_y) * height),
+        round(min(1.0, x2 + pad_x) * width),
+        round(min(1.0, y2 + pad_y) * height),
+    ))
+    max_side = max(crop.size)
+    if max_side != 1800:
+        scale = 1800 / max_side
+        crop = crop.resize(
+            (max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    crop.save(target, format="JPEG", quality=96, optimize=True)
+    return target
+
+
+def _create_focused_label_color_context_preview(
+    source: Path,
+    target: Path,
+    label_bbox: Any,
+) -> Path:
+    """Crop the product/color side of a shoe-box label at native detail."""
+
+    from PIL import Image, ImageOps
+
+    label = _normalized_bbox(label_bbox)
+    if label is None:
+        raise ShoeSelectionError("鞋盒标签坐标无效，无法生成颜色字段上下文裁片")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+        with Image.open(source) as opened:
+            image = _image_rgb_on_white(ImageOps.exif_transpose(opened))
+    width, height = image.size
+    x1, y1, x2, y2 = label
+    label_width = x2 - x1
+    label_height = y2 - y1
+    # Keep the whole label and some surrounding box context.  The printed color
+    # row is faint, and aggressive lower-left crops remove the table/grid cues
+    # that vision routes use to distinguish the color value from nearby size,
+    # material and compliance fields.  This asymmetric crop keeps the label
+    # large while preserving those cues.
+    crop = image.crop((
+        round(max(0.0, x1 - label_width * 0.40) * width),
+        round(max(0.0, y1 - label_height * 0.30) * height),
+        round(min(1.0, x2 + label_width * 0.02) * width),
+        round(min(1.0, y2 + label_height * 0.20) * height),
+    ))
+    max_side = max(crop.size)
+    if max_side > 1800:
+        scale = 1800 / max_side
+        crop = crop.resize(
+            (max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    crop.save(target, format="JPEG", quality=96, optimize=True)
+    return target
 
 
 def _default_analyze_color_label(**kwargs) -> dict[str, Any]:
@@ -6384,6 +7259,80 @@ def _default_analyze_color_label(**kwargs) -> dict[str, Any]:
     log = kwargs.get("log") or (lambda _message: None)
     progress = kwargs.get("progress")
     errors: list[str] = []
+    ai_color_votes: dict[str, list[dict[str, Any]]] = {}
+    local_label_evidence: dict[str, Any] | None = None
+    focused_seed_candidate: dict[str, Any] | None = None
+
+    def model_family(model_id: str) -> str:
+        """Collapse correlated routes so same-family OCR is not independent proof."""
+
+        normalized = _text(model_id).lower()
+        for family, prefixes in {
+            "openai": ("gpt-",),
+            "google": ("gemini-",),
+            "qwen": ("qwen",),
+            "kimi": ("kimi-",),
+            "deepseek": ("deepseek-",),
+            "glm": ("glm-",),
+            "anthropic": ("claude-",),
+        }.items():
+            if normalized.startswith(prefixes):
+                return family
+        return normalized
+
+    def accept_label_payload(candidate: dict[str, Any]) -> dict[str, Any] | None:
+        transcription = dict(candidate.get("_label_transcription") or {})
+        if (
+            _text(transcription.get("source"))
+            != "local_tesseract_style_identity_ai_color_fallback"
+        ):
+            return candidate
+        color_key = re.sub(r"\s+", "", _text(candidate.get("color_name"))).lower()
+        route_id = _text(candidate.get("_model_id"))
+        votes = ai_color_votes.setdefault(color_key, [])
+        if route_id and all(_text(item.get("_model_id")) != route_id for item in votes):
+            votes.append(candidate)
+        vote_families = {
+            model_family(_text(item.get("_model_id")))
+            for item in votes
+            if _text(item.get("_model_id"))
+        }
+        if len(votes) < 2 or len(vote_families) < 2:
+            log(
+                f"鞋盒标签 AI 颜色等待跨模型家族同票：{style_code}-{color_code}，"
+                f"颜色 {_text(candidate.get('color_name'))}，当前 {len(votes)} 票/"
+                f"{len(vote_families)} 个模型家族"
+            )
+            return None
+        accepted_votes: list[dict[str, Any]] = []
+        accepted_families: set[str] = set()
+        for item in votes:
+            family = model_family(_text(item.get("_model_id")))
+            if not family or family in accepted_families:
+                continue
+            accepted_votes.append(item)
+            accepted_families.add(family)
+            if len(accepted_votes) == 2:
+                break
+        accepted = dict(accepted_votes[0])
+        routes = [_text(item.get("_model_id")) for item in accepted_votes]
+        accepted["_model_id"] = "+".join(routes)
+        accepted_transcription = dict(
+            accepted.get("_label_transcription") or {}
+        )
+        accepted_transcription.update({
+            "source": "local_tesseract_style_identity_ai_color_consensus",
+            "model_routes": routes,
+            "model_families": sorted(accepted_families),
+            "model_votes": 2,
+            "color_name_source": "focused_label_ai_consensus",
+        })
+        accepted["_label_transcription"] = accepted_transcription
+        log(
+            f"鞋盒标签 AI 颜色跨模型家族同票：{style_code}-{color_code}，"
+            f"颜色 {_text(accepted.get('color_name'))}，模型 {','.join(routes)}"
+        )
+        return accepted
 
     system_prompt = (
         "你是鞋盒标签 OCR 审核员。只读取图片中实际印刷的标签文字，不根据鞋子外观猜颜色。"
@@ -6402,6 +7351,163 @@ def _default_analyze_color_label(**kwargs) -> dict[str, Any]:
         "坐标范围0到1000。"
     )
 
+    def verify_label_with_local_cache(candidate: dict[str, Any]) -> dict[str, Any]:
+        nonlocal local_label_evidence
+        if local_label_evidence is not None:
+            refined = dict(candidate)
+            refined["label_bbox"] = local_label_evidence.get("label_bbox")
+            refined["style_code_bbox"] = local_label_evidence.get("style_code_bbox")
+            transcription = dict(local_label_evidence.get("transcription") or {})
+            transcription["model_color_name"] = _text(candidate.get("color_name"))
+            transcription["model_product_name"] = _text(candidate.get("product_name"))
+            refined["_label_transcription"] = transcription
+            return refined
+        refined = _verify_label_payload_with_local_ocr(
+            candidate,
+            label_source_image=kwargs["label_source_image"],
+            style_code=style_code,
+            color_code=color_code,
+        )
+        transcription = dict(refined.get("_label_transcription") or {})
+        if (
+            _text(transcription.get("source"))
+            == "local_tesseract_style_identity_ai_color_fallback"
+        ):
+            local_label_evidence = {
+                "label_bbox": refined.get("label_bbox"),
+                "style_code_bbox": refined.get("style_code_bbox"),
+                "transcription": transcription,
+            }
+        return refined
+
+    def refine_color_from_focused_label(
+        candidate: dict[str, Any],
+        *,
+        current_model_id: str,
+    ) -> dict[str, Any]:
+        transcription = dict(candidate.get("_label_transcription") or {})
+        if (
+            _text(transcription.get("source"))
+            != "local_tesseract_style_identity_ai_color_fallback"
+        ):
+            return candidate
+        focused_input = _text(kwargs.get("label_image"))
+        focused_inputs = [focused_input]
+        source_text = _text(kwargs.get("label_source_image"))
+        if source_text:
+            source = Path(source_text)
+            label_image_path = Path(focused_input)
+            focused_target = label_image_path.with_name(
+                f"{label_image_path.stem}-focused{label_image_path.suffix or '.jpg'}"
+            )
+            color_context_target = label_image_path.with_name(
+                f"{label_image_path.stem}-color-context{label_image_path.suffix or '.jpg'}"
+            )
+            try:
+                focused_input = str(
+                    _create_focused_label_preview(
+                        source,
+                        focused_target,
+                        candidate.get("label_bbox"),
+                    )
+                )
+                color_context_input = str(
+                    _create_focused_label_color_context_preview(
+                        source,
+                        color_context_target,
+                        candidate.get("label_bbox"),
+                    )
+                )
+                # A single native-detail color context is both more accurate
+                # and materially faster than sending the overlapping full crop
+                # plus context crop through the multimodal gateway.
+                focused_inputs = [color_context_input]
+            except Exception:
+                logger.debug(
+                    "Failed to create focused shoe-label preview %s",
+                    source,
+                    exc_info=True,
+                )
+        focused_prompt = (
+            "这是裁切后的鞋盒标签左下区域。"
+            "只逐字读取标签中‘颜色’字段冒号后的完整值，必须保留全部中文修饰词和5位色码；"
+            "禁止根据鞋子外观概括，禁止省略任意中文修饰字；"
+            "标签只有一个颜色值，禁止用斜杠、顿号或其他方式返回多个候选。"
+            "不要根据提示词猜款色，也不要使用图片外的信息。"
+            '返回：{"color_name":"图片中颜色字段的完整原文"}。'
+        )
+        try:
+            focused_payload, focused_route = llm_gateway.generate_multimodal_json(
+                system_prompt=system_prompt,
+                user_prompt=focused_prompt,
+                image_inputs=focused_inputs,
+                model_id=current_model_id,
+                fallback_model_ids=[],
+                config=config,
+                timeout_seconds=SHOE_LABEL_OCR_TIMEOUT_SECONDS,
+                retry_same_model=False,
+            )
+        except llm_gateway.LlmGatewayError as exc:
+            raise llm_gateway.LlmResponseError(
+                f"鞋盒标签定向颜色 OCR 失败：{_text(exc)}"
+            ) from exc
+        if not isinstance(focused_payload, dict):
+            raise llm_gateway.LlmResponseError("鞋盒标签定向颜色 OCR 未返回 JSON 对象")
+        focused_code = _text(focused_payload.get("color_code"))
+        focused_name = re.sub(r"\s+", "", _text(focused_payload.get("color_name")))
+        expected_code = _text(color_code)
+        color_codes_in_name = re.findall(r"\d{5}", focused_name)
+        if (focused_code and focused_code != expected_code) or (
+            color_codes_in_name and color_codes_in_name != [expected_code]
+        ):
+            raise llm_gateway.LlmResponseError(
+                f"鞋盒标签定向颜色 OCR 色码不一致：{focused_name or focused_code or '空'}"
+            )
+        if not color_codes_in_name and focused_code != expected_code:
+            raise llm_gateway.LlmResponseError(
+                "鞋盒标签定向颜色 OCR 未返回可核验的5位色码"
+            )
+        if color_codes_in_name:
+            if not focused_name.endswith(expected_code):
+                raise llm_gateway.LlmResponseError(
+                    f"鞋盒标签定向颜色 OCR 色码不一致：{focused_name}"
+                )
+            prefix = focused_name[: -len(expected_code)]
+        else:
+            prefix = focused_name
+        joined_color = re.fullmatch(
+            r"([\u3400-\u9fff])[/／、]([\u3400-\u9fff]{1,4}色)",
+            prefix,
+        )
+        if joined_color:
+            prefix = "".join(joined_color.groups())
+        elif re.search(r"[/／、]", prefix):
+            raise llm_gateway.LlmResponseError(
+                f"鞋盒标签定向颜色 OCR 返回多个候选：{prefix}"
+            )
+        if not re.search(r"[\u3400-\u9fff]", prefix):
+            raise llm_gateway.LlmResponseError("鞋盒标签定向颜色 OCR 未返回中文颜色名")
+        # Some vision routes return the exact printed Chinese color in
+        # ``color_name`` and put the 5-digit code only in ``color_code``.  The
+        # two fields still form complete, internally consistent label evidence;
+        # normalize them to the package naming contract instead of discarding a
+        # correct independent vote.
+        focused_name = f"{prefix}{expected_code}"
+        refined = dict(candidate)
+        refined["color_name"] = focused_name
+        refined["_model_id"] = focused_route.model_id
+        refined_transcription = dict(transcription)
+        refined_transcription.update({
+            "focused_model_color_name": focused_name,
+            "color_name_source": "focused_label_ai_vote",
+        })
+        refined["_label_transcription"] = refined_transcription
+        log(
+            f"鞋盒标签定向颜色 OCR：{style_code}-{color_code}，"
+            f"模型 {focused_route.model_id}，颜色 {focused_name}"
+        )
+        return refined
+
     for current_model_id in model_ids:
         last_error = ""
         for attempt in range(1, SHOE_LABEL_OCR_MODEL_MAX_ATTEMPTS + 1):
@@ -6419,29 +7525,44 @@ def _default_analyze_color_label(**kwargs) -> dict[str, Any]:
                 f"模型 {current_model_id}，第 {attempt}/{SHOE_LABEL_OCR_MODEL_MAX_ATTEMPTS} 次"
             )
             try:
-                payload, route = llm_gateway.generate_multimodal_json(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    image_inputs=[kwargs["label_image"]],
-                    model_id=current_model_id,
-                    fallback_model_ids=[],
-                    config=config,
-                    timeout_seconds=SHOE_LABEL_OCR_TIMEOUT_SECONDS,
-                    retry_same_model=False,
-                )
-                _validate_label_ocr_payload(
-                    payload,
-                    style_code=style_code,
-                    color_code=color_code,
-                )
-                payload["_model_id"] = route.model_id
-                if _text(kwargs.get("label_source_image")):
-                    payload = _verify_label_payload_with_local_ocr(
+                if focused_seed_candidate is not None:
+                    # The first successful full-label pass plus local OCR has
+                    # already established the exact style identity and crop.
+                    # Independent fallback routes only need to vote on that
+                    # same focused color field; repeating full-label OCR here
+                    # doubles latency and creates another opportunity to time
+                    # out before the useful targeted vote.
+                    payload = dict(focused_seed_candidate)
+                    route = type(
+                        "FocusedLabelRoute",
+                        (),
+                        {"model_id": current_model_id},
+                    )()
+                else:
+                    payload, route = llm_gateway.generate_multimodal_json(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        image_inputs=[kwargs["label_image"]],
+                        model_id=current_model_id,
+                        fallback_model_ids=[],
+                        config=config,
+                        timeout_seconds=SHOE_LABEL_OCR_TIMEOUT_SECONDS,
+                        retry_same_model=False,
+                    )
+                    _validate_label_ocr_payload(
                         payload,
-                        label_source_image=kwargs["label_source_image"],
                         style_code=style_code,
                         color_code=color_code,
                     )
+                    payload["_model_id"] = route.model_id
+                    if _text(kwargs.get("label_source_image")):
+                        payload = verify_label_with_local_cache(payload)
+                    if local_label_evidence is not None:
+                        focused_seed_candidate = dict(payload)
+                payload = refine_color_from_focused_label(
+                    payload,
+                    current_model_id=current_model_id,
+                )
             except llm_gateway.LlmGatewayError as exc:
                 last_error = _text(exc)
                 log(
@@ -6455,66 +7576,11 @@ def _default_analyze_color_label(**kwargs) -> dict[str, Any]:
                     break
                 if _is_timeout_like_llm_error(exc):
                     log(
-                        f"[warn] 鞋盒标签 OCR 模型 60 秒软超时："
-                        f"{style_code}-{color_code}，模型 {current_model_id}；"
-                        f"进入单次耐心复测，硬上限 {float(SHOE_LABEL_OCR_TIMEOUT_PROBE_SECONDS):g} 秒"
+                        f"[warn] 鞋盒标签 OCR 模型 60 秒超时，"
+                        f"直接切换独立 fallback：{style_code}-{color_code}，"
+                        f"模型 {current_model_id}"
                     )
-                    _notify_shoe_model_progress(
-                        progress,
-                        f"鞋盒标签 OCR 单次耐心复测 {current_model_id}",
-                        style_code=style_code,
-                        color_code=color_code,
-                    )
-                    try:
-                        payload, route = llm_gateway.generate_multimodal_json(
-                            system_prompt=system_prompt,
-                            user_prompt=user_prompt,
-                            image_inputs=[kwargs["label_image"]],
-                            model_id=current_model_id,
-                            fallback_model_ids=[],
-                            config=config,
-                            timeout_seconds=SHOE_LABEL_OCR_TIMEOUT_PROBE_SECONDS,
-                            retry_same_model=False,
-                        )
-                        _validate_label_ocr_payload(
-                            payload,
-                            style_code=style_code,
-                            color_code=color_code,
-                        )
-                        payload["_model_id"] = route.model_id
-                        if _text(kwargs.get("label_source_image")):
-                            payload = _verify_label_payload_with_local_ocr(
-                                payload,
-                                label_source_image=kwargs["label_source_image"],
-                                style_code=style_code,
-                                color_code=color_code,
-                            )
-                    except llm_gateway.LlmGatewayError as probe_exc:
-                        last_error = _text(probe_exc)
-                        log(
-                            f"[warn] 鞋盒标签 OCR 模型单次耐心复测失败："
-                            f"{style_code}-{color_code}，模型 {current_model_id}：{last_error}"
-                        )
-                        log(
-                            f"[warn] 鞋盒标签 OCR 模型单次耐心复测仍不可用，快速 fallback："
-                            f"{style_code}-{color_code}，模型 {current_model_id}"
-                        )
-                        break
-                    if not isinstance(payload, dict):
-                        last_error = "鞋盒标签 OCR 未返回 JSON 对象"
-                        log(
-                            f"[warn] 鞋盒标签 OCR 模型单次耐心复测返回非对象结果："
-                            f"{style_code}-{color_code}，模型 {current_model_id}"
-                        )
-                        break
-                    payload["_model_id"] = route.model_id
-                    if errors:
-                        payload["_model_attempt_warnings"] = "；".join(errors[:5])
-                    log(
-                        f"鞋盒标签 OCR 模型单次耐心复测通过："
-                        f"{style_code}-{color_code}，模型 {current_model_id}"
-                    )
-                    return payload
+                    break
                 continue
             if not isinstance(payload, dict):
                 last_error = "鞋盒标签 OCR 未返回 JSON 对象"
@@ -6526,7 +7592,11 @@ def _default_analyze_color_label(**kwargs) -> dict[str, Any]:
             payload["_model_id"] = route.model_id
             if errors:
                 payload["_model_attempt_warnings"] = "；".join(errors[:5])
-            return payload
+            accepted_payload = accept_label_payload(payload)
+            if accepted_payload is not None:
+                return accepted_payload
+            last_error = "AI 颜色尚未获得两个跨模型家族同票"
+            break
         errors.append(f"{current_model_id}: {last_error or '未返回可用结果'}")
 
     raise ShoeSelectionError(
@@ -6845,6 +7915,17 @@ def _label_ocr_candidate_sources_for_wpz6(
             return None
         if _is_tms_source_filename(source_name, style_code, color_code):
             return None
+        if source_name in candidates:
+            return candidates[source_name]
+        feature = _entry_feature(entries_by_name[source_name])
+        foreground_coverage = (
+            feature.bounding_coverage
+            if feature is not None and feature.valid
+            else None
+        )
+        box_view_rank = 1
+        if foreground_coverage is not None:
+            box_view_rank = 0 if foreground_coverage < 0.90 else 2
         return candidates.setdefault(source_name, {
             "filename": source_name,
             "box_fact_models": set(),
@@ -6852,6 +7933,8 @@ def _label_ocr_candidate_sources_for_wpz6(
             "vote_models": set(),
             "vote": None,
             "current": False,
+            "box_view_rank": box_view_rank,
+            "foreground_coverage": foreground_coverage,
         })
 
     current_wpz6 = dict(_selection_indexed(selection, "wpz", 6)).get(6, "")
@@ -6931,6 +8014,7 @@ def _label_ocr_candidate_sources_for_wpz6(
         ]
     ranked.sort(key=lambda item: (
         not bool(item["box_fact_models"]),
+        item["box_view_rank"],
         -len(item["vote_models"]),
         -len(item["box_fact_models"]),
         bool(item["plain_shoe_fact_models"]),
@@ -7094,12 +8178,28 @@ def _create_tmq_asset(
         )
     if label is None:
         label = (0.50, 0.31, 0.79, 0.57)
-    style = ocr_service.refine_style_code_bbox(
-        image=image,
-        label_bbox=label,
-        style_code_bbox=style,
-        style_code=style_code,
-    )
+    try:
+        exact_style = ocr_service.locate_exact_style_code_bbox(
+            source,
+            style_code=style_code,
+            label_bbox=label,
+        )
+    except Exception:
+        exact_style = None
+        logger.debug(
+            "Failed to locate exact local style-code bbox for tmq %s",
+            source,
+            exc_info=True,
+        )
+    if exact_style is not None:
+        style = exact_style
+    else:
+        style = ocr_service.refine_style_code_bbox(
+            image=image,
+            label_bbox=label,
+            style_code_bbox=style,
+            style_code=style_code,
+        )
     label_px = (
         label[0] * width,
         label[1] * height,
@@ -7119,6 +8219,12 @@ def _create_tmq_asset(
     crop = crop.resize((canvas_size, canvas_size), Image.Resampling.LANCZOS)
 
     label_x1, label_y1, label_x2, label_y2 = label
+    fallback_style = (
+        label_x1 + (label_x2 - label_x1) * 0.24,
+        label_y1 + (label_y2 - label_y1) * 0.00,
+        label_x1 + (label_x2 - label_x1) * 0.90,
+        label_y1 + (label_y2 - label_y1) * 0.22,
+    )
     if style is not None:
         style_width_px = (style[2] - style[0]) * width
         style_height_px = (style[3] - style[1]) * height
@@ -7129,19 +8235,19 @@ def _create_tmq_asset(
         if style_width_px < min_width_px:
             center = (style[0] + style[2]) / 2
             half_width = (min_width_px / width) / 2
-            style = (
-                max(label_x1, center - half_width),
-                style[1],
-                min(label_x2, center + half_width),
-                style[3],
-            )
+            expanded_x1 = max(label_x1, center - half_width)
+            expanded_x2 = min(label_x2, center + half_width)
+            if expanded_x2 > expanded_x1:
+                style = (expanded_x1, style[1], expanded_x2, style[3])
+            else:
+                # A model can return a valid style bbox that is nevertheless
+                # outside its recovered/expanded label bbox. Avoid passing an
+                # inverted rectangle to Pillow; use the established top-row
+                # label geometry and let the downstream OCR/red-box validator
+                # fail closed if that geometry does not contain the style.
+                style = fallback_style
     else:
-        style = (
-            label_x1 + (label_x2 - label_x1) * 0.24,
-            label_y1 + (label_y2 - label_y1) * 0.00,
-            label_x1 + (label_x2 - label_x1) * 0.90,
-            label_y1 + (label_y2 - label_y1) * 0.22,
-        )
+        style = fallback_style
     draw = ImageDraw.Draw(crop)
     scale = canvas_size / side
     style_height_on_crop = max(1.0, (style[3] - style[1]) * height * scale)
@@ -7154,6 +8260,16 @@ def _create_tmq_asset(
         min(canvas_size, round((style[2] * width - left) * scale) + pad_right),
         min(canvas_size, round((style[3] * height - top) * scale) + pad_y),
     )
+    if rectangle[2] <= rectangle[0] or rectangle[3] <= rectangle[1]:
+        style = fallback_style
+        rectangle = (
+            max(0, round((style[0] * width - left) * scale) - pad_left),
+            max(0, round((style[1] * height - top) * scale) - pad_y),
+            min(canvas_size, round((style[2] * width - left) * scale) + pad_right),
+            min(canvas_size, round((style[3] * height - top) * scale) + pad_y),
+        )
+    if rectangle[2] <= rectangle[0] or rectangle[3] <= rectangle[1]:
+        raise ShoeSelectionError("鞋盒标签款号坐标位于裁切区域外，无法生成 tmq.jpg")
     draw.rectangle(rectangle, outline=(255, 0, 0), width=3)
     target.parent.mkdir(parents=True, exist_ok=True)
     crop.save(target, format="JPEG", quality=95, optimize=True)

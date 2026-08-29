@@ -294,10 +294,8 @@ def test_tmq_validator_requires_red_box_to_contain_ocr_style_code(
     draw = ImageDraw.Draw(image)
     draw.rectangle((10, 10, 60, 40), outline=(255, 0, 0), width=3)
     image.save(path, quality=100, subsampling=0)
-    monkeypatch.setattr(
-        validator.shoe.ocr_service,
-        "recognize_image_with_tesseract_js",
-        lambda *_args, **_kwargs: {
+    responses = iter([
+        {
             "words": [
                 validator.shoe.ocr_service.OcrWord(
                     text="204426146036",
@@ -306,6 +304,12 @@ def test_tmq_validator_requires_red_box_to_contain_ocr_style_code(
                 )
             ]
         },
+        {"text": "", "words": []},
+    ])
+    monkeypatch.setattr(
+        validator.shoe.ocr_service,
+        "recognize_image_with_tesseract_js",
+        lambda *_args, **_kwargs: next(responses),
     )
 
     issues = validator.validate_tmq_style_code(path, "204426146036")
@@ -337,6 +341,68 @@ def test_tmq_validator_accepts_full_style_code_inside_red_box(
     )
 
     assert validator.validate_tmq_style_code(path, "204426146036") == []
+
+
+def test_tmq_validator_rechecks_text_inside_red_box_when_full_ocr_bbox_includes_logo(
+    tmp_path: Path,
+    monkeypatch,
+):
+    path = tmp_path / "tmq.jpg"
+    image = Image.new("RGB", (800, 800), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((300, 200, 620, 265), outline=(255, 0, 0), width=4)
+    image.save(path, quality=100, subsampling=0)
+    responses = iter([
+        {
+            "text": "204426141112",
+            "words": [
+                validator.shoe.ocr_service.OcrWord(
+                    text="204426141112",
+                    bbox=(10, 210, 610, 260),
+                    confidence=0,
+                )
+            ],
+        },
+        {"text": "204426141112", "words": []},
+    ])
+    monkeypatch.setattr(
+        validator.shoe.ocr_service,
+        "recognize_image_with_tesseract_js",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    assert validator.validate_tmq_style_code(path, "204426141112") == []
+
+
+def test_tmq_validator_rechecks_red_box_when_full_image_ocr_misses_style(
+    tmp_path: Path,
+    monkeypatch,
+):
+    path = tmp_path / "tmq.jpg"
+    image = Image.new("RGB", (800, 800), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((353, 299, 567, 341), outline=(255, 0, 0), width=4)
+    image.save(path, quality=100, subsampling=0)
+    responses = iter([
+        {
+            "text": "6",
+            "words": [
+                validator.shoe.ocr_service.OcrWord(
+                    text="6",
+                    bbox=(557, 463, 706, 499),
+                    confidence=0,
+                )
+            ],
+        },
+        {"text": "204426141127", "words": []},
+    ])
+    monkeypatch.setattr(
+        validator.shoe.ocr_service,
+        "recognize_image_with_tesseract_js",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    assert validator.validate_tmq_style_code(path, "204426141127") == []
 
 
 def test_wpz5_and_box_must_not_be_near_duplicates(tmp_path: Path):

@@ -44,6 +44,14 @@ DEFAULT_CHAIN = [
     "deepseek-official-v4-flash-vision-exp",
     "kimi-k2.7-code",
 ]
+DEFAULT_LABEL_CHAIN = [
+    "gpt-5.6-sol",
+    "gemini-3.5-flash",
+    "qwen3.7-plus",
+    "gpt-5.6-terra",
+    "kimi-k2.7-code",
+    "deepseek-official-v4-flash-vision-exp",
+]
 TERMINAL_RUN_STATUSES = {
     "success",
     "done",
@@ -195,6 +203,7 @@ def run_one(
     export_root: Path,
     cloud_path: str,
     model_chain: list[str],
+    label_model_chain: list[str],
     pose_strategy: str,
     timeout_seconds: float,
     poll_seconds: float,
@@ -230,8 +239,8 @@ def run_one(
     }
     for index, model_id in enumerate(model_chain[1:6], start=1):
         params[f"fallback_model_{index}"] = model_id
-    params["label_model_id"] = model_chain[0]
-    params["label_fallback_model_ids"] = model_chain[1:6]
+    params["label_model_id"] = label_model_chain[0]
+    params["label_fallback_model_ids"] = label_model_chain[1:6]
 
     started = time.time()
     request_json(
@@ -321,6 +330,15 @@ def run_one(
         None,
     )
     report_rows = validator.rows_from_xlsx(report_path) if report_path and report_path.is_file() else []
+    report_style_roots: list[Path] = []
+    for row in report_rows:
+        local_path = Path(text(row.get("本地文件"))).expanduser()
+        for parent in local_path.parents:
+            if re.fullmatch(rf"{re.escape(style)}(?:_\d+)?", parent.name):
+                report_style_roots.append(parent)
+                break
+    if report_style_roots:
+        style_root = report_style_roots[0]
     validation_result = validator.validate_style(
         style=style,
         style_root=style_root,
@@ -340,6 +358,7 @@ def run_one(
         "run_id": last.get("id"),
         "elapsed": round(time.time() - started, 2),
         "model_chain": model_chain,
+        "label_model_chain": label_model_chain,
         "pose_strategy": pose_strategy,
         "export_root": str(export_root),
         "style_root": str(style_root),
@@ -373,6 +392,11 @@ def main() -> int:
     parser.add_argument("--styles", default=",".join(DEFAULT_STYLES))
     parser.add_argument("--model-chain", default=",".join(DEFAULT_CHAIN))
     parser.add_argument(
+        "--label-model-chain",
+        default=",".join(DEFAULT_LABEL_CHAIN),
+        help="comma-separated cross-family label OCR routes",
+    )
+    parser.add_argument(
         "--pose-strategy",
         default=shoe.SHOE_POSE_DEFAULT_STRATEGY,
         choices=[
@@ -393,6 +417,11 @@ def main() -> int:
     model_chain = [text(item) for item in re.split(r"[,，;；\s]+", args.model_chain) if text(item)]
     if not model_chain:
         raise SystemExit("model chain is empty")
+    label_model_chain = [
+        text(item)
+        for item in re.split(r"[,，;；\s]+", args.label_model_chain)
+        if text(item)
+    ] or list(DEFAULT_LABEL_CHAIN)
     output_root = Path(args.output_root).expanduser()
     artifact_root = Path(args.artifact_root)
     if args.clean_output and output_root.exists():
@@ -413,6 +442,7 @@ def main() -> int:
             export_root=output_root,
             cloud_path=args.cloud_path,
             model_chain=model_chain,
+            label_model_chain=label_model_chain,
             pose_strategy=args.pose_strategy,
             timeout_seconds=args.timeout,
             poll_seconds=args.poll,
@@ -423,6 +453,7 @@ def main() -> int:
         "output_root": str(output_root),
         "artifact_root": str(artifact_root),
         "model_chain": model_chain,
+        "label_model_chain": label_model_chain,
         "pose_strategy": args.pose_strategy,
         "results": results,
     }
