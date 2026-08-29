@@ -533,6 +533,42 @@ def recognize_image_with_tesseract_js(
     return data
 
 
+def locate_exact_style_code_bbox(
+    image_path: Path | str,
+    *,
+    style_code: str,
+    label_bbox: Any = None,
+    timeout_seconds: float = 30.0,
+) -> tuple[float, float, float, float] | None:
+    """Locate an exact printed style code and return normalized coordinates.
+
+    Vision models remain useful for the overall shoe-label bounds, but their
+    style-code box can drift to a visually prominent size or product row. An
+    exact local OCR word match is stronger evidence for the red-box position.
+    """
+
+    from PIL import Image, ImageOps
+
+    source = Path(image_path)
+    if not source.is_file():
+        raise RuntimeError(f"shoe label source image does not exist: {source}")
+    with Image.open(source) as opened:
+        width, height = ImageOps.exif_transpose(opened).size
+    result = recognize_image_with_tesseract_js(
+        source,
+        lang="eng",
+        timeout_seconds=timeout_seconds,
+    )
+    words = [word for word in result.get("words", []) if isinstance(word, OcrWord)]
+    return _style_bbox_from_ocr_words(
+        words=words,
+        style_code=style_code,
+        image_width=width,
+        image_height=height,
+        label_bbox=normalized_bbox(label_bbox),
+    )
+
+
 def _compact_label_ocr_line(value: Any) -> str:
     normalized = unicodedata.normalize("NFKC", _text(value))
     return re.sub(r"\s+", "", normalized)
@@ -623,6 +659,9 @@ def extract_shoe_label_fields(
     )
     fallback_results: list[dict[str, Any]] = []
     errors: list[str] = []
+    observed_texts: list[str] = []
+    best_product_name = ""
+    best_confidence = 0.0
     with tempfile.TemporaryDirectory(prefix="crawshrimp-shoe-label-") as tmpdir:
         temporary_root = Path(tmpdir)
         for region_name, region in regions:
@@ -652,6 +691,8 @@ def extract_shoe_label_fields(
                 continue
             result_text = _text(result.get("text"))
             confidence = float(result.get("confidence") or 0.0)
+            if result_text and result_text not in observed_texts:
+                observed_texts.append(result_text)
             color_name = _explicit_label_field(
                 result_text,
                 field_names=("颜色",),
@@ -661,6 +702,9 @@ def extract_shoe_label_fields(
                 result_text,
                 field_names=("产品名称", "品名"),
             )
+            if product_name and (not best_product_name or confidence > best_confidence):
+                best_product_name = product_name
+            best_confidence = max(best_confidence, confidence)
             if not color_name:
                 continue
             evidence = {
@@ -669,6 +713,7 @@ def extract_shoe_label_fields(
                 "confidence": confidence,
                 "source": "local_tesseract_explicit_label_field",
                 "region": region_name,
+                "observed_text": "\n".join(observed_texts),
             }
             if confidence >= 70.0:
                 return evidence
@@ -690,8 +735,9 @@ def extract_shoe_label_fields(
             )
     return {
         "color_name": "",
-        "product_name": "",
-        "confidence": 0.0,
+        "product_name": best_product_name,
+        "confidence": best_confidence,
         "source": "local_tesseract_explicit_label_field",
+        "observed_text": "\n".join(observed_texts),
         "errors": errors,
     }

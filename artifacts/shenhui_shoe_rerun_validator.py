@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -87,7 +88,12 @@ def prepared_rows(source_root: Path, report_xlsx: Path, style: str) -> list[dict
         output_name = text(row.get("输出文件名"))
         if not output_name:
             continue
-        local_path = source_root / style / output_name
+        reported_local_path = Path(text(row.get("本地文件"))).expanduser()
+        local_path = (
+            reported_local_path
+            if reported_local_path.is_file()
+            else source_root / style / output_name
+        )
         if local_path in seen_paths:
             continue
         seen_paths.add(local_path)
@@ -98,8 +104,9 @@ def prepared_rows(source_root: Path, report_xlsx: Path, style: str) -> list[dict
         current["__shoe_original_filename"] = text(row.get("原文件名")) or local_path.name
         color_folder = output_name.split("/", 1)[0]
         color_match = (
-            re.search(r"(\d{5})", color_folder)
-            or re.search(r"(\d{5})", text(row.get("颜色")))
+            re.search(r"(?<!\d)(\d{5})(?!\d)", text(row.get("颜色")))
+            or re.search(r"[-_](\d{5})(?:\D|$)", color_folder)
+            or re.search(r"(?<!\d)(\d{5})(?!\d)", color_folder)
         )
         current["__shoe_color_code"] = color_match.group(1) if color_match else ""
         rows.append(current)
@@ -664,11 +671,46 @@ def validate_tmq_style_code(path: Path, style_code: str) -> list[str]:
         style_code=style_code,
         ocr_words=words,
     )
+    if bbox is not None and red_box_contains_bbox(path, bbox):
+        return []
+
+    # Full-image Tesseract occasionally returns the correct 12 digits but a
+    # bounding box that also spans the adjacent balabala logo. Verify the text
+    # inside the detected red rectangle directly before reporting a failure.
+    rectangles = _red_rectangle_bounds(path)
+    with tempfile.TemporaryDirectory(prefix="crawshrimp-tmq-red-box-") as tmpdir:
+        for index, (left, top, right, bottom) in enumerate(rectangles):
+            inset = max(1, round(min(right - left, bottom - top) * 0.02))
+            cropped = image.crop((
+                left + inset,
+                top + inset,
+                max(left + inset + 1, right - inset + 1),
+                max(top + inset + 1, bottom - inset + 1),
+            ))
+            if cropped.height < 160:
+                scale = 160 / max(1, cropped.height)
+                cropped = cropped.resize(
+                    (
+                        max(1, round(cropped.width * scale)),
+                        max(1, round(cropped.height * scale)),
+                    ),
+                    Image.Resampling.LANCZOS,
+                )
+            crop_path = Path(tmpdir) / f"red-box-{index}.png"
+            cropped.save(crop_path, format="PNG")
+            try:
+                crop_ocr = shoe.ocr_service.recognize_image_with_tesseract_js(
+                    crop_path,
+                    lang="eng",
+                    whitelist="0123456789",
+                )
+            except Exception:
+                continue
+            if style_code in re.sub(r"\D", "", text(crop_ocr.get("text"))):
+                return []
     if bbox is None:
         return [f"tmq does not OCR the full style code {style_code}"]
-    if not red_box_contains_bbox(path, bbox):
-        return [f"tmq red box does not contain style code {style_code}"]
-    return []
+    return [f"tmq red box does not contain style code {style_code}"]
 
 
 def validate_color_folder_names(
@@ -1187,7 +1229,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--label-models",
-        default="gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5",
+        default="gpt-5.6-sol,gemini-3.5-flash,qwen3.7-plus,gpt-5.6-terra,kimi-k2.7-code",
         help="Comma-separated model chain for OCR; first is primary.",
     )
     parser.add_argument(
