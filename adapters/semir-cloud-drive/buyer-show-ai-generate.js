@@ -80,6 +80,25 @@
     return String(value || '').replace(/\\/g, '/').split('/').map(compact).filter(Boolean).join('/')
   }
 
+  function parentPath(value) {
+    const normalized = normalizePath(value)
+    if (!normalized) return ''
+    const parts = normalized.split('/')
+    parts.pop()
+    return parts.join('/')
+  }
+
+  function relativeModelSubfolder(fullpath, rootPath) {
+    const parent = parentPath(fullpath)
+    const root = normalizePath(rootPath)
+    if (!parent || !root || parent === root) return ''
+    if (parent.startsWith(`${root}/`)) return parent.slice(root.length + 1)
+    const marker = `/${root}/`
+    const markerIndex = parent.indexOf(marker)
+    if (markerIndex >= 0) return parent.slice(markerIndex + marker.length)
+    return ''
+  }
+
   function isImageItem(item) {
     const ext = String(item?.ext || '').trim().toLowerCase()
     return IMAGE_EXTS.has(ext)
@@ -602,6 +621,7 @@
         ...job,
         '模拍文件': '',
         '模拍云盘路径': '',
+        '模拍细分文件夹': '',
         '模拍下载结果': '未匹配到模拍图',
         '平铺参考图': flatItem?.filename || '',
         '平铺云盘路径': flatItem?.fullpath || '',
@@ -624,10 +644,12 @@
     for (let index = 0; index < modelItems.length; index += 1) {
       const modelItem = modelItems[index]
       const usageKey = `${job['款色号']}::${normalizePath(modelItem?.fullpath)}`
+      const modelSubfolder = relativeModelSubfolder(modelItem?.fullpath, modelConfig.relativePath)
       const base = {
         ...job,
         '模拍文件': compact(modelItem?.filename),
         '模拍云盘路径': normalizePath(modelItem?.fullpath),
+        '模拍细分文件夹': modelSubfolder,
         '模拍下载结果': '',
         '模拍本地文件': '',
         '平铺参考图': flatItem?.filename || '',
@@ -654,7 +676,7 @@
 
       base.__model_download_index = await ensureDownloadItem(
         modelItem,
-        job,
+        base,
         'model',
         downloadItems,
         downloadIndexByKey,
@@ -674,7 +696,7 @@
 
       base.__ref_download_index = await ensureDownloadItem(
         flatItem,
-        job,
+        base,
         'flat',
         downloadItems,
         downloadIndexByKey,
@@ -747,6 +769,7 @@
       finalizeRowsWithDownloads,
       buildFolderHashRoute,
       buildSearchHashRoute,
+      relativeModelSubfolder,
       scoreFlatReferenceItem,
       styleCodeFromSkc,
       hyphenatedStyleColorCode,

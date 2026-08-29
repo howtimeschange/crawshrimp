@@ -53,6 +53,7 @@ class SemirCloudDriveManifestTests(unittest.TestCase):
         self.assertIn("~/Downloads/AI 买家秀全量测试", params["export_folder"]["hint"])
         self.assertEqual(params["input_file"]["templates"][0]["file"], "templates/buyer-show-ai-template.csv")
         self.assertIn("模拍云盘路径", output_columns)
+        self.assertIn("模拍细分文件夹", output_columns)
         self.assertIn("平铺云盘路径", output_columns)
         self.assertIn("生图结果", output_columns)
 

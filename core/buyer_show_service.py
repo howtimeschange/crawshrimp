@@ -79,6 +79,7 @@ SUMMARY_COLUMNS = [
     "存放地址",
     "模拍文件",
     "模拍云盘路径",
+    "模拍细分文件夹",
     "模拍下载结果",
     "模拍本地文件",
     "平铺参考图",
@@ -102,6 +103,7 @@ USAGE_COLUMNS = [
     "源表行号",
     "模拍文件",
     "模拍云盘路径",
+    "模拍细分文件夹",
     "平铺云盘路径",
     "AI任务ID",
     "1XM任务ID",
@@ -708,6 +710,55 @@ def _package_output_stem(row: Mapping[str, Any], ordinal: int) -> str:
     return f"{unique_value}_{ordinal:03d}_{style_color_code}_AI买家秀"
 
 
+def _model_subfolder_text(row: Mapping[str, Any]) -> str:
+    return _compact(
+        row.get("模拍细分文件夹")
+        or row.get("模特细分文件夹")
+        or row.get("模拍文件夹")
+        or row.get("model_subfolder")
+        or row.get("__model_subfolder")
+    )
+
+
+def _safe_local_path_parts(value: Any) -> list[str]:
+    parts: list[str] = []
+    for raw_part in _compact(value).replace("\\", "/").split("/"):
+        safe_part = _safe_local_name(raw_part, "")
+        if safe_part:
+            parts.append(safe_part)
+    return parts
+
+
+def _package_relative_parts(row: Mapping[str, Any]) -> list[str]:
+    unique_folder = _safe_local_name(row.get("唯一值") or row.get("AI图包文件夹命名"), "未命名")
+    return [unique_folder, *_safe_local_path_parts(_model_subfolder_text(row))]
+
+
+def _package_relative_key(row: Mapping[str, Any]) -> str:
+    return "/".join(_package_relative_parts(row))
+
+
+def _package_target_dir(package_root: Path, row: Mapping[str, Any]) -> Path:
+    target_dir = package_root
+    for part in _package_relative_parts(row):
+        target_dir = target_dir / part
+    return target_dir
+
+
+def _assign_package_target_dir(row: dict, package_root: Path, folder_ordinals: dict[str, int]) -> Path:
+    target_dir = _package_target_dir(package_root, row)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    row["本地图包文件夹"] = str(target_dir)
+    row["__package_root"] = str(package_root)
+    subfolder = _model_subfolder_text(row)
+    if subfolder and not _compact(row.get("模拍细分文件夹")):
+        row["模拍细分文件夹"] = subfolder
+    relative_key = _package_relative_key(row)
+    folder_ordinals[relative_key] = int(folder_ordinals.get(relative_key) or 0) + 1
+    row["__package_ordinal_start"] = folder_ordinals[relative_key]
+    return target_dir
+
+
 def _package_filename(row: Mapping[str, Any], ordinal: int, source_path: Path) -> str:
     stem = _package_output_stem(row, ordinal)
     suffix = _image_suffix_from_file(source_path)
@@ -727,8 +778,7 @@ def _copy_downloaded_materials_for_review(
     package_root: Path,
     folder_ordinals: dict[str, int],
 ) -> list[str]:
-    unique_folder = _safe_local_name(row.get("唯一值") or row.get("AI图包文件夹命名"), "未命名")
-    target_dir = package_root / unique_folder
+    target_dir = _package_target_dir(package_root, row)
     copied_files: list[str] = []
     for result_key, path_key, role in [
         ("模拍下载结果", "模拍本地文件", "模拍原图"),
@@ -737,11 +787,13 @@ def _copy_downloaded_materials_for_review(
         if not _is_successful_download(row, result_key, path_key):
             continue
         source = Path(_compact(row.get(path_key))).expanduser()
-        folder_ordinals[unique_folder] = int(folder_ordinals.get(unique_folder) or 0) + 1
-        target = target_dir / _material_package_filename(row, folder_ordinals[unique_folder], role, source)
+        relative_key = _package_relative_key(row)
+        folder_ordinals[relative_key] = int(folder_ordinals.get(relative_key) or 0) + 1
+        target = target_dir / _material_package_filename(row, folder_ordinals[relative_key], role, source)
         copied = _copy_file_to_unique_target(source, target)
         copied_files.append(str(copied))
     if copied_files:
+        row["__package_root"] = str(package_root)
         row["本地图包文件夹"] = str(target_dir)
         row["下载素材文件"] = "\n".join(copied_files)
     return copied_files
@@ -756,6 +808,7 @@ def _make_usage_export_row(row: Mapping[str, Any], output_file: str, created_at:
         "源表行号": _compact(row.get("表格行号")),
         "模拍文件": _compact(row.get("模拍文件")),
         "模拍云盘路径": _compact(row.get("模拍云盘路径")),
+        "模拍细分文件夹": _model_subfolder_text(row),
         "平铺云盘路径": _compact(row.get("平铺云盘路径")),
         "AI任务ID": _compact(row.get("AI任务ID")),
         "1XM任务ID": _compact(row.get("1XM任务ID")),
@@ -774,6 +827,7 @@ def _record_buyer_show_usage(row: dict, output_files: list[str], prompt: str) ->
     style_code = _extract_style_code(style_color_code)
     model_cloud_path = _compact(row.get("模拍云盘路径"))
     target_dir = Path(_compact(row.get("本地图包文件夹"))).expanduser()
+    package_root = Path(_compact(row.get("__package_root"))).expanduser() if _compact(row.get("__package_root")) else target_dir.parent
     created_at = datetime.now().isoformat(timespec="seconds")
     row["__usage_record_time"] = created_at
     data_sink.create_buyer_show_material_usage({
@@ -791,7 +845,9 @@ def _record_buyer_show_usage(row: dict, output_files: list[str], prompt: str) ->
         "ai_task_id": _compact(row.get("1XM任务ID")),
         "meta": {
             "workflow": BUYER_SHOW_TASK_ID,
-            "package_root": str(target_dir.parent),
+            "package_root": str(package_root),
+            "package_folder": str(target_dir),
+            "model_subfolder": _model_subfolder_text(row),
             "prompt": prompt,
         },
     })
@@ -1170,12 +1226,7 @@ def finalize_buyer_show_outputs(
             continue
 
         if resume_enabled:
-            unique_folder = _safe_local_name(row.get("唯一值") or row.get("AI图包文件夹命名"), "未命名")
-            target_dir = package_root / unique_folder
-            target_dir.mkdir(parents=True, exist_ok=True)
-            row["本地图包文件夹"] = str(target_dir)
-            folder_ordinals[unique_folder] = int(folder_ordinals.get(unique_folder) or 0) + 1
-            row["__package_ordinal_start"] = folder_ordinals[unique_folder]
+            _assign_package_target_dir(row, package_root, folder_ordinals)
             if _prepare_buyer_show_resume_row(row, run_params=run_params, log=log):
                 if _compact(row.get("生图结果")) == "待落图":
                     materialize_only_rows.append(row)
@@ -1204,12 +1255,7 @@ def finalize_buyer_show_outputs(
             continue
 
         if not resume_enabled:
-            unique_folder = _safe_local_name(row.get("唯一值") or row.get("AI图包文件夹命名"), "未命名")
-            target_dir = package_root / unique_folder
-            target_dir.mkdir(parents=True, exist_ok=True)
-            row["本地图包文件夹"] = str(target_dir)
-            folder_ordinals[unique_folder] = int(folder_ordinals.get(unique_folder) or 0) + 1
-            row["__package_ordinal_start"] = folder_ordinals[unique_folder]
+            _assign_package_target_dir(row, package_root, folder_ordinals)
         scheduled_count += 1
         generation_rows.append(row)
         if usage_blocks_enabled:

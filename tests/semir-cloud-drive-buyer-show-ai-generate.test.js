@@ -140,6 +140,54 @@ test('collectModelShotItems scans child folders when model path is a category fo
   assert.equal(JSON.stringify(result.items.map(item => item.filename)), JSON.stringify(['买家秀-01.jpg']))
 })
 
+test('collectJobRows records model subfolder relative to the configured style folder', async () => {
+  const helpers = await loadExports({
+    fetch: async (url) => {
+      if (String(url).includes('/fengcloud/2/file/info')) {
+        return {
+          ok: true,
+          json: async () => ({ uri: `https://download.example/${encodeURIComponent(String(url))}.jpg` }),
+        }
+      }
+      return { ok: true, json: async () => ({}) }
+    },
+  })
+  const root = '买家秀图库/208326102205'
+  const job = {
+    '表格行号': 2,
+    '款色号': '208326102205-00316',
+    '货号': '208326102205',
+    '唯一值': 'ORD-1',
+    'AI素材库路径': `巴拉搜索渠道-淘系//${root}`,
+  }
+  const sharedBase = {
+    flat_config: { relativePath: '平铺图库' },
+    flat_mount: { mountId: 'flat-mount', mountName: '巴拉营运BU-商品' },
+    mount_cache: { '巴拉搜索渠道-淘系': { mountId: 'model-mount', mountName: '巴拉搜索渠道-淘系' } },
+    active_job_plan: {
+      job_index: 0,
+      style_color_code: '208326102205-00316',
+      model_items: [
+        { dir: '0', ext: 'jpg', filename: 'look-01.jpg', fullpath: `${root}/模特A/正面/look-01.jpg` },
+        { dir: '0', ext: 'jpg', filename: 'look-02.jpg', fullpath: `${root}/模特B/look-02.jpg` },
+      ],
+      model_scan: { scannedFolders: 3, scannedItems: 2, scannedImages: 2, truncated: false },
+      flat_item: { dir: '0', ext: 'jpg', filename: '208326102205-00316.jpg', fullpath: '平铺图库/208326102205-00316.jpg' },
+      flat_search_count: 1,
+    },
+    batch_seen_usage: [],
+    model_file_info_batch_size: 5,
+    usage_record_mode: 'ignore',
+  }
+
+  const result = await helpers.collectJobRows(job, sharedBase, 1, 1)
+
+  assert.equal(helpers.relativeModelSubfolder(`${root}/模特A/正面/look-01.jpg`, root), '模特A/正面')
+  assert.equal(result.rows.length, 2)
+  assert.equal(result.rows[0]['模拍细分文件夹'], '模特A/正面')
+  assert.equal(result.rows[1]['模拍细分文件夹'], '模特B')
+})
+
 test('full batch scan defaults do not truncate category folders early', async () => {
   const helpers = await loadExports()
 

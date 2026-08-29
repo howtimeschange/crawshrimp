@@ -132,6 +132,66 @@ class BuyerShowServiceTests(unittest.TestCase):
         self.assertEqual(usage_rows[0]["model_cloud_path"], "买家秀图库/冬季/上装/女/model.jpg")
         self.assertIn(str(output_files[0]), usage_rows[0]["output_file"])
 
+    def test_finalize_nests_outputs_under_model_subfolders(self):
+        generated_a = self.root / "generated-a.png"
+        generated_b = self.root / "generated-b.png"
+        generated_a.write_bytes(PNG_1X1)
+        generated_b.write_bytes(PNG_1X1)
+        rows = [
+            self._source_rows(style_color_code="208326102205-00316", unique_value="ORD-SAME")[0],
+            self._source_rows(style_color_code="208326102205-00317", unique_value="ORD-SAME")[0],
+        ]
+        rows[0]["模拍细分文件夹"] = "模特A/正面"
+        rows[1]["模拍细分文件夹"] = "模特B"
+        rows[1]["模拍文件"] = "look-b.jpg"
+        rows[1]["模拍云盘路径"] = "买家秀图库/208326102205/模特B/look-b.jpg"
+
+        with (
+            patch("core.buyer_show_service.ai_image_service.run_job_with_one_xm", return_value={
+                "ok": True,
+                "summary": {"task_id": "1xm-task-subfolder", "image_urls": ["https://cdn.example/generated.png"]},
+            }),
+            patch("core.buyer_show_service.ai_image_service.materialize_remote_image", side_effect=[
+                {"ok": True, "path": str(generated_a), "url": "https://cdn.example/generated-a.png"},
+                {"ok": True, "path": str(generated_b), "url": "https://cdn.example/generated-b.png"},
+            ]),
+        ):
+            refs = buyer_show_service.finalize_buyer_show_outputs(
+                data_rows=rows,
+                runtime_files=[],
+                exported_files=[],
+                run_params={
+                    "export_folder": str(self.root / "exports"),
+                    "package_name": "AI买家秀细分文件夹测试",
+                    "ai_generation_concurrency": 1,
+                    "ai_result_download_concurrency": 1,
+                    "usage_record_mode": "ignore",
+                },
+                runtime_artifact_dir=str(self.root / "runtime"),
+                settings={"base_url": "https://api.example", "4k": "secret"},
+                log=lambda _msg: None,
+            )
+
+        package_root = Path(refs[0])
+        nested_a = package_root / "ORD-SAME" / "模特A" / "正面"
+        nested_b = package_root / "ORD-SAME" / "模特B"
+        self.assertEqual(len(list(nested_a.glob("*AI买家秀.png"))), 1)
+        self.assertEqual(len(list(nested_b.glob("*AI买家秀.png"))), 1)
+        self.assertTrue(any("_001_208326102205-00316_AI买家秀" in path.name for path in nested_a.glob("*.png")))
+        self.assertTrue(any("_001_208326102205-00317_AI买家秀" in path.name for path in nested_b.glob("*.png")))
+        with zipfile.ZipFile(Path(refs[1])) as archive:
+            names = archive.namelist()
+        self.assertTrue(any("/ORD-SAME/模特A/正面/" in f"/{name}" for name in names))
+        self.assertTrue(any("/ORD-SAME/模特B/" in f"/{name}" for name in names))
+
+        wb = load_workbook(Path(refs[2]))
+        values = list(wb.active.iter_rows(values_only=True))
+        summary_rows = [dict(zip(values[0], value)) for value in values[1:]]
+        self.assertEqual(summary_rows[0]["模拍细分文件夹"], "模特A/正面")
+        self.assertEqual(summary_rows[0]["本地图包文件夹"], str(nested_a))
+        self.assertEqual(summary_rows[1]["模拍细分文件夹"], "模特B")
+        self.assertEqual(summary_rows[1]["本地图包文件夹"], str(nested_b))
+
     def test_finalize_skips_model_image_already_used_for_same_style_color(self):
         data_sink.create_buyer_show_material_usage({
             "style_code": "208326102205",
