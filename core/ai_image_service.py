@@ -26,6 +26,7 @@ from core.one_xm_image import (
     DEFAULT_BASE_URL,
     FAILED_STATUSES,
     SUCCESS_STATUSES,
+    OneXMImageError,
     OneXMImageClient,
     extract_image_urls,
     file_to_data_url,
@@ -64,6 +65,10 @@ class DownloadOutputsError(RuntimeError):
 
 class ActiveAiImageJobError(RuntimeError):
     """Raised when a queued or running workbench task cannot be deleted safely."""
+
+
+class AiImageInputAssetError(ValueError):
+    """Raised when a local image input cannot be prepared for provider submission."""
 
 
 def _compact(value: Any) -> str:
@@ -210,6 +215,39 @@ def _param_input_assets(params: Mapping[str, Any]) -> list[dict[str, Any]]:
     return assets
 
 
+def _asset_role_label(kind: str) -> str:
+    normalized = _compact(kind).lower()
+    if normalized == "main":
+        return "主图"
+    if normalized == "reference":
+        return "参考图"
+    if normalized == "mask":
+        return "蒙版图"
+    return "图片"
+
+
+def _asset_read_error_message(kind: str, path: str, exc: Exception) -> str:
+    label = _asset_role_label(kind)
+    source = _compact(path) or "未命名文件"
+    if isinstance(exc, FileNotFoundError):
+        return f"{label}文件不存在，请重新选择文件：{source}"
+    if isinstance(exc, PermissionError):
+        return f"后端无法读取{label}文件，请检查文件权限后重新选择：{source}"
+    message = _sanitize_error(exc)
+    if isinstance(exc, OneXMImageError) and "20MB" in message:
+        return f"{label}文件超过 1XM 20MB 限制，请压缩后重新选择：{source}"
+    if isinstance(exc, OSError):
+        return f"后端无法读取{label}文件，请确认文件仍在原位置且抓虾有权限读取：{source}"
+    return message or f"后端无法读取{label}文件，请重新选择：{source}"
+
+
+def _asset_data_url(kind: str, path: str, file_to_data_url_fn: Callable[[str], str]) -> str:
+    try:
+        return file_to_data_url_fn(path)
+    except (FileNotFoundError, PermissionError, OSError, OneXMImageError) as exc:
+        raise AiImageInputAssetError(_asset_read_error_message(kind, path, exc)) from exc
+
+
 def build_workbench_one_xm_payload(
     job: Mapping[str, Any],
     assets: list[Mapping[str, Any]] | None = None,
@@ -258,7 +296,7 @@ def build_workbench_one_xm_payload(
         if mask_value.startswith(("data:", "http://", "https://")):
             payload["mask"] = mask_value
         else:
-            payload["mask"] = file_to_data_url_fn(mask_value)
+            payload["mask"] = _asset_data_url("mask", mask_value, file_to_data_url_fn)
 
     input_assets = _param_input_assets(params) or list(assets or [])
     ordered_assets = sorted(input_assets, key=lambda item: (int(item.get("sort_order") or 0), int(item.get("id") or 0)))
@@ -268,13 +306,13 @@ def build_workbench_one_xm_payload(
             continue
         path = _compact(asset.get("path"))
         if path:
-            images.append(file_to_data_url_fn(path))
+            images.append(_asset_data_url("main", path, file_to_data_url_fn))
     for asset in ordered_assets:
         if _compact(asset.get("kind")).lower() != "reference":
             continue
         path = _compact(asset.get("path"))
         if path:
-            images.append(file_to_data_url_fn(path))
+            images.append(_asset_data_url("reference", path, file_to_data_url_fn))
     if images:
         payload["image"] = images[:10]
     return payload
@@ -655,6 +693,32 @@ def _merge_run_summary(job: Mapping[str, Any], latest_summary: Mapping[str, Any]
     if isinstance(previous_summary.get("result_cache"), Mapping):
         merged["result_cache"] = dict(previous_summary["result_cache"])
     return merged
+
+
+def _record_workbench_failed_run(
+    job: Mapping[str, Any],
+    run_uid: str,
+    error: Any,
+    *,
+    tier: str = "",
+    secrets: list[str] | None = None,
+) -> str:
+    message = _sanitize_error(error, secrets)
+    summary = _safe_summary(
+        {
+            "ok": False,
+            "run_uid": run_uid,
+            "error": message,
+        },
+        [],
+        tier,
+    )
+    summary = _merge_run_summary(job, summary, status="failed")
+    data_sink.update_ai_image_job(_compact(job.get("job_uid")), {
+        "status": "failed",
+        "summary": summary,
+    })
+    return message
 
 
 def _workbench_job_lock(job_uid: str) -> threading.RLock:
@@ -1353,15 +1417,25 @@ def run_job_with_one_xm(
         from core.api_server import _resolve_one_xm_settings
 
         resolved_settings = _resolve_one_xm_settings()
-    tier, api_key = select_model_key(job, resolved_settings)
+    run_uid = uuid4().hex
+    api_key = ""
+    tier = _compact(_params(job).get("model_key_tier"))
+    try:
+        tier, api_key = select_model_key(job, resolved_settings)
+    except MissingModelKeyError as exc:
+        _record_workbench_failed_run(job, run_uid, exc, tier=exc.config_id)
+        raise
     assets = data_sink.list_ai_image_assets(job_uid)
-    payload = build_one_xm_payload(job, assets, file_to_data_url_fn=file_to_data_url_fn)
-    if not payload.get("prompt"):
-        raise ValueError("AI image job prompt is required")
-    requested_count = _requested_image_count(payload)
+    try:
+        payload = build_one_xm_payload(job, assets, file_to_data_url_fn=file_to_data_url_fn)
+        if not payload.get("prompt"):
+            raise ValueError("AI image job prompt is required")
+        requested_count = _requested_image_count(payload)
+    except (AiImageInputAssetError, FileNotFoundError, PermissionError, OSError, OneXMImageError, ValueError) as exc:
+        message = _record_workbench_failed_run(job, run_uid, exc, tier=tier, secrets=[api_key])
+        raise ValueError(message) from exc
 
     client = OneXMImageClient(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
-    run_uid = uuid4().hex
     data_sink.update_ai_image_job(job_uid, {"status": "running"})
     try:
         result = runner(

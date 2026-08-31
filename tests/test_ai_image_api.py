@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from core import ai_image_service
 from core import api_server
 from core import data_sink
+from core.one_xm_image import OneXMImageError
 
 
 class AiImageApiTests(unittest.TestCase):
@@ -204,6 +205,44 @@ class AiImageApiTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail["config_id"], "ai.1xm.gemini_3_pro_image_preview_key")
+
+    def test_run_job_api_maps_missing_input_image_to_readable_400_and_failed_summary(self):
+        missing = self.root / "missing-main.png"
+        job = data_sink.create_ai_image_job({
+            "title": "missing input",
+            "prompt": "prompt",
+            "model_key": "gpt-image-2",
+            "params": {
+                "size": "1024x1024",
+                "main_image_path": str(missing),
+            },
+        })
+
+        with patch("core.api_server._resolve_one_xm_settings", return_value={"base_url": "https://api.example", "2k": "secret-key", "4k": ""}):
+            with self.assertRaises(HTTPException) as ctx:
+                api_server.run_ai_image_job(job["job_uid"])
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("主图文件不存在", ctx.exception.detail)
+        self.assertEqual(refreshed["status"], "failed")
+        self.assertIn("主图文件不存在", refreshed["summary"]["runs"][0]["error"])
+
+    def test_run_job_api_maps_escaped_image_preparation_errors_to_400(self):
+        job = data_sink.create_ai_image_job({"title": "escaped prep error"})
+
+        for error in (
+            FileNotFoundError("主图文件不存在，请重新选择文件"),
+            OneXMImageError("参考图文件超过 1XM 20MB 限制"),
+            OSError("后端无法读取参考图文件"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                with patch("core.api_server.ai_image_service.run_job_with_one_xm", side_effect=error):
+                    with self.assertRaises(HTTPException) as ctx:
+                        api_server.run_ai_image_job(job["job_uid"])
+
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertIn(str(error), ctx.exception.detail)
 
     def test_batch_run_api_submits_prompts_under_existing_job(self):
         job = data_sink.create_ai_image_job({"title": "batch api job"})

@@ -139,7 +139,7 @@ test('AI image task records show latest generation time without mixed settings m
   const metaBody = workbench.slice(metaStart, metaEnd)
 
   assert.match(sidebarBody, /<span>\{\{ taskMetaLine\(job\) \}\}<\/span>/)
-  assert.match(sidebarBody, /<small>\{\{ taskResultLine\(job\) \}\}<\/small>/)
+  assert.match(sidebarBody, /<small :title="taskResultLine\(job\)">\{\{ taskResultLine\(job\) \}\}<\/small>/)
   assert.notEqual(latestStart, -1, 'latestTaskGenerationAt should exist')
   assert.match(latestBody, /summary\.runs/)
   assert.match(latestBody, /created_at/)

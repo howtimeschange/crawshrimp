@@ -412,7 +412,7 @@
                       </span>
                     </div>
                     <span>{{ taskMetaLine(job) }}</span>
-                    <small>{{ taskResultLine(job) }}</small>
+                    <small :title="taskResultLine(job)">{{ taskResultLine(job) }}</small>
                   </button>
                   <button
                     class="aiw-history-pin"
@@ -1345,6 +1345,22 @@ watch(advancedJsonError, (error, previousError) => {
   if (!error && previousError && errorMessage.value === previousError) errorMessage.value = ''
 })
 
+watch(() => [
+  form.modelId,
+  form.ratio,
+  form.size,
+  form.quality,
+  form.format,
+  String(form.count || ''),
+  form.output_dir,
+  form.prompt,
+  form.advancedJson,
+  form.mainImagePath,
+  form.referenceImagePaths.join('\n'),
+], () => {
+  clearGenerateError()
+})
+
 watch(() => form.mainImagePath, (path) => {
   void refreshImagePreview(path)
 })
@@ -1682,6 +1698,7 @@ async function chooseMainImage() {
     images: true,
   })
   if (path) {
+    clearGenerateError()
     form.mainImagePath = path
     await refreshImagePreview(path, { force: true })
   }
@@ -1696,6 +1713,7 @@ async function chooseReferenceImages() {
   const nextPaths = (Array.isArray(paths) ? paths : [paths])
     .map((path) => String(path || '').trim())
     .filter(Boolean)
+  if (nextPaths.length) clearGenerateError()
   for (const path of nextPaths) {
     if (!form.referenceImagePaths.includes(path)) form.referenceImagePaths.push(path)
     await refreshImagePreview(path, { force: true })
@@ -1704,7 +1722,10 @@ async function chooseReferenceImages() {
 
 async function chooseOutputFolder() {
   const directory = await chooseDirectory('选择 AI 生图输出文件夹')
-  if (directory) form.output_dir = directory
+  if (directory) {
+    clearGenerateError()
+    form.output_dir = directory
+  }
 }
 
 async function chooseDirectory(title = '选择文件夹') {
@@ -1808,6 +1829,13 @@ function parseAdvancedJson(options = {}) {
 function assertAdvancedJsonValid() {
   if (advancedJsonError.value) throw new Error(advancedJsonError.value)
   return parseAdvancedJson()
+}
+
+function clearGenerateError() {
+  const jsonError = advancedJsonError.value
+  if (jsonError && errorMessage.value === jsonError) return
+  if (errorMessage.value) errorMessage.value = ''
+  if (batchGenerationDialog.error) batchGenerationDialog.error = ''
 }
 
 function buildJobPayload(options = {}) {
@@ -2460,6 +2488,30 @@ function collectResultCardsFromRun(job, run, queueIndex = 0, options = {}) {
   ].filter((item, index, list) => resultKey(item) && list.findIndex((candidate) => resultKey(candidate) === resultKey(item)) === index)
 }
 
+function generatedResultCards(job = {}) {
+  return collectResultCards(job).filter((item) => !item.loading && !item.failed && resultKey(item))
+}
+
+function latestTaskFailure(job = {}) {
+  const summary = job.summary && typeof job.summary === 'object' ? job.summary : {}
+  const runs = Array.isArray(summary.runs) ? summary.runs : []
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    const run = runs[index] || {}
+    const status = String(run.status || '').toLowerCase()
+    if (!status) continue
+    return status === 'failed' && String(run.error || '').trim() ? run : null
+  }
+  if (String(job.status || '').toLowerCase() === 'failed' && String(summary.error || '').trim()) {
+    return { error: summary.error }
+  }
+  return null
+}
+
+function compactTaskFailureText(failure = {}) {
+  const text = String(failure?.error || '生成任务失败，请检查参数后重试').replace(/\s+/g, ' ').trim()
+  return text.length > 96 ? `${text.slice(0, 96)}...` : text
+}
+
 function latestTaskGenerationAt(job = {}) {
   const summary = job.summary && typeof job.summary === 'object' ? job.summary : {}
   const runs = Array.isArray(summary.runs) ? summary.runs : []
@@ -2480,21 +2532,25 @@ function latestTaskGenerationAt(job = {}) {
 }
 
 function taskMetaLine(job = {}) {
+  if (latestTaskFailure(job) && !generationBelongsToJob(generatingJobUid.value, job.job_uid)) return '生成失败'
   const generatedAt = latestTaskGenerationAt(job)
   return generatedAt ? `最近生成 ${formatDateTime(generatedAt)}` : '尚未生成'
 }
 
 function taskResultLine(job = {}) {
   const summary = job.summary && typeof job.summary === 'object' ? job.summary : {}
-  const count = collectResultCards(job).length
+  const count = generatedResultCards(job).length
   const runCount = Array.isArray(summary.runs) ? summary.runs.length : (count ? 1 : 0)
-  if (count) return `已有 ${count} 张结果 · ${runCount} 组生成`
   if (generationBelongsToJob(generatingJobUid.value, job.job_uid)) return '正在生成'
+  const failure = latestTaskFailure(job)
+  if (count && failure) return `已有 ${count} 张结果 · 上次失败：${compactTaskFailureText(failure)}`
+  if (count) return `已有 ${count} 张结果 · ${runCount} 组生成`
+  if (failure) return compactTaskFailureText(failure)
   return '暂无结果'
 }
 
 function taskPreviewItems(job = {}) {
-  return collectResultCards(job).slice(0, 4)
+  return generatedResultCards(job).slice(0, 4)
 }
 
 function queueMetaLine(queue = {}) {

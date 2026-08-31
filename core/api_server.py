@@ -69,7 +69,7 @@ from core.dev_harness import run_harness_capture, run_harness_eval, run_harness_
 from core.dev_harness_models import DevHarnessCaptureRequest, DevHarnessEvalRequest, DevHarnessSnapshotRequest
 from core.knowledge_service import ensure_knowledge_index, rebuild_knowledge_index, search_knowledge
 from core.one_xm_image import DEFAULT_BASE_URL as ONE_XM_DEFAULT_BASE_URL
-from core.one_xm_image import OneXMImageClient, file_to_data_url, run_image_task_until_done
+from core.one_xm_image import OneXMImageClient, OneXMImageError, file_to_data_url, run_image_task_until_done
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
 from core.runtime_install_guard import InstallRuntimeBusy, RuntimeInstallGuard, UpdateDrainActive
@@ -11149,6 +11149,8 @@ def run_ai_image_job(job_uid: str):
             "message": str(exc),
             "config_id": exc.config_id,
         }) from exc
+    except (FileNotFoundError, OneXMImageError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

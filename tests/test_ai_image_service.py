@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from core import data_sink
 from core import ai_image_service
+from core.one_xm_image import OneXMImageError
 
 
 PNG_1X1 = bytes.fromhex(
@@ -678,6 +679,59 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertIn("upstream exploded", refreshed["summary"]["error"])
         self.assertNotIn("super-secret", summary_text)
         self.assertNotIn("data:image", summary_text)
+
+    def test_run_job_records_failed_summary_when_main_image_is_missing(self):
+        missing = self.root / "missing-main.png"
+        job = data_sink.create_ai_image_job({
+            "title": "missing input",
+            "prompt": "prompt",
+            "params": {
+                "size": "1024x1024",
+                "main_image_path": str(missing),
+            },
+        })
+
+        with self.assertRaisesRegex(ValueError, "主图文件不存在"):
+            ai_image_service.run_job_with_one_xm(
+                job["job_uid"],
+                settings={"2k": "secret-key", "4k": ""},
+                runner=lambda *_args, **_kwargs: self.fail("runner should not start when input file is missing"),
+            )
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        self.assertEqual(refreshed["status"], "failed")
+        self.assertIn("主图文件不存在", refreshed["summary"]["error"])
+        self.assertEqual(refreshed["summary"]["runs"][0]["status"], "failed")
+        self.assertEqual(refreshed["summary"]["runs"][0]["input_params"]["main_image_path"], str(missing))
+        self.assertNotIn("secret-key", json.dumps(refreshed["summary"], ensure_ascii=False))
+
+    def test_run_job_records_failed_summary_when_reference_image_is_too_large(self):
+        reference = self.root / "too-large-reference.png"
+        job = data_sink.create_ai_image_job({
+            "title": "oversized reference",
+            "prompt": "prompt",
+            "params": {
+                "size": "1024x1024",
+                "reference_image_paths": [str(reference)],
+            },
+        })
+
+        def oversized_file_to_data_url(path):
+            raise OneXMImageError(f"Reference image exceeds 1XM 20MB limit: {path}")
+
+        with self.assertRaisesRegex(ValueError, "参考图文件超过 1XM 20MB 限制"):
+            ai_image_service.run_job_with_one_xm(
+                job["job_uid"],
+                settings={"2k": "secret-key", "4k": ""},
+                runner=lambda *_args, **_kwargs: self.fail("runner should not start when input file is too large"),
+                file_to_data_url_fn=oversized_file_to_data_url,
+            )
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        run = refreshed["summary"]["runs"][0]
+        self.assertEqual(refreshed["status"], "failed")
+        self.assertIn("参考图文件超过 1XM 20MB 限制", run["error"])
+        self.assertEqual(run["input_params"]["reference_image_paths"], [str(reference)])
 
     def test_run_job_ignores_downloader_failures_because_generation_is_url_first(self):
         job = data_sink.create_ai_image_job({
