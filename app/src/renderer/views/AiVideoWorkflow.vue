@@ -108,8 +108,8 @@
                 <strong>{{ materialTask.message }}</strong>
                 <span>
                   {{ materialTask.completedStyles || 0 }} / {{ materialTask.totalStyles || normalizeStyleCodeLines(styleCodes).length }} 款 ·
-                  成功 {{ materialTask.downloaded || materialSummary.modelCount + materialSummary.detailCount }} ·
-                  失败 {{ materialTask.failed || materialSummary.failedCount }}
+                  已下载 {{ materialTask.downloaded || materialSummary.modelCount + materialSummary.detailCount }} 张 ·
+                  异常 {{ materialTask.failed || materialSummary.failedCount }}
                 </span>
               </div>
               <div class="aiv-dual-progress">
@@ -2160,6 +2160,7 @@ import {
   BALA_VIDEO_PROMPT_TEMPLATE,
   QN_VIDEO_MODEL_OPTIONS,
   applyBalaMaterialBatchToWorkspaceGroups,
+  balaMaterialPathMatchesStyleCodes,
   balaMaterialPanelControl,
   buildBalaAiStageRequest,
   buildBalaMaterialRowsFromWorkspaceGroups,
@@ -2214,6 +2215,7 @@ import {
   selectVisibleEditableVersions,
   isBalaVideoTaskSubmitEligible,
   serializeBalaImageWorkspaceState,
+  summarizeBalaMaterialDisplayCoverage,
   summarizeBalaMaterialGroups,
   toBalaBridgeStringArray,
   waitForNewTaskRun,
@@ -2459,6 +2461,7 @@ const materialTask = reactive({
   downloaded: 0,
   failed: 0,
   runId: '',
+  requestedStyleCodes: [],
   error: '',
   logs: [],
   outputFiles: [],
@@ -4219,6 +4222,7 @@ function resetMaterialWorkspace() {
     downloaded: 0,
     failed: 0,
     runId: '',
+    requestedStyleCodes: [],
     error: '',
     logs: [],
     outputFiles: [],
@@ -4331,7 +4335,7 @@ const materialRecallClearLocalPathCount = computed(() => materialRecallLocalPath
 
 const materialRecallClearDescription = computed(() => {
   const count = materialRecallClearLocalPathCount.value
-  return `可选择仅清除本机回显记录，或同时删除 ${count} 张当前回显的本地图片；仅清除记录会让这些旧素材继续隐藏，新路径或新增的素材仍会回显。`
+  return `可选择仅清除本机回显记录，或同时删除 ${count} 张当前回显的本地图片；仅清除记录会让这些旧素材继续隐藏，下次重新找同款时再恢复回显。`
 })
 
 function applyMaterialRecallHiddenPaths(paths = [], { replaceAll = false } = {}) {
@@ -4342,6 +4346,17 @@ function applyMaterialRecallHiddenPaths(paths = [], { replaceAll = false } = {})
       if (key) materialRecallHiddenPaths.add(key)
     }
   }
+}
+
+function releaseMaterialRecallHiddenPathsForStyles(styleCodes = []) {
+  if (!materialRecallHiddenPaths.size) return 0
+  let released = 0
+  for (const path of [...materialRecallHiddenPaths]) {
+    if (!balaMaterialPathMatchesStyleCodes(path, styleCodes)) continue
+    materialRecallHiddenPaths.delete(path)
+    released += 1
+  }
+  return released
 }
 
 async function deleteMaterialRecallLocalImages(paths = []) {
@@ -4437,6 +4452,7 @@ function clearMaterialRecallHistory({ hiddenPaths = [], deleteLocalFiles = false
     downloaded: 0,
     failed: 0,
     runId: '',
+    requestedStyleCodes: [],
     error: '',
     logs: [],
     outputFiles: [],
@@ -4705,6 +4721,15 @@ function materialStatusMessage({ status, total, completed, downloaded, failed, l
   if (status === 'running') {
     const phase = String(live?.phase || '').trim()
     const current = String(live?.buyer_id || live?.current_buyer_id || '').trim()
+    if (/^finalize/i.test(phase)) {
+      const downloadTotal = Number(live?.download_total || live?.download_total_files || 0)
+      const downloadCompleted = Number(live?.download_completed || live?.download_completed_files || 0)
+      const parts = []
+      if (total > 0) parts.push(`款号 ${completed || 0}/${total}`)
+      if (downloadTotal > 0) parts.push(`图片 ${downloadCompleted || downloaded || 0}/${downloadTotal}`)
+      if (failed) parts.push(`异常 ${failed}`)
+      return `下载完成，正在整理并回显素材${parts.length ? `（${parts.join(' · ')}）` : ''}。`
+    }
     const parts = []
     if (total > 0) parts.push(`款号 ${completed || 0}/${total}`)
     if (current) parts.push(`当前 ${current}`)
@@ -4789,6 +4814,7 @@ async function startMaterialPrepare() {
     downloaded: 0,
     failed: 0,
     runId: '',
+    requestedStyleCodes: runStyleCodes,
     error: '',
     logs: [],
     outputFiles: [],
@@ -4809,6 +4835,12 @@ async function startMaterialPrepare() {
     applyMaterialLiveStatus(launchSnapshot)
     if (launch.status === 'failed') {
       throw new Error(launch.snapshot?.error || '素材下载页面或任务未成功启动，请检查 9222 浏览器登录态后重试。')
+    }
+    const releasedHiddenPathCount = releaseMaterialRecallHiddenPathsForStyles(runStyleCodes)
+    if (releasedHiddenPathCount) {
+      materialTask.logs.push(`已恢复本次重新找图款号的 ${releasedHiddenPathCount} 条历史清除记录。`)
+      persistWorkspaceState()
+      void flushWorkspaceManifest()
     }
     if (isTerminalMaterialStatus(launch.status)) {
       await finalizeMaterialTask(materialPollRunId)
@@ -4914,6 +4946,48 @@ async function readRowsFromOutputFiles(files = []) {
   return rows
 }
 
+function materialStyleCodesFromRows(rows = []) {
+  return [...new Set((rows || [])
+    .map(row => String(row?.输入款号 || row?.款号 || row?.style_code || '').trim())
+    .filter(Boolean))]
+}
+
+function materialRequestedStyleCodesForRun(run = {}, rows = []) {
+  const params = run?.params && typeof run.params === 'object' ? run.params : {}
+  const candidates = [
+    params.item_codes,
+    params.itemCodes,
+    params.style_codes,
+    params.styleCodes,
+    materialTask.requestedStyleCodes,
+    styleCodes.value,
+  ]
+  for (const candidate of candidates) {
+    const text = Array.isArray(candidate) ? candidate.join('\n') : String(candidate || '')
+    const codes = normalizeStyleCodeLines(text)
+    if (codes.length) return codes
+  }
+  return materialStyleCodesFromRows(rows)
+}
+
+function formatMissingMaterialStyleCodes(codes = []) {
+  const visible = (codes || []).slice(0, 6)
+  const suffix = codes.length > visible.length ? ` 等 ${codes.length} 款` : ''
+  return `${visible.join('、')}${suffix}`
+}
+
+function materialFinalizeMessage({ sourceRows = [], rows = [], summary = {}, coverage = {} } = {}) {
+  if (rows.length && coverage.hasMissingStyles) {
+    return `部分完成：${coverage.displayedStyleCount}/${coverage.requestedStyleCount} 个款号已回显，缺少 ${formatMissingMaterialStyleCodes(coverage.missingStyleCodes)}；当前 ${summary.modelCount || 0} 张模拍，${summary.detailCount || 0} 张细节。`
+  }
+  if (rows.length && summary.styleCount) {
+    return `找图完成：${summary.styleCount} 个款号，${summary.modelCount} 张模拍，${summary.detailCount} 张细节。`
+  }
+  return sourceRows.length
+    ? '最近任务不属于当前工作区，请在当前工作区重新开始找图。'
+    : '找图完成，但没有可进入下一步的素材。'
+}
+
 async function finalizeMaterialTask(runId = '') {
   resetMaterialPoll()
   const data = await window.cs.getData(BALA_AI_VIDEO_ADAPTER_ID, BALA_MATERIAL_PREPARE_TASK_ID)
@@ -4928,6 +5002,7 @@ async function finalizeMaterialTask(runId = '') {
   if (sourceRows.length && !rows.length) {
     materialTask.logs.push('最近素材任务不属于当前工作区，已忽略旧目录中的素材。')
   }
+  const requestedStyleCodes = materialRequestedStyleCodesForRun(run, rows)
   const downloadedRows = materialRowsAfterMaterialRecallClear(collectDownloadedMaterialRows({ rows }))
   let batch = null
   if (downloadedRows.length && typeof window.cs.createBalaMaterialBatch === 'function') {
@@ -4943,9 +5018,7 @@ async function finalizeMaterialTask(runId = '') {
       materialTask.logs.push(`创建素材审核批次失败，已回退到本地结果回显：${error?.message || String(error)}`)
     }
   }
-  const rowStyleCodes = [...new Set(rows
-    .map(row => String(row?.输入款号 || row?.款号 || row?.style_code || '').trim())
-    .filter(Boolean))]
+  const rowStyleCodes = materialStyleCodesFromRows(rows)
   const groups = normalizeBalaMaterialGroups({
     batch,
     rows: downloadedRows,
@@ -4953,24 +5026,26 @@ async function finalizeMaterialTask(runId = '') {
   const mergedGroups = mergeBalaMaterialGroups(styleWorkspaces, groups)
   replaceStyleWorkspaces(mergedGroups, { preserveView: true })
   const summary = summarizeBalaMaterialGroups(mergedGroups)
-  const nextStatus = summary.failedCount > 0 ? 'partial' : 'done'
+  const coverage = summarizeBalaMaterialDisplayCoverage({
+    groups: mergedGroups,
+    requestedCodes: requestedStyleCodes,
+  })
+  const missingStyleCount = coverage.missingStyleCodes.length
+  const nextStatus = summary.failedCount > 0 || missingStyleCount > 0 ? 'partial' : 'done'
+  const styleTotal = requestedStyleCodes.length || rowStyleCodes.length || summary.styleCount
   updateMaterialTask({
     status: nextStatus,
     progress: 100,
     searchProgress: 100,
     downloadProgress: downloadedRows.length ? 100 : 0,
-    searchTotal: rowStyleCodes.length || summary.styleCount,
-    searchCompleted: rowStyleCodes.length || summary.styleCount,
+    searchTotal: styleTotal,
+    searchCompleted: styleTotal,
     downloadTotal: downloadedRows.length + summary.failedCount,
     downloadCompleted: downloadedRows.length + summary.failedCount,
     outputFiles,
     downloaded: summary.modelCount + summary.detailCount,
-    failed: summary.failedCount,
-    message: rows.length && summary.styleCount
-      ? `找图完成：${summary.styleCount} 个款号，${summary.modelCount} 张模拍，${summary.detailCount} 张细节。`
-      : (sourceRows.length
-          ? '最近任务不属于当前工作区，请在当前工作区重新开始找图。'
-          : '找图完成，但没有可进入下一步的素材。'),
+    failed: summary.failedCount + missingStyleCount,
+    message: materialFinalizeMessage({ sourceRows, rows, summary, coverage }),
   })
 }
 

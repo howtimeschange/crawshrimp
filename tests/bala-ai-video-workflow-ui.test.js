@@ -310,7 +310,7 @@ test('workspace file sync invalidates thumbnails only for paths that actually ch
   assert.doesNotMatch(syncSource, /releaseWorkspacePreviews\(\)/)
 })
 
-test('material workspace exposes two-level clear actions that keep old cleared files hidden', () => {
+test('material workspace exposes two-level clear actions and releases them on explicit rerun', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   assert.match(source, /materialRecallHiddenPaths/)
   assert.doesNotMatch(source, /materialRecallClearedAt/)
@@ -336,7 +336,8 @@ test('material workspace exposes two-level clear actions that keep old cleared f
   assert.match(source, /filterBalaWorkspaceFilesByHiddenPaths\(files, \[\.\.\.materialRecallHiddenPaths\]\)/)
   assert.match(source, /filterBalaMaterialRowsByHiddenPaths\(rows, \[\.\.\.materialRecallHiddenPaths\]\)/)
   assert.match(source, /const downloadedRows = materialRowsAfterMaterialRecallClear\(collectDownloadedMaterialRows\(\{ rows \}\)\)/)
-  assert.doesNotMatch(source, /releaseMaterialRecallHiddenPathsForStyles/)
+  assert.match(source, /function releaseMaterialRecallHiddenPathsForStyles\(styleCodes = \[\]\)/)
+  assert.match(source, /releaseMaterialRecallHiddenPathsForStyles\(runStyleCodes\)/)
   assert.doesNotMatch(source, /会重新按规则全量回显/)
   assert.doesNotMatch(source, /mtimeMs|modifiedAt|workspaceFileModifiedTime/)
 })
@@ -359,6 +360,40 @@ test('material clear hidden paths filter both workspace scans and downloaded res
       { 输入款号: '208326105204', 本地文件: visiblePath, 下载结果: '已下载' },
     ], [`${hiddenPath}/`]),
     [{ 输入款号: '208326105204', 本地文件: visiblePath, 下载结果: '已下载' }],
+  )
+})
+
+test('material display coverage reports requested styles with no visible recall assets', () => {
+  assert.equal(typeof balaWorkflow.summarizeBalaMaterialDisplayCoverage, 'function')
+
+  const groups = normalizeBalaMaterialGroups({
+    rows: [
+      { 输入款号: '208326103208', 素材来源: '模拍图', 本地文件: '/workspace/208326103208/01_模拍原图/1.jpg', 下载结果: '已下载' },
+      { 输入款号: '208326103209', 素材来源: '商品细节图', 本地文件: '/workspace/208326103209/02_商品细节图/1.jpg', 下载结果: '已下载' },
+      { 输入款号: '208326121202', 素材来源: '模拍图', 本地文件: '/workspace/208326121202/01_模拍原图/1.jpg', 下载结果: '已下载' },
+      { 输入款号: '208326108211', 素材来源: '商品细节图', 本地文件: '/workspace/208326108211/02_商品细节图/1.jpg', 下载结果: '已下载' },
+      { 输入款号: '208326100213', 素材来源: '模拍图', 本地文件: '/workspace/208326100213/01_模拍原图/1.jpg', 下载结果: '已下载' },
+    ],
+  })
+
+  assert.deepEqual(
+    balaWorkflow.summarizeBalaMaterialDisplayCoverage({
+      groups,
+      requestedCodes: [
+        '208326103208',
+        '208326103209',
+        '208326121202',
+        '208326108211',
+        '208326100213',
+        '208326102202',
+      ],
+    }),
+    {
+      requestedStyleCount: 6,
+      displayedStyleCount: 5,
+      missingStyleCodes: ['208326102202'],
+      hasMissingStyles: true,
+    },
   )
 })
 
@@ -917,6 +952,11 @@ test('AI video material step uses a native directory picker, dual progress, laun
   assert.match(source, /下载进度/)
   assert.match(source, /materialTask\.searchProgress/)
   assert.match(source, /materialTask\.downloadProgress/)
+  assert.match(source, /下载完成，正在整理并回显素材/)
+  assert.match(source, /summarizeBalaMaterialDisplayCoverage/)
+  assert.match(source, /missingStyleCodes/)
+  assert.match(source, /requestedStyleCodes:\s*runStyleCodes/)
+  assert.match(source, /materialTask\.requestedStyleCodes/)
   assert.match(source, /waitForMaterialRunStart/)
   assert.match(source, /素材下载页面或任务未成功启动/)
   assert.match(source, /restoreLatestMaterialTask/)

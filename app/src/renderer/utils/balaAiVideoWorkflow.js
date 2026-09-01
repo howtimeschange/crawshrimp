@@ -250,6 +250,15 @@ export function filterBalaMaterialRowsByHiddenPaths(rows = [], hiddenPaths = [])
   return (rows || []).filter(row => !hidden.has(normalizedLocalPath(row?.本地文件 || row?.local_file || row?.path)))
 }
 
+export function balaMaterialPathMatchesStyleCodes(path = '', styleCodes = []) {
+  const targets = new Set((styleCodes || []).map(compact).filter(Boolean))
+  if (!targets.size) return false
+  return normalizedLocalPath(path)
+    .split('/')
+    .filter(Boolean)
+    .some(segment => targets.has(segment))
+}
+
 function pathInsideWorkspace(path = '', workspaceDir = '') {
   const candidate = normalizedLocalPath(path)
   const root = normalizedLocalPath(workspaceDir)
@@ -986,6 +995,26 @@ export function summarizeBalaMaterialGroups(groups = []) {
     summary.failedCount += (group.errors || []).length
   }
   return summary
+}
+
+export function summarizeBalaMaterialDisplayCoverage({ groups = [], requestedCodes = [] } = {}) {
+  const requested = [...new Set((requestedCodes || []).map(compact).filter(Boolean))]
+  const visibleStyleCodes = new Set()
+  for (const group of groups || []) {
+    const code = compact(group?.styleCode || group?.style_code)
+    if (!code) continue
+    const visibleCount = (group?.modelPhotos || []).length + (group?.detailPhotos || []).length
+    if (visibleCount > 0) visibleStyleCodes.add(code)
+  }
+  const missingStyleCodes = requested.filter(code => !visibleStyleCodes.has(code))
+  return {
+    requestedStyleCount: requested.length,
+    displayedStyleCount: requested.length
+      ? requested.length - missingStyleCodes.length
+      : visibleStyleCodes.size,
+    missingStyleCodes,
+    hasMissingStyles: missingStyleCodes.length > 0,
+  }
 }
 
 export function normalizeWorkflowStageStatus(value = '') {
