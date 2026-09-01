@@ -2169,6 +2169,8 @@ import {
   collectVideoResultRows,
   collectDownloadedMaterialRows,
   clearBalaVideoTaskHistory,
+  filterBalaMaterialRowsByHiddenPaths,
+  filterBalaWorkspaceFilesByHiddenPaths,
   filterBalaModelLibraryItems,
   formatBalaModelDisplayLabel,
   hasGeneratingBalaReviewAssets,
@@ -4258,8 +4260,11 @@ function releaseWorkspaceImagePreviews(paths = []) {
 }
 
 function filesAfterMaterialRecallClear(files = []) {
-  if (!materialRecallHiddenPaths.size) return files || []
-  return (files || []).filter(file => !materialRecallHiddenPaths.has(normalizedWorkspacePath(file?.path)))
+  return filterBalaWorkspaceFilesByHiddenPaths(files, [...materialRecallHiddenPaths])
+}
+
+function materialRowsAfterMaterialRecallClear(rows = []) {
+  return filterBalaMaterialRowsByHiddenPaths(rows, [...materialRecallHiddenPaths])
 }
 
 function applyWorkspaceFileSync(files = []) {
@@ -4326,35 +4331,12 @@ const materialRecallClearLocalPathCount = computed(() => materialRecallLocalPath
 
 const materialRecallClearDescription = computed(() => {
   const count = materialRecallClearLocalPathCount.value
-  return `可选择仅清除本机回显记录，或同时删除 ${count} 张当前回显的本地图片；下一次对同款重新找图后，会重新按规则全量回显符合条件的素材。`
+  return `可选择仅清除本机回显记录，或同时删除 ${count} 张当前回显的本地图片；仅清除记录会让这些旧素材继续隐藏，新路径或新增的素材仍会回显。`
 })
 
-function pathHasStyleCode(path = '', styleCode = '') {
-  const code = String(styleCode || '').trim()
-  if (!code) return false
-  return normalizedWorkspacePath(path).split('/').includes(code)
-}
-
-function releaseMaterialRecallHiddenPathsForStyles(styleCodes = []) {
-  if (!materialRecallHiddenPaths.size) return false
-  const codes = [...new Set((styleCodes || []).map(code => String(code || '').trim()).filter(Boolean))]
-  if (!codes.length) {
-    materialRecallHiddenPaths.clear()
-    return true
-  }
-  let changed = false
-  for (const path of [...materialRecallHiddenPaths]) {
-    if (!codes.some(code => pathHasStyleCode(path, code))) continue
-    materialRecallHiddenPaths.delete(path)
-    changed = true
-  }
-  return changed
-}
-
-function applyMaterialRecallHiddenPaths(styleCodes = [], paths = [], { replaceAll = false } = {}) {
+function applyMaterialRecallHiddenPaths(paths = [], { replaceAll = false } = {}) {
   if (replaceAll) replaceMaterialRecallHiddenPaths(paths)
   else {
-    releaseMaterialRecallHiddenPathsForStyles(styleCodes)
     for (const path of paths) {
       const key = normalizedWorkspacePath(path)
       if (key) materialRecallHiddenPaths.add(key)
@@ -4423,7 +4405,7 @@ function clearMaterialRecallHistory({ hiddenPaths = [], deleteLocalFiles = false
   aiPollRunId = ''
   aiQueuedRequestId = ''
   activeAiPlaceholderIds.clear()
-  applyMaterialRecallHiddenPaths([], hiddenPaths, { replaceAll: true })
+  applyMaterialRecallHiddenPaths(hiddenPaths)
   materialBatch.value = null
   materialBoardUrl.value = ''
   reviewBatch.value = null
@@ -4440,8 +4422,8 @@ function clearMaterialRecallHistory({ hiddenPaths = [], deleteLocalFiles = false
   updateMaterialTask({
     status: 'idle',
     message: deleteLocalFiles
-      ? `已清空本机回显记录并删除 ${deletedCount} 张本地图片；下一次找图会重新按规则全量回显符合条件的素材。`
-      : '已清空本机回显记录；本地图片仍保留，下一次找图会重新按规则全量回显符合条件的素材。',
+      ? `已清空本机回显记录并删除 ${deletedCount} 张本地图片。`
+      : '已清空本机回显记录；本地图片仍保留，已清除的旧素材会继续隐藏。',
     progress: 0,
     searchProgress: 0,
     downloadProgress: 0,
@@ -4510,7 +4492,7 @@ function clearMaterialRecallHistoryForStyle(styleCode = activeMaterialStyleCode.
   if (!code) return
   const removed = styleWorkspaces.filter(style => style.styleCode === code)
   const remaining = styleWorkspaces.filter(style => style.styleCode !== code)
-  applyMaterialRecallHiddenPaths([code], hiddenPaths)
+  applyMaterialRecallHiddenPaths(hiddenPaths)
   delete materialExpanded[code]
   delete materialRenderLimits[materialRenderKey(code, 'model')]
   delete materialRenderLimits[materialRenderKey(code, 'detail')]
@@ -4520,8 +4502,8 @@ function clearMaterialRecallHistoryForStyle(styleCode = activeMaterialStyleCode.
   updateMaterialTask({
     status: 'idle',
     message: deleteLocalFiles
-      ? `已清空 ${code} 本机回显记录并删除 ${deletedCount} 张本地图片；下一次找图会重新按规则全量回显本款素材。`
-      : `已清空 ${code} 本机回显记录；本地图片仍保留，下一次找图会重新按规则全量回显本款素材。`,
+      ? `已清空 ${code} 本机回显记录并删除 ${deletedCount} 张本地图片。`
+      : `已清空 ${code} 本机回显记录；本地图片仍保留，已清除的旧素材会继续隐藏。`,
     error: '',
   })
   persistWorkspaceState()
@@ -4783,11 +4765,6 @@ async function startMaterialPrepare() {
     return
   }
   const runStyleCodes = normalizeStyleCodeLines(params.item_codes)
-  if (releaseMaterialRecallHiddenPathsForStyles(runStyleCodes)) {
-    persistWorkspaceState()
-    void flushWorkspaceManifest()
-    void syncWorkspaceFiles()
-  }
   materialWorkspaceRequired.value = false
   const previousStatus = await window.cs.getTaskStatus(
     BALA_AI_VIDEO_ADAPTER_ID,
@@ -4951,7 +4928,7 @@ async function finalizeMaterialTask(runId = '') {
   if (sourceRows.length && !rows.length) {
     materialTask.logs.push('最近素材任务不属于当前工作区，已忽略旧目录中的素材。')
   }
-  const downloadedRows = collectDownloadedMaterialRows({ rows })
+  const downloadedRows = materialRowsAfterMaterialRecallClear(collectDownloadedMaterialRows({ rows }))
   let batch = null
   if (downloadedRows.length && typeof window.cs.createBalaMaterialBatch === 'function') {
     try {

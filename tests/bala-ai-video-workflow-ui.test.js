@@ -9,6 +9,8 @@ import {
   buildBalaMaterialRowsFromWorkspaceGroups,
   buildBalaVideoStageRequest,
   latestRunForTaskData,
+  filterBalaMaterialRowsByHiddenPaths,
+  filterBalaWorkspaceFilesByHiddenPaths,
   mergeBalaVideoResults,
   normalizeBalaMaterialGroups,
   normalizeBalaReviewBatchStyles,
@@ -308,7 +310,7 @@ test('workspace file sync invalidates thumbnails only for paths that actually ch
   assert.doesNotMatch(syncSource, /releaseWorkspacePreviews\(\)/)
 })
 
-test('material workspace exposes two-level clear actions without permanently filtering old scanned files', () => {
+test('material workspace exposes two-level clear actions that keep old cleared files hidden', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   assert.match(source, /materialRecallHiddenPaths/)
   assert.doesNotMatch(source, /materialRecallClearedAt/)
@@ -330,9 +332,34 @@ test('material workspace exposes two-level clear actions without permanently fil
   assert.doesNotMatch(source, /materialGroups\.value\.length/)
   assert.match(source, /function clearMaterialRecallHistoryForStyle/)
   assert.match(source, /function filesAfterMaterialRecallClear\(files = \[\]\)/)
-  assert.match(source, /materialRecallHiddenPaths\.has\(normalizedWorkspacePath\(file\?\.path\)\)/)
-  assert.match(source, /releaseMaterialRecallHiddenPathsForStyles\(runStyleCodes\)/)
+  assert.match(source, /function materialRowsAfterMaterialRecallClear\(rows = \[\]\)/)
+  assert.match(source, /filterBalaWorkspaceFilesByHiddenPaths\(files, \[\.\.\.materialRecallHiddenPaths\]\)/)
+  assert.match(source, /filterBalaMaterialRowsByHiddenPaths\(rows, \[\.\.\.materialRecallHiddenPaths\]\)/)
+  assert.match(source, /const downloadedRows = materialRowsAfterMaterialRecallClear\(collectDownloadedMaterialRows\(\{ rows \}\)\)/)
+  assert.doesNotMatch(source, /releaseMaterialRecallHiddenPathsForStyles/)
+  assert.doesNotMatch(source, /会重新按规则全量回显/)
   assert.doesNotMatch(source, /mtimeMs|modifiedAt|workspaceFileModifiedTime/)
+})
+
+test('material clear hidden paths filter both workspace scans and downloaded result rows', () => {
+  const hiddenPath = '/workspace/208326104201/01_模拍原图/old.jpg'
+  const visiblePath = '/workspace/208326105204/01_模拍原图/new.jpg'
+
+  assert.deepEqual(
+    filterBalaWorkspaceFilesByHiddenPaths([
+      { path: hiddenPath, styleCode: '208326104201' },
+      { path: visiblePath, styleCode: '208326105204' },
+    ], [hiddenPath]),
+    [{ path: visiblePath, styleCode: '208326105204' }],
+  )
+
+  assert.deepEqual(
+    filterBalaMaterialRowsByHiddenPaths([
+      { 输入款号: '208326104201', 本地文件: hiddenPath, 下载结果: '已下载' },
+      { 输入款号: '208326105204', 本地文件: visiblePath, 下载结果: '已下载' },
+    ], [`${hiddenPath}/`]),
+    [{ 输入款号: '208326105204', 本地文件: visiblePath, 下载结果: '已下载' }],
+  )
 })
 
 test('AI image submit clears only the selected input state after task acceptance', () => {
@@ -443,6 +470,7 @@ test('material recall is independent from the one-time cloud-download style-code
   assert.doesNotMatch(source, /watch\(styleCodes, resetDraftMaterialGroups\)/)
   assert.match(source, /replaceStyleWorkspaces\(savedStyles\.length \? savedStyles : \[\]\)/)
   assert.match(source, /replaceStyleWorkspaces\(\[\]\)/)
+  assert.match(source, /const downloadedRows = materialRowsAfterMaterialRecallClear\(collectDownloadedMaterialRows\(\{ rows \}\)\)/)
   assert.match(source, /const groups = normalizeBalaMaterialGroups\(\{\s*batch,\s*rows: downloadedRows,\s*\}\)/)
   assert.doesNotMatch(source, /if \(rowStyleCodes\.length\) styleCodes\.value = rowStyleCodes\.join\('\\n'\)/)
 })

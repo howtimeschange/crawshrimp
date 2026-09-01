@@ -234,6 +234,22 @@ function normalizedLocalPath(value = '') {
   return text.length > 1 ? text.replace(/\/+$/, '') : text
 }
 
+function normalizedHiddenPathSet(paths = []) {
+  return new Set(Array.from(paths || []).map(normalizedLocalPath).filter(Boolean))
+}
+
+export function filterBalaWorkspaceFilesByHiddenPaths(files = [], hiddenPaths = []) {
+  const hidden = normalizedHiddenPathSet(hiddenPaths)
+  if (!hidden.size) return files || []
+  return (files || []).filter(file => !hidden.has(normalizedLocalPath(file?.path)))
+}
+
+export function filterBalaMaterialRowsByHiddenPaths(rows = [], hiddenPaths = []) {
+  const hidden = normalizedHiddenPathSet(hiddenPaths)
+  if (!hidden.size) return rows || []
+  return (rows || []).filter(row => !hidden.has(normalizedLocalPath(row?.本地文件 || row?.local_file || row?.path)))
+}
+
 function pathInsideWorkspace(path = '', workspaceDir = '') {
   const candidate = normalizedLocalPath(path)
   const root = normalizedLocalPath(workspaceDir)
