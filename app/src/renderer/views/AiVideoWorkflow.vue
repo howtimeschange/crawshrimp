@@ -2194,6 +2194,7 @@ import {
   normalizeOperationType,
   normalizeStyleCodeLines,
   normalizeBalaTemplateCatalog,
+  normalizeBalaVideoLocalPath,
   normalizeBalaVideoTaskProvider,
   normalizeBalaVideoResultRows,
   normalizeWorkflowStageStatus,
@@ -2206,6 +2207,7 @@ import {
   qnVideoResultFailure,
   rebaseBalaMaterialRowsToWorkspace,
   reconcileBalaWorkspaceFiles,
+  restoreBalaVideoResultsFromWorkspaceFiles,
   resolveBalaAssetPreviewSource,
   resolveBalaVersionPreviewSource,
   resolveBalaVideoPlaybackSource,
@@ -3092,7 +3094,7 @@ function persistedVideoResult(item = {}) {
     status: migrateBalaBusinessManagerText(item.status),
     progress: Number(item.progress || 0),
     progressSource: String(item.progressSource || ''),
-    path: String(item.path || ''),
+    path: normalizeBalaVideoLocalPath(item),
     videoUrl: String(item.videoUrl || ''),
     error: migrateBalaBusinessManagerText(item.error),
   }
@@ -4026,9 +4028,7 @@ const modelLibrarySelectionSummary = computed(() => {
 })
 
 function localVideoPathFor(item = {}) {
-  return [item.path, item.local_video_path, item.videoUrl, item.video_url]
-    .map(value => String(value || '').trim())
-    .find(value => value && !/^(https?:|data:|blob:)/i.test(value) && isBalaVideoFilePath(value)) || ''
+  return normalizeBalaVideoLocalPath(item)
 }
 
 function localVideoPreviewCacheTag(item = {}, path = '') {
@@ -4092,7 +4092,18 @@ function mediaPlaybackSource(item = {}) {
     return ''
   }
   const remote = resolveBalaVideoPlaybackSource(
-    { ...item, path: '', local_video_path: '' },
+    {
+      ...item,
+      path: '',
+      local_video_path: '',
+      localVideoPath: '',
+      local_path: '',
+      localPath: '',
+      video_path: '',
+      videoPath: '',
+      本地视频文件: '',
+      本地文件: '',
+    },
     { resolveRemote: resolveRemoteVideoUrl },
   )
   return remote || ''
@@ -4282,12 +4293,44 @@ function applyWorkspaceFileSync(files = []) {
   restoreScroll()
 }
 
+function applyWorkspaceVideoFileSync(files = []) {
+  const restored = restoreBalaVideoResultsFromWorkspaceFiles({
+    tasks: videoTasks,
+    results: videoResults,
+    files,
+  })
+  if (!restored.length) return
+  upsertVideoResults(restored)
+  for (const item of restored) {
+    const task = videoTaskForResult(item)
+    if (!task) continue
+    task.status = '已完成'
+    task.queuedRequestId = ''
+    if (item.providerTaskId && !task.providerTaskId) task.providerTaskId = item.providerTaskId
+    if (item.providerStatus && !task.providerStatus) task.providerStatus = item.providerStatus
+  }
+  if (videoStageState.status !== 'running') {
+    videoStageState.status = 'done'
+    videoStageState.error = ''
+    videoStageState.message = `已从本地工作区恢复 ${restored.length} 个视频结果。`
+  }
+}
+
 async function syncWorkspaceFiles() {
-  if (!workspaceDir.value || typeof window.cs?.listBalaWorkspaceImages !== 'function') return
+  if (!workspaceDir.value) return
   try {
-    applyWorkspaceFileSync(await window.cs.listBalaWorkspaceImages(workspaceDir.value))
+    if (typeof window.cs?.listBalaWorkspaceImages === 'function') {
+      applyWorkspaceFileSync(await window.cs.listBalaWorkspaceImages(workspaceDir.value))
+    }
   } catch {
     // Folder changes can race Finder writes; the next poll will retry safely.
+  }
+  try {
+    if (typeof window.cs?.listBalaWorkspaceVideos === 'function') {
+      applyWorkspaceVideoFileSync(await window.cs.listBalaWorkspaceVideos(workspaceDir.value))
+    }
+  } catch {
+    // Folder changes can race video downloads; the next poll will retry safely.
   }
 }
 
@@ -7324,7 +7367,7 @@ async function refreshProviderVideoResult(item, { download = false } = {}) {
   if (!isApiVideoProvider(provider) || !providerTaskId) {
     throw new Error('缺少可刷新的 provider task ID')
   }
-  const existingLocalPath = /\.mp4$/i.test(String(item?.path || '').trim()) ? String(item.path).trim() : ''
+  const existingLocalPath = normalizeBalaVideoLocalPath(item)
   const result = await window.cs.refreshBalaVideoProviderTask({
     provider,
     task_id: providerTaskId,
@@ -7603,7 +7646,7 @@ async function downloadCompletedVideoResults() {
       errors.push(`${item.styleCode || item.id}: ${error?.message || String(error)}`)
     }
   }
-  const localQnCount = videoResults.filter(item => item.providerKey === 'qn' && /\.mp4$/i.test(String(item.path || ''))).length
+  const localQnCount = videoResults.filter(item => item.providerKey === 'qn' && localVideoPathFor(item)).length
   if (!downloaded && !localQnCount && !errors.length) {
     videoStageState.status = 'failed'
     videoStageState.error = '还没有已完成的视频结果可下载'
@@ -7657,6 +7700,8 @@ function buildQnVideoTaskParams(task, mode = 'plan') {
 function upsertVideoResults(results = []) {
   const trackedTaskIds = new Set(videoTasks.map(task => String(task?.id || '').trim()).filter(Boolean))
   const trackedResults = (results || []).filter(item => {
+    const providerKey = normalizeBalaVideoTaskProvider(item?.providerKey || item?.provider)
+    if (!String(item?.taskRefId || '').trim() && providerKey === 'local-workspace') return true
     const taskRefId = String(item?.taskRefId || item?.id || '').trim()
     return !taskRefId || trackedTaskIds.has(taskRefId)
   })

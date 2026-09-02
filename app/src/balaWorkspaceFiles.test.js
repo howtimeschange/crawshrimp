@@ -12,6 +12,7 @@ const {
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   listAuthorizedBalaWorkspaceImages,
+  listAuthorizedBalaWorkspaceVideos,
   loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,
   rememberAuthorizedBalaWorkspaceRoot,
@@ -233,6 +234,43 @@ test('workspace video metadata permits regular videos anywhere and never seriali
       () => getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: linkPath }),
       /符号链接/,
     )
+  })
+})
+
+test('workspace video listing only returns regular videos with safe metadata sorted newest first', () => {
+  withTempTree(({ workspace, outside }) => {
+    const styleVideoDir = path.join(workspace, '208326102205')
+    const resultDir = path.join(workspace, '视频结果')
+    const oldVideo = path.join(styleVideoDir, '208326102205_seedance_cgt-20260831.mp4')
+    const newVideo = path.join(resultDir, '208326102206_happyhorse_i2v_20260901.mov')
+    const outsideVideo = path.join(outside, 'outside.mp4')
+    fs.mkdirSync(styleVideoDir, { recursive: true })
+    fs.mkdirSync(resultDir, { recursive: true })
+    fs.writeFileSync(oldVideo, Buffer.alloc(1024, 1))
+    fs.writeFileSync(newVideo, Buffer.alloc(2048, 2))
+    fs.writeFileSync(path.join(workspace, 'note.txt'), 'not a video')
+    fs.writeFileSync(path.join(workspace, 'cover.jpg'), 'image')
+    fs.writeFileSync(outsideVideo, 'outside')
+    fs.symlinkSync(outsideVideo, path.join(workspace, 'linked.mp4'))
+    fs.utimesSync(oldVideo, new Date('2026-09-01T09:00:00Z'), new Date('2026-09-01T09:00:00Z'))
+    fs.utimesSync(newVideo, new Date('2026-09-02T09:00:00Z'), new Date('2026-09-02T09:00:00Z'))
+
+    const videos = listAuthorizedBalaWorkspaceVideos({ workspaceRoot: workspace })
+
+    assert.deepEqual(videos.map(video => video.path), [
+      fs.realpathSync.native(newVideo),
+      fs.realpathSync.native(oldVideo),
+    ])
+    assert.equal(videos[0].styleCode, '208326102206')
+    assert.equal(videos[0].mime, 'video/quicktime')
+    assert.equal(videos[0].relativePath, '视频结果/208326102206_happyhorse_i2v_20260901.mov')
+    assert.equal(videos[0].folders, '视频结果')
+    assert.match(videos[0].version, /-/)
+    assert.equal(typeof videos[0].mtimeMs, 'number')
+    assert.equal(Number.isFinite(Date.parse(videos[0].modifiedAt)), true)
+    assert.equal(Object.hasOwn(videos[0], 'data_url'), false)
+    assert.equal(Object.hasOwn(videos[0], 'sha256'), false)
+    assert.equal(videos[1].styleCode, '208326102205')
   })
 })
 

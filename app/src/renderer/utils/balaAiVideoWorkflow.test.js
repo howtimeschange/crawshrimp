@@ -5,7 +5,9 @@ import * as balaWorkflow from './balaAiVideoWorkflow.js'
 
 import {
   balaMaterialPanelControl,
+  normalizeBalaVideoLocalPath,
   normalizeBalaVideoResultRows,
+  restoreBalaVideoResultsFromWorkspaceFiles,
   resolveBalaAssetPreviewSource,
   resolveBalaVideoPlaybackSource,
 } from './balaAiVideoWorkflow.js'
@@ -241,6 +243,75 @@ test('video results resolve downloadable local files and remote playback URLs', 
   assert.equal(
     resolveBalaVideoPlaybackSource({ path: '/Users/xingyicheng/Downloads/巴拉AI视频成片' }),
     '',
+  )
+})
+
+test('video local path normalization accepts provider variants and ignores remote-only values', () => {
+  assert.equal(
+    normalizeBalaVideoLocalPath({ 本地视频文件: '/Users/xingyicheng/Downloads/本地结果.mov' }),
+    '/Users/xingyicheng/Downloads/本地结果.mov',
+  )
+  assert.equal(
+    normalizeBalaVideoLocalPath({ localVideoPath: 'file:///Users/xingyicheng/Downloads/result%20clip.mp4' }),
+    '/Users/xingyicheng/Downloads/result clip.mp4',
+  )
+  assert.equal(
+    normalizeBalaVideoLocalPath({ videoUrl: 'https://cdn.example.com/result.mp4' }),
+    '',
+  )
+  assert.equal(
+    normalizeBalaVideoLocalPath({ path: '/Users/xingyicheng/Downloads/巴拉AI视频成片' }),
+    '',
+  )
+})
+
+test('workspace video files restore missing downloaded results without attaching ambiguous tasks', () => {
+  const restored = restoreBalaVideoResultsFromWorkspaceFiles({
+    tasks: [{
+      id: 'video-task-1',
+      styleCode: '208326102205',
+      provider: 'seedance',
+      providerTaskId: 'cgt-20260901162529-kzdw7',
+      template: { title: '外景种草' },
+    }],
+    results: [{
+      id: 'video-task-1',
+      taskRefId: 'video-task-1',
+      styleCode: '208326102205',
+      providerTaskId: 'cgt-20260901162529-kzdw7',
+      status: '生成完成待下载',
+      path: '',
+    }],
+    files: [{
+      path: '/workspace/208326102205/208326102205_seedance_cgt-20260901162529-kzdw7.mp4',
+      styleCode: '208326102205',
+      mtimeMs: 200,
+    }],
+  })
+
+  assert.equal(restored.length, 1)
+  assert.equal(restored[0].id, 'video-task-1')
+  assert.equal(restored[0].taskRefId, 'video-task-1')
+  assert.equal(restored[0].status, '已完成')
+  assert.equal(restored[0].progress, 100)
+  assert.equal(restored[0].progressSource, 'local-workspace')
+  assert.equal(restored[0].path, '/workspace/208326102205/208326102205_seedance_cgt-20260901162529-kzdw7.mp4')
+  assert.equal(restored[0].error, '')
+
+  const ambiguous = restoreBalaVideoResultsFromWorkspaceFiles({
+    tasks: [{ id: 'video-task-ambiguous', styleCode: '208326102205', provider: 'seedance' }],
+    results: [{ id: 'video-task-ambiguous', taskRefId: 'video-task-ambiguous', status: '生成完成待下载' }],
+    files: [
+      { path: '/workspace/208326102205/first.mp4', styleCode: '208326102205', mtimeMs: 300 },
+      { path: '/workspace/208326102205/second.mp4', styleCode: '208326102205', mtimeMs: 200 },
+      { path: '/workspace/模板预览/208326102205_template.mp4', styleCode: '208326102205', mtimeMs: 400 },
+    ],
+  })
+
+  assert.equal(ambiguous.some(item => item.taskRefId === 'video-task-ambiguous'), false)
+  assert.deepEqual(
+    ambiguous.map(item => item.path).sort(),
+    ['/workspace/208326102205/first.mp4', '/workspace/208326102205/second.mp4'],
   )
 })
 

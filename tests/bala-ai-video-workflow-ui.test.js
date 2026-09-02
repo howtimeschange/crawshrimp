@@ -310,6 +310,21 @@ test('workspace file sync invalidates thumbnails only for paths that actually ch
   assert.doesNotMatch(syncSource, /releaseWorkspacePreviews\(\)/)
 })
 
+test('workspace file sync scans local videos and restores result records', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const start = source.indexOf('function applyWorkspaceVideoFileSync')
+  const end = source.indexOf('function materialRecallStyleSummary', start)
+  const syncSource = source.slice(start, end)
+
+  assert.match(source, /normalizeBalaVideoLocalPath/)
+  assert.match(source, /restoreBalaVideoResultsFromWorkspaceFiles/)
+  assert.match(syncSource, /restoreBalaVideoResultsFromWorkspaceFiles\(\{\s*tasks: videoTasks,\s*results: videoResults,\s*files,/)
+  assert.match(syncSource, /upsertVideoResults\(restored\)/)
+  assert.match(syncSource, /task\.status = '已完成'/)
+  assert.match(syncSource, /listBalaWorkspaceImages\(workspaceDir\.value\)/)
+  assert.match(syncSource, /listBalaWorkspaceVideos\(workspaceDir\.value\)/)
+})
+
 test('material workspace exposes two-level clear actions and releases them on explicit rerun', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   assert.match(source, /materialRecallHiddenPaths/)
@@ -1318,10 +1333,13 @@ test('video tasks and provider results persist across reloads with real refresh 
   assert.match(preload, /refreshBalaVideoProviderTask/)
   assert.match(preload, /readBalaWorkspaceManifest/)
   assert.match(preload, /writeBalaWorkspaceManifest/)
+  assert.match(preload, /listBalaWorkspaceVideos/)
   assert.match(devBridge, /refreshBalaVideoProviderTask/)
+  assert.match(devBridge, /listBalaWorkspaceVideos/)
   assert.match(main, /refresh-bala-video-provider-task/)
   assert.match(main, /read-bala-workspace-manifest/)
   assert.match(main, /write-bala-workspace-manifest/)
+  assert.match(main, /list-bala-workspace-videos/)
 })
 
 test('video generation keeps task controls independent, submits asynchronously, and labels the action as generate video', () => {
@@ -1380,6 +1398,8 @@ test('downloaded video results prefer local playback and refresh stale path prev
   assert.match(source, /function releaseWorkspaceVideoPreviews\(paths = \[\]\)/)
   assert.match(source, /releaseWorkspaceVideoPreviews\(trackedResults\.map\(videoResultLocalPath\)\)/)
   assert.match(source, /releaseWorkspaceVideoPreviews\(removed\.map\(videoResultLocalPath\)\)/)
+  assert.match(source, /function localVideoPathFor\(item = \{\}\)\s*\{\s*return normalizeBalaVideoLocalPath\(item\)\s*\}/)
+  assert.match(source, /applyWorkspaceVideoFileSync/)
   assert.match(source, /function localVideoPlaybackUrl\(mediaUrl = '', item = \{\}, path = ''\)/)
   assert.match(source, /url\.searchParams\.set\('v', tag\)/)
   assert.match(mediaSource, /const localPreview = localPath \? localVideoPreviews\[localPath\] : ''/)

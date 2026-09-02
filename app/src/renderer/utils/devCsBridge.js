@@ -506,6 +506,9 @@ export function createDevCsBridge() {
     getBalaWorkspaceVideoMedia: async () => {
       throw devModeError('浏览器开发模式不能安全流式预览本机视频，请在 Electron 开发壳中查看')
     },
+    listBalaWorkspaceVideos: async () => {
+      throw devModeError('浏览器开发模式不能安全扫描本机视频，请在 Electron 开发壳中查看')
+    },
     readBalaWorkspaceImagePreview: async () => {
       throw devModeError('浏览器开发模式不能安全预览本机图片，请在 Electron 开发壳中查看')
     },

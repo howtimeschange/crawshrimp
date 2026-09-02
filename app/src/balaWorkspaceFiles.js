@@ -175,6 +175,49 @@ function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), f
   return assets.sort((left, right) => left.path.localeCompare(right.path))
 }
 
+function listAuthorizedBalaWorkspaceVideos({ workspaceRoot, roots = new Set(), fsApi = fs } = {}) {
+  const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
+  const videos = []
+  const visit = (directory) => {
+    for (const entry of fsApi.readdirSync(directory, { withFileTypes: true })) {
+      const candidate = path.join(directory, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        visit(candidate)
+        continue
+      }
+      if (!entry.isFile() || !BALA_VIDEO_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue
+      const stat = fsApi.statSync(candidate)
+      const canonical = canonicalPath(candidate, fsApi)
+      assertDescendant(canonicalRoot, canonical)
+      const relative = path.relative(canonicalRoot, canonical).split(path.sep)
+      const folders = relative.slice(0, -1).join('/')
+      const name = path.basename(canonical)
+      const nameStyleMatch = name.match(/(?:^|[^0-9])(\d{12})(?!\d)/)
+      const styleCode = relative.find(part => /^\d{12}$/.test(part)) || (nameStyleMatch ? nameStyleMatch[1] : '')
+      const version = `${stat.mtimeMs.toString(16)}-${stat.size.toString(16)}`
+      videos.push({
+        path: canonical,
+        name,
+        filename: name,
+        relativePath: relative.join('/'),
+        folders,
+        styleCode,
+        mime: videoMimeForPath(canonical),
+        version,
+        modifiedAt: new Date(stat.mtimeMs).toISOString(),
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+      })
+    }
+  }
+  visit(canonicalRoot)
+  return videos.sort((left, right) => {
+    const modified = Number(right.mtimeMs || 0) - Number(left.mtimeMs || 0)
+    return modified || left.path.localeCompare(right.path)
+  })
+}
+
 function getAuthorizedBalaWorkspaceVideo({ workspaceRoot, filePath, roots = new Set(), fsApi = fs } = {}) {
   const rawFile = String(filePath || '').trim()
   if (!rawFile) throw new Error('缺少本地视频路径')
@@ -279,6 +322,7 @@ module.exports = {
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   listAuthorizedBalaWorkspaceImages,
+  listAuthorizedBalaWorkspaceVideos,
   loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,
   rememberAuthorizedBalaWorkspaceRoot,

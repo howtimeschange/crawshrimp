@@ -44,6 +44,7 @@ const {
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   listAuthorizedBalaWorkspaceImages,
+  listAuthorizedBalaWorkspaceVideos,
   readAuthorizedBalaWorkspaceManifest,
   writeAuthorizedBalaWorkspaceManifest,
 } = require('./balaWorkspaceFiles')
@@ -3414,6 +3415,10 @@ secureHandle('read-bala-workspace-image-thumbnail', async (_, workspaceRoot, fil
 
 secureHandle('list-bala-workspace-images', async (_, workspaceRoot) => {
   return listAuthorizedBalaWorkspaceImages({ workspaceRoot })
+})
+
+secureHandle('list-bala-workspace-videos', async (_, workspaceRoot) => {
+  return listAuthorizedBalaWorkspaceVideos({ workspaceRoot })
 })
 
 secureHandle('get-local-media-url', async (_, filePath) => {

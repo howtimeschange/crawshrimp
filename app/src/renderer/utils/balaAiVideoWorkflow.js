@@ -42,6 +42,41 @@ export function isBalaVideoFilePath(path = '') {
   return /\.(?:mp4|m4v|mov|webm)(?:$|[?#])/i.test(balaPreviewValue(path))
 }
 
+function fileUrlToLocalPath(value = '') {
+  const text = balaPreviewValue(value)
+  if (!/^file:/i.test(text)) return ''
+  try {
+    const parsed = new URL(text)
+    return decodeURIComponent(parsed.pathname || '')
+  } catch {
+    return ''
+  }
+}
+
+export function normalizeBalaVideoLocalPath(result = {}) {
+  const candidates = Array.isArray(result)
+    ? result
+    : [
+        result?.path,
+        result?.local_video_path,
+        result?.localVideoPath,
+        result?.local_path,
+        result?.localPath,
+        result?.video_path,
+        result?.videoPath,
+        result?.本地视频文件,
+        result?.本地文件,
+      ]
+  return candidates
+    .map((value) => {
+      const text = balaPreviewValue(value)
+      if (!text || /^(https?:|data:|blob:)/i.test(text)) return ''
+      const localPath = /^file:/i.test(text) ? fileUrlToLocalPath(text) : text
+      return isBalaVideoFilePath(localPath) ? localPath : ''
+    })
+    .find(Boolean) || ''
+}
+
 function balaLocalFileUrl(path = '') {
   const value = balaPreviewValue(path)
   if (!value || !isBalaVideoFilePath(value)) return ''
@@ -89,7 +124,7 @@ export function balaMaterialPanelControl(expanded) {
 export function resolveBalaVideoPlaybackSource(result = {}, { resolveRemote = value => value } = {}) {
   const remote = balaPreviewValue(resolveRemote(result.videoUrl || result.video_url))
   if (remote) return remote
-  return balaLocalFileUrl(result.path || result.local_video_path)
+  return balaLocalFileUrl(normalizeBalaVideoLocalPath(result))
 }
 
 export function migrateBalaBusinessManagerText(value = '') {
@@ -1072,11 +1107,8 @@ export function isBalaVideoTaskSubmitEligible(task = {}, result = {}) {
     .map(value => String(value || '').trim().toLowerCase())
     .filter(Boolean)
     .join(' ')
-  const localVideoPath = [result?.path, result?.local_video_path]
-    .map(value => String(value || '').trim())
-    .find(value => value && isBalaVideoFilePath(value))
   const hasGeneratedOutput = Boolean(
-    localVideoPath || String(result?.videoUrl || result?.video_url || '').trim(),
+    normalizeBalaVideoLocalPath(result) || String(result?.videoUrl || result?.video_url || '').trim(),
   )
   if (hasGeneratedOutput || /已下载|已生成|生成完成|已完成|downloaded|completed|succeeded/.test(status)) {
     return false
@@ -1778,7 +1810,7 @@ export function collectVideoResultRows(payload = {}) {
 export function normalizeBalaVideoResultRows(rows = [], fallbackTask = {}) {
   return (rows || []).map((row, index) => {
     const result = compact(row?.执行结果 || row?.result || row?.状态 || row?.status)
-    const localPath = compact(row?.本地视频文件 || row?.本地文件 || row?.local_video_path || row?.localVideoPath)
+    const localPath = normalizeBalaVideoLocalPath(row)
     const videoUrl = compact(
       row?.视频URL || row?.视频链接 || row?.video_url || row?.videoUrl || row?.url || row?.download_url || row?.downloadUrl,
     )
@@ -1802,7 +1834,7 @@ export function normalizeBalaVideoResultRows(rows = [], fallbackTask = {}) {
 }
 
 function balaVideoResultHasOutput(result = {}) {
-  return Boolean(compact(result?.path || result?.videoUrl || result?.video_url))
+  return Boolean(normalizeBalaVideoLocalPath(result) || compact(result?.videoUrl || result?.video_url))
 }
 
 function balaVideoResultSettlesTask(result = {}) {
@@ -1846,6 +1878,204 @@ export function mergeBalaVideoResults(existingResults = [], incomingResults = []
     else merged.unshift(item)
   }
   return merged
+}
+
+function workspaceVideoFilePath(file = {}) {
+  return normalizeBalaVideoLocalPath(file)
+}
+
+function workspaceVideoFileName(file = {}) {
+  return compact(file?.name || file?.filename || filenameFromPath(workspaceVideoFilePath(file)))
+}
+
+function workspaceVideoFileSearchText(file = {}) {
+  return [
+    workspaceVideoFilePath(file),
+    workspaceVideoFileName(file),
+    file?.relativePath,
+  ].map(value => compact(value).replace(/\\/g, '/').toLowerCase()).filter(Boolean).join(' ')
+}
+
+function workspaceVideoStyleCode(file = {}) {
+  const explicit = compact(file?.styleCode || file?.style_code)
+  if (explicit) return explicit
+  const match = workspaceVideoFileSearchText(file).match(/(?:^|[^0-9])(\d{12})(?!\d)/)
+  return match ? match[1] : ''
+}
+
+function normalizedWorkspaceVideoFile(file = {}) {
+  const filePath = workspaceVideoFilePath(file)
+  if (!filePath) return null
+  const name = workspaceVideoFileName(file)
+  return {
+    ...file,
+    path: filePath,
+    name,
+    filename: name,
+    styleCode: workspaceVideoStyleCode(file),
+    searchText: workspaceVideoFileSearchText(file),
+    mtimeMs: Number(file?.mtimeMs || 0),
+  }
+}
+
+function videoIdentityTokens(task = {}, result = {}) {
+  const source = [
+    task?.providerTaskId,
+    task?.runId,
+    task?.queuedRequestId,
+    result?.providerTaskId,
+    result?.taskId,
+    result?.queuedRequestId,
+    result?.raw?.提交任务ID,
+    result?.raw?.视频任务ID,
+    result?.raw?.任务ID,
+  ]
+  const tokens = []
+  for (const value of source) {
+    const token = compact(value)
+    if (token.length >= 6 && !tokens.includes(token)) tokens.push(token)
+  }
+  return tokens
+}
+
+function workspaceVideoMatchesStyle(file = {}, task = {}, result = {}) {
+  const styleCode = compact(task?.styleCode || result?.styleCode)
+  if (!styleCode) return true
+  return workspaceVideoStyleCode(file) === styleCode || workspaceVideoFileSearchText(file).includes(styleCode.toLowerCase())
+}
+
+function findWorkspaceVideoForTask({ task = {}, result = {}, files = [] } = {}) {
+  const candidates = (files || [])
+    .map(normalizedWorkspaceVideoFile)
+    .filter(Boolean)
+    .filter(file => workspaceVideoMatchesStyle(file, task, result))
+    .sort((left, right) => Number(right.mtimeMs || 0) - Number(left.mtimeMs || 0))
+  if (!candidates.length) return null
+
+  const tokens = videoIdentityTokens(task, result).map(token => token.toLowerCase())
+  if (tokens.length) {
+    const exact = candidates.find(file => tokens.some(token => file.searchText.includes(token)))
+    if (exact) return exact
+  }
+
+  return candidates.length === 1 ? candidates[0] : null
+}
+
+function workspaceVideoCanRestoreAsLocalResult(file = {}) {
+  if (!workspaceVideoStyleCode(file)) return false
+  return !/(^|\/)(模板预览|template[-_ ]?previews?)(\/|$)/i.test(workspaceVideoFileSearchText(file))
+}
+
+function workspaceVideoLocalResultId(file = {}) {
+  const filePath = workspaceVideoFilePath(file)
+  return `local-video:${filePath || workspaceVideoFileName(file)}`
+}
+
+function resultForTask(results = [], task = {}) {
+  const taskId = compact(task?.id)
+  if (!taskId) return null
+  return (results || []).find(item => {
+    const resultId = compact(item?.id)
+    return compact(item?.taskRefId) === taskId || resultId === taskId || resultId.startsWith(`${taskId}-`)
+  }) || null
+}
+
+function videoTaskResultLabel(task = {}) {
+  const template = task?.template
+  if (template && typeof template === 'object') return compact(template.title || template.id) || '不选模板'
+  return compact(template || task?.templateTitle || task?.templateName) || '不选模板'
+}
+
+export function restoreBalaVideoResultsFromWorkspaceFiles({ tasks = [], results = [], files = [] } = {}) {
+  const normalizedFiles = (files || []).map(normalizedWorkspaceVideoFile).filter(Boolean)
+  if (!normalizedFiles.length) return []
+
+  const restored = []
+  const restoredResultIds = new Set()
+  const usedFilePaths = new Set()
+  const restoreWithFile = (result, file) => {
+    restored.push(result)
+    restoredResultIds.add(compact(result?.id))
+    if (file?.path) usedFilePaths.add(file.path)
+  }
+  for (const task of tasks || []) {
+    const taskId = compact(task?.id)
+    if (!taskId) continue
+    const current = resultForTask(results, task) || {}
+    if (normalizeBalaVideoLocalPath(current)) continue
+    const file = findWorkspaceVideoForTask({
+      task,
+      result: current,
+      files: normalizedFiles.filter(item => !usedFilePaths.has(item.path)),
+    })
+    if (!file) continue
+    const providerKey = normalizeBalaVideoTaskProvider(current.providerKey || task?.provider)
+    const providerTaskId = compact(current.providerTaskId || task?.providerTaskId || task?.runId)
+    const next = {
+      ...current,
+      id: compact(current.id) || taskId,
+      taskRefId: compact(current.taskRefId) || taskId,
+      styleCode: compact(current.styleCode || task?.styleCode || file.styleCode),
+      template: compact(current.template) || videoTaskResultLabel(task),
+      provider: compact(current.provider || task?.providerLabel || task?.provider),
+      providerKey,
+      providerTaskId,
+      taskId: compact(current.taskId || providerTaskId || task?.queuedRequestId),
+      queuedRequestId: compact(current.queuedRequestId || task?.queuedRequestId),
+      providerStatus: compact(current.providerStatus),
+      status: '已完成',
+      progress: 100,
+      progressSource: compact(current.progressSource || 'local-workspace'),
+      path: file.path,
+      videoUrl: compact(current.videoUrl || current.video_url),
+      error: '',
+    }
+    restoreWithFile(next, file)
+  }
+
+  for (const current of results || []) {
+    const id = compact(current?.id)
+    if (!id || restoredResultIds.has(id) || normalizeBalaVideoLocalPath(current)) continue
+    const file = findWorkspaceVideoForTask({
+      result: current,
+      files: normalizedFiles.filter(item => !usedFilePaths.has(item.path)),
+    })
+    if (!file) continue
+    restoreWithFile({
+      ...current,
+      styleCode: compact(current.styleCode || file.styleCode),
+      status: '已完成',
+      progress: 100,
+      progressSource: compact(current.progressSource || 'local-workspace'),
+      path: file.path,
+      error: '',
+    }, file)
+  }
+
+  for (const file of normalizedFiles) {
+    if (!workspaceVideoCanRestoreAsLocalResult(file) || usedFilePaths.has(file.path)) continue
+    if ((results || []).some(item => normalizeBalaVideoLocalPath(item) === file.path)) continue
+    restoreWithFile({
+      id: workspaceVideoLocalResultId(file),
+      taskRefId: '',
+      styleCode: workspaceVideoStyleCode(file),
+      template: '本地恢复',
+      provider: '本地视频',
+      providerKey: 'local-workspace',
+      providerTaskId: '',
+      taskId: workspaceVideoFileName(file),
+      queuedRequestId: '',
+      providerStatus: 'local-workspace',
+      status: '已完成',
+      progress: 100,
+      progressSource: 'local-workspace',
+      path: file.path,
+      videoUrl: '',
+      error: '',
+    }, file)
+  }
+
+  return restored
 }
 
 export function qnVideoResultFailure(rows = []) {
