@@ -2485,6 +2485,7 @@ const videoStageState = reactive({
   progress: 0,
 })
 const videoTaskBusyIds = reactive(new Set())
+const videoProviderArchiveBusyIds = new Set()
 const pendingVideoHistoryCleanup = ref(null)
 const videoHistoryCleanupBusy = ref(false)
 const videoHistoryCleanupError = ref('')
@@ -7254,7 +7255,7 @@ function videoResultStage(item = {}) {
     return { id: 'failed', label: '失败', message: '任务失败。请检查错误信息后可直接重跑，或返回生视频修改并重新预检。' }
   }
   if (localVideoPathFor(item)) {
-    return { id: 'downloaded', label: '已下载', message: '视频已下载到本地，可直接预览或打开文件。' }
+    return { id: 'downloaded', label: '已下载', message: '视频已下载到工作区，可直接预览或打开文件。' }
   }
   if (/待授权|预检完成/.test(status)) {
     return { id: 'authorization', label: '待授权', message: '预检已完成，返回生视频后明确授权才会创建外部视频任务。' }
@@ -7347,7 +7348,7 @@ function workflowRunProgress(snapshot = {}) {
 
 function isProviderTaskSucceeded(provider, status) {
   const normalized = String(status || '').trim().toLowerCase()
-  return provider === 'happyhorse' ? normalized === 'succeeded' : normalized === 'succeeded'
+  return ['succeeded', 'completed'].includes(normalized)
 }
 
 function providerTaskDisplayStatus(provider, status, localPath = '') {
@@ -7407,6 +7408,28 @@ async function refreshProviderVideoResult(item, { download = false } = {}) {
   }
   upsertVideoResults([next])
   return { result, item: next }
+}
+
+async function refreshProviderVideoResultAndArchive(item) {
+  const refreshed = await refreshProviderVideoResult(item)
+  const provider = String(refreshed.item?.providerKey || item?.providerKey || '').trim()
+  if (!isProviderTaskSucceeded(provider, refreshed.result?.status)) return refreshed
+  if (normalizeBalaVideoLocalPath(refreshed.item)) return refreshed
+
+  const archiveKey = String(
+    refreshed.item?.taskRefId
+      || refreshed.item?.providerTaskId
+      || refreshed.item?.id
+      || '',
+  ).trim()
+  if (!archiveKey || videoProviderArchiveBusyIds.has(archiveKey)) return refreshed
+
+  videoProviderArchiveBusyIds.add(archiveKey)
+  try {
+    return await refreshProviderVideoResult(refreshed.item, { download: true })
+  } finally {
+    videoProviderArchiveBusyIds.delete(archiveKey)
+  }
 }
 
 async function restoreQnVideoTaskFromRunHistory(task, preferredRunId = '') {
@@ -7569,8 +7592,10 @@ function resetVideoResultPoll() {
 
 function videoTaskNeedsResultPoll(task = {}) {
   if (!String(task?.providerTaskId || task?.runId || task?.queuedRequestId || '').trim()) return false
+  if (normalizeBalaVideoLocalPath(videoResultForTask(task))) return false
   if (task.provider === 'qn') return !['已完成', '失败'].includes(String(task.status || '').trim())
   const providerStatus = String(task?.providerStatus || '').trim().toLowerCase()
+  if (isProviderTaskSucceeded(task.provider, providerStatus)) return true
   return !['succeeded', 'failed', 'error', 'canceled', 'cancelled', 'unknown'].includes(providerStatus)
 }
 
@@ -7615,7 +7640,7 @@ async function refreshVideoResults({ silent = false } = {}) {
           providerKey: task.provider,
           providerTaskId: task.providerTaskId,
         }
-        await refreshProviderVideoResult(item)
+        await refreshProviderVideoResultAndArchive(item)
       }
     } catch (error) {
       errors.push(`${task.styleCode}: ${error?.message || String(error)}`)
@@ -9165,7 +9190,7 @@ async function refreshSingleVideoResult(item) {
   if (!task) return
   try {
     if (isApiVideoProvider(task.provider)) {
-      await refreshProviderVideoResult(item)
+      await refreshProviderVideoResultAndArchive(item)
     } else {
       await refreshQnVideoTask(task)
     }

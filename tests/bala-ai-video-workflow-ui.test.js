@@ -1368,6 +1368,26 @@ test('submitted video tasks automatically poll until their provider result becom
   assert.match(source, /onBeforeUnmount\(\(\) => \{[\s\S]*?resetVideoResultPoll\(\)/)
 })
 
+test('terminal provider video results auto-archive into the workspace', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const archiveStart = source.indexOf('async function refreshProviderVideoResultAndArchive')
+  const archiveEnd = source.indexOf('async function restoreQnVideoTaskFromRunHistory', archiveStart)
+  const archiveSource = source.slice(archiveStart, archiveEnd)
+  const refreshStart = source.indexOf('async function refreshVideoResults')
+  const refreshEnd = source.indexOf('async function downloadCompletedVideoResults', refreshStart)
+  const refreshSource = source.slice(refreshStart, refreshEnd)
+  const pollStart = source.indexOf('function videoTaskNeedsResultPoll')
+  const pollEnd = source.indexOf('function scheduleVideoResultPoll', pollStart)
+  const pollSource = source.slice(pollStart, pollEnd)
+
+  assert.match(source, /const videoProviderArchiveBusyIds = new Set\(\)/)
+  assert.match(archiveSource, /await refreshProviderVideoResult\(refreshed\.item, \{ download: true \}\)/)
+  assert.match(archiveSource, /normalizeBalaVideoLocalPath\(refreshed\.item\)/)
+  assert.match(refreshSource, /await refreshProviderVideoResultAndArchive\(item\)/)
+  assert.match(pollSource, /normalizeBalaVideoLocalPath\(videoResultForTask\(task\)\)/)
+  assert.match(pollSource, /isProviderTaskSucceeded\(task\.provider, providerStatus\)/)
+})
+
 test('video results support safe history cleanup in a 9:16 feed layout', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const templateSource = source.split('<script setup>')[0]
