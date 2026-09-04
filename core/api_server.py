@@ -8719,7 +8719,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 aggregated_data.extend(item_rows)
             data = aggregated_data
         else:
-            data = await runner.run_script_file(script_path, params=run_params, control_hook=wait_for_control)
+            data = await runner.run_script_file(
+                script_path,
+                params=run_params,
+                control_hook=wait_for_control,
+                # PLM 尺码表下载仅查询页面内的 RequestHandler；若 Chrome
+                # CDP 短暂断连，安全重放尚未返回结果的当前款号阶段。
+                retry_transient_cdp_errors=(adapter_id, task_id) == ("plm-ops-assistant", "size_chart_downloader"),
+            )
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
         if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':

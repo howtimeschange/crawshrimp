@@ -1255,6 +1255,139 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runner.ws_url, "ws://keep-current")
         self.assertEqual(runner.tab_id, "tab-1")
 
+    async def test_evaluate_with_reconnect_retries_unclean_cdp_close_when_explicitly_enabled(self):
+        class TransientCloseRunner(JSRunner):
+            def __init__(self):
+                super().__init__("ws://example.invalid")
+                self.calls = 0
+                self.refreshes = 0
+
+            async def evaluate(self, expression: str, user_gesture: bool = False) -> JSResult:
+                self.calls += 1
+                if self.calls == 1:
+                    return JSResult(success=False, error="no close frame received or sent")
+                return JSResult(success=True, data=[{"retried": True}], meta={"has_more": False})
+
+            async def _refresh_ws_url(self) -> None:
+                self.refreshes += 1
+
+        runner = TransientCloseRunner()
+        runner._retry_transient_cdp_errors = True
+
+        async def fake_sleep(_seconds):
+            return None
+
+        with patch("asyncio.sleep", new=fake_sleep):
+            result = await runner.evaluate_with_reconnect("read-only PLM query", allow_navigation_retry=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.data, [{"retried": True}])
+        self.assertEqual(runner.calls, 2)
+        self.assertEqual(runner.refreshes, 1)
+
+    async def test_evaluate_with_reconnect_does_not_retry_unclean_cdp_close_by_default(self):
+        class TransientCloseRunner(JSRunner):
+            def __init__(self):
+                super().__init__("ws://example.invalid")
+                self.calls = 0
+                self.refreshes = 0
+
+            async def evaluate(self, expression: str, user_gesture: bool = False) -> JSResult:
+                self.calls += 1
+                return JSResult(success=False, error="no close frame received or sent")
+
+            async def _refresh_ws_url(self) -> None:
+                self.refreshes += 1
+
+        runner = TransientCloseRunner()
+        result = await runner.evaluate_with_reconnect("write-capable task", allow_navigation_retry=True)
+
+        self.assertFalse(result.success)
+        self.assertEqual(runner.calls, 1)
+        self.assertEqual(runner.refreshes, 0)
+
+    async def test_run_script_file_recovers_a_long_read_only_batch_after_unclean_cdp_close(self):
+        class LongReadOnlyBatchRunner(JSRunner):
+            def __init__(self):
+                super().__init__("ws://example.invalid")
+                self.phase_attempts = {}
+                self.refreshes = 0
+                self.retry_refreshes = 0
+                self.did_drop_connection = False
+
+            async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+                return None
+
+            async def _clear_run_params(self, run_token: str) -> None:
+                return None
+
+            async def _refresh_ws_url(self) -> None:
+                self.refreshes += 1
+                if self.did_drop_connection and self.phase_attempts.get(171) == 1:
+                    self.retry_refreshes += 1
+
+            async def evaluate(self, expression: str, user_gesture: bool = False) -> JSResult:
+                phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+                shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+                phase = json.loads(phase_raw) if phase_raw is not None else ""
+                shared = json.loads(shared_raw) if shared_raw is not None else {}
+
+                if phase == "main":
+                    return JSResult(
+                        success=True,
+                        data=[],
+                        meta={
+                            "action": "next_phase",
+                            "next_phase": "collect_style",
+                            "sleep_ms": 0,
+                            "shared": {"style_index": 1},
+                        },
+                    )
+
+                style_index = int(shared.get("style_index") or 0)
+                self.phase_attempts[style_index] = self.phase_attempts.get(style_index, 0) + 1
+                if style_index == 171 and not self.did_drop_connection:
+                    self.did_drop_connection = True
+                    return JSResult(success=False, error="no close frame received or sent")
+
+                rows = [
+                    {"款号": f"style-{style_index}", "测量点": row_index}
+                    for row_index in range(130)
+                ]
+                done = style_index == 178
+                return JSResult(
+                    success=True,
+                    data=rows,
+                    meta={
+                        "action": "complete" if done else "next_phase",
+                        "has_more": False,
+                        "next_phase": "collect_style",
+                        "sleep_ms": 0,
+                        "shared": {"style_index": style_index + 1},
+                    },
+                )
+
+        runner = LongReadOnlyBatchRunner()
+
+        async def fake_sleep(_seconds):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "read-only-plm.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            with patch("asyncio.sleep", new=fake_sleep):
+                data = await runner.run_script_file(
+                    script_path,
+                    params={},
+                    retry_transient_cdp_errors=True,
+                )
+
+        self.assertEqual(len(data), 178 * 130)
+        self.assertEqual(len({(row["款号"], row["测量点"]) for row in data}), 178 * 130)
+        self.assertEqual(runner.phase_attempts[171], 2)
+        self.assertEqual(runner.retry_refreshes, 1)
+        self.assertFalse(runner._retry_transient_cdp_errors)
+
     async def test_run_script_file_complete_has_more_honors_sleep_ms_before_next_page(self):
         runner = CompleteSleepRunner()
 

@@ -38,6 +38,12 @@ NAVIGATION_ERROR_MARKERS = (
     "Promise was collected",
     "Execution context was destroyed",
 )
+TRANSIENT_CDP_TRANSPORT_ERROR_MARKERS = (
+    "no close frame received or sent",
+    "no close frame received",
+    "connection closed",
+    "connection is closed",
+)
 WASH_CARE_FIELDS = ("washing", "bleaching", "drying", "ironing", "dryCleaning")
 WASH_CARE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 WASH_CARE_TEMU_SYMBOL_OPTIONS = {
@@ -423,6 +429,9 @@ class JSRunner:
         self.last_runtime_shared: dict = {}
         self.last_runtime_page: int = 0
         self.last_runtime_phase: str = ""
+        # Only read-only tasks opt in while they run.  Replaying a write after a
+        # dropped WebSocket could duplicate a business action.
+        self._retry_transient_cdp_errors = False
 
     def _next_id(self) -> int:
         self._msg_id += 1
@@ -3853,6 +3862,10 @@ class JSRunner:
     def _is_navigation_error(self, error: str) -> bool:
         return any(marker in (error or "") for marker in NAVIGATION_ERROR_MARKERS)
 
+    def _is_transient_cdp_transport_error(self, error: str) -> bool:
+        normalized = str(error or "").lower()
+        return any(marker in normalized for marker in TRANSIENT_CDP_TRANSPORT_ERROR_MARKERS)
+
     def _params_storage_key(self, run_token: str) -> str:
         return f"__CRAWSHRIMP_PARAMS__:{run_token}"
 
@@ -3967,10 +3980,18 @@ class JSRunner:
             return result
 
         retry = 0
-        while not result.success and self._is_navigation_error(result.error or "") and retry < 4:
+        while not result.success and retry < 4:
+            navigation_error = self._is_navigation_error(result.error or "")
+            transport_error = (
+                self._retry_transient_cdp_errors
+                and self._is_transient_cdp_transport_error(result.error or "")
+            )
+            if not navigation_error and not transport_error:
+                break
             retry += 1
             delay = min(0.8 * retry + 0.4, 3.0)
-            logger.info(f"导航/重载中，等待 {delay:.1f}s 后重试 (attempt {retry}/4)")
+            reason = "Chrome CDP 连接异常" if transport_error else "导航/重载中"
+            logger.info(f"{reason}，等待 {delay:.1f}s 后重试 (attempt {retry}/4)")
             await asyncio.sleep(delay)
             try:
                 await self._refresh_ws_url()
@@ -3980,9 +4001,18 @@ class JSRunner:
             result = await self.evaluate(expression)
         return result
 
-    async def run_script_file(self, script_path: Path, params: dict = None, control_hook=None) -> List[dict]:
+    async def run_script_file(
+        self,
+        script_path: Path,
+        params: dict = None,
+        control_hook=None,
+        retry_transient_cdp_errors: bool = False,
+    ) -> List[dict]:
         """执行脚本文件，支持自动分页 + 多阶段重入，返回合并后的所有 data 记录
         params: 用户填写的参数，注入为 window.__CRAWSHRIMP_PARAMS__
+
+        retry_transient_cdp_errors: 仅供幂等、只读脚本开启。Chrome 的 CDP
+        WebSocket 非正常断开且结果未返回时，会重新执行当前阶段。
         """
         script = script_path.read_text(encoding="utf-8")
         all_data: List[dict] = []
@@ -3993,8 +4023,14 @@ class JSRunner:
         self.last_runtime_shared = {}
         self.last_runtime_page = 0
         self.last_runtime_phase = ""
+        previous_retry_setting = self._retry_transient_cdp_errors
+        self._retry_transient_cdp_errors = bool(retry_transient_cdp_errors)
 
-        await self._persist_run_params(run_token, params_json)
+        try:
+            await self._persist_run_params(run_token, params_json)
+        except BaseException:
+            self._retry_transient_cdp_errors = previous_retry_setting
+            raise
 
         async def cooperate(kind: str, page: int, phase: str, shared: Optional[dict] = None, extra: Optional[dict] = None) -> None:
             self.last_runtime_page = int(page or 0)
@@ -4615,3 +4651,4 @@ class JSRunner:
         finally:
             await self._clear_run_params(run_token)
             self._page_file_cache_keys = set()
+            self._retry_transient_cdp_errors = previous_retry_setting
