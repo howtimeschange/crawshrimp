@@ -1,4 +1,5 @@
 import unittest
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -66,6 +67,28 @@ class OcrServiceTests(unittest.TestCase):
         self.assertEqual(status["package"], "tesseract.js")
         self.assertIn("available", status)
         self.assertIn("node_modules", status)
+
+    def test_tesseract_status_accepts_electron_asar_node_modules(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            asar_path = root / "app.asar"
+            asar_path.write_bytes(b"asar archive placeholder")
+            node_modules = asar_path / "node_modules"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "CRAWSHRIMP_NODE_EXECUTABLE": "/Applications/Crawshrimp.app/Contents/MacOS/Crawshrimp",
+                        "CRAWSHRIMP_NODE_MODULES_DIR": str(node_modules),
+                    },
+                    clear=False,
+                ),
+                patch.object(ocr_service, "_project_root", return_value=root / "python-scripts"),
+            ):
+                status = ocr_service.project_tesseract_status()
+
+        self.assertTrue(status["available"])
+        self.assertEqual(status["node_modules"], str(node_modules))
 
     def test_extract_shoe_label_fields_preserves_full_printed_color_name(self):
         with tempfile.TemporaryDirectory() as tmpdir:

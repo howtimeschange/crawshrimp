@@ -262,8 +262,10 @@
       || isShoePathValue(sourceConfig?.broadRelativePath || '')
   }
 
-  function isShoeCodePlan(sourceConfigs, items) {
-    if (Object.values(sourceConfigs || {}).some(isShoeSourceConfig)) return true
+  function isShoeCodePlan(_sourceConfigs, items) {
+    // sourceConfigs describes the whole search scope shared by the batch. It
+    // must not classify every code in that batch as shoes; only the matched
+    // assets for the current code can establish its category.
     return (Array.isArray(items) ? items : []).some(isShoeItem)
   }
 
@@ -1016,7 +1018,7 @@
     const modelItems = modelResult?.items || []
     const allLabelItems = [...stillItems, ...modelItems]
     if (isShoeCodePlan(sourceConfigs, allLabelItems)) {
-      const shoeItems = allLabelItems.filter(item => isShoeItem(item) || isShoeSourceConfig(sourceConfigs?.[item?.__source_type || '']))
+      const shoeItems = allLabelItems.filter(isShoeItem)
       const styleColorItems = selectShoeStyleColorItems(shoeItems, inputCode)
       const shoeLabelItems = selectShoeLabelItems(shoeItems, inputCode)
       const statsNote = [

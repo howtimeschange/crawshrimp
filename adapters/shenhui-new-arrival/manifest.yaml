@@ -1,8 +1,172 @@
+manifest_version: 2
 id: shenhui-new-arrival
 name: 深绘上新助手
 version: 0.3.0
 author: codex
 description: "从森马云盘按款合并模特图与静物图，按深绘上新 SOP 规整后导出待上传图包"
+
+compatibility:
+  crawshrimp: ">=2.5.2 <3.0.0"
+  electron: ">=43 <44"
+  os: [darwin, win32]
+  architectures: [arm64, x64]
+
+permissions:
+  - id: browser.read
+    reason: 读取当前已登录的森马云盘或深绘页面
+    approval: install
+    scopes: ["https://fmp.semirapp.com/*", "https://www.deepdraw.biz/*"]
+  - id: browser.download
+    reason: 从企业网盘下载图片、PDF 和标签素材
+    approval: run
+  - id: browser.upload
+    reason: 把用户确认的图包上传到深绘
+    approval: each_use
+  - id: filesystem.read
+    reason: 读取用户选择的 Excel、PDF、图片和目录
+    approval: run
+  - id: filesystem.write
+    reason: 写入整理后的图包、截图、ZIP 和验收表
+    approval: run
+  - id: ai.invoke
+    reason: 调用已配置的多模态模型进行标签、姿势和语义识别
+    approval: run
+  - id: external.write
+    reason: 在深绘创建或更新用户明确提交的图包
+    approval: each_use
+
+capabilities:
+  - id: browser.cdp
+    kind: browser
+    provider: crawshrimp
+    operations: [observe, evaluate, click, download, upload, readback]
+  - id: filesystem.local
+    kind: filesystem
+    provider: crawshrimp
+    operations: [read, write, list, zip]
+  - id: cloud_drive.semir
+    kind: cloud_drive
+    provider: semir-cloud-drive
+    operations: [search, list, download]
+  - id: pdf.processing
+    kind: pdf
+    provider: crawshrimp
+    operations: [render, crop, screenshot]
+  - id: ocr.host
+    kind: ocr
+    provider: tesseract
+    operations: [recognize, locate_text, verify]
+  - id: ai.multimodal
+    kind: ai
+    provider: crawshrimp-llm-gateway
+    operations: [classify, extract, consensus, validate]
+    models: [gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna]
+  - id: approval.review
+    kind: approval
+    provider: crawshrimp
+    operations: [precheck, confirm_upload, audit]
+  - id: data.excel
+    kind: data
+    provider: crawshrimp
+    operations: [read, validate, export]
+  - id: external.deepdraw
+    kind: external_system
+    provider: deepdraw
+    operations: [upload, readback]
+
+backend_handlers:
+  - id: package.finalize
+    runtime: platform
+    entrypoint: core.api_server:_finalize_shenhui_new_arrival_outputs
+    description: 整理下载文件、处理 PDF/标签并生成最终产物引用
+  - id: apparel_label.process
+    runtime: platform
+    entrypoint: core.shenhui_apparel_label_processing:process_prepare_upload_package_labels
+    description: 多模型识别服饰吊牌/洗唛并以本地 OCR 复核裁图
+  - id: shoe_package.prepare
+    runtime: platform
+    entrypoint: core.shenhui_shoe_packaging:prepare_shoe_packages
+    description: 按鞋品规则、多模型共识和标签 OCR 生成深绘图包
+  - id: pdf_screenshot.finalize
+    runtime: platform
+    entrypoint: core.shenhui_pdf_screenshot:finalize_pdf_batch_screenshot_outputs
+    description: 渲染 PDF、应用裁切模板并导出截图与结果表
+
+contracts:
+  inputs:
+    - id: business_scope
+      type: string
+      source: task_param
+      description: 款号、款色或用户明确选择的处理范围
+    - id: source_assets
+      type: file
+      source: task_param_or_cloud_drive
+      description: 本地或森马云盘中的图片、PDF、Excel 与目录
+    - id: execution_confirmation
+      type: boolean
+      required: false
+      source: task_param
+      description: 上传或外部写入前的用户确认
+  outputs:
+    - id: delivery_package
+      type: archive
+      description: 按深绘目录和命名规则整理的图包或 ZIP
+    - id: acceptance_report
+      type: table
+      description: 包含来源、处理动作、模型/OCR 证据、状态和备注的结果表
+      schema:
+        required_columns: [输入款号, 下载结果, 本地文件, 备注]
+    - id: external_readback
+      type: status
+      required: false
+      description: 深绘上传后的目标系统读回状态
+
+checkpoints:
+  - id: assets.downloaded
+    description: 云盘素材已下载且保存来源路径和本地文件
+    persisted_fields: [云盘路径, 本地文件, 下载结果]
+    resume_from: material_processing
+    invalidated_by: [source_path_changed, local_file_missing]
+  - id: package.prepared
+    description: 单款图包已完成规则处理并生成验收记录
+    persisted_fields: [输入款号, 规则槽位, 处理动作, 本地文件, 备注]
+    resume_from: package_validation
+    invalidated_by: [rule_version_changed, source_hash_changed]
+  - id: upload.readback
+    description: 深绘已返回可核验的上传结果
+    persisted_fields: [输入款号, 上传状态, 目标记录, 读回证据]
+    resume_from: delivery_verification
+    invalidated_by: [target_record_missing]
+
+external_systems:
+  - id: semir.cloud_drive
+    name: 森马云盘
+    kind: cloud_drive
+    base_urls: [https://fmp.semirapp.com]
+    auth: browser_session
+    supported_versions: [web-current@2026-09]
+  - id: deepdraw.web
+    name: 深绘
+    kind: website
+    required: false
+    base_urls: [https://www.deepdraw.biz]
+    auth: browser_session
+    supported_versions: [web-current@2026-09]
+
+sensitive_config:
+  - id: ai.llm_provider_credentials
+    label: 多模态模型 Provider 凭证
+    source: settings
+    required: false
+    secret: true
+    description: 只引用抓虾 AI 能力配置，不在 Manifest 保存密钥值
+
+acceptance:
+  entrypoint: tests/manifest_acceptance.py
+  command: [python, tests/manifest_acceptance.py]
+  required_checks: [manifest_v2_contract, declared_entrypoints_exist, sensitive_config_has_no_inline_value]
+  fixtures: []
+
 entry_url: https://fmp.semirapp.com/web/index#/home/file
 
 auth:
@@ -14,6 +178,12 @@ tasks:
     name: 批量下载吊牌/洗唛/平铺图
     description: 按款号从森马云盘默认平拍/模拍路径定位素材，服饰优先下载 yq1/yq2 吊牌洗唛和平铺图；鞋品路径仅保留款色图，并对无语义图名的鞋盒标签候选做 OCR 识别后保留鞋盒标签图/电子吊牌图，按款号整理到本地目录
     script: batch-label-tile-download.js
+    requires:
+      permissions: [browser.read, browser.download, filesystem.write, ai.invoke]
+      capabilities: [browser.cdp, filesystem.local, cloud_drive.semir, pdf.processing, ocr.host, ai.multimodal, data.excel]
+      backend_handlers: [package.finalize]
+      external_systems: [semir.cloud_drive]
+      sensitive_config: [ai.llm_provider_credentials]
     skip_auth: false
     params:
       - id: mode
@@ -100,6 +270,12 @@ tasks:
     name: 【服饰】整理深绘上新图包
     description: 按款号从森马云盘两条路径定位匹配文件夹，下载文件夹内模特图和静物图，过滤 SOP 中不可用素材并打包为深绘待上传图包
     script: prepare-upload-package.js
+    requires:
+      permissions: [browser.read, browser.download, filesystem.write, ai.invoke]
+      capabilities: [browser.cdp, filesystem.local, cloud_drive.semir, pdf.processing, ocr.host, ai.multimodal, data.excel]
+      backend_handlers: [package.finalize, apparel_label.process]
+      external_systems: [semir.cloud_drive]
+      sensitive_config: [ai.llm_provider_credentials]
     skip_auth: false
     params:
       - id: mode
@@ -252,6 +428,12 @@ tasks:
     name: 【鞋品】整理深绘上新图包
     description: 按鞋品品类与颜色选取天猫、唯品会、颜色图、海报、实物展示、细节和功能图，保留网盘全部原图并生成保持原尺寸的 jdt、wpt30、tmt 及 tmq 渠道素材
     script: prepare-shoe-upload-package.js
+    requires:
+      permissions: [browser.read, browser.download, filesystem.read, filesystem.write, ai.invoke]
+      capabilities: [browser.cdp, filesystem.local, cloud_drive.semir, pdf.processing, ocr.host, ai.multimodal, data.excel]
+      backend_handlers: [package.finalize, shoe_package.prepare]
+      external_systems: [semir.cloud_drive]
+      sensitive_config: [ai.llm_provider_credentials]
     skip_auth: false
     params:
       - id: mode
@@ -439,6 +621,10 @@ tasks:
     name: 上传深绘图片包
     description: 在深绘“产品素材 / 图片包上传”页按款号搜索产品，选择匹配行并批量上传款号命名的 ZIP 图片包；执行模式为真实上传时会直接提交
     script: upload-to-deepdraw.js
+    requires:
+      permissions: [browser.read, browser.upload, filesystem.read, external.write]
+      capabilities: [browser.cdp, filesystem.local, approval.review, external.deepdraw, data.excel]
+      external_systems: [deepdraw.web]
     entry_url: https://www.deepdraw.biz/authorized/merchant/index
     tab_match_prefixes:
       - https://www.deepdraw.biz/authorized/merchant/index
@@ -496,6 +682,10 @@ tasks:
     name: PDF 批量截图
     description: 批量选择本地 PDF 吊牌/水洗文件，截图并裁切为深绘可用的 yq 图片包
     script: pdf-batch-screenshot.js
+    requires:
+      permissions: [filesystem.read, filesystem.write]
+      capabilities: [filesystem.local, pdf.processing, data.excel]
+      backend_handlers: [package.finalize, pdf_screenshot.finalize]
     entry_url: about:blank
     skip_auth: true
     params:

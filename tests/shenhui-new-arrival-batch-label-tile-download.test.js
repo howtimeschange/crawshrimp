@@ -402,3 +402,38 @@ test('selectShoeLabelItems respects requested shoe color for OCR candidates', as
   assert.deepEqual(Array.from(selected, item => item.filename), ['GUDO7015.jpg', 'GUDO7016.jpg'])
   assert.equal(selected.every(item => item.__shoe_color_code === '00322'), true)
 })
+
+test('isShoeCodePlan classifies each code from matched item paths instead of global source scope', async () => {
+  const helpers = await loadExports()
+  const apparelItems = [
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: '202426107128-20047.jpg',
+      fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/平拍原图/全域/7p/中童-已写/202426107128-已写/202426107128-20047.jpg',
+    },
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: 'yq1.jpg',
+      fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/平拍原图/全域/7p/中童-已写/202426107128-已写/yq1.jpg',
+    },
+  ]
+  const shoeItems = [
+    {
+      dir: '0',
+      ext: 'jpg',
+      filename: '204426140121-00414.jpg',
+      fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/平拍原图/全域/7p/鞋品/204426140121-已写/00414/36/204426140121-00414.jpg',
+    },
+  ]
+  const shoeScopedSourceConfigs = {
+    still: {
+      relativePath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/平拍原图/全域/7p/鞋品',
+      broadRelativePath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉冬/平拍原图/全域/7p/鞋品',
+    },
+  }
+
+  assert.equal(helpers.isShoeCodePlan(shoeScopedSourceConfigs, apparelItems), false)
+  assert.equal(helpers.isShoeCodePlan({}, shoeItems), true)
+})

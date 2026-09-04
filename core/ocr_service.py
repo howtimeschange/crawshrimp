@@ -394,6 +394,28 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _is_inside_asar_archive(path: Path) -> bool:
+    """Treat paths below Electron's app.asar as directories for Node use.
+
+    Electron exposes files inside an asar archive to Node's module loader, but
+    Python's filesystem APIs only see the archive itself.  The packaged
+    desktop app intentionally points OCR at ``app.asar/node_modules``.
+    """
+
+    parts = path.expanduser().parts
+    for index, part in enumerate(parts[:-1]):
+        if not part.lower().endswith(".asar"):
+            continue
+        archive = Path(*parts[: index + 1])
+        if archive.is_file():
+            return True
+    return False
+
+
+def _is_directory_candidate(path: Path) -> bool:
+    return path.is_dir() or _is_inside_asar_archive(path)
+
+
 def _candidate_node_modules_dirs() -> list[Path]:
     candidates: list[Path] = []
     for raw in (
@@ -406,11 +428,18 @@ def _candidate_node_modules_dirs() -> list[Path]:
             if part:
                 candidates.append(Path(part).expanduser())
     candidates.append(_project_root() / "app" / "node_modules")
-    return [path for path in candidates if path.is_dir()]
+    return [path for path in candidates if _is_directory_candidate(path)]
 
 
 def project_tesseract_status() -> dict[str, Any]:
-    node_modules = next((path for path in _candidate_node_modules_dirs() if (path / "tesseract.js").is_dir()), None)
+    node_modules = next(
+        (
+            path
+            for path in _candidate_node_modules_dirs()
+            if _is_directory_candidate(path / "tesseract.js")
+        ),
+        None,
+    )
     node_executable = _node_executable()
     return {
         "available": bool(node_modules and node_executable),
