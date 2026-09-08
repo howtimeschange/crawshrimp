@@ -84,6 +84,7 @@
         "label": { "type": "string" },
         "placeholder": { "type": "string" },
         "hint": { "type": "string" },
+        "add_label": { "type": "string", "description": "line_list 新增按钮文案" },
         "quick_fill_options": { "$ref": "#/definitions/stringArray" },
         "rows": { "type": "integer", "minimum": 1 },
         "ui_span": { "enum": ["compact", "full", "half", "third"] },
@@ -99,6 +100,12 @@
         "options": {
           "type": "array",
           "items": { "$ref": "#/definitions/option" }
+        },
+        "default_model": { "type": "object", "description": "model_chain 主模型 select 配置" },
+        "fallback_models": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "model_chain 备选模型配置列表"
         },
         "include_file_listing": { "type": "boolean" },
         "visible_when": {

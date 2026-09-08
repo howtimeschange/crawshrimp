@@ -54,7 +54,7 @@
 - JS 如何注入（底座调用 `Runtime.evaluate`）
 - 数据如何存储（底座写 Excel / JSON / SQLite）
 - 通知如何发送（底座调用钉钉 / Feishu API）
-- 分页如何循环（底座检测 `meta.has_more`，自动翻页）
+- 分页如何循环调用（底座检测 `meta.has_more` 后再次执行脚本；点击下一页、导航或请求下一批数据由脚本负责）
 
 **你只需要关心：**
 - 目标页面上有什么 DOM 元素
@@ -118,6 +118,28 @@ tasks:
 })()
 ```
 
+### 本地 API 鉴权
+
+以下 curl 示例都使用 `CRAWSHRIMP_API_TOKEN`。在仓库根目录执行以下命令，读取已启动服务的 token；必须与服务使用相同的 `CRAWSHRIMP_DATA` / `CRAWSHRIMP_BACKEND_LOCK_DIR`，若服务显式指定了 token，则使用相同的环境变量。不要把真实 token 写进适配包或提交到仓库。
+
+```bash
+CRAWSHRIMP_API_TOKEN="$(PYTHONPATH=. venv/bin/python - <<'PYTOKEN'
+import os
+from pathlib import Path
+from core import runtime_paths
+token = os.environ.get('CRAWSHRIMP_API_TOKEN', '').strip()
+if not token:
+    lock_dir = os.environ.get('CRAWSHRIMP_BACKEND_LOCK_DIR', '').strip()
+    root = Path(lock_dir).expanduser() if lock_dir else runtime_paths.data_root()
+    token = (root / 'api-token').read_text().strip()
+print(token)
+PYTOKEN
+)"
+export CRAWSHRIMP_API_TOKEN
+```
+
+业务 API 默认需要 `X-Crawshrimp-Token`，缺失或不匹配会返回 401。健康检查、文档和部分资产/审核路由免 token，精确范围见 `core/api_server.py` 的 `_is_public_api_path()`。dev harness 会自动读取环境 token 或运行数据目录中的 `api-token`。
+
 ### 第四步：安装
 
 ```bash
@@ -127,7 +149,7 @@ tasks:
 # - 或选择 / 拖入打包好的 .zip 包
 
 # 方式二：API 安装
-curl -X POST http://127.0.0.1:18765/adapters/install \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/my-adapter"}'
 ```
@@ -135,7 +157,7 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 开发阶段如果想让“仓库里的改动立刻影响运行时”，可以使用目录 `link` 安装：
 
 ```bash
-curl -X POST http://127.0.0.1:18765/adapters/install \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/my-adapter", "install_mode": "link"}'
 ```
@@ -204,7 +226,7 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 
 ```bash
 # 1. 安装成 link，一次即可
-curl -X POST http://127.0.0.1:18765/adapters/install \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/repo/adapters/my-adapter", "install_mode": "link"}'
 
@@ -219,7 +241,7 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 如果你刻意保留 `copy` 模式来验证真实交付语义，再使用下面的重装校验：
 
 ```bash
-curl -X POST http://127.0.0.1:18765/adapters/install \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/repo/adapters/my-adapter"}'
 
@@ -283,6 +305,8 @@ Compress-Archive -Path .\my-adapter -DestinationPath .\my-adapter-v1.0.0.zip -Fo
 
 ## 3. manifest.yaml 完整参考
 
+运行时支持的字段以 `core/models.py` 和 `core/adapter_loader.py` 为准，Schema 用于编辑器提示和编写时校验。部分适配包包含 `manifest_version: 2`、`compatibility`、`permissions`、`capabilities` 等扩展声明，但当前加载模型会忽略这些字段。它们不会自动弹出审批、限制访问范围或阻止操作；任务仍按现有代码执行，确认与权限检查由具体任务实现。
+
 ```yaml
 # ── 适配包基本信息 ─────────────────────────────────
 id: my-adapter               # 必填。唯一 ID，小写字母+数字+连字符
@@ -329,6 +353,8 @@ tasks:
         required: false
         placeholder: "输入提示"
         hint: "提示文字"
+        # line_list 可使用 add_label 自定义新增按钮文案；
+        # model_chain 可使用 default_model 对象与 fallback_models 对象数组配置模型选择。
         quick_fill_options: ["近7日", "近30日"]  # text/textarea 快捷填充值
         ui_span: full        # compact | half | third | full
         visible_when:        # 可选。按其他参数值控制显示
@@ -471,7 +497,7 @@ tasks:
     success: true,   // bool，必填
     data: [...],     // 对象数组，成功时必填
     meta: {
-      has_more: false  // bool，必填（true 触发自动翻页）
+      has_more: false  // bool，可选，默认 false；true 让底座再次执行脚本，不会自动点击下一页
     }
   }
 })()
@@ -1856,7 +1882,7 @@ Authorization: APPCODE <AppCode>
 真实联调最小命令：
 
 ```bash
-curl -sS -x '' -X POST http://127.0.0.1:18765/data-sync/odps \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -sS -x '' -X POST http://127.0.0.1:18765/data-sync/odps \
   -H 'Content-Type: application/json' \
   -d '{
     "adapter_id": "temu",
@@ -2052,7 +2078,7 @@ window.__CRAWSHRIMP_PAGE__ = 1
 
 **Q：我刚改了仓库里的脚本，为什么运行的还是旧代码？**
 
-因为底座执行的是“已安装副本”，不是你的源码目录。
+先确认安装模式：`copy` 执行已安装副本，`link` 直接读取所链接的源码目录。以下重装步骤只适用于 `copy`；使用 `link` 时先确认链接指向预期 checkout，通常无需重新安装。
 
 安装逻辑会把适配包复制到运行时数据目录：
 
@@ -2069,7 +2095,7 @@ window.__CRAWSHRIMP_PAGE__ = 1
 示例：
 
 ```bash
-curl -X POST http://127.0.0.1:18765/adapters/install \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/Users/me/project/crawshrimp/adapters/temu"}'
 
@@ -2087,7 +2113,7 @@ diff -qr \
 如果你在用 AI agent / Codex 开发适配包，建议把这条写进自定义 Prompt：
 
 ```text
-修改 crawshrimp 适配包后，不要假设运行环境会直接读取仓库源码目录。底座执行的是已安装副本（运行时数据目录/adapters/<adapter_id>/，或 $CRAWSHRIMP_DATA/adapters/<adapter_id>/）。每次修改 adapter 后，必须重新调用 POST /adapters/install 安装当前目录，并用 diff/shasum 校验源码目录与执行副本一致，再进行任务运行或问题排查。
+修改 crawshrimp 适配包后，先确认运行时安装模式与源码路径。copy 模式需要重新调用 POST /adapters/install，并用 diff/shasum 校验执行副本；link 模式通常无需重装，但须确认链接指向预期 checkout/branch。完成路径和脚本核验后，再进行任务运行或问题排查。
 ```
 
 **Q：`entry_url` 应该填什么？**
@@ -2163,7 +2189,7 @@ manifest 示例：
 
 ## 13. 底座 HTTP API 参考
 
-底座 FastAPI 服务运行在 `http://127.0.0.1:18765`，适配开发阶段可直接调用调试。
+底座 FastAPI 服务默认运行在 `http://127.0.0.1:18765`，适配开发阶段可调用调试；先按[本地 API 鉴权](#本地-api-鉴权)设置 token。`/run` 返回表示已启动后台任务，完成情况需查询状态并验收产物。`/resume` 用于当前进程中暂停的任务，不保证重启后恢复。
 
 ### 任务管理
 
@@ -2174,7 +2200,7 @@ manifest 示例：
 | `DELETE` | `/adapters/{adapter_id}` | 卸载适配包 |
 | `PATCH` | `/adapters/{adapter_id}/enable` | 启用/禁用适配包（`{"enabled": true}`） |
 | `GET` | `/tasks` | 列出所有任务 |
-| `POST` | `/tasks/{adapter_id}/{task_id}/run` | 运行任务（body 为 params JSON） |
+| `POST` | `/tasks/{adapter_id}/{task_id}/run` | 运行任务（body 为 `{"params": {...}, "current_tab_id": "可选 tab id"}`） |
 | `POST` | `/tasks/{adapter_id}/{task_id}/pause` | 暂停运行中的任务 |
 | `POST` | `/tasks/{adapter_id}/{task_id}/resume` | 继续暂停中的任务 |
 | `POST` | `/tasks/{adapter_id}/{task_id}/stop` | 停止运行中的任务 |
@@ -2191,12 +2217,12 @@ manifest 示例：
 
 ```bash
 # 按目录安装
-curl -X POST http://127.0.0.1:18765/adapters/install \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/my-adapter"}'
 
 # 开发模式按 link 安装
-curl -X POST http://127.0.0.1:18765/adapters/install \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/my-adapter", "install_mode": "link"}'
 
@@ -2204,23 +2230,23 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 # body 里的 zip_base64 为 zip 文件内容的 base64 编码
 
 # 查看任务日志
-curl http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/logs
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/logs
 
 # 清空任务日志
-curl -X DELETE http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/logs
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X DELETE http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/logs
 
 # 运行任务（传 file_excel 参数）
-curl -X POST http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/run \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/run \
   -H 'Content-Type: application/json' \
   -d '{"params": {"input_file": {"path": "/Users/me/vouchers.xlsx"}}}'
 
 # current 模式运行时可传当前 Chrome tab id
-curl -X POST http://127.0.0.1:18765/tasks/my-adapter/task_id/run \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/tasks/my-adapter/task_id/run \
   -H 'Content-Type: application/json' \
   -d '{"params": {"mode": "current"}, "current_tab_id": "ABCDEF"}'
 
 # 动态参数探测
-curl -X POST http://127.0.0.1:18765/tasks/my-adapter/task_id/params/probe \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/tasks/my-adapter/task_id/params/probe \
   -H 'Content-Type: application/json' \
   -d '{"params": {"mode": "current"}, "current_tab_id": "ABCDEF"}'
 ```
@@ -2233,7 +2259,7 @@ curl -X POST http://127.0.0.1:18765/tasks/my-adapter/task_id/params/probe \
 | `POST` | `/files/delete` | 删除本地文件，并清理历史运行里的输出文件引用 |
 
 ```bash
-curl -X POST http://127.0.0.1:18765/files/read-excel \
+curl -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" -X POST http://127.0.0.1:18765/files/read-excel \
   -H 'Content-Type: application/json' \
   -d '{"path": "/Users/me/data.xlsx", "sheet": "Sheet1", "header_row": 1}'
 ```
