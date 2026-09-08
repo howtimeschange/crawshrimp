@@ -119,6 +119,8 @@ def register_adapter(manifest: AdapterManifest, run_callback: Callable) -> int:
     run_callback: async fn(adapter_id, task_id) -> None
     Returns number of jobs registered.
     """
+    # Reconcile the whole manifest, including tasks removed or made manual.
+    unregister_adapter(manifest.id)
     sched = get_scheduler()
     count = 0
     for task in manifest.tasks:

@@ -2300,11 +2300,40 @@ def stop_run(run_id: int, records_count: int, output_files: List[str], error: st
 def stop_orphaned_active_runs(error: str = "任务运行时后端已重启，已自动标记为停止") -> int:
     """Mark runs that cannot have an in-memory worker after backend startup as stopped."""
     with _get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        now = datetime.now().isoformat()
+        instances = conn.execute("""
+            SELECT ti.instance_uid, ti.summary_json, tr.id AS run_id,
+                   tr.records_count, tr.finished_at, tr.error
+            FROM task_instances ti JOIN task_runs tr ON tr.id = ti.last_run_id
+            WHERE ti.archived = 0
+              AND ti.status IN ('running', 'pausing', 'paused', 'stopping')
+              AND tr.status IN ('running', 'pausing', 'paused', 'stopping', 'stopped')
+        """).fetchall()
+        for instance in instances:
+            try:
+                summary = json.loads(instance["summary_json"] or "{}")
+            except (TypeError, ValueError):
+                summary = {}
+            if not isinstance(summary, dict):
+                summary = {}
+            summary.update({
+                "run_id": instance["run_id"],
+                "records": instance["records_count"],
+                "error": instance["error"] or error,
+                "interruption_reason": error,
+            })
+            finished_at = instance["finished_at"] or now
+            conn.execute("""
+                UPDATE task_instances
+                SET status='stopped', summary_json=?, completed_at=?, updated_at=?
+                WHERE instance_uid=? AND last_run_id=?
+            """, (_json_dumps(summary), finished_at, now, instance["instance_uid"], instance["run_id"]))
         cur = conn.execute("""
             UPDATE task_runs
             SET status='stopped', finished_at=?, last_seen_at=?, error=COALESCE(NULLIF(error, ''), ?)
             WHERE status IN ('running', 'pausing', 'paused', 'stopping')
-        """, (datetime.now().isoformat(), datetime.now().isoformat(), error))
+        """, (now, now, error))
         conn.commit()
         return int(cur.rowcount or 0)
 

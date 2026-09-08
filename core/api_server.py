@@ -54,6 +54,7 @@ from core.cloud_approval_url import (
 from core.cloud_batch_sync import sync_local_approval_batch
 from core.cloud_machine_agent import CloudMachineAgent
 from core import adapter_loader
+from core.url_matching import url_matches_prefix as _url_matches_prefix
 from core import ai_image_service
 from core import ai_video_generation_service
 from core import llm_gateway
@@ -1791,38 +1792,6 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
     return ctx
 
 
-def _url_matches_prefix(url: str, prefix: str) -> bool:
-    if not url or not prefix:
-        return False
-    if url.startswith(prefix):
-        return True
-
-    try:
-        url_p = urlparse(url)
-        prefix_p = urlparse(prefix)
-    except Exception:
-        return False
-
-    url_host = (url_p.hostname or '').lower()
-    prefix_host = (prefix_p.hostname or '').lower()
-    url_path = url_p.path or '/'
-    prefix_path = prefix_p.path or '/'
-
-    if not url_host or not prefix_host:
-        return False
-
-    if url_host == prefix_host:
-        return url_path.startswith(prefix_path)
-
-    # Temu seller 现在会按区域切到 agentseller-us.temu.com / agentseller-xx.temu.com
-    if prefix_host == 'agentseller.temu.com' and url_host.endswith('.temu.com') and url_host.startswith('agentseller'):
-        normalized_prefix = prefix_path if prefix_path.endswith('/') else prefix_path + '/'
-        normalized_url = url_path if url_path.endswith('/') else url_path + '/'
-        return normalized_url.startswith(normalized_prefix) or normalized_prefix == '//'
-
-    return False
-
-
 def _is_temu_agentseller_url(url: str) -> bool:
     try:
         parsed = urlparse(str(url or ""))
@@ -1921,12 +1890,16 @@ def _temu_opener_tab_sort_key(target_entry_url: str, tab_url: str) -> tuple[int,
 
 
 def _is_compatible_current_tab_for_task(adapter_id: str, task_id: str, target_entry_url: str, tab_url: str) -> bool:
-    if adapter_id != "temu":
+    if adapter_id != "temu" or not _url_matches_prefix(target_entry_url, target_entry_url):
         return False
+    origin = urlparse(target_entry_url)._replace(path="/", params="", query="", fragment="")
     if _is_temu_agentseller_url(target_entry_url):
-        return _is_temu_agentseller_url(tab_url)
+        # Permit other seller pages/regions, but keep scheme and port checks.
+        port = f":{origin.port}" if origin.port is not None else ""
+        origin = origin._replace(netloc=f"agentseller.temu.com{port}")
+        return _url_matches_prefix(tab_url, origin.geturl())
     if _is_temu_kuajingmaihuo_url(target_entry_url):
-        return _is_temu_kuajingmaihuo_url(tab_url)
+        return _url_matches_prefix(tab_url, origin.geturl())
     return False
 
 
@@ -12942,12 +12915,7 @@ async def _run_scheduled_task(adapter_id: str, task_id: str):
         logger.warning("Skip scheduled task %s because a run is already active", jid)
         return
 
-    lock = _task_lock(jid)
-    async with lock:
-        if _task_has_live_control(jid):
-            logger.warning("Skip scheduled task %s because a manual run is already active", jid)
-            return
-        await _execute_task(adapter_id, task_id, {}, {}, run_control=None)
+    await _run_scheduled_controlled_task(adapter_id, task_id, {})
 
 
 async def _run_task_schedule(schedule_uid: str):
@@ -12975,32 +12943,22 @@ async def _run_task_schedule(schedule_uid: str):
         )
         return
 
-    lock = _task_lock(jid)
-    async with lock:
-        if _task_has_live_control(jid):
-            logger.warning("Skip task schedule %s because a manual run is active", schedule_uid)
-            data_sink.update_task_instance(
-                schedule_run["instance_uid"],
-                status="failed",
-                summary={"error": "任务正在运行中，本次定时触发已跳过", "schedule_uid": schedule_uid},
-            )
-            data_sink.record_task_schedule_run(
-                schedule_uid,
-                instance_uid=schedule_run["instance_uid"],
-                status="skipped",
-                error="任务正在运行中，本次定时触发已跳过",
-            )
-            return
-        try:
-            await _execute_task(
-                adapter_id,
-                task_id,
-                dict(schedule_run.get("run_params") or {}),
-                {},
-                run_control=None,
-            )
-        except Exception as exc:
-            logger.exception("Task schedule %s failed: %s", schedule_uid, exc)
+    await _run_scheduled_controlled_task(
+        adapter_id, task_id, dict(schedule_run.get("run_params") or {}),
+    )
+
+
+async def _run_scheduled_controlled_task(adapter_id: str, task_id: str, params: dict):
+    # Launch synchronously reserves both task and instance controls before the
+    # first await. Waiting for the handle preserves APScheduler max_instances.
+    handle = _create_task_run_handle(adapter_id, task_id, params, {})
+    try:
+        await handle
+    except asyncio.CancelledError:
+        # A user's stop cancels the child, not the periodic scheduler itself.
+        # Scheduler shutdown still propagates cancellation to its caller.
+        if asyncio.current_task().cancelling():
+            raise
 
 
 async def _run_task_background(
@@ -13023,7 +12981,7 @@ async def _run_task_background(
     except Exception as exc:
         live = dict(_run_status.get(jid) or {})
         if live.get('status') in ACTIVE_LIVE_STATUSES or not live:
-            _run_status[jid] = {
+            _set_live_status(control_jids, {
                 'status': 'error',
                 'run_id': live.get('run_id'),
                 'adapter_id': adapter_id,
@@ -13036,7 +12994,9 @@ async def _run_task_background(
                 'phase': live.get('phase') or 'error',
                 'queued_request_id': queued_request_id or live.get('queued_request_id') or '',
                 'queued_enqueued_at': queued_enqueued_at or live.get('queued_enqueued_at') or '',
-            }
+            })
+            if instance_uid:
+                data_sink.update_task_instance(instance_uid, status="failed", summary={"error": str(exc)})
         _run_logs.setdefault(jid, []).append(f"[{adapter_id}/{task_id}] FATAL: {exc}")
         logger.exception("Background task crashed before cleanup: %s", jid)
     finally:
@@ -13048,7 +13008,7 @@ async def _run_task_background(
         _start_next_queued_task(_task_jid(adapter_id, task_id))
 
 
-def _launch_task_run_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict) -> dict:
+def _create_task_run_handle(adapter_id: str, task_id: str, params: dict, runtime_options: dict) -> asyncio.Task:
     run_params = dict(params or {})
     instance_uid = str(run_params.get("__task_instance_uid") or "").strip()
     control_jids = _run_jids(adapter_id, task_id, instance_uid)
@@ -13080,6 +13040,11 @@ def _launch_task_run_background(adapter_id: str, task_id: str, params: dict, run
     run_control['task'] = task_handle
     for control_jid in control_jids:
         _run_controls[control_jid] = run_control
+    return task_handle
+
+
+def _launch_task_run_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict) -> dict:
+    _create_task_run_handle(adapter_id, task_id, params, runtime_options)
     return {"ok": True, "message": "Task started in background"}
 
 

@@ -373,7 +373,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.last_runtime_shared = {}
                 self.last_runtime_phase = ""
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 self.last_runtime_phase = "done"
                 self.last_runtime_shared = {
                     "total_rows": 21,
@@ -471,7 +471,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )()
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 self.last_runtime_phase = "done"
                 self.last_runtime_shared = {
                     "progress_kind": "temu_ai_wash_label",
@@ -690,7 +690,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.tab_id = "tab-1"
                 self.tab_url = "https://fmp.semirapp.com/web/index#/home/file"
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return []
 
         class FakeTask:
@@ -807,7 +807,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.tab_url = str(url)
                 return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 self.last_runtime_phase = "wait_product_readback"
                 self.last_runtime_shared = {
                     "total_rows": 3,
@@ -1554,7 +1554,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, *args, **kwargs):
                 self.runtime_output_files = []
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 raise asyncio.CancelledError()
 
         class FakeTask:
@@ -1622,7 +1622,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, *args, **kwargs):
                 self.runtime_output_files = []
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 raise asyncio.CancelledError()
 
         class FakeTask:
@@ -1779,7 +1779,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.navigations.append(str(url))
                 return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return [{
                     "商品ID": params["item_links"].split("id=")[1].split("&")[0],
                     "执行结果": "成功",
@@ -1925,7 +1925,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 selected["navigations"].append(str(url))
                 return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return [{"执行结果": "成功"}]
 
         class FakeParam:
@@ -2036,7 +2036,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.navigations.append(str(url))
                 return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return [{"执行结果": "成功"}]
 
         class FakeTask:
@@ -2110,7 +2110,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, *args, **kwargs):
                 self.runtime_output_files = []
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return [{"输入款号": "208226103201", "下载结果": "已跳过"}]
 
         class FakeTask:
@@ -2169,7 +2169,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
 
-            async def fake_run_script_file(script_path, params=None, control_hook=None):
+            async def fake_run_script_file(script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 shared = {
                     "current_exec_no": 3,
                     "total_rows": 3,
@@ -2274,7 +2274,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 fake_bridge.current_url = str(url)
                 return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return [{"执行结果": "成功"}]
 
         class FakeTask:
@@ -2377,7 +2377,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def _refresh_ws_url(self):
                 return None
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return [{"日期": "2026-06-02"}]
 
         class FakeTask:
@@ -2510,7 +2510,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def _refresh_ws_url(self):
                 return None
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return [{"日期": "2026-06-02"}]
 
         class FakeTask:
@@ -2641,7 +2641,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             async def _refresh_ws_url(self):
                 return None
 
-            async def run_script_file(self, script_path, params=None, control_hook=None):
+            async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
                 return [{"活动ID": "7631472587859837230"}]
 
         class FakeTask:

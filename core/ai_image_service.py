@@ -1005,6 +1005,16 @@ def _update_workbench_run(job_uid: str, run_uid: str, patch: Mapping[str, Any]) 
         return data_sink.update_ai_image_job(job_uid, {"status": job_status, "summary": rebuilt})
 
 
+def _workbench_poll_error_patch(run: Mapping[str, Any], exc: Exception, api_key: str) -> dict:
+    """A failed status query is not evidence that the provider task failed."""
+    failures = int(run.get("poll_error_count") or 0) + 1
+    return {
+        "poll_error_count": failures,
+        "poll_after": min(60, 5 * (2 ** min(failures - 1, 4))),
+        "last_poll_error": _sanitize_error(exc, [api_key]),
+    }
+
+
 def poll_workbench_run(
     job_uid: str,
     run_uid: str,
@@ -1047,6 +1057,9 @@ def poll_workbench_run(
             )
             if patch.get("status") == "failed":
                 patch = _workbench_transient_retry_patch(job, run, patch, client)
+            patch.update({"poll_error_count": 0, "last_poll_error": ""})
+        except (OneXMImageError, OSError, http.client.HTTPException) as exc:
+            patch = _workbench_poll_error_patch(run, exc, client.api_key)
         except Exception as exc:
             patch = {
                 "status": "failed",
@@ -1125,12 +1138,19 @@ def refresh_workbench_run_once(
         }
         _, api_key = select_model_key(run_job, resolved_settings)
         client = client_factory(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
-        current = client.get_task(poll_url)
+        try:
+            current = client.get_task(poll_url)
+        except (OneXMImageError, OSError, http.client.HTTPException) as exc:
+            updated_job = _update_workbench_run(
+                uid, _compact(run.get("run_uid")), _workbench_poll_error_patch(run, exc, api_key),
+            )
+            continue
         patch = _workbench_run_patch(
             current,
             fallback_status=_compact(run.get("provider_status")) or "queued",
             requested_count=int(run.get("requested_count") or 1),
         )
+        patch.update({"poll_error_count": 0, "last_poll_error": ""})
         if patch.get("status") == "failed" and _is_transient_workbench_failure(patch.get("error")):
             patch = {
                 "provider_status": patch.get("provider_status") or run.get("provider_status") or "running",
@@ -1237,6 +1257,24 @@ def retry_workbench_run(
     }
 
 
+def _deduplicated_workbench_batch(job: Mapping[str, Any], request_key: str) -> dict | None:
+    runs = [
+        dict(run) for run in (job.get("summary") or {}).get("runs") or []
+        if isinstance(run, Mapping) and _compact(run.get("request_uid")) == request_key
+    ]
+    if not runs:
+        return None
+    return {
+        "ok": True,
+        "accepted": True,
+        "deduplicated": True,
+        "job_uid": job["job_uid"],
+        "batch_uid": _compact(runs[0].get("batch_uid")),
+        "runs": sorted(runs, key=lambda run: int(run.get("batch_index") or 0)),
+        "job": dict(job),
+    }
+
+
 def submit_workbench_batch(
     job_uid: str,
     prompts: list[Mapping[str, Any] | str],
@@ -1268,23 +1306,9 @@ def submit_workbench_batch(
         raise ValueError("单次最多提交 100 条 Prompt")
 
     request_key = _compact(request_uid) or uuid4().hex
-    existing_runs = [
-        dict(run)
-        for run in (job.get("summary") or {}).get("runs") or []
-        if isinstance(run, Mapping)
-    ]
-    duplicate_runs = [run for run in existing_runs if _compact(run.get("request_uid")) == request_key]
-    if duplicate_runs:
-        batch_uid = _compact(duplicate_runs[0].get("batch_uid"))
-        return {
-            "ok": True,
-            "accepted": True,
-            "deduplicated": True,
-            "job_uid": job_uid,
-            "batch_uid": batch_uid,
-            "runs": sorted(duplicate_runs, key=lambda run: int(run.get("batch_index") or 0)),
-            "job": job,
-        }
+    duplicate = _deduplicated_workbench_batch(job, request_key)
+    if duplicate:
+        return duplicate
 
     resolved_settings = dict(settings or {})
     if not resolved_settings:
@@ -1334,6 +1358,13 @@ def submit_workbench_batch(
 
     with _workbench_job_lock(job_uid):
         latest_job = data_sink.get_ai_image_job(job_uid)
+        if not latest_job:
+            raise ValueError(f"AI image job not found: {job_uid}")
+        # Reserve the request under the same lock as the summary write. The
+        # earlier snapshot is only a fast path; concurrent requests can race it.
+        duplicate = _deduplicated_workbench_batch(latest_job, request_key)
+        if duplicate:
+            return duplicate
         latest_summary = dict((latest_job or {}).get("summary") or {})
         previous_runs = [dict(run) for run in latest_summary.get("runs") or [] if isinstance(run, Mapping)]
         if not previous_runs:

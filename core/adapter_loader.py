@@ -9,6 +9,7 @@ import zipfile
 import logging
 import re
 import threading
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -196,7 +197,13 @@ def _read_install_metadata(adapter_id: str) -> dict[str, Any]:
 
 def _write_install_metadata(adapter_id: str, payload: dict[str, Any]) -> None:
     path = _metadata_path(adapter_id)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    fd, temporary = tempfile.mkstemp(prefix=f".{adapter_id}-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     _install_meta[adapter_id] = dict(payload)
 
 
@@ -299,6 +306,12 @@ def set_enabled(adapter_id: str, enabled: bool) -> None:
 
 
 def install_from_dir(source_dir: str, install_mode: str = "copy", preserve_existing_link: bool = False) -> AdapterManifest:
+    # Scans and concurrent installs must never observe an intermediate package.
+    with _scan_lock:
+        return _install_from_dir_locked(source_dir, install_mode, preserve_existing_link)
+
+
+def _install_from_dir_locked(source_dir: str, install_mode: str, preserve_existing_link: bool) -> AdapterManifest:
     src = Path(source_dir).expanduser()
     if not (src / "manifest.yaml").exists():
         raise FileNotFoundError(f"缺少 manifest.yaml: {source_dir}")
@@ -338,19 +351,53 @@ def install_from_dir(source_dir: str, install_mode: str = "copy", preserve_exist
             )
             return existing_manifest
 
-    if dest.exists() or dest.is_symlink():
-        _remove_installed_path(dest)
-    if install_mode == "link":
-        dest.symlink_to(src, target_is_directory=True)
-    else:
-        shutil.copytree(src, dest)
+    # Replacing a real source directory (or one of its parents) destroys the
+    # source. Also reject copying an ancestor of the install root into itself.
+    resolved_dest = dest.resolve()
+    install_path = dest.parent.resolve() / dest.name
+    replaces_source = not dest.is_symlink() and (src == resolved_dest or resolved_dest in src.parents)
+    if replaces_source or install_path in src.parents or src in install_path.parents:
+        raise ValueError("安装来源和目标目录不能相同或互相包含")
+
+    transaction_dir = Path(tempfile.mkdtemp(prefix=".adapter-install-", dir=dest.parent.parent))
+    staged = transaction_dir / "new"
+    backup = transaction_dir / "old"
+    switched = False
     metadata = {
         "adapter_id": m.id,
         "install_mode": install_mode,
-        "runtime_path": _safe_realpath(dest),
+        "runtime_path": str(src) if install_mode == "link" else str(dest.parent.resolve() / dest.name),
         "source_path": _safe_realpath(src),
     }
-    _write_install_metadata(m.id, metadata)
+    try:
+        if install_mode == "link":
+            staged.symlink_to(src, target_is_directory=True)
+        else:
+            shutil.copytree(src, staged)
+        staged_manifest = _read_manifest_file(staged / "manifest.yaml")
+        if staged_manifest.model_dump() != m.model_dump():
+            raise ValueError("安装期间 manifest 已变化，请重试")
+        if dest.exists() or dest.is_symlink():
+            dest.rename(backup)
+        staged.rename(dest)
+        switched = True
+        _write_install_metadata(m.id, metadata)
+    except BaseException:
+        if switched:
+            _remove_installed_path(dest)
+        if backup.exists() or backup.is_symlink():
+            backup.rename(dest)
+        raise
+    else:
+        # Only discard the old package after both package and metadata commit.
+        try:
+            _remove_installed_path(backup)
+        except OSError:
+            logger.warning("旧版本清理失败，备份保留在 %s", backup, exc_info=True)
+    finally:
+        # If rollback/cleanup fails, keep the only remaining copy for recovery.
+        if not backup.exists() and not backup.is_symlink():
+            shutil.rmtree(transaction_dir, ignore_errors=True)
     _adapters[m.id] = m
     _adapter_dirs[m.id] = dest
     _enabled[m.id] = True

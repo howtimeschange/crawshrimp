@@ -6,10 +6,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 import asyncio
 
 from core import adapter_loader
+from core.url_matching import url_matches_prefix as _url_matches_prefix
 from core.cdp_bridge import get_bridge
 from core.js_runner import JSRunner
 
@@ -23,37 +23,6 @@ class BrowserSessionContext:
     mode: str
     tab: dict
     runner: JSRunner
-
-
-def _url_matches_prefix(url: str, prefix: str) -> bool:
-    if not url or not prefix:
-        return False
-    if url.startswith(prefix):
-        return True
-
-    try:
-        url_p = urlparse(url)
-        prefix_p = urlparse(prefix)
-    except Exception:
-        return False
-
-    url_host = (url_p.hostname or "").lower()
-    prefix_host = (prefix_p.hostname or "").lower()
-    url_path = url_p.path or "/"
-    prefix_path = prefix_p.path or "/"
-
-    if not url_host or not prefix_host:
-        return False
-
-    if url_host == prefix_host:
-        return url_path.startswith(prefix_path)
-
-    if prefix_host == "agentseller.temu.com" and url_host.endswith(".temu.com") and url_host.startswith("agentseller"):
-        normalized_prefix = prefix_path if prefix_path.endswith("/") else prefix_path + "/"
-        normalized_url = url_path if url_path.endswith("/") else url_path + "/"
-        return normalized_url.startswith(normalized_prefix) or normalized_prefix == "//"
-
-    return False
 
 
 def _is_logged_in(auth_result) -> bool:
