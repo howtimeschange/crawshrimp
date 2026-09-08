@@ -1,199 +1,160 @@
-# crawshrimp - Development Notes
+# Crawshrimp Development Notes
 
-## Phase 1 Status: COMPLETE
+抓虾当前是本地优先的电商执行与 AI 内容生产平台，不是早期只做 JS 注入和 Excel 导出的 v1 原型。开始开发前先读：
 
-All core Python modules implemented:
+1. `SPEC.md`：当前产品架构、Crawshrimp/Harness 关系、平台与森马定制边界；
+2. `PRODUCT.md`：产品用户、目标与产品原则；
+3. `sdk/ADAPTER_GUIDE.md`：Adapter 配置、参数、脚本动作与开发协议；
+4. `README.md`：完整功能、环境、发布与云端运行说明。
 
+## Current Architecture
+
+```text
+Electron 43 + Vue
+  ↕ loopback HTTP / token
+FastAPI + SQLite + filesystem
+  ├─ Adapter runtime / JS phase runner / scheduler
+  ├─ Python business handlers / PDF / OCR / AI providers
+  ├─ Chrome CDP / local files / enterprise cloud drives
+  ├─ AI image and video workbenches
+  └─ optional cloud approval machine agent
+
+Cloudflare approval workbench
+  ├─ login / RBAC / audit / prompt / batch review
+  └─ capability-gated machine jobs with lease and idempotency
 ```
-core/
-  models.py          Pydantic models (AdapterManifest, TaskRun, JSResult, ...)
-  config.py          Global config (~/.crawshrimp/config.json)
-  cdp_bridge.py      Chrome CDP connection manager
-  js_runner.py       JS injection executor (timeout + auto-pagination)
-  adapter_loader.py  Adapter install/scan/validate (dir + zip)
-  scheduler.py       APScheduler (manual/interval/cron)
-  data_sink.py       SQLite task state + Excel/JSON export
-  notifier.py        DingTalk / Feishu / custom webhook
-  api_server.py      FastAPI - all endpoints, full task pipeline
 
-adapters/temu/
-  manifest.yaml      Complete Temu adapter spec
-  auth_check.js      Login state detection
-  goods-data.js      Product data scraper (migrated + IIFE wrapped)
-  reviews.js         Reviews scraper (migrated + IIFE wrapped)
-  aftersales.js      After-sales scraper (migrated + IIFE wrapped)
-  store-items.js     Store item listing (migrated + IIFE wrapped)
-```
+`crawshrimp-harness` 是独立发布的智能体交互线。它通过 DSH + MCP 调用 Harness 自有后端与 Adapter 副本，复用抓虾能力代码，但保留自己的会话、权限和发布架构；不要用整仓复制同步两条开发线。
 
-## Quick Dev Start
+## Quick Start
+
+从仓库根目录执行；Python 3.11+、Node.js 22.12.0+。以下是 macOS/Linux shell 示例。
 
 ```bash
-cd core
-pip install -r requirements.txt
-python api_server.py
-# API running at http://localhost:18765
-# Docs at http://localhost:18765/docs
+python3 -m venv venv
+venv/bin/pip install -r core/requirements.txt
+npm --prefix app ci
 ```
 
-## Adapter Dev Loop
-
-适配包开发现在推荐固定走这条闭环：
-
-1. 目录 `link` 安装一次，让运行时直接指向源码目录
-2. 用 `scripts/crawshrimp_dev_harness.py snapshot / knowledge / capture / eval / probe` 摸页面
-3. 写 adapter 逻辑、phase/shared、回归测试
-4. 只有在发包或验证用户态安装时，才切回默认 `copy` / ZIP
-
-本地开发建议先执行：
+终端一：
 
 ```bash
+bash dev.sh
+```
+
+终端二：
+
+```bash
+cd app
+npm run dev
+```
+
+默认本地 API 是 `http://127.0.0.1:18765`，Vite 是 `http://127.0.0.1:5173`。业务 API 默认校验 `X-Crawshrimp-Token`；健康检查、文档和部分资产/审核路由免 token，准确白名单见 `core/api_server.py` 的 `_is_public_api_path()`。
+
+两个终端应使用相同的 `CRAWSHRIMP_DATA` 和 token 配置。桌面端还支持已保存的数据目录；若其目录与独立后端不同，应显式指定同一目录。Electron 会检查并复用兼容后端，必要时自行启动后端；不要求并行运行两个核心服务。
+
+## Adapter Development Loop
+
+1. 判断它是简单页面任务，还是需要文件、后端、AI/OCR、PDF、云盘、审批和外部交付的复杂任务。
+2. 沿用 `core/models.py` 支持的 Manifest 字段，在 `tasks` 中配置脚本、参数、触发方式与输出。额外的 v2 权限/能力声明目前不会自动形成运行时门禁。
+3. 开发态用 `install_mode=link` 指向源码目录。
+4. 用 dev harness 建立页面和请求证据，再写 JS phase/shared 或后端处理逻辑。
+5. 先跑任务回归与相关验收测试，再安装/运行最小 live 验证。
+6. 检查真实产物和目标系统读回，不只看任务状态。
+
+Link 安装：
+
+```bash
+# 默认从与服务相同的运行目录读取；显式环境 token 优先。
+CRAWSHRIMP_API_TOKEN="$(PYTHONPATH=. venv/bin/python - <<'PYTOKEN'
+import os
+from pathlib import Path
+from core import runtime_paths
+token = os.environ.get('CRAWSHRIMP_API_TOKEN', '').strip()
+if not token:
+    lock_dir = os.environ.get('CRAWSHRIMP_BACKEND_LOCK_DIR', '').strip()
+    root = Path(lock_dir).expanduser() if lock_dir else runtime_paths.data_root()
+    token = (root / 'api-token').read_text().strip()
+print(token)
+PYTOKEN
+)"
+export CRAWSHRIMP_API_TOKEN
+
 curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H "X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/repo/adapters/<adapter_id>", "install_mode": "link"}'
-
-./venv/bin/python scripts/crawshrimp_dev_harness.py snapshot \
-  --adapter <adapter_id> \
-  --task <task_id>
 ```
 
-`dev harness` 是新的标准开发入口：
-
-- `snapshot`：看当前页面结构和知识命中
-- `knowledge`：查 notes / probe 自动物化出的经验卡片
-- `capture`：抓被动请求、点击请求或指定 URL 请求
-- `eval`：在当前页直接跑临时 JS
-- `probe`：只在需要结构化 bundle 时再用
-
-知识索引默认写到：
-
-- `~/.crawshrimp/knowledge/cards.json`
-- `~/.crawshrimp/knowledge/skills/<adapter>/<task>.md`
-
-如果你改的是 `adapters/<id>/notes/*.md` 或手工补了 probe 产物，可以运行：
+Dev harness（在仓库根目录执行，替换 adapter/task 示例；CLI 会读取环境 token 或运行目录的 `api-token`）：
 
 ```bash
-./venv/bin/python scripts/crawshrimp_dev_harness.py rebuild-knowledge
+venv/bin/python scripts/crawshrimp_dev_harness.py snapshot --adapter temu --task goods_traffic_detail
+venv/bin/python scripts/crawshrimp_dev_harness.py knowledge --adapter temu --task goods_traffic_detail --query drawer
+venv/bin/python scripts/crawshrimp_dev_harness.py capture --adapter temu --task goods_traffic_detail --capture-mode passive
+venv/bin/python scripts/crawshrimp_dev_harness.py eval --adapter temu --task goods_traffic_detail --file /absolute/path/to/probe.js
 ```
 
-### Runtime Truth
+运行时真值：
 
-底座运行的不是仓库路径本身，而是“已安装运行时”：
+- `link`：运行时 Adapter 目录是源码符号链接；
+- `copy`：运行时执行安装副本，源码修改后必须重新安装；
+- 设置 `CRAWSHRIMP_DATA` 后，Adapter 位于 `$CRAWSHRIMP_DATA/adapters/<adapter_id>/`。
 
-- `link` 模式：`~/.crawshrimp/adapters/<adapter_id>` 是指向源码目录的符号链接
-- `copy` 模式：底座会复制一份执行副本到 `~/.crawshrimp/adapters/<adapter_id>/`
-- 如果设置了 `CRAWSHRIMP_DATA`：路径会变成 `$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
+## Task Progress Contract
 
-这意味着：
+- 脚本通过 `meta.shared` 传递跨 phase 状态；它本身不等于跨进程持久化检查点，恢复能力需由具体任务实现。
+- `total_rows`、`current_exec_no`、`current_row_no`、`batch_no`、`total_batches` 等字段必须来自真实业务状态。
+- 不为显示百分比伪造 total。
+- 前端增强进度只在 `app/src/renderer/utils/taskProgress.js` 的精确白名单中启用。
 
-- 本地开发优先使用 `link`
-- 如果你刻意使用 `copy`，改完脚本后必须重新安装
-- 出现“明明改了代码但运行结果还是旧的”时，先检查安装模式和运行时目录，不要先怀疑业务逻辑
+## Validation
 
-`copy` 模式下的验证方式：
+按改动面选择最小但完整的验证。Python CI 使用 pytest，单用 unittest discover 会漏掉函数式 pytest 用例。首次运行 Python 测试先安装 `tests/requirements.txt`；云端检查需先安装该子项目依赖。
 
 ```bash
-curl -X POST http://127.0.0.1:18765/adapters/install \
-  -H 'Content-Type: application/json' \
-  -d '{"path": "/absolute/path/to/repo/adapters/<adapter_id>"}'
+# 测试依赖
+venv/bin/pip install -r tests/requirements.txt
 
-diff -qr /absolute/path/to/repo/adapters/<adapter_id> ~/.crawshrimp/adapters/<adapter_id>
+# Adapter loader
+PYTHONPATH=. venv/bin/python -m pytest tests/test_adapter_loader.py -v
+
+# Python backend
+PYTHONPATH=. venv/bin/python -m pytest tests -v
+
+# Adapter JS
+node --test tests/*.test.js
+
+# Electron / renderer
+npm --prefix app test
+npm --prefix app run vite:build
+
+# Cloud approval
+npm --prefix cloud/approval-workbench ci
+npm --prefix cloud/approval-workbench run check
+
+# Patch hygiene
+git diff --check
 ```
 
-## Task Progress UI Contract
+改 Adapter 后仍需按任务风险进行运行时同步和最小 live 验证。涉及导出时检查文件存在、签名/格式、行数、范围和重复键；涉及平台写入时检查目标系统读回。
 
-前端进度条的配置已经收口到一个地方：
+## API Discovery
 
-- 规则入口：`app/src/renderer/utils/taskProgress.js`
-- 任务白名单：`TASK_PROGRESS_RULES`
-- 规则解析：`resolveTaskProgressConfig(...)`
-- 任务详情页摘要：`buildTaskRunnerProgressSummary(...)`
-- 侧边栏 / 脚本列表摘要：`buildTaskOverviewProgress(...)`
+运行后打开 `http://127.0.0.1:18765/docs` 查看当前接口。与 Adapter 协议直接相关的入口：
 
-当前约束：
-
-- 默认所有任务都走 `classic` 进度，不影响历史脚本
-- `enhanced` 只对白名单任务生效
-- 当前白名单包含 `temu / goods_traffic_list`、`temu / goods_traffic_detail`
-
-`enhanced` 适用场景：
-
-- 任务是大批量、多行、长耗时执行，用户需要更强的过程可见性
-- 除了总进度，还存在“当前条目内部”的二级进度，例如弹窗翻页、站点切换、维度组合遍历
-- 在部分阶段拿不到稳定 `total / percent`，但 `records` 和上下文字段仍能持续推进
-- 脚本能稳定补充 `batch_no / total_batches / current_store / current_buyer_id / phase` 这类上下文
-
-不建议这样做：
-
-- 在视图组件里手写 `adapter_id === ... && task_id === ...`
-- 为了显示百分比伪造 `total_rows`
-- 把增强样式直接改成全局默认
-
-扩展到新任务时，建议按这个顺序走：
-
-1. 先确认脚本 live 字段来源稳定：`records` 单调增长，`shared` 元数据不会乱跳。
-2. 先只接标准进度字段：`total_rows / current_exec_no / current_row_no / current_buyer_id / current_store / batch_no / total_batches`。
-3. 确认 `classic` UI 已可用后，再判断是否真的需要 `enhanced`。
-4. 需要 `enhanced` 时，只在 `TASK_PROGRESS_RULES` 里新增一条精确到 `adapterId + taskId` 的规则。
-5. 如果需要新的展示字段，优先改 `taskProgress.js` 的汇总函数，不要在 `App.vue` / `ScriptList.vue` / `TaskRunner.vue` 各写一套。
-6. 跑一次前端构建验证：`npm --prefix app run vite:build`
-
-后端 live 字段来源：
-
-- `core/api_server.py` 会从 `shared.total_rows / current_exec_no / current_row_no / batch_no / total_batches / current_buyer_id / current_store` 组装 `live`
-- `live.completed` / `live.records` 来自执行器当前累计产出条数
-- `live.progress_text` 是后端根据 `current/total` 自动生成的，不需要脚本手填
-- 前端页面只消费底座下发的 `live`，不会直接从 adapter 脚本读 UI 配置
-
-## Phase 2: Electron + Vue GUI
-
-Next up:
-
-1. `app/` scaffold - Electron main process (reuse temu-assistant shell)
-2. Replace renderer with Vue 3 + Vite
-3. 4 views: PlatformManager / TaskDashboard / DataExplorer / Settings
-4. Full IPC bridge
-
-Key reuse from temu-assistant:
-- `electron-app/src/main.js` - Python process spawn, window management, portfinder
-- `electron-app/scripts/after-pack.js` - python-build-standalone bundle hook
-- `electron-app/build.yml` - electron-builder config (macOS DMG + Windows NSIS)
-
-## Bundling Strategy (Open-box install)
-
-Inherited from temu-assistant - users get a single installer, zero setup:
-
-```
-macOS:
-  crawshrimp.dmg -> CrawShrimp.app
-    Resources/
-      python/bundle/    python-build-standalone 3.12 (arm64 or x64)
-      python-scripts/   core/*.py + adapters/
-      bb-browser/       CDP connector node module
-
-Windows:
-  crawshrimp-setup.exe -> NSIS installer
-    (same structure under AppData)
+```text
+GET    /adapters
+POST   /adapters/install
+DELETE /adapters/{adapter_id}
+PATCH  /adapters/{adapter_id}/enable
+GET    /tasks
+POST   /tasks/{adapter_id}/{task_id}/run
+GET    /tasks/{adapter_id}/{task_id}/status
+GET    /tasks/{adapter_id}/{task_id}/logs
+POST   /tasks/{adapter_id}/{task_id}/pause
+POST   /tasks/{adapter_id}/{task_id}/resume
+POST   /tasks/{adapter_id}/{task_id}/stop
 ```
 
-CI triggers on `git tag vX.X.X` (same as temu-assistant).
-
-## API Reference
-
-See http://localhost:18765/docs when running locally.
-
-Key endpoints:
-```
-GET  /health                              # chrome available + adapter count
-GET  /adapters                            # list installed adapters
-POST /adapters/install                    # {path} or {zip_base64}
-DELETE /adapters/{id}                     # uninstall
-PATCH /adapters/{id}/enable               # {enabled: bool}
-GET  /tasks                               # all tasks with live status
-POST /tasks/{adapter}/{task}/run          # trigger now (background)
-GET  /tasks/{adapter}/{task}/status       # live + last run
-GET  /tasks/{adapter}/{task}/logs         # live log lines
-GET  /data/{adapter}/{task}/export        # ?format=excel|json
-GET  /settings                            # read config
-PUT  /settings                            # write config
-GET  /settings/chrome-tabs               # list open Chrome tabs
-```
+`/run` 触发后台执行，返回成功不等于业务完成；随后查询 `/status`、`/logs` 并验收产物。`/resume` 用于当前进程中暂停的任务，不保证重启后恢复。任务实例另有 `/task-instances` 与 `/task-instances/{instance_uid}/run` 等入口，完整请求结构以 OpenAPI 为准。

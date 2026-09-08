@@ -15,7 +15,7 @@
 - AI 视频工作流恢复本地结果文件读回，已完成视频可自动下载到工作区并继续在任务结果中展示。
 - 素材重跑时恢复正确的历史素材召回范围，并让已清理的 AI 视频素材继续隐藏，减少旧素材误选。
 - AI 生图工作台区分主图、参考图和蒙版图的准备失败，文件不存在、无权限或超过 1XM 限制时显示具体错误，避免请求在输入不完整时静默失败。
-- 深绘上新图包隔离鞋品与服饰 OCR 分类判断，避免批次级来源配置把其他款号误识别为鞋品；同时补齐上新助手 Manifest v2 的兼容性、权限、能力和验收声明。
+- 深绘上新图包隔离鞋品与服饰 OCR 分类判断，避免批次级来源配置把其他款号误识别为鞋品；同时补齐上新助手 Manifest v2 的兼容性、权限、能力和验收声明（声明保留在包中；当前主项目加载模型尚未将这些扩展字段作为运行时门禁）。
 - 扩展 AI 视频工作流、本地文件回显、OCR 与 AI 生图测试覆盖。
 
 完整变更见 [v2.5.3 Release Notes](release-notes/v2.5.3.md)。
@@ -262,6 +262,8 @@ cd app
 npm run dev
 ```
 
+两个终端需使用相同的数据目录和 token 配置；已有桌面配置或隔离开发目录时，显式指定相同的 `CRAWSHRIMP_DATA`。详见 [开发说明](DEVELOPMENT.md)。
+
 默认地址：
 
 - 本地 API：`http://127.0.0.1:18765`
@@ -269,7 +271,7 @@ npm run dev
 - Vite：`http://127.0.0.1:5173`
 - 云端审批本地 Worker：`http://127.0.0.1:8787`
 
-除 `/health` 和 API 文档外，本地 API 默认要求 `X-Crawshrimp-Token`。`dev.sh` 会从运行目录读取或生成 token 并打印使用方法。
+业务 API 默认要求 `X-Crawshrimp-Token`。健康检查、API 文档、Adapter 资产和部分本地审核/素材路由免 token；精确范围见 `core/api_server.py` 的 `_is_public_api_path()`。`dev.sh` 会从运行目录读取或生成 token 并打印使用方法。
 
 ### 手动启动 CDP Chrome
 
@@ -294,8 +296,9 @@ npm --prefix app test
 # Adapter 与桌面契约测试
 node --test tests/*.test.js
 
-# Python 后端测试
-PYTHONPATH=. venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+# Python 后端测试（与 CI 一致，同时覆盖 unittest 与 pytest 用例）
+venv/bin/pip install -r tests/requirements.txt
+PYTHONPATH=. venv/bin/python -m pytest tests -v
 
 # Cloudflare 审批台：typecheck + test + build
 npm --prefix cloud/approval-workbench run check
@@ -305,6 +308,8 @@ npm --prefix cloud/approval-workbench run check
 
 | Adapter | 平台 | 主要能力 |
 |---|---|---|
+| `ai-mopai-fentu` | 森马云盘 / PLM | 模拍分图审核、审核后上传、静物核表分图/上传、尺码表 PDF 下载 |
+| `bala-ai-video-assistant` | 巴拉 / 森马云盘 / AI 视频 | 视频素材准备、换脸换背景素材生成与视频工作流 |
 | `aliexpress-ops-assistant` | 速卖通 | 成交分析、商品排行、商品主图抠图下载 |
 | `amazon-ops-assistant` | Amazon | Reviews 全量抓取、商品标签 PDF 批量拆分 |
 | `cross-border-research` | Renner / Zara / Macy's | 儿童鞋服品类、价格带、上新与促销调研 |
@@ -330,7 +335,7 @@ npm --prefix cloud/approval-workbench run check
 
 ## 运行数据与安全
 
-运行目录解析顺序：
+新用户的默认运行目录（已存在旧版 `~/.crawshrimp` 数据时，macOS/Windows 会优先沿用旧目录）：
 
 - Windows：优先 `%LOCALAPPDATA%\crawshrimp`
 - macOS：优先 `~/Library/Application Support/crawshrimp`
@@ -419,6 +424,9 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 
 ## 相关文档
 
+- [当前产品架构说明](SPEC.md)
+- [产品定义](PRODUCT.md)
+- [开发启动与验证](DEVELOPMENT.md)
 - [云端审批台 Runbook](docs/cloud-approval-workbench-runbook.md)
 - [云端审批 MVP 测试记录](docs/cloud-approval-workbench-mvp-test-log.md)
 - [桌面更新发布验收清单](docs/desktop-update-release-checklist.md)
