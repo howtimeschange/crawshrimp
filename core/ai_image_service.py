@@ -5,6 +5,7 @@ import base64
 import binascii
 import hashlib
 import http.client
+import logging
 import mimetypes
 import re
 import shutil
@@ -27,6 +28,7 @@ from core.one_xm_image import (
     FAILED_STATUSES,
     SUCCESS_STATUSES,
     OneXMImageError,
+    RejectedOneXMImageError,
     OneXMImageClient,
     extract_image_urls,
     file_to_data_url,
@@ -49,6 +51,13 @@ NANO_BANANA_RESOLUTIONS = {"1K", "2K", "4K"}
 _WORKBENCH_JOB_LOCKS: dict[str, threading.RLock] = {}
 _WORKBENCH_JOB_LOCKS_GUARD = threading.Lock()
 _WORKBENCH_POLL_EXECUTOR = ThreadPoolExecutor(max_workers=100, thread_name_prefix="ai-image-poll")
+_WORKBENCH_ACTIVE_SUBMISSIONS: set[tuple[str, str]] = set()
+_WORKBENCH_POLLERS: set[tuple[str, str]] = set()
+_WORKBENCH_POLLERS_LOCK = threading.Lock()
+_WORKBENCH_STOP = threading.Event()
+_WORKBENCH_RECOVERY_THREAD: threading.Thread | None = None
+_WORKBENCH_RECOVERY_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 class MissingModelKeyError(ValueError):
@@ -901,19 +910,19 @@ def _workbench_retry_payload(job: Mapping[str, Any], run: Mapping[str, Any]) -> 
     return payload
 
 
-def _workbench_transient_retry_patch(
+def _retry_transient_workbench_failure(
     job: Mapping[str, Any],
     run: Mapping[str, Any],
     failure_patch: Mapping[str, Any],
     client: OneXMImageClient,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     error = _compact(failure_patch.get("error"))
     try:
         retry_count = max(0, int(run.get("retry_count") or 0))
     except (TypeError, ValueError):
         retry_count = 0
     if not _is_transient_workbench_failure(error) or retry_count >= WORKBENCH_TRANSIENT_RETRY_LIMIT:
-        return dict(failure_patch)
+        return None
 
     next_retry_count = retry_count + 1
     history = [
@@ -929,37 +938,11 @@ def _workbench_transient_retry_patch(
         "error": error,
         "failed_at": _now_iso(),
     })
-    try:
-        task = client.create_task(
-            _workbench_retry_payload(job, run),
-            idempotency_key=(
-                f"ai_image_{_compact(job.get('job_uid'))}_{_compact(run.get('run_uid'))}"
-                f"_retry_{next_retry_count}"
-            ),
-            timeout=30,
-            request_retries=3,
-        )
-        patch = _workbench_run_patch(
-            task,
-            requested_count=int(run.get("requested_count") or 1),
-        )
-        patch.update({
-            "retry_count": next_retry_count,
-            "retry_history": history,
-            "last_retry_error": error,
-        })
-        if patch.get("status") in {"queued", "running", "completed"}:
-            patch["error"] = ""
-        return patch
-    except Exception as exc:
-        retry_error = _sanitize_error(exc, [client.api_key])
-        return {
-            **dict(failure_patch),
-            "retry_count": next_retry_count,
-            "retry_history": history,
-            "last_retry_error": error,
-            "error": f"{error}; 自动重试提交失败: {retry_error}"[:500],
-        }
+    return _submit_workbench_attempt(
+        _compact(job.get('job_uid')), run, client, _workbench_retry_payload(job, run),
+        f"ai_image_{_compact(job.get('job_uid'))}_{_compact(run.get('run_uid'))}_retry_{next_retry_count}",
+        {'retry_count': next_retry_count, 'retry_history': history, 'last_retry_error': error},
+    )
 
 
 def _rebuild_workbench_summary(summary: Mapping[str, Any], runs: list[dict[str, Any]]) -> tuple[dict, str]:
@@ -990,7 +973,14 @@ def _rebuild_workbench_summary(summary: Mapping[str, Any], runs: list[dict[str, 
     return rebuilt, job_status
 
 
-def _update_workbench_run(job_uid: str, run_uid: str, patch: Mapping[str, Any]) -> dict:
+def _same_workbench_attempt(current: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    return all(current.get(key, default) == expected.get(key, default) for key, default in (
+        ('generation', 0), ('task_id', ''), ('poll_url', ''), ('status', ''),
+    ))
+
+
+def _update_workbench_run(job_uid: str, run_uid: str, patch: Mapping[str, Any], *,
+                          expected_run: Mapping[str, Any] | None = None, restart: bool = False) -> dict:
     with _workbench_job_lock(job_uid):
         job = data_sink.get_ai_image_job(job_uid)
         if not job:
@@ -1000,9 +990,58 @@ def _update_workbench_run(job_uid: str, run_uid: str, patch: Mapping[str, Any]) 
         run_index = next((index for index, run in enumerate(runs) if _compact(run.get("run_uid")) == run_uid), -1)
         if run_index < 0:
             raise ValueError(f"AI image run not found: {run_uid}")
+        current = runs[run_index]
+        if expected_run is not None and not _same_workbench_attempt(current, expected_run):
+            return job
+        if not restart and current.get('status') in {'completed', 'failed'} and patch.get('status', current['status']) != current['status']:
+            return job
         runs[run_index] = {**runs[run_index], **dict(patch)}
         rebuilt, job_status = _rebuild_workbench_summary(summary, runs)
         return data_sink.update_ai_image_job(job_uid, {"status": job_status, "summary": rebuilt})
+
+
+def _find_workbench_run(job: Mapping[str, Any], run_uid: str) -> dict:
+    return next((dict(run) for run in (job.get('summary') or {}).get('runs') or []
+                 if run.get('run_uid') == run_uid), {})
+
+
+def _unknown_submission_patch(error: str) -> dict:
+    return {'status': 'failed', 'provider_status': 'unknown', 'error_code': 'UNKNOWN_SUBMIT_RESULT',
+            'error': f'提交回执未知，请先核实远端任务；禁止直接重试以避免重复计费。{error}'[:500]}
+
+
+def _submit_workbench_attempt(job_uid: str, run: Mapping[str, Any], client: OneXMImageClient,
+                              payload: Mapping[str, Any], key: str, metadata: Mapping[str, Any] | None = None) -> dict:
+    run_uid = _compact(run.get('run_uid'))
+    identity = (job_uid, run_uid)
+    with _workbench_job_lock(job_uid):
+        job = data_sink.get_ai_image_job(job_uid) or {}
+        current = _find_workbench_run(job, run_uid)
+        if not current or not _same_workbench_attempt(current, run):
+            return job
+        if current.get('error_code') == 'UNKNOWN_SUBMIT_RESULT':
+            raise ValueError('提交回执未知，禁止直接重试以避免重复计费，请先核实远端任务')
+        reserved = {**dict(metadata or {}), 'generation': int(current.get('generation') or 0) + 1,
+                    'idempotency_key': key, 'submitted_at': _now_iso(), 'status': 'queued',
+                    'provider_status': 'submitting', 'task_id': '', 'poll_url': '',
+                    'error': '', 'error_code': '', 'image_urls': [], 'output_files': []}
+        job = _update_workbench_run(job_uid, run_uid, reserved, expected_run=current, restart=True)
+        snapshot = _find_workbench_run(job, run_uid)
+        _WORKBENCH_ACTIVE_SUBMISSIONS.add(identity)
+    try:
+        try:
+            task = client.create_task(payload, idempotency_key=key, timeout=30, request_retries=3)
+            result = _workbench_run_patch(task, requested_count=int(run.get('requested_count') or 1))
+            if result.get('status') in {'queued', 'running'} and not (result.get('task_id') or result.get('poll_url')):
+                result = _unknown_submission_patch('Provider 未返回任务句柄')
+        except RejectedOneXMImageError as exc:
+            result = {'status': 'failed', 'provider_status': 'failed', 'error': _sanitize_error(exc, [getattr(client, 'api_key', '')])}
+        except Exception as exc:
+            result = _unknown_submission_patch(_sanitize_error(exc, [getattr(client, 'api_key', '')]))
+        return _update_workbench_run(job_uid, run_uid, result, expected_run=snapshot)
+    finally:
+        with _workbench_job_lock(job_uid):
+            _WORKBENCH_ACTIVE_SUBMISSIONS.discard(identity)
 
 
 def _workbench_poll_error_patch(run: Mapping[str, Any], exc: Exception, api_key: str) -> dict:
@@ -1021,8 +1060,11 @@ def poll_workbench_run(
     client: OneXMImageClient,
     *,
     sleep_fn: Callable[[float], None] = time.sleep,
+    stop_event: threading.Event | None = None,
 ) -> dict:
     while True:
+        if stop_event is not None and stop_event.is_set():
+            return {'ok': False, 'stopped': True}
         job = data_sink.get_ai_image_job(job_uid)
         if not job:
             return {"ok": False, "job_uid": job_uid, "run_uid": run_uid, "error": "AI image job not found"}
@@ -1037,17 +1079,22 @@ def poll_workbench_run(
             return {"ok": run.get("status") == "completed", "job_uid": job_uid, "run_uid": run_uid, "run": run}
         poll_url = _compact(run.get("poll_url") or run.get("task_id"))
         if not poll_url:
-            updated = _update_workbench_run(job_uid, run_uid, {
-                "status": "failed",
-                "provider_status": "failed",
-                "error": "1XM task did not return poll_url",
-            })
+            with _workbench_job_lock(job_uid):
+                if (job_uid, run_uid) in _WORKBENCH_ACTIVE_SUBMISSIONS:
+                    return {'ok': False, 'submitting': True}
+                updated = _update_workbench_run(job_uid, run_uid,
+                    _unknown_submission_patch('未找到可恢复的远端任务句柄'), expected_run=run)
             return {"ok": False, "job_uid": job_uid, "run_uid": run_uid, "job": updated}
         try:
             wait_seconds = max(0.0, float(run.get("poll_after") or 5))
         except (TypeError, ValueError):
             wait_seconds = 5.0
-        sleep_fn(wait_seconds)
+        if stop_event is not None:
+            if stop_event.wait(wait_seconds):
+                return {'ok': False, 'stopped': True}
+        else:
+            sleep_fn(wait_seconds)
+        updated = None
         try:
             current = client.get_task(poll_url)
             patch = _workbench_run_patch(
@@ -1055,8 +1102,8 @@ def poll_workbench_run(
                 fallback_status=_compact(run.get("provider_status")) or "queued",
                 requested_count=int(run.get("requested_count") or 1),
             )
-            if patch.get("status") == "failed":
-                patch = _workbench_transient_retry_patch(job, run, patch, client)
+            if patch.get("status") == "failed" and (stop_event is None or not stop_event.is_set()):
+                updated = _retry_transient_workbench_failure(job, run, patch, client)
             patch.update({"poll_error_count": 0, "last_poll_error": ""})
         except (OneXMImageError, OSError, http.client.HTTPException) as exc:
             patch = _workbench_poll_error_patch(run, exc, client.api_key)
@@ -1066,7 +1113,8 @@ def poll_workbench_run(
                 "provider_status": "failed",
                 "error": _sanitize_error(exc, [client.api_key]),
             }
-        updated = _update_workbench_run(job_uid, run_uid, patch)
+        if updated is None:
+            updated = _update_workbench_run(job_uid, run_uid, patch, expected_run=run)
         latest_run = next(
             (item for item in (updated.get("summary") or {}).get("runs") or [] if item.get("run_uid") == run_uid),
             {},
@@ -1142,7 +1190,7 @@ def refresh_workbench_run_once(
             current = client.get_task(poll_url)
         except (OneXMImageError, OSError, http.client.HTTPException) as exc:
             updated_job = _update_workbench_run(
-                uid, _compact(run.get("run_uid")), _workbench_poll_error_patch(run, exc, api_key),
+                uid, _compact(run.get("run_uid")), _workbench_poll_error_patch(run, exc, api_key), expected_run=run,
             )
             continue
         patch = _workbench_run_patch(
@@ -1159,7 +1207,7 @@ def refresh_workbench_run_once(
             }
             if patch["provider_status"] in FAILED_STATUSES:
                 patch["provider_status"] = "running"
-        updated_job = _update_workbench_run(uid, _compact(run.get("run_uid")), patch)
+        updated_job = _update_workbench_run(uid, _compact(run.get("run_uid")), patch, expected_run=run)
     return updated_job
 
 
@@ -1183,6 +1231,8 @@ def retry_workbench_run(
         raise ValueError(f"AI image run not found: {run_uid}")
     if _compact(run.get("status")).lower() != "failed":
         raise ValueError("只有失败的生图队列可以重试")
+    if run.get('error_code') == 'UNKNOWN_SUBMIT_RESULT':
+        raise ValueError('提交回执未知，禁止直接重试以避免重复计费，请先核实远端任务')
 
     resolved_settings = dict(settings or {})
     if not resolved_settings:
@@ -1212,41 +1262,19 @@ def retry_workbench_run(
         "retried_at": _now_iso(),
     })
 
-    try:
-        task = client.create_task(
-            _workbench_retry_payload(job, run),
-            idempotency_key=f"ai_image_{job_uid}_{run_uid}_manual_retry_{manual_retry_count}",
-            timeout=30,
-            request_retries=3,
-        )
-        patch = _workbench_run_patch(
-            task,
-            requested_count=int(run.get("requested_count") or 1),
-        )
-        patch.update({
-            "retry_count": 0,
-            "manual_retry_count": manual_retry_count,
-            "manual_retry_history": manual_retry_history,
-            "last_retry_error": _compact(run.get("error")),
-        })
-        if patch.get("status") in {"queued", "running", "completed"}:
-            patch["error"] = ""
-    except Exception as exc:
-        patch = {
-            "manual_retry_count": manual_retry_count,
-            "manual_retry_history": manual_retry_history,
-            "error": f"手动重试提交失败: {_sanitize_error(exc, [api_key])}"[:500],
-        }
-
-    updated = _update_workbench_run(job_uid, run_uid, patch)
+    updated = _submit_workbench_attempt(
+        job_uid, run, client, _workbench_retry_payload(job, run),
+        f"ai_image_{job_uid}_{run_uid}_manual_retry_{manual_retry_count}",
+        {'retry_count': 0, 'manual_retry_count': manual_retry_count,
+         'manual_retry_history': manual_retry_history, 'last_retry_error': _compact(run.get('error'))},
+    )
     latest_run = next(
         (item for item in (updated.get("summary") or {}).get("runs") or [] if item.get("run_uid") == run_uid),
         {},
     )
     accepted = latest_run.get("status") in {"queued", "running", "completed"}
     if latest_run.get("status") in {"queued", "running"}:
-        poller = poll_submitter or _WORKBENCH_POLL_EXECUTOR.submit
-        poller(poll_workbench_run, job_uid, run_uid, client)
+        _schedule_workbench_poll(job_uid, run_uid, client, poll_submitter=poll_submitter)
     return {
         "ok": accepted,
         "accepted": accepted,
@@ -1255,6 +1283,82 @@ def retry_workbench_run(
         "run": latest_run,
         "job": updated,
     }
+
+
+def _schedule_workbench_poll(job_uid: str, run_uid: str, client: OneXMImageClient, *, poll_submitter=None, stop_event=None) -> bool:
+    stop = stop_event if stop_event is not None else _WORKBENCH_STOP
+    if stop.is_set():
+        return False
+    if poll_submitter is not None:
+        poll_submitter(poll_workbench_run, job_uid, run_uid, client)
+        return True
+    identity = (job_uid, run_uid)
+    with _WORKBENCH_POLLERS_LOCK:
+        if stop.is_set() or identity in _WORKBENCH_POLLERS:
+            return False
+        _WORKBENCH_POLLERS.add(identity)
+    def release(_future=None):
+        with _WORKBENCH_POLLERS_LOCK:
+            _WORKBENCH_POLLERS.discard(identity)
+    try:
+        future = _WORKBENCH_POLL_EXECUTOR.submit(poll_workbench_run, job_uid, run_uid, client, stop_event=stop)
+        future.add_done_callback(release)
+    except BaseException:
+        release()
+        raise
+    return True
+
+
+def recover_workbench_runs(*, settings=None, client_factory=OneXMImageClient, poll_submitter=None, stop_event=None) -> None:
+    for job in data_sink.list_active_ai_image_jobs():
+        if stop_event is not None and stop_event.is_set():
+            return
+        uid = job['job_uid']
+        for run in (job.get('summary') or {}).get('runs') or []:
+            if run.get('status') not in {'queued', 'running'}:
+                continue
+            run_uid = run['run_uid']
+            if not (run.get('task_id') or run.get('poll_url')):
+                with _workbench_job_lock(uid):
+                    if (uid, run_uid) not in _WORKBENCH_ACTIVE_SUBMISSIONS:
+                        _update_workbench_run(uid, run_uid,
+                            _unknown_submission_patch('后端重启前未保存远端提交回执'), expected_run=run)
+                continue
+            try:
+                resolved = settings
+                if resolved is None:
+                    from core.api_server import _resolve_one_xm_settings
+                    resolved = _resolve_one_xm_settings()
+                run_job = {**job, 'model_key': run.get('model_key') or job.get('model_key'),
+                           'params': {**_params(job),
+                                      'model_key_tier': run.get('model_key_tier') or _params(job).get('model_key_tier'),
+                                      'size': run.get('size') or _params(job).get('size')}}
+                _, key = select_model_key(run_job, resolved)
+                client = client_factory(key, base_url=_compact(resolved.get('base_url')) or DEFAULT_BASE_URL)
+                _schedule_workbench_poll(uid, run_uid, client, poll_submitter=poll_submitter, stop_event=stop_event)
+            except Exception:
+                logger.warning('Unable to resume image poll for %s/%s; will retry', uid, run_uid, exc_info=True)
+
+
+def ensure_workbench_worker_started() -> None:
+    global _WORKBENCH_RECOVERY_THREAD, _WORKBENCH_STOP
+    with _WORKBENCH_RECOVERY_LOCK:
+        if _WORKBENCH_RECOVERY_THREAD and _WORKBENCH_RECOVERY_THREAD.is_alive() and not _WORKBENCH_STOP.is_set():
+            return
+        _WORKBENCH_STOP = stop = threading.Event()
+        def recover():
+            while not stop.is_set():
+                try:
+                    recover_workbench_runs(stop_event=stop)
+                except Exception:
+                    logger.exception('AI image recovery tick failed')
+                stop.wait(10)
+        _WORKBENCH_RECOVERY_THREAD = threading.Thread(target=recover, daemon=True, name='ai-image-recovery')
+        _WORKBENCH_RECOVERY_THREAD.start()
+
+
+def stop_workbench_worker() -> None:
+    _WORKBENCH_STOP.set()
 
 
 def _deduplicated_workbench_batch(job: Mapping[str, Any], request_key: str) -> dict | None:
@@ -1373,47 +1477,30 @@ def submit_workbench_batch(
                 previous_runs.append(legacy_run)
         rebuilt, _ = _rebuild_workbench_summary(latest_summary, [*previous_runs, *batch_runs])
         data_sink.update_ai_image_job(job_uid, {"status": "running", "summary": rebuilt})
+        _WORKBENCH_ACTIVE_SUBMISSIONS.update((job_uid, run['run_uid']) for run in batch_runs)
 
-    poller = poll_submitter or _WORKBENCH_POLL_EXECUTOR.submit
-
-    def create_one(run: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
-        payload = {**base_payload, "prompt": run["prompt"]}
+    def create_one(run: Mapping[str, Any]) -> dict:
+        payload = {**base_payload, 'prompt': run['prompt']}
         if model in NANO_BANANA_MODELS:
-            payload.pop("n", None)
+            payload.pop('n', None)
         else:
-            payload["n"] = int(run.get("requested_count") or 1)
-        task = client.create_task(
-            payload,
-            idempotency_key=f"ai_image_{job_uid}_{run['run_uid']}",
-            timeout=30,
-            request_retries=3,
-        )
-        return _compact(run.get("run_uid")), dict(task or {})
+            payload['n'] = int(run.get('requested_count') or 1)
+        updated = _submit_workbench_attempt(job_uid, run, client, payload,
+                                          f"ai_image_{job_uid}_{run['run_uid']}")
+        latest = _find_workbench_run(updated, run['run_uid'])
+        if latest.get('status') in {'queued', 'running'}:
+            _schedule_workbench_poll(job_uid, run['run_uid'], client, poll_submitter=poll_submitter)
+        return updated
 
-    with executor_factory(max_workers=min(len(batch_runs), 100)) as executor:
-        future_to_run = {executor.submit(create_one, run): run for run in batch_runs}
-        for future in as_completed(future_to_run):
-            run = future_to_run[future]
-            run_uid = _compact(run.get("run_uid"))
-            try:
-                _, task = future.result()
-                patch = _workbench_run_patch(
-                    task,
-                    requested_count=int(run.get("requested_count") or 1),
-                )
-            except Exception as exc:
-                patch = {
-                    "status": "failed",
-                    "provider_status": "failed",
-                    "error": _sanitize_error(exc, [api_key]),
-                }
-            updated = _update_workbench_run(job_uid, run_uid, patch)
-            latest_run = next(
-                (item for item in (updated.get("summary") or {}).get("runs") or [] if item.get("run_uid") == run_uid),
-                {},
-            )
-            if latest_run.get("status") in {"queued", "running"}:
-                poller(poll_workbench_run, job_uid, run_uid, client)
+    try:
+        with executor_factory(max_workers=min(len(batch_runs), 100)) as executor:
+            futures = [executor.submit(create_one, run) for run in batch_runs]
+            for future in as_completed(futures):
+                future.result()
+    finally:
+        with _workbench_job_lock(job_uid):
+            for run in batch_runs:
+                _WORKBENCH_ACTIVE_SUBMISSIONS.discard((job_uid, run['run_uid']))
 
     final_job = data_sink.get_ai_image_job(job_uid) or job
     final_runs = [

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from core import runtime_paths
+from core.execution_checkpoint import execution_checkpoint
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
 
 MATERIAL_IMPORT_DETAIL_CHUNK_SIZE = 1000
@@ -36,7 +37,7 @@ class _LeaseKeeper:
         self._renew = renew
         self._interval = max(0.001, float(interval or LEASE_RENEW_INTERVAL_SECONDS))
         self._stop_event = threading.Event()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._error: Exception | None = None
         self._thread = threading.Thread(target=self._run, name="cloud-job-lease-keeper", daemon=True)
 
@@ -57,12 +58,15 @@ class _LeaseKeeper:
 
     def _run(self) -> None:
         while not self._stop_event.wait(self._interval):
-            try:
-                self._renew()
-            except Exception as exc:
-                self._set_error(exc)
-                self._stop_event.set()
-                return
+            # A checkpoint must not pass between receipt of a failed renewal
+            # and publication of its error to the operation thread.
+            with self._lock:
+                try:
+                    self._renew()
+                except Exception as exc:
+                    self._set_error(exc)
+                    self._stop_event.set()
+                    return
 
     def _set_error(self, error: Exception) -> None:
         with self._lock:
@@ -424,7 +428,8 @@ class CloudJobExecutor:
         keeper = _LeaseKeeper(lambda: self._renew(job), self.lease_renew_interval)
         keeper.start()
         try:
-            result = operation()
+            with execution_checkpoint(keeper.raise_if_failed):
+                result = operation()
         finally:
             keeper.stop()
         keeper.raise_if_failed()

@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
+from core.execution_checkpoint import check_execution
 
 
 UPSTREAM_BASE_URL = "https://api.1xm.ai/v1"
@@ -28,6 +29,10 @@ class OneXMImageError(RuntimeError):
 
 class RetryableOneXMImageError(OneXMImageError):
     """Network or upstream errors that can be retried safely."""
+
+
+class RejectedOneXMImageError(OneXMImageError):
+    """The HTTP endpoint explicitly rejected the request (non-retryable)."""
 
 
 def _compact(value: object) -> str:
@@ -82,7 +87,7 @@ def _default_transport(method: str, url: str, headers: Optional[Mapping[str, str
         payload = _parse_json_bytes(exc.read() or b"{}")
         if exc.code in RETRYABLE_STATUS_CODES:
             raise RetryableOneXMImageError(_error_message(payload, f"HTTP {exc.code}")) from exc
-        raise OneXMImageError(_error_message(payload, f"HTTP {exc.code}")) from exc
+        raise RejectedOneXMImageError(_error_message(payload, f"HTTP {exc.code}")) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise RetryableOneXMImageError(str(exc)) from exc
 
@@ -173,6 +178,7 @@ class OneXMImageClient:
         idempotency_key: str = "",
         timeout: int = 30,
     ) -> dict[str, Any]:
+        check_execution()
         status, body = self.transport(
             method.upper(),
             _join_url(self.base_url, path_or_url),
@@ -183,7 +189,7 @@ class OneXMImageClient:
         if status < 200 or status >= 300:
             if status in RETRYABLE_STATUS_CODES:
                 raise RetryableOneXMImageError(_error_message(body, f"HTTP {status}"))
-            raise OneXMImageError(_error_message(body, f"HTTP {status}"))
+            raise RejectedOneXMImageError(_error_message(body, f"HTTP {status}"))
         return body if isinstance(body, dict) else {}
 
     def create_task(
@@ -219,7 +225,7 @@ class OneXMImageClient:
         sleep_fn: Callable[[float], None] = time.sleep,
     ) -> dict[str, Any]:
         target = _route_default_poll_url_through_base(self.base_url, poll_url_or_task_id)
-        if not target.startswith("http://") and not target.startswith("https://"):
+        if not target.startswith(("http://", "https://", "/")):
             target = f"/images/tasks/{target}"
         return _retry_call(
             lambda: self.request_json("GET", target, timeout=timeout),

@@ -3375,6 +3375,7 @@ TMALL_UPLOAD_CREATE_JS = r"""
     form.append('name', name);
     form.append('_tb_token_', getCookieValue('_tb_token_'));
     form.append('file', await dataUrlToBlob(dataUrl), name);
+    if (typeof __crawshrimpCheckpoint === 'function') await __crawshrimpCheckpoint();
     const response = await fetch(`https://stream-upload.taobao.com/api/upload.api?${query.toString()}`, {
       method: 'POST',
       credentials: 'include',
@@ -3403,6 +3404,7 @@ TMALL_UPLOAD_CREATE_JS = r"""
     }
     let payload = null;
     try {
+      if (typeof __crawshrimpCheckpoint === 'function') await __crawshrimpCheckpoint();
       payload = await client.request({
         api,
         v: options.v || '1.0',
@@ -4286,7 +4288,9 @@ async def upload_and_create_tmall_task(
         "batch_delay_ms": max(0, int(float(batch_delay_seconds or 0) * 1000)),
         "readback_delay_ms": max(0, int(float(readback_delay_seconds or 0) * 1000)),
     }
-    result = await runner.evaluate_with_reconnect(js_call(TMALL_UPLOAD_CREATE_JS, payload), allow_navigation_retry=True)
+    result = await runner.evaluate_with_reconnect(
+        '/* crawshrimp:checkpoints */' + js_call(TMALL_UPLOAD_CREATE_JS, payload), allow_navigation_retry=True,
+    )
     if not result.success:
         raise RuntimeError(result.error or "天猫上传/创建测图任务失败")
     return (result.data[0] if isinstance(result.data, list) and result.data else {}) if result.data is not None else {}
@@ -4399,6 +4403,8 @@ def submit_progress_message_for_plan(plan: Mapping[str, Any], workflow: Workflow
 
 
 async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[str, Any]:
+    from core.execution_checkpoint import check_execution
+    check_execution()
     log = log or (lambda _message: None)
     batch["test_task_status"] = "creating"
     if compact(batch.get("execution_mode")) == "approval_then_create":
@@ -4496,6 +4502,7 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
     batch["status"] = "submitting"
     persist_submit_progress("running", message="准备提交已确认图片")
     for plan in plans:
+        check_execution()
         workflow = workflow_from_dict(plan.get("workflow") or {})
         existing_row = previous_latest_rows.get(workflow.style_code)
         plan_message = submit_progress_message_for_plan(plan, workflow)

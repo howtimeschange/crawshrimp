@@ -337,11 +337,11 @@
                     </div>
                   </div>
                   <div v-else class="aiw-failed-preview">
-                    <strong>生成失败</strong>
+                    <strong>{{ item.error_code === 'UNKNOWN_SUBMIT_RESULT' ? '提交结果待核实' : '生成失败' }}</strong>
                     <span>{{ generationFailureMessage(item.error) }}</span>
                     <small v-if="retrySummaryText(item)">{{ retrySummaryText(item) }}</small>
                     <div class="aiw-failed-actions">
-                      <button type="button" :disabled="retryingRunUids.has(item.runUid)" @click.stop="retryFailedRun(item)">
+                      <button v-if="item.error_code !== 'UNKNOWN_SUBMIT_RESULT'" type="button" :disabled="retryingRunUids.has(item.runUid)" @click.stop="retryFailedRun(item)">
                         <span class="aiw-icon-button-content"><AiwIcon name="rotate-ccw" />{{ retryingRunUids.has(item.runUid) ? '重试提交中...' : '重试本队列' }}</span>
                       </button>
                       <button type="button" @click.stop="copyFailedPrompt(item)">
@@ -2383,6 +2383,7 @@ function workbenchRunPlaceholders(job, run, index) {
       label: run.title || `队列 ${index + 1}`,
       prompt: run.prompt || '',
       error: run.error || '1XM 任务执行失败',
+      error_code: run.error_code || '',
       jobUid: job?.job_uid || '',
       runUid: run.run_uid || '',
       requested_count: Number(run.requested_count || 1),
@@ -3040,6 +3041,7 @@ function announceStatus(message) {
 }
 
 async function retryFailedRun(item) {
+  if (item?.error_code === 'UNKNOWN_SUBMIT_RESULT') return
   const jobUid = resultOwnerJobUid(item)
   const runUid = String(item?.runUid || '').trim()
   if (!jobUid || !runUid || retryingRunUids.has(runUid)) return

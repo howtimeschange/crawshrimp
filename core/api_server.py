@@ -9189,6 +9189,10 @@ async def lifespan(app: FastAPI):
             ai_video_generation_service.ensure_worker_started()
         except Exception:
             logger.exception("ai video generation recovery failed; continuing without active video recovery")
+        try:
+            ai_image_service.ensure_workbench_worker_started()
+        except Exception:
+            logger.exception("ai image generation recovery failed; continuing without active image recovery")
     logger.info("crawshrimp core started")
     try:
         yield
@@ -9202,6 +9206,8 @@ async def lifespan(app: FastAPI):
             ai_video_generation_service.stop_worker()
         except Exception:
             logger.exception("ai video worker shutdown failed")
+        if owns_backend_instance:
+            ai_image_service.stop_workbench_worker()
         app.state.owns_backend_instance = False
         instance_lock.close()
 

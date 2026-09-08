@@ -767,6 +767,13 @@ def get_ai_image_job(job_uid: str) -> Optional[dict]:
     return _ai_image_job_from_row(row)
 
 
+def list_active_ai_image_jobs() -> list[dict]:
+    """Recovery must not be limited to the most recent UI history page."""
+    with _get_conn() as conn:
+        rows = conn.execute("SELECT * FROM ai_image_jobs WHERE status IN ('queued', 'running')").fetchall()
+    return [_ai_image_job_from_row(row) for row in rows]
+
+
 def list_ai_image_jobs(limit: int = 100) -> list[dict]:
     try:
         safe_limit = max(1, min(int(limit), 500))

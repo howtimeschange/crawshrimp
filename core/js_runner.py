@@ -25,6 +25,7 @@ from urllib.request import Request, build_opener, urlopen, ProxyHandler
 import websockets
 
 from core.models import JSResult
+from core.execution_checkpoint import check_execution, has_execution_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +460,9 @@ class JSRunner:
         return await self._bridge_call_async("close_tab_async", "close_tab", tab_id)
 
     async def _evaluate_raw(self, expression: str, user_gesture: bool = False) -> dict:
+        check_execution()
+        if has_execution_checkpoint() and expression.lstrip().startswith('/* crawshrimp:checkpoints */'):
+            return await self._evaluate_checkpointed_raw(expression, user_gesture=user_gesture)
         msg_id = self._next_id()
         payload = json.dumps({
             "id": msg_id,
@@ -472,12 +476,80 @@ class JSRunner:
             }
         })
         async with websockets.connect(self.ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
+            check_execution()
             await ws.send(payload)
             while True:
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.timeout + 5)
                 msg = json.loads(raw)
                 if msg.get("id") == msg_id:
                     return msg
+
+    async def _evaluate_checkpointed_raw(self, expression: str, user_gesture: bool = False) -> dict:
+        """A browser write asks the host for the current lease, not a cached flag.
+
+        Already-sent requests finish normally so their receipts can be saved.
+        Only scripts with explicit per-request checkpoints use this bridge.
+        """
+        binding = '__crawshrimp_check_' + secrets.token_hex(12)
+        pending = binding + '_pending'
+        wrapped = f'''(async () => {{
+          const pending = globalThis[{json.dumps(pending)}] = new Map();
+          let sequence = 0;
+          const __crawshrimpCheckpoint = () => new Promise((resolve, reject) => {{
+            const id = ++sequence;
+            pending.set(id, error => {{ pending.delete(id); error ? reject(new Error(error)) : resolve(); }});
+            globalThis[{json.dumps(binding)}](JSON.stringify({{id}}));
+          }});
+          try {{ return await ({expression}); }}
+          finally {{ delete globalThis[{json.dumps(pending)}]; delete globalThis[{json.dumps(binding)}]; }}
+        }})()'''
+        async with websockets.connect(self.ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
+            enable_id = self._next_id()
+            await ws.send(json.dumps({'id': enable_id, 'method': 'Runtime.enable', 'params': {}}))
+            while True:
+                reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                if reply.get('id') == enable_id:
+                    if 'error' in reply:
+                        raise RuntimeError('无法启用云端租约检查，已阻止提交')
+                    break
+            add_id = self._next_id()
+            await ws.send(json.dumps({'id': add_id, 'method': 'Runtime.addBinding', 'params': {'name': binding}}))
+            while True:
+                reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                if reply.get('id') == add_id:
+                    if 'error' in reply:
+                        raise RuntimeError('无法建立云端租约检查，已阻止提交')
+                    break
+            try:
+                check_execution()
+                msg_id = self._next_id()
+                await ws.send(json.dumps({'id': msg_id, 'method': 'Runtime.evaluate', 'params': {
+                    'expression': wrapped, 'awaitPromise': True, 'returnByValue': True,
+                    'timeout': self.timeout * 1000, 'userGesture': user_gesture,
+                }}))
+                async with asyncio.timeout(self.timeout + 5):
+                    while True:
+                        reply = json.loads(await ws.recv())
+                        if reply.get('id') == msg_id:
+                            return reply
+                        event = reply.get('params') or {}
+                        if reply.get('method') != 'Runtime.bindingCalled' or event.get('name') != binding:
+                            continue
+                        sequence = int(json.loads(event['payload'])['id'])
+                        error = ''
+                        try:
+                            check_execution()
+                        except Exception:
+                            error = '云端任务已取消或租约失效，已阻止后续提交'
+                        await ws.send(json.dumps({'id': self._next_id(), 'method': 'Runtime.evaluate', 'params': {
+                            'expression': f'globalThis[{json.dumps(pending)}]?.get({sequence})?.({json.dumps(error)})',
+                            'contextId': event['executionContextId'],
+                        }}))
+            finally:
+                try:
+                    await ws.send(json.dumps({'id': self._next_id(), 'method': 'Runtime.removeBinding', 'params': {'name': binding}}))
+                except Exception:
+                    pass
 
     async def _cdp_send(self, method: str, params: dict) -> dict:
         """直接通过 CDP WebSocket 发送任意命令（非 Runtime.evaluate）"""
@@ -3786,6 +3858,7 @@ class JSRunner:
         }
 
     async def evaluate(self, expression: str, user_gesture: bool = False) -> JSResult:
+        check_execution()
         try:
             msg = await self._evaluate_raw(expression, user_gesture=user_gesture)
         except asyncio.TimeoutError:
@@ -3981,7 +4054,7 @@ class JSRunner:
 
         retry = 0
         while not result.success and retry < 4:
-            navigation_error = self._is_navigation_error(result.error or "")
+            navigation_error = self._retry_transient_cdp_errors and self._is_navigation_error(result.error or "")
             transport_error = (
                 self._retry_transient_cdp_errors
                 and self._is_transient_cdp_transport_error(result.error or "")
@@ -4081,6 +4154,10 @@ class JSRunner:
                             error_message = str(result.error or "").strip() or "脚本执行失败：未返回错误详情"
                             if error_message == "timeout" and not retry_transient_cdp_errors:
                                 error_message = "脚本执行超时，结果待核实；未自动重试，请先核实平台结果，避免重复提交"
+                            elif not retry_transient_cdp_errors and (
+                                self._is_navigation_error(error_message) or self._is_transient_cdp_transport_error(error_message)
+                            ):
+                                error_message += '；结果待核实，未自动重试，请先核实平台结果，避免重复提交'
                             logger.error(f"脚本执行失败 (page={page}, phase={phase}): {error_message}")
                             raise RuntimeError(error_message)
 
