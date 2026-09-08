@@ -1403,7 +1403,7 @@
               :disabled="materialRecallClearBusy || !materialRecallClearLocalPathCount"
               @click="confirmMaterialRecallClear(true)"
             >
-              {{ materialRecallClearBusy ? '正在清理...' : '清除本地图片' }}
+              {{ materialRecallClearBusy ? (materialRecallClearProgress || '正在清理...') : '清除本地图片' }}
             </button>
           </div>
         </footer>
@@ -2264,6 +2264,7 @@ const materialRecallHiddenPaths = reactive(new Set())
 const pendingMaterialRecallClear = ref(null)
 const materialRecallClearBusy = ref(false)
 const materialRecallClearError = ref('')
+const materialRecallClearProgress = ref('')
 const selectedTemplateId = ref('')
 const selectedModel = ref(null)
 const sourceModelAssignments = reactive({})
@@ -3629,6 +3630,8 @@ let previewAnnotationResolve = null
 let previewAnnotationReject = null
 let previewAnnotationTimer = null
 let workspaceFileSyncTimer = null
+let workspaceFileSyncBusy = false
+let workspaceFileSyncGeneration = 0
 
 function pruneSourceModelAssignments() {
   const validKeys = new Set(styleWorkspaces.flatMap(style => workspaceImageSources(style).flatMap(source => [
@@ -3765,11 +3768,16 @@ function localImageCacheKey(path = '', thumbnail = false) {
   return thumbnail ? `thumb:${key}` : key
 }
 
+const localImagePreviewRequests = new Map()
+
 async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
   const key = String(path || '').trim()
   if (!key) return
   const cacheKey = localImageCacheKey(key, thumbnail)
   if (!cacheKey || localImagePreviews[cacheKey] || brokenPreviews[cacheKey] || localImagePreviewLoading.has(cacheKey)) return
+  const request = { workspace: workspaceDir.value }
+  localImagePreviewRequests.set(cacheKey, request)
+  const isCurrent = () => localImagePreviewRequests.get(cacheKey) === request && workspaceDir.value === request.workspace
   localImagePreviewLoading.add(cacheKey)
   try {
     let dataUrl = ''
@@ -3800,11 +3808,14 @@ async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
       dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
     }
     if (!dataUrl) throw new Error(thumbnail ? '本地缩略图不可用' : '本地图片预览不可用')
-    localImagePreviews[cacheKey] = dataUrl
+    if (isCurrent()) localImagePreviews[cacheKey] = dataUrl
   } catch {
-    brokenPreviews[cacheKey] = true
+    if (isCurrent()) brokenPreviews[cacheKey] = true
   } finally {
-    localImagePreviewLoading.delete(cacheKey)
+    if (localImagePreviewRequests.get(cacheKey) === request) {
+      localImagePreviewLoading.delete(cacheKey)
+      localImagePreviewRequests.delete(cacheKey)
+    }
   }
 }
 
@@ -4212,6 +4223,9 @@ function persistWorkspaceDir(path = '') {
 }
 
 function resetMaterialWorkspace() {
+  workspaceFileSyncGeneration += 1
+  localImagePreviewRequests.clear()
+  localImagePreviewLoading.clear()
   resetMaterialPoll()
   materialPollRunId = ''
   materialBatch.value = null
@@ -4242,6 +4256,8 @@ function resetMaterialWorkspace() {
 }
 
 function releaseWorkspacePreviews() {
+  localImagePreviewRequests.clear()
+  localImagePreviewLoading.clear()
   for (const key of Object.keys(localVideoPreviews)) delete localVideoPreviews[key]
   for (const key of Object.keys(localImagePreviews)) delete localImagePreviews[key]
   for (const key of Object.keys(brokenPreviews)) delete brokenPreviews[key]
@@ -4268,6 +4284,10 @@ function releaseWorkspaceImagePreviews(paths = []) {
   for (const path of paths) {
     const key = String(path || '').trim()
     if (!key) continue
+    for (const cacheKey of [key, localImageCacheKey(key, true)]) {
+      localImagePreviewRequests.delete(cacheKey)
+      localImagePreviewLoading.delete(cacheKey)
+    }
     delete localImagePreviews[key]
     delete localImagePreviews[localImageCacheKey(key, true)]
     delete brokenPreviews[key]
@@ -4318,20 +4338,32 @@ function applyWorkspaceVideoFileSync(files = []) {
 }
 
 async function syncWorkspaceFiles() {
-  if (!workspaceDir.value) return
+  if (!workspaceDir.value || workspaceFileSyncBusy || materialRecallClearBusy.value) return
+  const workspace = workspaceDir.value
+  const generation = workspaceFileSyncGeneration
+  const isCurrent = () => workspaceDir.value === workspace
+    && generation === workspaceFileSyncGeneration && !materialRecallClearBusy.value
+  workspaceFileSyncBusy = true
   try {
-    if (typeof window.cs?.listBalaWorkspaceImages === 'function') {
-      applyWorkspaceFileSync(await window.cs.listBalaWorkspaceImages(workspaceDir.value))
+    try {
+      if (typeof window.cs?.listBalaWorkspaceImages === 'function') {
+        const files = await window.cs.listBalaWorkspaceImages(workspace)
+        if (isCurrent()) applyWorkspaceFileSync(files)
+      }
+    } catch {
+      // Files may change while the directory is being scanned; retry next poll.
     }
-  } catch {
-    // Folder changes can race Finder writes; the next poll will retry safely.
-  }
-  try {
-    if (typeof window.cs?.listBalaWorkspaceVideos === 'function') {
-      applyWorkspaceVideoFileSync(await window.cs.listBalaWorkspaceVideos(workspaceDir.value))
+    if (!isCurrent()) return
+    try {
+      if (typeof window.cs?.listBalaWorkspaceVideos === 'function') {
+        const files = await window.cs.listBalaWorkspaceVideos(workspace)
+        if (isCurrent()) applyWorkspaceVideoFileSync(files)
+      }
+    } catch {
+      // Video downloads can race directory scans.
     }
-  } catch {
-    // Folder changes can race video downloads; the next poll will retry safely.
+  } finally {
+    workspaceFileSyncBusy = false
   }
 }
 
@@ -4412,6 +4444,9 @@ async function deleteMaterialRecallLocalImages(paths = []) {
     const result = await window.cs.deleteBalaWorkspaceImage(workspaceDir.value, path)
     if (result?.ok === false) throw new Error(result?.error || `删除本地图片失败：${path}`)
     deleted += 1
+    if (deleted % 25 === 0 || deleted === targets.length) {
+      materialRecallClearProgress.value = `正在清理 ${deleted}/${targets.length}`
+    }
   }
   return { deleted }
 }
@@ -4441,6 +4476,8 @@ async function confirmMaterialRecallClear(deleteLocalFiles = false) {
   if (!pending || materialRecallClearBusy.value) return
   const localPaths = materialRecallLocalPathsForPending(pending)
   materialRecallClearBusy.value = true
+  workspaceFileSyncGeneration += 1
+  materialRecallClearProgress.value = ''
   materialRecallClearError.value = ''
   try {
     const deletion = deleteLocalFiles ? await deleteMaterialRecallLocalImages(localPaths) : { deleted: 0 }
@@ -9482,6 +9519,9 @@ watch([displayedVideoTaskAssets, () => videoTaskDialogOpen.value], async ([, ope
 })
 
 onBeforeUnmount(() => {
+  localImagePreviewRequests.clear()
+  localImagePreviewLoading.clear()
+  workspaceFileSyncGeneration += 1
   cancelVideoTaskPromptGeneration({ silent: true })
   resetMaterialPoll()
   resetAiPoll()

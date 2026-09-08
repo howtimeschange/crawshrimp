@@ -702,7 +702,10 @@ def _short_video_cached_rows_from_shared(shared_state: Optional[dict], error: st
         status = str(work.get(work_key) or "").strip()
         if status:
             return status
-        return "执行中断" if bool(job.get(enabled_key)) else "已关闭"
+        if not bool(job.get(enabled_key)):
+            return "已关闭"
+        pending_phase = {"guang_status": "wait_guang_receipt", "recommend_status": "wait_recommend_receipt"}.get(work_key)
+        return "回执待核实，请勿重复发布" if phase == pending_phase else "执行中断"
 
     rows.append({
         "款号": style_code,
@@ -8530,9 +8533,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
             return merge_output_file_refs(runtime_files, exported_files)
 
-        async def export_short_video_cached_rows_on_error(error_message: str) -> tuple[list[dict], list[str]]:
+        def recover_short_video_cached_rows(current_rows, error_message: str) -> list[dict]:
             if not _is_bala_short_video_batch_upload(adapter_id, task_id) or not runner:
-                return [], []
+                return list(current_rows or [])
             cached_shared = {}
             if run_control and isinstance(run_control.get('shared_progress'), dict):
                 cached_shared.update(run_control.get('shared_progress') or {})
@@ -8541,13 +8544,28 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 cached_shared.update(runner_shared)
             phase_name = str(getattr(runner, 'last_runtime_phase', '') or '').strip()
             cached_rows = _short_video_cached_rows_from_shared(cached_shared, error_message, phase_name)
-            cached_rows = _apply_final_export_guards(adapter_id, task_id, cached_rows)
+            # Partial data can overlap the shared cache; prefer its latest fields.
+            rows, positions = [], {}
+            for row in [*cached_rows, *(current_rows or [])]:
+                if not isinstance(row, dict):
+                    continue
+                key = (str(row.get("ID") or ""), str(row.get("款号") or ""))
+                if any(key) and key in positions:
+                    rows[positions[key]].update(row)
+                elif row not in rows:
+                    if any(key):
+                        positions[key] = len(rows)
+                    rows.append(dict(row))
+            return rows
+
+        async def export_short_video_cached_rows_on_error(error_message: str) -> tuple[list[dict], list[str]]:
+            cached_rows = recover_short_video_cached_rows(data, error_message)
             if not cached_rows:
                 return [], []
             runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
             exported_files = await export_outputs(cached_rows)
             finalized_files = await finalize_output_files(cached_rows, runtime_files, exported_files)
-            log(f"[warn] 短视频任务异常中断，已导出缓存结果 {len(cached_rows)} 行")
+            log(f"[warn] 短视频任务中断，已导出缓存结果 {len(cached_rows)} 行")
             return cached_rows, finalized_files
 
         def recover_shenhui_shoe_partial_rows(current_rows) -> list[dict]:
@@ -8917,6 +8935,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     except RunAbortedError as e:
         err = e.reason or str(e)
         data = list(e.partial_data or data or [])
+        if 'recover_short_video_cached_rows' in locals():
+            data = recover_short_video_cached_rows(data, err)
         if 'recover_shenhui_shoe_partial_rows' in locals():
             data = recover_shenhui_shoe_partial_rows(data)
         raw_count = len(data)

@@ -4012,7 +4012,8 @@ class JSRunner:
         params: 用户填写的参数，注入为 window.__CRAWSHRIMP_PARAMS__
 
         retry_transient_cdp_errors: 仅供幂等、只读脚本开启。Chrome 的 CDP
-        WebSocket 非正常断开且结果未返回时，会重新执行当前阶段。
+        WebSocket 非正常断开或阶段超时且结果未返回时，会重新执行当前阶段。
+        写入脚本默认禁止超时重放，回执未知时交由适配器查询核实。
         """
         script = script_path.read_text(encoding="utf-8")
         all_data: List[dict] = []
@@ -4066,7 +4067,7 @@ class JSRunner:
                             result = await self.evaluate_with_reconnect(payload, allow_navigation_retry=True)
                             if result.success:
                                 break
-                            if result.error != "timeout" or timeout_retry:
+                            if result.error != "timeout" or timeout_retry or not retry_transient_cdp_errors:
                                 break
                             timeout_retry = True
                             logger.info(f"脚本超时，先刷新当前页面后重试 (page={page}, phase={phase})")
@@ -4078,6 +4079,8 @@ class JSRunner:
 
                         if not result.success:
                             error_message = str(result.error or "").strip() or "脚本执行失败：未返回错误详情"
+                            if error_message == "timeout" and not retry_transient_cdp_errors:
+                                error_message = "脚本执行超时，结果待核实；未自动重试，请先核实平台结果，避免重复提交"
                             logger.error(f"脚本执行失败 (page={page}, phase={phase}): {error_message}")
                             raise RuntimeError(error_message)
 

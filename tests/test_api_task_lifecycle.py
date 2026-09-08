@@ -758,6 +758,15 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         finish_run.assert_called_once_with(2101, 1, [board_url])
 
     async def test_execute_short_video_batch_upload_exports_cached_rows_on_error(self):
+        await self._assert_short_video_cached_export()
+
+    async def test_execute_short_video_batch_upload_exports_cached_rows_on_stop(self):
+        await self._assert_short_video_cached_export(stopped=True)
+
+    async def test_execute_short_video_stop_preserves_unknown_publish_receipt(self):
+        await self._assert_short_video_cached_export(stopped=True, pending=True)
+
+    async def _assert_short_video_cached_export(self, stopped=False, pending=False):
         class FakeBridge:
             def __init__(self):
                 self.tab = {
@@ -808,7 +817,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
 
             async def run_script_file(self, script_path, params=None, control_hook=None, *, retry_transient_cdp_errors=False):
-                self.last_runtime_phase = "wait_product_readback"
+                self.last_runtime_phase = "wait_recommend_receipt" if pending else "wait_product_readback"
                 self.last_runtime_shared = {
                     "total_rows": 3,
                     "current_exec_no": 2,
@@ -843,6 +852,9 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                         "shared": self.last_runtime_shared,
                         "records": 0,
                     })
+                if stopped:
+                    from core.js_runner import RunAbortedError
+                    raise RunAbortedError("任务已停止", partial_data=[{"ID": "100000001", "款号": "style-1", "上传情况": "光合：成功"}])
                 raise RuntimeError("无法连接 Chrome CDP (http://127.0.0.1:9222)")
 
         class FakeTask:
@@ -900,8 +912,8 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                                 with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
                                     with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
                                         with patch("core.api_server.data_sink.export_excel", side_effect=fake_export_excel):
-                                            with patch("core.api_server.data_sink.fail_run") as fail_run:
-                                                with self.assertRaisesRegex(RuntimeError, "无法连接 Chrome CDP"):
+                                            with patch("core.api_server.data_sink.stop_run" if stopped else "core.api_server.data_sink.fail_run") as fail_run:
+                                                with (contextlib.nullcontext() if stopped else self.assertRaisesRegex(RuntimeError, "无法连接 Chrome CDP")):
                                                     await api_server._execute_task(
                                                         "bala-ai-video-assistant",
                                                         "short_video_batch_upload",
@@ -913,11 +925,17 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(exported_rows), 3)
         self.assertEqual(exported_rows[-1]["ID"], "100000002")
         self.assertEqual(exported_rows[-1]["上传情况"], "执行中断")
-        self.assertIn("无法连接 Chrome CDP", exported_rows[-1]["备注"])
+        self.assertIn("任务已停止" if stopped else "无法连接 Chrome CDP", exported_rows[-1]["备注"])
+        self.assertEqual(exported_rows[-1]["内容ID"], "1234567890")
+        if pending:
+            self.assertIn("待核实", exported_rows[-1]["搜推素材状态"])
         fail_run.assert_called_once()
-        _, fail_kwargs = fail_run.call_args
-        self.assertEqual(fail_kwargs["records_count"], 3)
-        self.assertEqual(fail_kwargs["output_files"], [exported_path])
+        if stopped:
+            self.assertEqual(fail_run.call_args.args[1:3], (3, [exported_path]))
+        else:
+            _, fail_kwargs = fail_run.call_args
+            self.assertEqual(fail_kwargs["records_count"], 3)
+            self.assertEqual(fail_kwargs["output_files"], [exported_path])
 
     async def test_lifespan_uses_instance_lock_as_startup_owner(self):
         calls = []

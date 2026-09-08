@@ -611,3 +611,37 @@ test('ensureReady switches endpoint before launching when ready backend is forei
   assert.deepEqual(endpoints, [18766])
   assert.equal(startCount, 1)
 })
+
+test('one unavailable identity check never switches or stops a healthy backend', async () => {
+  let live = false, validation = true, switches = 0, stops = 0, starts = 0
+  const controller = createBackendController({
+    probeReady: async () => live,
+    validateReady: async () => validation,
+    switchEndpoint: async () => { switches++ },
+    startProcess: () => { starts++; live = true; return new EventEmitter() },
+    stopProcess: () => { stops++; live = false },
+    intervalMs: 1, attempts: 3,
+  })
+  await controller.ensureReady()
+  validation = null
+  await assert.rejects(controller.ensureReady(), /temporarily unavailable/)
+  assert.equal(controller.getState(), 'degraded')
+  validation = true
+  await controller.ensureReady()
+  assert.equal(controller.getState(), 'ready')
+  assert.deepEqual({ starts, stops, switches }, { starts: 1, stops: 0, switches: 0 })
+})
+
+test('startup retries an unavailable identity check on the same endpoint', async () => {
+  let live = false, checks = 0, switches = 0, stops = 0
+  const controller = createBackendController({
+    probeReady: async () => live,
+    validateReady: async () => ++checks === 1 ? null : true,
+    switchEndpoint: async () => { switches++ },
+    startProcess: () => { live = true; return new EventEmitter() },
+    stopProcess: () => { stops++ }, intervalMs: 1, attempts: 3,
+  })
+  await controller.ensureReady()
+  assert.equal(controller.getState(), 'ready')
+  assert.deepEqual({ stops, switches }, { stops: 0, switches: 0 })
+})

@@ -905,6 +905,31 @@
     }
   }
 
+  // CDP phases have a 60s budget, while publication alone can take 120s.
+  // Keep the request in the page and poll its receipt without replaying a POST.
+  function pollPublishReceipt(scene, { start = false, publish = publishPreparedContent, now = Date.now() } = {}) {
+    const key = `${window.__CRAWSHRIMP_RUN_TOKEN__ || ''}:${currentJob(shared).index}:${scene}`
+    const requests = window.__CRAWSHRIMP_VIDEO_PUBLISH_RECEIPTS__ ||= {}
+    let request = requests[scene]
+    if (!request || request.key !== key) {
+      if (!start) throw new Error('发布回执等待被页面刷新或关闭中断，结果待核对；请先在平台确认，勿重复发布')
+      request = requests[scene] = { key, startedAt: now, status: 'pending' }
+      Promise.resolve().then(() => publish(scene)).then(result => {
+        request.status = 'done'
+        request.result = result
+      }, error => {
+        request.status = 'error'
+        request.error = compact(error?.message || error)
+      })
+    }
+    if (request.status === 'error') throw new Error(request.error)
+    if (request.status === 'done') return request.result
+    if (now - request.startedAt > 180000) {
+      throw new Error('等待发布回执超过 180 秒，结果待核对；请先在平台确认，勿重复发布')
+    }
+    return null
+  }
+
   function normalizeItem(item, itemId) {
     const id = normalizeItemId(item?.itemId || item?.id || itemId)
     const title = compact(item?.title || item?.itemTitle || item?.name)
@@ -1440,6 +1465,7 @@
       authExpiredReason,
       markUnstartedTargetStatuses,
       resultRow,
+      pollPublishReceipt,
     })
   }
   if (phase === '__exports__') return complete([])
@@ -1566,11 +1592,12 @@
     }
   }
 
-  if (phase === 'publish_guang_api') {
+  if (phase === 'publish_guang_api' || phase === 'wait_guang_receipt') {
     try {
       const { job } = currentJob(shared)
       validatePublishReadback(job, currentWork(shared).guang_form_readback || {}, 'pc_newcreator_video')
-      const result = await publishPreparedContent('pc_newcreator_video')
+      const result = pollPublishReceipt('pc_newcreator_video', { start: phase === 'publish_guang_api' })
+      if (!result) return nextPhase('wait_guang_receipt', 1000, { ...shared, current_store: '等待光合发布回执' })
       assertUnusedContentId(shared, result.contentId, '光合', ['内容ID', '光合内容ID'])
       return routeAfterGuang(mergeWork(shared, {
         guang_status: '发布成功',
@@ -1648,11 +1675,12 @@
     }
   }
 
-  if (phase === 'publish_recommend_api') {
+  if (phase === 'publish_recommend_api' || phase === 'wait_recommend_receipt') {
     try {
       const { job } = currentJob(shared)
       validatePublishReadback(job, currentWork(shared).recommend_form_readback || {}, 'qn_material_manager')
-      const result = await publishPreparedContent('qn_material_manager')
+      const result = pollPublishReceipt('qn_material_manager', { start: phase === 'publish_recommend_api' })
+      if (!result) return nextPhase('wait_recommend_receipt', 1000, { ...shared, current_store: '等待搜推发布回执' })
       assertUnusedContentId(shared, result.contentId, '搜推', ['搜推内容ID'])
       return routeAfterRecommend(mergeWork(shared, {
         recommend_status: '发布成功',

@@ -321,8 +321,8 @@ test('workspace file sync scans local videos and restores result records', () =>
   assert.match(syncSource, /restoreBalaVideoResultsFromWorkspaceFiles\(\{\s*tasks: videoTasks,\s*results: videoResults,\s*files,/)
   assert.match(syncSource, /upsertVideoResults\(restored\)/)
   assert.match(syncSource, /task\.status = '已完成'/)
-  assert.match(syncSource, /listBalaWorkspaceImages\(workspaceDir\.value\)/)
-  assert.match(syncSource, /listBalaWorkspaceVideos\(workspaceDir\.value\)/)
+  assert.match(syncSource, /listBalaWorkspaceImages\(workspace\)/)
+  assert.match(syncSource, /listBalaWorkspaceVideos\(workspace\)/)
 })
 
 test('material workspace exposes two-level clear actions and releases them on explicit rerun', () => {

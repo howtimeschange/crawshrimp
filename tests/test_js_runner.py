@@ -1460,6 +1460,33 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runner.calls[0]["phase"], "main")
         self.assertTrue(runner.calls[0]["allow_navigation_retry"])
 
+    async def test_timeout_replay_requires_explicit_read_only_contract(self):
+        class TimeoutRunner(JSRunner):
+            def __init__(self):
+                super().__init__("ws://example.invalid")
+                self.calls = 0
+                self.reloads = 0
+            async def _persist_run_params(self, *args): pass
+            async def _clear_run_params(self, *args): pass
+            async def _reload_current_page(self): self.reloads += 1
+            async def evaluate(self, *args, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return JSResult(success=False, error="timeout")
+                return JSResult(success=True, data=[{"id": "committed"}], meta={"has_more": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "submit.js"
+            script.write_text("/* platform request */")
+            writer = TimeoutRunner()
+            with self.assertRaisesRegex(RuntimeError, "结果待核实"):
+                await writer.run_script_file(script)
+            self.assertEqual((writer.calls, writer.reloads), (1, 0))
+            reader = TimeoutRunner()
+            result = await reader.run_script_file(script, retry_transient_cdp_errors=True)
+            self.assertEqual(result, [{"id": "committed"}])
+            self.assertEqual((reader.calls, reader.reloads), (2, 1))
+
     async def test_run_script_file_replaces_empty_script_error_with_readable_message(self):
         class EmptyErrorRunner(JSRunner):
             def __init__(self):

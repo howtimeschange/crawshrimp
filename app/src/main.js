@@ -3,7 +3,7 @@
 // Prevent child processes from accidentally inheriting ELECTRON_RUN_AS_NODE
 delete process.env.ELECTRON_RUN_AS_NODE
 
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session, powerMonitor, protocol, nativeImage } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session, powerMonitor, protocol } = require('electron')
 const { Notification } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path   = require('path')
@@ -16,6 +16,8 @@ const { fileURLToPath } = require('url')
 const { Readable } = require('stream')
 const { spawn, execSync, execFileSync } = require('child_process')
 const { createBackendController } = require('./backendController')
+const { createPdfPreviewWorker } = require('./pdfPreviewWorker')
+const pdfPreviewWorker = createPdfPreviewWorker()
 const { createLifecycleController } = require('./lifecycleController')
 const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChrome')
 const { startDesktopServices } = require('./startupServices')
@@ -40,14 +42,13 @@ const { createUpdateCheckScheduler } = require('./updateCheckScheduler')
 const { evaluateUpdatePlatform, resolveUpdateFeedUrl } = require('./updatePlatform')
 const {
   authorizeBalaWorkspaceRoot,
-  deleteAuthorizedWorkspaceImage,
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
-  listAuthorizedBalaWorkspaceImages,
-  listAuthorizedBalaWorkspaceVideos,
-  readAuthorizedBalaWorkspaceManifest,
-  writeAuthorizedBalaWorkspaceManifest,
 } = require('./balaWorkspaceFiles')
+const { createWorkspaceFileWorker } = require('./balaWorkspaceWorker')
+const workspaceFileWorker = createWorkspaceFileWorker()
+const { createThumbnailReader } = require('./localImageThumbnail')
+const readThumbnailAsync = createThumbnailReader({ getPythonBin })
 const APP_METADATA = require('../package.json')
 const APP_ID = 'com.crawshrimp.app'
 
@@ -787,37 +788,6 @@ async function saveExistingFileAs(resolvedSrcPath) {
   return { ok: true, dest: res.filePath }
 }
 
-function findQuickLookPdfPreview(pdfPath, outputDir) {
-  const candidates = [
-    path.join(outputDir, `${path.basename(pdfPath)}.png`),
-    path.join(outputDir, `${path.basename(pdfPath, path.extname(pdfPath))}.png`),
-  ]
-  const stack = [outputDir]
-  while (stack.length) {
-    const dir = stack.pop()
-    for (const name of fs.readdirSync(dir)) {
-      const candidate = path.join(dir, name)
-      const stat = fs.statSync(candidate)
-      if (stat.isDirectory()) stack.push(candidate)
-      if (stat.isFile() && /\.(png|jpg|jpeg)$/i.test(name)) candidates.push(candidate)
-    }
-  }
-  return candidates.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) || ''
-}
-
-function pdfPreviewPageFromImage(imagePath, page, width = 0, height = 0) {
-  const raw = fs.readFileSync(imagePath)
-  const ext = path.extname(imagePath).toLowerCase()
-  const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png'
-  return {
-    page,
-    preview_path: imagePath,
-    width,
-    height,
-    data_url: `data:${mime};base64,${raw.toString('base64')}`,
-  }
-}
-
 function resolveLocalImagePath(rawPath = '') {
   const value = String(rawPath || '').trim()
   if (!value) return ''
@@ -855,213 +825,12 @@ function readLocalImageDataUrl(rawPath = '') {
 
 /**
  * Resize local images for grid thumbnails. Avoids loading multi‑MB originals as data URLs.
- * Prefer Electron nativeImage; fall back to macOS sips.
+ * Decode and resize outside the main thread, with bounded concurrency.
  */
 function readLocalImageThumbnail(rawPath = '', opts = {}) {
   const imagePath = resolveLocalImagePath(rawPath)
-  const mime = imageMimeForPath(imagePath)
-  if (!imagePath || !mime) throw new Error('请选择 PNG、JPG、WEBP 或 GIF 图片')
-  const stat = fs.statSync(imagePath)
-  if (!stat.isFile()) throw new Error('图片文件不存在')
-  // Thumbnails can still be generated for larger sources than full preview.
-  if (stat.size > 80 * 1024 * 1024) throw new Error('图片超过 80MB，无法生成缩略图')
-
-  const maxEdge = Math.max(64, Math.min(Number(opts.maxEdge || opts.max_edge || 320) || 320, 1280))
-  const qualityPct = Math.round(Math.max(0.4, Math.min(Number(opts.quality || 0.72) || 0.72, 0.95)) * 100)
-
-  // Fast path: already tiny enough — return original bytes when small.
-  if (stat.size <= 120 * 1024) {
-    try {
-      return readLocalImageDataUrl(imagePath)
-    } catch {
-      // continue to resize path
-    }
-  }
-
-  try {
-    let image = nativeImage.createFromPath(imagePath)
-    if (!image.isEmpty()) {
-      const size = image.getSize()
-      const longEdge = Math.max(size.width || 0, size.height || 0)
-      if (longEdge > maxEdge && longEdge > 0) {
-        const scale = maxEdge / longEdge
-        image = image.resize({
-          width: Math.max(1, Math.round((size.width || maxEdge) * scale)),
-          height: Math.max(1, Math.round((size.height || maxEdge) * scale)),
-          quality: 'good',
-        })
-      }
-      const jpeg = image.toJPEG(qualityPct)
-      if (jpeg && jpeg.length) {
-        const outSize = image.getSize()
-        return {
-          ok: true,
-          path: imagePath,
-          data_url: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
-          width: outSize.width,
-          height: outSize.height,
-          bytes: jpeg.length,
-          thumbnail: true,
-        }
-      }
-    }
-  } catch {
-    // fall through to sips
-  }
-
-  // macOS sips fallback for formats/sizes nativeImage struggles with
-  if (process.platform === 'darwin') {
-    const sipsBin = '/usr/bin/sips'
-    if (fs.existsSync(sipsBin)) {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crawshrimp-thumb-'))
-      const tmpOut = path.join(tmpDir, 'thumb.jpg')
-      try {
-        execFileSync(sipsBin, ['-s', 'format', 'jpeg', '-Z', String(maxEdge), imagePath, '--out', tmpOut], {
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: 20000,
-        })
-        if (fs.existsSync(tmpOut)) {
-          const raw = fs.readFileSync(tmpOut)
-          return {
-            ok: true,
-            path: imagePath,
-            data_url: `data:image/jpeg;base64,${raw.toString('base64')}`,
-            bytes: raw.length,
-            thumbnail: true,
-          }
-        }
-      } catch {
-        // fall through
-      } finally {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
-      }
-    }
-  }
-
-  // Last resort: full file if under the preview size cap
-  return readLocalImageDataUrl(imagePath)
-}
-
-function renderPdfPreviewWithPyMuPDF(pdfPath, outputDir) {
-  const pythonBin = getPythonBin()
-  fs.mkdirSync(outputDir, { recursive: true })
-
-  const script = `
-import json
-import sys
-from pathlib import Path
-
-import fitz
-
-pdf_path = Path(sys.argv[1])
-output_dir = Path(sys.argv[2])
-output_dir.mkdir(parents=True, exist_ok=True)
-
-doc = fitz.open(str(pdf_path))
-pages = []
-try:
-    for index in range(doc.page_count):
-        page = doc.load_page(index)
-        rect = page.rect
-        long_edge = max(float(rect.width or 0), float(rect.height or 0), 1.0)
-        scale = max(3.0, min(8.0, 3600.0 / long_edge))
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-        target = output_dir / f"page-{index + 1}.png"
-        pixmap.save(str(target))
-        pages.append({
-            "page": index + 1,
-            "preview_path": str(target),
-            "width": pixmap.width,
-            "height": pixmap.height,
-        })
-finally:
-    doc.close()
-
-print(json.dumps({"pages": pages}, ensure_ascii=False))
-`.trim()
-
-  try {
-    const env = { ...process.env, PYTHONIOENCODING: 'utf-8' }
-    delete env.ELECTRON_RUN_AS_NODE
-    const stdout = execFileSync(pythonBin, ['-c', script, pdfPath, outputDir], {
-      encoding: 'utf8',
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 60000,
-      maxBuffer: 1024 * 1024,
-    })
-    const parsed = JSON.parse(String(stdout || '').trim() || '{}')
-    const pages = Array.isArray(parsed.pages)
-      ? parsed.pages
-        .filter(page => page?.preview_path && fs.existsSync(page.preview_path))
-        .map(page => pdfPreviewPageFromImage(
-          page.preview_path,
-          Number(page.page) || 1,
-          Number(page.width) || 0,
-          Number(page.height) || 0,
-        ))
-      : []
-    if (!pages.length) return { ok: false, error: 'PyMuPDF 没有渲染出 PDF 页面。' }
-    return {
-      ok: true,
-      engine: 'pymupdf',
-      page_count: pages.length,
-      pages,
-      preview_path: pages[0].preview_path,
-      data_url: pages[0].data_url,
-    }
-  } catch (error) {
-    const stderr = String(error?.stderr || '').trim()
-    const detail = stderr || error.message || String(error)
-    return { ok: false, error: detail }
-  }
-}
-
-function renderPdfPreviewWithQuickLook(pdfPath) {
-  if (!fs.existsSync(pdfPath) || !fs.statSync(pdfPath).isFile()) {
-    return { ok: false, error: `PDF 文件不存在：${pdfPath}` }
-  }
-  if (path.extname(pdfPath).toLowerCase() !== '.pdf') {
-    return { ok: false, error: '请选择 PDF 文件进行预览框选。' }
-  }
-
-  const previewRoot = path.join(getCrawshrimpDataDir(), 'pdf-previews')
-  const digest = crypto.createHash('sha1').update(`${pdfPath}:${fs.statSync(pdfPath).mtimeMs}`).digest('hex').slice(0, 16)
-  const outputDir = path.join(previewRoot, digest)
-  fs.rmSync(outputDir, { recursive: true, force: true })
-  fs.mkdirSync(outputDir, { recursive: true })
-
-  const pymupdfResult = renderPdfPreviewWithPyMuPDF(pdfPath, path.join(outputDir, 'pages'))
-  if (pymupdfResult.ok) return pymupdfResult
-  if (process.platform !== 'darwin') {
-    return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}` }
-  }
-
-  try {
-    const quickLookBin = fs.existsSync('/usr/bin/qlmanage') ? '/usr/bin/qlmanage' : 'qlmanage'
-    execFileSync(quickLookBin, ['-t', '-s', '1800', '-o', outputDir, pdfPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 45000,
-    })
-    const previewPath = findQuickLookPdfPreview(pdfPath, outputDir)
-    if (!previewPath) {
-      const produced = fs.readdirSync(outputDir).join(', ')
-      return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}；Quick Look 没有输出图片。输出目录：${produced || '空'}` }
-    }
-    const page = pdfPreviewPageFromImage(previewPath, 1)
-    return {
-      ok: true,
-      engine: 'quicklook',
-      page_count: 1,
-      pages: [page],
-      preview_path: previewPath,
-      data_url: page.data_url,
-    }
-  } catch (error) {
-    const stderr = String(error?.stderr || '').trim()
-    const detail = stderr || error.message || String(error)
-    return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}；Quick Look: ${detail}` }
-  }
+  if (!imagePath || !imageMimeForPath(imagePath)) throw new Error('请选择 PNG、JPG、WEBP 或 GIF 图片')
+  return readThumbnailAsync(imagePath, opts)
 }
 
 // ── Window ────────────────────────────────────────────────────────────────────
@@ -1747,10 +1516,10 @@ function readAiVideoImagePreview(fileToken) {
   return stripLocalPath(readLocalImageDataUrl(media.path))
 }
 
-function readAiVideoImageThumbnail(fileToken, opts = {}) {
+async function readAiVideoImageThumbnail(fileToken, opts = {}) {
   const media = getAiVideoCapabilityMediaFile(fileToken)
   if (!String(media.mime || '').startsWith('image/')) throw new Error('该授权不是图片')
-  return stripLocalPath(readLocalImageThumbnail(media.path, opts || {}))
+  return stripLocalPath(await readLocalImageThumbnail(media.path, opts || {}))
 }
 
 function normalizeUpdaterApiError(error) {
@@ -2251,7 +2020,7 @@ function getBackendHealth(timeoutMs = 800) {
 
 async function validateApiRuntime() {
   const health = await getBackendHealth()
-  if (!health.ok) return false
+  if (!health.ok) return null // Unreachable is not evidence of an incompatible runtime.
   const runtime = health.data?.runtime
   if (isCompatibleBackendRuntime(runtime)) return true
   if (adoptOwnedBackendDataDir(runtime)) return true
@@ -3373,7 +3142,7 @@ secureHandle('select-bala-workspace', async (_, opts = {}) => {
 })
 
 secureHandle('delete-bala-workspace-image', async (_, workspaceRoot, filePath) => {
-  return deleteAuthorizedWorkspaceImage({
+  return workspaceFileWorker.run('deleteAuthorizedWorkspaceImage', {
     filePath,
   })
 })
@@ -3407,18 +3176,18 @@ secureHandle('read-bala-workspace-image-thumbnail', async (_, workspaceRoot, fil
     const media = getAuthorizedBalaWorkspaceImage({
       filePath,
     })
-    return readLocalImageThumbnail(media.path, opts || {})
+    return await readLocalImageThumbnail(media.path, opts || {})
   } catch (error) {
     return { ok: false, error: error?.message || String(error) }
   }
 })
 
 secureHandle('list-bala-workspace-images', async (_, workspaceRoot) => {
-  return listAuthorizedBalaWorkspaceImages({ workspaceRoot })
+  return workspaceFileWorker.run('listAuthorizedBalaWorkspaceImages', { workspaceRoot })
 })
 
 secureHandle('list-bala-workspace-videos', async (_, workspaceRoot) => {
-  return listAuthorizedBalaWorkspaceVideos({ workspaceRoot })
+  return workspaceFileWorker.run('listAuthorizedBalaWorkspaceVideos', { workspaceRoot })
 })
 
 secureHandle('get-local-media-url', async (_, filePath) => {
@@ -3438,13 +3207,13 @@ secureHandle('get-local-media-url', async (_, filePath) => {
 })
 
 secureHandle('read-bala-workspace-manifest', async (_, workspaceRoot) => {
-  return readAuthorizedBalaWorkspaceManifest({
+  return workspaceFileWorker.run('readAuthorizedBalaWorkspaceManifest', {
     workspaceRoot,
   })
 })
 
 secureHandle('write-bala-workspace-manifest', async (_, workspaceRoot, payload) => {
-  return writeAuthorizedBalaWorkspaceManifest({
+  return workspaceFileWorker.run('writeAuthorizedBalaWorkspaceManifest', {
     workspaceRoot,
     payload,
   })
@@ -3456,7 +3225,7 @@ secureHandle('read-local-image-preview', async (_, filePath) => {
 
 secureHandle('read-local-image-thumbnail', async (_, filePath, opts = {}) => {
   try {
-    return readLocalImageThumbnail(filePath, opts || {})
+    return await readLocalImageThumbnail(filePath, opts || {})
   } catch (error) {
     return { ok: false, error: error?.message || String(error) }
   }
@@ -3469,7 +3238,7 @@ secureHandle('list-directory-files', async (_, rootPath, opts = {}) => {
 
 secureHandle('render-pdf-preview', async (_, filePath) => {
   try {
-    return renderPdfPreviewWithQuickLook(String(filePath || ''))
+    return await pdfPreviewWorker.run({ pdfPath: String(filePath || ''), pythonBin: getPythonBin(), dataDir: getCrawshrimpDataDir() })
   } catch (error) {
     return { ok: false, error: error.message || String(error) }
   }

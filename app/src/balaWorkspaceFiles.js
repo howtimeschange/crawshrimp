@@ -8,7 +8,7 @@ const BALA_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
 const BALA_VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.webm'])
 const BALA_WORKSPACE_MANIFEST_FILENAME = '.crawshrimp-ai-video-workflow.json'
 const BALA_WORKSPACE_MANIFEST_MAX_BYTES = 8 * 1024 * 1024
-const fileSha256Cache = new Map()
+const workspaceHashCaches = new WeakMap()
 
 function canonicalPath(value, fsApi = fs) {
   const resolved = path.resolve(String(value || '').trim())
@@ -100,16 +100,18 @@ function imageMimeForPath(filePath = '') {
   return ''
 }
 
-function fileSha256(filePath, fsApi = fs, cacheKey = '') {
-  const key = `${filePath}:${cacheKey}`
-  if (fileSha256Cache.has(key)) return fileSha256Cache.get(key)
+function fileSha256(filePath, fsApi, version, previous, next) {
+  const cached = previous.get(filePath)
+  if (cached?.version === version) {
+    next.set(filePath, cached)
+    return cached.digest
+  }
   try {
     const digest = crypto.createHash('sha256').update(fsApi.readFileSync(filePath)).digest('hex')
-    fileSha256Cache.set(key, digest)
-    if (fileSha256Cache.size > 2000) fileSha256Cache.delete(fileSha256Cache.keys().next().value)
+    next.set(filePath, { version, digest })
     return digest
   } catch {
-    return ''
+    return '' // Do not cache transient read failures.
   }
 }
 
@@ -134,6 +136,10 @@ function getAuthorizedBalaWorkspaceImage({ workspaceRoot, filePath, roots = new 
 
 function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), fsApi = fs } = {}) {
   const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
+  let workspaces = workspaceHashCaches.get(fsApi)
+  if (!workspaces) workspaceHashCaches.set(fsApi, workspaces = new Map())
+  const previousHashes = workspaces.get(canonicalRoot) || new Map()
+  const nextHashes = new Map()
   const assets = []
   const visit = (directory) => {
     for (const entry of fsApi.readdirSync(directory, { withFileTypes: true })) {
@@ -147,7 +153,7 @@ function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), f
       const stat = fsApi.statSync(candidate)
       const canonical = canonicalPath(candidate, fsApi)
       const version = `${stat.mtimeMs.toString(16)}-${stat.size.toString(16)}`
-      const sha256 = fileSha256(canonical, fsApi, version)
+      const sha256 = fileSha256(canonical, fsApi, version, previousHashes, nextHashes)
       assertDescendant(canonicalRoot, canonical)
       const relative = path.relative(canonicalRoot, canonical).split(path.sep)
       const styleCode = (relative.find(part => /^\d{12}$/.test(part)) || '')
@@ -172,6 +178,8 @@ function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), f
     }
   }
   visit(canonicalRoot)
+  // Publish only complete snapshots, pruning removed files and older versions.
+  workspaces.set(canonicalRoot, nextHashes)
   return assets.sort((left, right) => left.path.localeCompare(right.path))
 }
 

@@ -317,3 +317,24 @@ test('workspace manifest reads and writes under any selected workspace directory
     assert.equal(readAuthorizedBalaWorkspaceManifest({ workspaceRoot: outside }), null)
   })
 })
+
+test('large workspace hashes only changed files and prunes deleted file versions', () => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bala-hash-snapshot-'))
+  let reads = 0
+  const fsApi = { ...fs, readFileSync: (...args) => { reads++; return fs.readFileSync(...args) } }
+  const scan = () => listAuthorizedBalaWorkspaceImages({ workspaceRoot, fsApi })
+  try {
+    for (let i = 0; i < 2001; i++) fs.writeFileSync(path.join(workspaceRoot, `${i}.jpg`), 'initial')
+    scan(); assert.equal(reads, 2001)
+    reads = 0; scan(); assert.equal(reads, 0)
+    const file = path.join(workspaceRoot, '0.jpg')
+    fs.writeFileSync(file, 'modified content')
+    reads = 0; scan(); assert.equal(reads, 1)
+    const stat = fs.statSync(file)
+    fs.unlinkSync(file)
+    reads = 0; assert.equal(scan().length, 2000); assert.equal(reads, 0)
+    fs.writeFileSync(file, 'modified content')
+    fs.utimesSync(file, stat.atime, stat.mtime)
+    reads = 0; scan(); assert.equal(reads, 1)
+  } finally { fs.rmSync(workspaceRoot, { recursive: true, force: true }) }
+})

@@ -3119,7 +3119,7 @@ async function finishRun(result, options = {}) {
     if (isInstanceMode.value) emit('instance-updated')
     lastResult.value = {
       ok: false,
-      msg: options.message || `■ 已停止，保留 ${result.records ?? result.records_count ?? 0} 条结果`,
+      msg: options.message || `■ 已停止，保留 ${result.records ?? result.records_count ?? 0} 条结果${result.error ? `；${result.error}` : ''}`,
     }
   } else if (result.status === 'error') {
     if (isInstanceMode.value) emit('instance-updated')

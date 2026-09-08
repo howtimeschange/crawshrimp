@@ -823,3 +823,101 @@ test('short video upload finds the product page-owned submit API without a click
     ['商品标题为必填项，不能为空'],
   )
 })
+
+test('slow publication keeps one request across phase polls beyond the CDP timeout', async () => {
+  const helpers = await loadExports()
+  let resolveReceipt
+  let submits = 0
+  const publish = () => {
+    submits += 1
+    return new Promise(resolve => { resolveReceipt = resolve })
+  }
+  assert.equal(helpers.pollPublishReceipt('pc_newcreator_video', { start: true, publish, now: 1000 }), null)
+  await Promise.resolve()
+  assert.equal(submits, 1)
+  assert.equal(helpers.pollPublishReceipt('pc_newcreator_video', { now: 91000 }), null)
+  assert.equal(helpers.pollPublishReceipt('pc_newcreator_video', { start: true, publish, now: 92000 }), null)
+  assert.equal(submits, 1)
+  resolveReceipt({ contentId: '9001234567', receipt: 'SUCCESS' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(helpers.pollPublishReceipt('pc_newcreator_video').contentId, '9001234567')
+  assert.equal(helpers.pollPublishReceipt('pc_newcreator_video', { start: true, publish }).contentId, '9001234567')
+  assert.equal(submits, 1)
+})
+
+test('lost or overdue publication receipts do not resubmit and require platform verification', async () => {
+  const helpers = await loadExports()
+  assert.throws(() => helpers.pollPublishReceipt('qn_material_manager'), /结果待核对/)
+  let submits = 0
+  const publish = () => { submits += 1; return new Promise(() => {}) }
+  helpers.pollPublishReceipt('qn_material_manager', { start: true, publish, now: 1000 })
+  await Promise.resolve()
+  assert.throws(() => helpers.pollPublishReceipt('qn_material_manager', { now: 182000 }), /180 秒.*勿重复发布/)
+  assert.equal(submits, 1)
+})
+
+test('publication request failure is consumed without an unhandled rejection or repeat POST', async () => {
+  const helpers = await loadExports()
+  let submits = 0
+  helpers.pollPublishReceipt('qn_material_manager', {
+    start: true,
+    publish: async () => { submits += 1; throw new Error('SESSION_EXPIRED') },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.throws(() => helpers.pollPublishReceipt('qn_material_manager'), /SESSION_EXPIRED/)
+  assert.equal(submits, 1)
+})
+
+test('Guang and recommend publication phases return promptly and consume their own deferred receipt', async () => {
+  const helpers = await loadExports()
+  for (const [target, scene] of [['guang', 'pc_newcreator_video'], ['recommend', 'qn_material_manager']]) {
+    const job = helpers.normalizeJobs({
+      input_file: { rows: [inputRow({ 参与活动: '', '定时/日': '', '定时/具体时间': '' })] },
+      video_override_path: '/tmp/example.mp4',
+      publish_targets: ['guang', 'recommend'],
+    }).jobs[0]
+    const content = {
+      shortTitle: helpers.titleForScene(job, scene), title: job.description, editorTitle: job.description,
+      items: [{ itemId: job.item_id }], coverUser: { url: 'https://example.test/cover.jpg' },
+      fileId: 'file123', videoStatus: 'success', onlineTime: null,
+    }
+    let finishPublish
+    let submits = 0
+    const receipts = {}
+    const contextExtra = {
+      document: { querySelectorAll: () => [{ __reactFiberTest: { memoizedProps: {
+        store: { getState: () => ({ content: { value: content } }) },
+        actions: { content: { updateContentItem() {} } }, dispatch() {},
+      } } }] },
+      window: {
+        __USER_INFO__: { userId: '12345' },
+        __CRAWSHRIMP_RUN_TOKEN__: `test-${target}`,
+        __CRAWSHRIMP_VIDEO_PUBLISH_RECEIPTS__: receipts,
+        lib: { mtop: { request: async ({ api }) => {
+          if (api.endsWith('session.generate')) return { data: { publishSession: 'session123' } }
+          submits += 1
+          return new Promise(resolve => { finishPublish = resolve })
+        } } },
+      },
+    }
+    const shared = { jobs: [job], job_index: 0, results: [], current_work: { [`${target}_form_readback`]: content } }
+    const first = await runAdapter({ phase: `publish_${target}_api`, shared, contextExtra })
+    assert.equal(first.meta.next_phase, `wait_${target}_receipt`)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(submits, 1)
+    const waiting = await runAdapter({ phase: first.meta.next_phase, shared: first.meta.shared, contextExtra })
+    assert.equal(waiting.meta.next_phase, `wait_${target}_receipt`)
+    assert.equal(submits, 1)
+    finishPublish({ data: { contentId: '9001234567' }, ret: ['SUCCESS'] })
+    await new Promise(resolve => setImmediate(resolve))
+    const done = await runAdapter({ phase: first.meta.next_phase, shared: first.meta.shared, contextExtra })
+    if (target === 'guang') {
+      assert.equal(done.meta.next_phase, 'navigate_recommend')
+      assert.equal(done.meta.shared.current_work.guang_content_id, '9001234567')
+    } else {
+      assert.equal(done.meta.action, 'complete')
+      assert.equal(done.data[0].搜推内容ID, '9001234567')
+    }
+    assert.equal(submits, 1)
+  }
+})

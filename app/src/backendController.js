@@ -128,6 +128,10 @@ function createBackendController(options) {
         await acceptReadyBackend(ensureGeneration)
         return
       }
+      if (runtimeValid !== false) {
+        markNotReady('degraded')
+        throw new Error('Backend runtime validation temporarily unavailable')
+      }
       markNotReady('restarting')
       await switchEndpoint()
       assertActiveGeneration(ensureGeneration)
@@ -172,6 +176,11 @@ function createBackendController(options) {
             if (runtimeValid) {
               await acceptReadyBackend(startupGeneration)
               return
+            }
+            if (runtimeValid !== false) {
+              markNotReady('degraded')
+              await sleep(intervalMs)
+              continue
             }
             markNotReady('restarting')
             if (backendProcess) {
