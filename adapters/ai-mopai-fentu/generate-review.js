@@ -4,6 +4,8 @@
   const shared = window.__CRAWSHRIMP_SHARED__ || {}
   const SEMIR_CLOUD_URL = 'https://fmp.semirapp.com/'
   const FILE_EXTENSIONS = /\.(?:jpe?g|png|webp|psd)$/i
+  const CLOUD_LOGIN_TIMEOUT_MS = 10 * 60 * 1000
+  const UNSAFE_EXCEL_NUMERIC_PREFIX = '__CRAWSHRIMP_UNSAFE_EXCEL_NUMBER__:'
 
   const compact = value => String(value ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim()
   const slashPath = value => compact(value).replace(/\\/g, '/').replace(/\/{2,}/g, '/')
@@ -316,6 +318,15 @@
     const raw = nodes(cell, 'v')[0]?.textContent || ''
     if (type === 's') return sharedStrings[Number(raw)] ?? ''
     if (type === 'b') return raw === '1' ? 'True' : 'False'
+    const numericText = compact(raw)
+    const scientific = numericText.match(/^[+-]?\d+(?:\.\d+)?[eE][+-]?(\d+)$/)
+    const unsafeNumeric = (!type || type === 'n') && (
+      /^\d{16,}(?:\.0+)?$/.test(numericText)
+      || (scientific && Number(scientific[1]) >= 15)
+    )
+    if (unsafeNumeric) {
+      return `${UNSAFE_EXCEL_NUMERIC_PREFIX}${cell.getAttribute('r') || '未知单元格'}:${numericText}`
+    }
     return raw
   }
 
@@ -338,7 +349,7 @@
     })
   }
 
-  const WORKSHEET_FIELDS = ['大货款号', '大货款色号', '款色号', '款色编码', 'SKU编码', '商品编码', '上市批次', '产品线', '年龄段']
+  const WORKSHEET_FIELDS = ['大货款号', '大货款色号', '款色号', '款色编码', 'SKU编码', '商品编码', '导购', '上市批次', '产品线', '年龄段']
 
   function worksheetHeaderName(value) {
     return compact(value).replace(/\s+/g, '')
@@ -450,10 +461,11 @@
     const sharedXml = await zipText(buffer, entries, 'xl/sharedStrings.xml', false)
     const sharedStrings = sharedXml ? nodes(xmlDocument(sharedXml, '共享文本'), 'si').map(item => item.textContent || '') : []
     const sheets = {}
-    const sheetNames = requestedSheets.length ? requestedSheets : [...sheetTargets.keys()]
+    const sheetNames = requestedSheets.length
+      ? requestedSheets.filter(sheetName => sheetTargets.has(sheetName))
+      : [...sheetTargets.keys()]
     for (const sheetName of sheetNames) {
       const target = sheetTargets.get(sheetName)
-      if (!target) throw new Error(`计划表“${file.name}”缺少指定 Sheet：${sheetName}`)
       const xml = await zipText(buffer, entries, target)
       sheets[sheetName] = { rows: worksheetRows(xml, sharedStrings) }
     }
@@ -579,7 +591,14 @@
   }
 
   function codeFromValue(value, length) {
+    if (length === 17 && typeof value === 'number') {
+      throw new Error('计划表17位款色号以数值格式传入，末位可能已经失真；请将款色号整列设置为文本格式后重新保存')
+    }
     let text = compact(value).replace(/^'+/, '').replace(/\.0+$/, '')
+    if (length === 17 && text.startsWith(UNSAFE_EXCEL_NUMERIC_PREFIX)) {
+      const details = text.slice(UNSAFE_EXCEL_NUMERIC_PREFIX.length)
+      throw new Error(`计划表17位款色号单元格 ${details} 使用数值格式，末位可能已经失真；请将款色号整列设置为文本格式后重新保存`)
+    }
     if (/^\d+(?:\.\d+)?[eE][+-]?\d+$/.test(text)) {
       const number = Number(text)
       if (Number.isSafeInteger(number)) text = String(number)
@@ -621,6 +640,44 @@
       value: values[0],
       note: keys.length > 1 ? `存在 ${keys.length} 个同名“${label}”列，采用唯一非空值“${values[0]}”` : '',
     }
+  }
+
+  function summarizeGuide(rows) {
+    const sourceRows = Array.isArray(rows) ? rows : []
+    if (!sourceRows.some(row => matchingKeys(row, ['导购']).length)) {
+      return { value: '', note: '未找到“导购”列，审核表导购留空' }
+    }
+
+    const byColor = new Map()
+    sourceRows.forEach((row, index) => {
+      const colorCodes = rowCodes(row, COLOR_ALIASES, 17)
+      const identity = colorCodes.length === 1 ? `color:${colorCodes[0]}` : `row:${index}`
+      const entry = byColor.get(identity) || { values: new Set() }
+      matchingKeys(row, ['导购']).map(key => compact(row[key])).filter(Boolean)
+        .forEach(value => entry.values.add(value))
+      byColor.set(identity, entry)
+    })
+
+    const counts = new Map()
+    let emptyCount = 0
+    let conflictCount = 0
+    for (const entry of byColor.values()) {
+      const values = [...entry.values]
+      if (!values.length) {
+        emptyCount += 1
+      } else if (values.length > 1) {
+        conflictCount += 1
+      } else {
+        counts.set(values[0], (counts.get(values[0]) || 0) + 1)
+      }
+    }
+
+    const value = [...counts.entries()].map(([guide, count]) => `${count}款“${guide}”`).join('；')
+    const notes = []
+    if (emptyCount) notes.push(`有 ${emptyCount} 个款色的“导购”为空，汇总未计入`)
+    if (conflictCount) notes.push(`有 ${conflictCount} 个款色的“导购”存在冲突，汇总未计入`)
+    if (!value && !notes.length) notes.push('“导购”为空，审核表导购留空')
+    return { value, note: notes.join('；') }
   }
 
   function fieldGroup(key) {
@@ -694,6 +751,27 @@
     return { [name]: { rows: Array.isArray(fileParam.rows) ? fileParam.rows : [] } }
   }
 
+  function validatePlanMappings(plans, mappings) {
+    if (!mappings.length) return ''
+    const planSheets = plans.map(plan => ({
+      plan,
+      sheets: Object.keys(workbookSheets(plan.file)),
+    }))
+    const unknownSheets = unique(mappings
+      .filter(mapping => !planSheets.some(item => item.sheets.includes(mapping.sheet)))
+      .map(mapping => mapping.sheet))
+    if (unknownSheets.length) {
+      return `Sheet 映射中的以下 Sheet 未出现在任何查询计划表：${unknownSheets.join('、')}`
+    }
+    const unmatchedPlans = planSheets
+      .filter(item => !mappings.some(mapping => item.sheets.includes(mapping.sheet)))
+      .map(item => item.plan.label)
+    if (unmatchedPlans.length) {
+      return `${unmatchedPlans.join('、')}与本次 Sheet 映射没有任何匹配项`
+    }
+    return ''
+  }
+
   function planRowSignature(row) {
     return ['上市批次', '产品线', '年龄段'].map(label => {
       const resolved = label === '上市批次'
@@ -706,12 +784,8 @@
   function choosePlanHit(plan, styleNo, colorNo, mappings) {
     const availableSheets = workbookSheets(plan.file)
     const effectiveMappings = mappings.length
-      ? mappings
+      ? mappings.filter(item => Object.prototype.hasOwnProperty.call(availableSheets, item.sheet))
       : Object.keys(availableSheets).map(sheet => ({ sheet, directory: '' }))
-    const missingSheets = effectiveMappings.map(item => item.sheet).filter(name => !availableSheets[name])
-    if (missingSheets.length) {
-      return { status: 'ambiguous', note: `${plan.label}缺少指定 Sheet：${missingSheets.join('、')}` }
-    }
 
     const sheetHits = []
     for (const mapping of effectiveMappings) {
@@ -766,7 +840,9 @@
     }
 
     const colorCodes = unique(selectedSheet.matches.flatMap(item => rowCodes(item, COLOR_ALIASES, 17)))
+    const guide = summarizeGuide(selectedSheet.matches)
     if (!colorCodes.length) notes.push('计划表未识别到款色号列，同款款色号数量记为0')
+    if (guide.note) notes.push(guide.note)
     if (sheetHits.length > 1) notes.push(`多个 Sheet 命中，按17位款色号唯一命中 ${selectedSheet.mapping.sheet}`)
     return {
       status: 'hit',
@@ -774,6 +850,7 @@
       sheet: selectedSheet.mapping.sheet,
       sheetDirectory: selectedSheet.mapping.directory,
       colorCount: colorCodes.length,
+      guideSummary: guide.value,
       note: notes.join('；'),
     }
   }
@@ -805,6 +882,7 @@
       '最终文件夹名': '',
       '款色号': '',
       '款号': '',
+      '导购': '',
       '命中计划表及对应目录': '',
       '命中Sheet及对应目录': '',
       '批次': '',
@@ -813,6 +891,7 @@
       '状态': '需复核',
       '同款款色号数量': 0,
       '备注': '',
+      '产品线': '',
     }
 
     const codeLabel = folder.codeType === 'color' ? '17位款色号' : '12位款号'
@@ -839,8 +918,10 @@
     }
 
     const hit = selected.hit
+    base['导购'] = compact(hit.guideSummary)
     const batch = resolveBatchField(hit.row)
     const product = resolveRequiredField(hit.row, ['产品线'], '产品线')
+    if (product.ok) base['产品线'] = product.value
     const age = product.ok && product.value === '婴幼童'
       ? resolveRequiredField(hit.row, ['年龄段'], '年龄段')
       : { ok: true, value: '', note: '' }
@@ -925,14 +1006,20 @@
         ...shared,
         cloud_login_url: SEMIR_CLOUD_URL,
         cloud_login_wait_rounds: 0,
+        cloud_login_started_at: Date.now(),
       })
     }
     if (sourceMode === 'cloud' && phase === 'cloud_wait_login') {
       if (!await cloudLoginReady()) {
+        const loginStartedAt = Number(shared.cloud_login_started_at || Date.now())
+        if (Date.now() - loginStartedAt >= CLOUD_LOGIN_TIMEOUT_MS) {
+          return { success: false, error: '等待森马云盘登录超过10分钟，请确认网络和登录状态后重新运行任务' }
+        }
         return cloudNextPhase('cloud_wait_login', {
           ...shared,
           cloud_login_url: SEMIR_CLOUD_URL,
           cloud_login_wait_rounds: Number(shared.cloud_login_wait_rounds || 0) + 1,
+          cloud_login_started_at: loginStartedAt,
         })
       }
       return cloudNextPhase('cloud_plan_start', {
@@ -1002,6 +1089,8 @@
       label: `查询计划表2（${basename(plan2Path)}）`,
       directory: plan2Directory,
     })
+    const mappingError = validatePlanMappings(plans, mappings)
+    if (mappingError) return { success: false, error: mappingError }
     const config = {
       cloudRoot,
       customPathItem,

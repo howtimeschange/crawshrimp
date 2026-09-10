@@ -4,6 +4,9 @@
   const shared = window.__CRAWSHRIMP_SHARED__ || {}
   const SEMIR_CLOUD_URL = 'https://fmp.semirapp.com/'
   const PHOTOGRAPHY_MOUNT_NAME = '摄影'
+  const PHOTOGRAPHY_SCAN_BATCH_STYLES = 40
+  const CLOUD_LOGIN_TIMEOUT_MS = 10 * 60 * 1000
+  const UNSAFE_EXCEL_NUMERIC_PREFIX = '__CRAWSHRIMP_UNSAFE_EXCEL_NUMBER__:'
 
   const compact = value => String(value ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim()
   const slashPath = value => compact(value).replace(/\\/g, '/').replace(/\/{2,}/g, '/')
@@ -113,7 +116,7 @@
     }
   }
 
-  function cloudSourceEval(expression) {
+  function cloudSourceEval(expression, nextShared = shared) {
     return {
       success: true,
       data: [],
@@ -126,9 +129,27 @@
         shared_key: 'cloud_source_scan',
         next_phase: 'cloud_source_ready',
         sleep_ms: 0,
-        shared,
+        shared: nextShared,
       },
     }
+  }
+
+  function photographyScanBatches(colorCodes) {
+    const batches = []
+    let batch = []
+    let styles = new Set()
+    for (const colorCode of colorCodes) {
+      const styleCode = colorCode.slice(0, 12)
+      if (!styles.has(styleCode) && styles.size >= PHOTOGRAPHY_SCAN_BATCH_STYLES) {
+        batches.push(batch)
+        batch = []
+        styles = new Set()
+      }
+      styles.add(styleCode)
+      batch.push(colorCode)
+    }
+    if (batch.length) batches.push(batch)
+    return batches
   }
 
   function buildPhotographySearchExpression(colorCodes) {
@@ -299,7 +320,7 @@
               file_count: selected.file_count,
               matched_jpg_filename: selected.marker_file.filename,
             }] : [],
-            files: selected ? selected.files : [],
+            file_count: selected ? Number(selected.file_count || 0) : 0,
             selection_note: matched.length > 1 && selected
               ? '多个文件夹包含该款色，已选图片多的上传'
               : '',
@@ -401,6 +422,15 @@
     const raw = nodes(cell, 'v')[0]?.textContent || ''
     if (type === 's') return sharedStrings[Number(raw)] ?? ''
     if (type === 'b') return raw === '1' ? 'True' : 'False'
+    const numericText = compact(raw)
+    const scientific = numericText.match(/^[+-]?\d+(?:\.\d+)?[eE][+-]?(\d+)$/)
+    const unsafeNumeric = (!type || type === 'n') && (
+      /^\d{16,}(?:\.0+)?$/.test(numericText)
+      || (scientific && Number(scientific[1]) >= 15)
+    )
+    if (unsafeNumeric) {
+      return `${UNSAFE_EXCEL_NUMERIC_PREFIX}${cell.getAttribute('r') || '未知单元格'}:${numericText}`
+    }
     return raw
   }
 
@@ -535,10 +565,11 @@
     const sharedXml = await zipText(buffer, entries, 'xl/sharedStrings.xml', false)
     const sharedStrings = sharedXml ? nodes(xmlDocument(sharedXml, '共享文本'), 'si').map(item => item.textContent || '') : []
     const sheets = {}
-    const sheetNames = requestedSheets.length ? requestedSheets : [...sheetTargets.keys()]
+    const sheetNames = requestedSheets.length
+      ? requestedSheets.filter(sheetName => sheetTargets.has(sheetName))
+      : [...sheetTargets.keys()]
     for (const sheetName of sheetNames) {
       const target = sheetTargets.get(sheetName)
-      if (!target) throw new Error(`计划表“${file.name}”缺少指定 Sheet：${sheetName}`)
       const xml = await zipText(buffer, entries, target)
       sheets[sheetName] = { rows: worksheetRows(xml, sharedStrings) }
     }
@@ -616,7 +647,14 @@
   }
 
   function codeFromValue(value, length) {
+    if (length === 17 && typeof value === 'number') {
+      throw new Error('计划表17位款色号以数值格式传入，末位可能已经失真；请将款色号整列设置为文本格式后重新保存')
+    }
     let text = compact(value).replace(/^'+/, '').replace(/\.0+$/, '')
+    if (length === 17 && text.startsWith(UNSAFE_EXCEL_NUMERIC_PREFIX)) {
+      const details = text.slice(UNSAFE_EXCEL_NUMERIC_PREFIX.length)
+      throw new Error(`计划表17位款色号单元格 ${details} 使用数值格式，末位可能已经失真；请将款色号整列设置为文本格式后重新保存`)
+    }
     if (/^\d+(?:\.\d+)?[eE][+-]?\d+$/.test(text)) {
       const number = Number(text)
       if (Number.isSafeInteger(number)) text = String(number)
@@ -731,6 +769,27 @@
     return { [name]: { rows: Array.isArray(fileParam.rows) ? fileParam.rows : [] } }
   }
 
+  function validatePlanMappings(plans, mappings) {
+    if (!mappings.length) return ''
+    const planSheets = plans.map(plan => ({
+      plan,
+      sheets: Object.keys(workbookSheets(plan.file)),
+    }))
+    const unknownSheets = unique(mappings
+      .filter(mapping => !planSheets.some(item => item.sheets.includes(mapping.sheet)))
+      .map(mapping => mapping.sheet))
+    if (unknownSheets.length) {
+      return `Sheet 映射中的以下 Sheet 未出现在任何查询计划表：${unknownSheets.join('、')}`
+    }
+    const unmatchedPlans = planSheets
+      .filter(item => !mappings.some(mapping => item.sheets.includes(mapping.sheet)))
+      .map(item => item.plan.label)
+    if (unmatchedPlans.length) {
+      return `${unmatchedPlans.join('、')}与本次 Sheet 映射没有任何匹配项`
+    }
+    return ''
+  }
+
   function planRowSignature(row) {
     return ['上市批次', '产品线', '年龄段'].map(label => {
       const resolved = label === '上市批次'
@@ -743,12 +802,8 @@
   function choosePlanHit(plan, styleNo, colorNo, mappings) {
     const availableSheets = workbookSheets(plan.file)
     const effectiveMappings = mappings.length
-      ? mappings
+      ? mappings.filter(item => Object.prototype.hasOwnProperty.call(availableSheets, item.sheet))
       : Object.keys(availableSheets).map(sheet => ({ sheet, directory: '' }))
-    const missingSheets = effectiveMappings.map(item => item.sheet).filter(name => !availableSheets[name])
-    if (missingSheets.length) {
-      return { status: 'ambiguous', note: `${plan.label}缺少指定 Sheet：${missingSheets.join('、')}` }
-    }
 
     const sheetHits = []
     for (const mapping of effectiveMappings) {
@@ -839,7 +894,7 @@
     const styleNo = compact(found?.style_code || colorCode.slice(0, 12))
     const markerJpgName = compact(found?.marker_jpg_name || `${styleNo}-${colorCode.slice(-5)}.jpg`)
     const folders = Array.isArray(found?.folders) ? found.folders : []
-    const files = Array.isArray(found?.files) ? found.files : []
+    const fileCount = Number(found?.file_count ?? (Array.isArray(found?.files) ? found.files.length : 0))
     const candidateFolderCount = Number(found?.candidate_folder_count || 0)
     const matchedFolderCount = Number(found?.matched_folder_count || 0)
     const folderNames = folders.map(folder => compact(folder?.filename)).filter(Boolean)
@@ -855,7 +910,7 @@
       '候选摄影文件夹数': candidateFolderCount,
       '命中款色文件夹数': matchedFolderCount,
       '摄影文件夹数': folders.length,
-      '文件数': files.length,
+      '文件数': fileCount,
       '最终文件夹名': '',
       '命中计划表及对应目录': '',
       '命中Sheet及对应目录': '',
@@ -881,7 +936,7 @@
       base['备注'] = `已找到对应JPG ${markerJpgName}，但未能唯一选择摄影文件夹`
       return base
     }
-    if (!files.length) {
+    if (!fileCount) {
       base['备注'] = '已找到摄影文件夹，但其中没有 JPG/JPEG/PNG/WEBP/PSD 文件'
       return base
     }
@@ -890,8 +945,8 @@
     const namePrefix = config.keepSourceName ? sourceFolderName : styleNo
     base['最终文件夹名'] = `${namePrefix} ${config.renameContent}${config.dateText}`.trim()
 
-    const p1 = choosePlanHit(plans[0], styleNo, '', mappings)
-    const p2 = plans[1] ? choosePlanHit(plans[1], styleNo, '', mappings) : null
+    const p1 = choosePlanHit(plans[0], styleNo, colorCode, mappings)
+    const p2 = plans[1] ? choosePlanHit(plans[1], styleNo, colorCode, mappings) : null
     const selected = selectFinalPlan(p1, p2, plans)
     if (selected.status !== 'hit') {
       notes.push(selected.status === 'none' ? '所有指定计划表和 Sheet 均未找到款号' : selected.note)
@@ -975,14 +1030,20 @@
         ...shared,
         cloud_login_url: SEMIR_CLOUD_URL,
         cloud_login_wait_rounds: 0,
+        cloud_login_started_at: Date.now(),
       })
     }
     if (phase === 'cloud_wait_login') {
       if (!await cloudLoginReady()) {
+        const loginStartedAt = Number(shared.cloud_login_started_at || Date.now())
+        if (Date.now() - loginStartedAt >= CLOUD_LOGIN_TIMEOUT_MS) {
+          return { success: false, error: '等待森马云盘登录超过10分钟，请确认网络和登录状态后重新运行任务' }
+        }
         return cloudNextPhase('cloud_wait_login', {
           ...shared,
           cloud_login_url: SEMIR_CLOUD_URL,
           cloud_login_wait_rounds: Number(shared.cloud_login_wait_rounds || 0) + 1,
+          cloud_login_started_at: loginStartedAt,
         })
       }
       return cloudNextPhase('cloud_plan_start', {
@@ -1019,21 +1080,6 @@
     if (!loadedPlans.plan1) return { success: false, error: '计划表1尚未完成读取，请重新执行任务' }
     if (plan2Path && !loadedPlans.plan2) return { success: false, error: '计划表2尚未完成读取，请重新执行任务' }
 
-    if (phase !== 'cloud_source_ready') {
-      return cloudSourceEval(buildPhotographySearchExpression(colorCodes))
-    }
-
-    const evaluated = shared.cloud_source_scan
-    if (!evaluated?.ok) return { success: false, error: `读取摄影库失败：${compact(evaluated?.error || '未收到跨标签页执行结果')}` }
-    const scan = evaluated.value
-    if (!scan?.ok) return { success: false, error: `读取摄影库失败：${compact(scan?.error || '未知错误')}` }
-    if (compact(scan.mount_name) !== PHOTOGRAPHY_MOUNT_NAME) {
-      return { success: false, error: `搜索范围错误：期望“${PHOTOGRAPHY_MOUNT_NAME}”库，实际为“${compact(scan.mount_name)}”` }
-    }
-
-    const resultMap = new Map((Array.isArray(scan.results) ? scan.results : [])
-      .map(item => [compact(item?.color_code), item]))
-    const cloudRoot = normalizeCloudRoot(params.cloud_root)
     const plans = [{
       file: loadedPlans.plan1,
       label: `查询计划表1（${basename(plan1Path)}）`,
@@ -1044,6 +1090,55 @@
       label: `查询计划表2（${basename(plan2Path)}）`,
       directory: plan2Directory,
     })
+    const mappingError = validatePlanMappings(plans, mappings)
+    if (mappingError) return { success: false, error: mappingError }
+
+    const scanBatches = photographyScanBatches(colorCodes)
+    if (phase !== 'cloud_source_ready') {
+      return cloudSourceEval(buildPhotographySearchExpression(scanBatches[0]), {
+        ...shared,
+        cloud_source_batch_index: 0,
+        cloud_source_batch_count: scanBatches.length,
+        cloud_source_results: [],
+      })
+    }
+
+    const batchIndex = Math.max(0, Number(shared.cloud_source_batch_index || 0))
+    const batchCount = scanBatches.length
+    const evaluated = shared.cloud_source_scan
+    if (!evaluated?.ok) {
+      const detail = compact(evaluated?.error)
+      const fallback = `第 ${batchIndex + 1}/${batchCount} 批未收到跨标签页执行结果，可能是单批查询超时或云盘页面中途断开`
+      return { success: false, error: `读取摄影库失败：${detail || fallback}` }
+    }
+    const batchScan = evaluated.value
+    if (!batchScan?.ok) return { success: false, error: `读取摄影库失败：${compact(batchScan?.error || '未知错误')}` }
+    if (compact(batchScan.mount_name) !== PHOTOGRAPHY_MOUNT_NAME) {
+      return { success: false, error: `搜索范围错误：期望“${PHOTOGRAPHY_MOUNT_NAME}”库，实际为“${compact(batchScan.mount_name)}”` }
+    }
+    if (shared.cloud_source_mount_id && compact(shared.cloud_source_mount_id) !== compact(batchScan.mount_id)) {
+      return { success: false, error: '读取摄影库失败：分批查询期间摄影库挂载点发生变化，请重新运行任务' }
+    }
+
+    const accumulatedResults = [
+      ...(Array.isArray(shared.cloud_source_results) ? shared.cloud_source_results : []),
+      ...(Array.isArray(batchScan.results) ? batchScan.results : []),
+    ]
+    const nextBatchIndex = batchIndex + 1
+    if (nextBatchIndex < batchCount) {
+      const { cloud_source_scan: _finishedBatch, ...carryShared } = shared
+      return cloudSourceEval(buildPhotographySearchExpression(scanBatches[nextBatchIndex]), {
+        ...carryShared,
+        cloud_source_batch_index: nextBatchIndex,
+        cloud_source_batch_count: batchCount,
+        cloud_source_results: accumulatedResults,
+        cloud_source_mount_id: compact(batchScan.mount_id),
+      })
+    }
+
+    const resultMap = new Map(accumulatedResults
+      .map(item => [compact(item?.color_code), item]))
+    const cloudRoot = normalizeCloudRoot(params.cloud_root)
     const config = {
       cloudRoot,
       customPathItem,
@@ -1065,6 +1160,29 @@
       plans,
       mappings,
     ))
+    // 同款多色可能选择不同摄影目录；统一业务目标，但保留每行原始来源。
+    const rowsByStyle = new Map()
+    for (const row of rows) {
+      if (row['状态'] !== '待审核') continue
+      if (!rowsByStyle.has(row['款号'])) rowsByStyle.set(row['款号'], [])
+      rowsByStyle.get(row['款号']).push(row)
+    }
+    for (const [styleNo, group] of rowsByStyle) {
+      const parents = unique(group.map(row => row['云盘目标路径'].slice(0, row['云盘目标路径'].lastIndexOf('/'))))
+      if (parents.length > 1) {
+        for (const row of group) {
+          row['状态'] = '需复核'
+          row['备注'] = [row['备注'], '同款的上级业务路径不同（季节、渠道、批次或产品线等），未自动合并'].filter(Boolean).join('；')
+        }
+      } else if (unique(group.map(row => row['最终文件夹名'])).length > 1) {
+        const finalName = `${styleNo} ${config.renameContent}${config.dateText}`.trim()
+        for (const row of group) {
+          row['最终文件夹名'] = finalName
+          row['云盘目标路径'] = `${parents[0]}/${finalName}`
+          row['备注'] = [row['备注'], `同款摄影文件夹名称不同，已统一目标文件夹为“${finalName}”；保留各款色摄影来源，上传时合并处理`].filter(Boolean).join('；')
+        }
+      }
+    }
     if (!embeddedPlan1) delete window.__AI_MOP_STILL_PLAN_FILES__
     const reviewNeeded = rows.filter(row => row['状态'] === '需复核').length
     return {

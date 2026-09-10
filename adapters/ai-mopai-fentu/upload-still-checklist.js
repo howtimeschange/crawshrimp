@@ -6,8 +6,14 @@
   const CLOUD_FILE_EXTENSIONS = /\.(?:jpe?g|png|webp|psd)$/i
   const LIST_PAGE_SIZE = 500
   const SEARCH_SCOPE = '["filename", "tag"]'
+  const SEARCH_REQUEST_TIMEOUT_MS = 10000
+  const SEARCH_TOTAL_TIMEOUT_MS = 20000
+  const SEARCH_MAX_PAGES = 8
+  const STYLE_SEARCH_MAX_RETRIES = 2
   const MAX_UPLOAD_BATCH_FILES = 4
   const PHOTOGRAPHY_MOUNT_NAME = '摄影'
+  const STYLE_SEARCH_MOUNT_NAME = '巴拉营运BU-商品'
+  const STYLE_SEARCH_PATH_SEGMENT = '平拍原图'
 
   function compact(value) {
     return String(value == null ? '' : value).trim()
@@ -177,7 +183,7 @@
       filename: compact(item?.filename || item?.name || item?.file_name || basename(item?.fullpath || item?.path)),
       fullpath: slashPath(item?.fullpath || item?.full_path || item?.path),
       filesize: Number(item?.filesize || item?.size || item?.file_size || 0),
-      filehash: compact(item?.filehash || item?.file_hash || item?.md5),
+      filehash: compact(item?.filehash || item?.file_hash || item?.sha1).toLowerCase(),
       mtime: item?.mtime || item?.modified_at || item?.updated_at || '',
     }
   }
@@ -372,6 +378,9 @@
   async function buildChecklistJobs(rows, photographyMountId) {
     const results = []
     const rowJobs = []
+    const blockedStyles = new Set(rows.filter(row => compact(row?.['状态']) === '需复核')
+      .map(row => /^\d{12}$/.test(compact(row?.['款号'])) ? compact(row['款号'])
+        : /^\d{17}$/.test(compact(row?.['款色号'])) ? compact(row['款色号']).slice(0, 12) : '').filter(Boolean))
     const allowedStatuses = new Set(['待审核', '审核通过', '通过', '已审核'])
     const colorCounts = new Map()
     for (const row of rows) {
@@ -398,7 +407,8 @@
         style_code: styleCode,
         color_code: colorCode,
         marker_jpg_name: markerJpgName || expectedMarkerJpgName,
-        selection_note: selectionNote,
+        selection_note: [selectionNote, ...compact(row?.['备注']).split('；')
+          .filter(note => note.startsWith('同款摄影文件夹名称不同，已统一目标文件夹为'))].filter(Boolean).join('；'),
         files: [],
         structured_files: [],
         directories: [],
@@ -524,6 +534,44 @@
       })
     }
 
+    for (const result of results) {
+      if (result['上传状态'] === '需复核' && /^\d{12}$/.test(compact(result['款号']))) {
+        blockedStyles.add(compact(result['款号']))
+      }
+    }
+    // 兼容旧核表：只把同父目录、同命名后缀的摄影源名称差异统一为款号。
+    const rowsByStyle = new Map()
+    for (const job of rowJobs) {
+      if (!rowsByStyle.has(job.style_code)) rowsByStyle.set(job.style_code, [])
+      rowsByStyle.get(job.style_code).push(job)
+    }
+    const targetConflicts = new Map()
+    for (const [styleCode, group] of rowsByStyle) {
+      if (unique(group.map(job => job.cloud_target)).length <= 1) continue
+      if (unique(group.map(job => `${job.mount_name}//${job.parent_path}`)).length > 1) {
+        targetConflicts.set(styleCode, '上级业务路径不同（季节、渠道、批次或产品线等），未自动合并')
+        continue
+      }
+      const suffixes = group.map(job => {
+        const names = unique(job.source_folder_paths.map(basename))
+        if (names.length !== 1) return null
+        const name = names[0]
+        if (job.folder_name === name) return ''
+        if (!job.folder_name.startsWith(`${name} `)) return null
+        return compact(job.folder_name.slice(name.length))
+      })
+      if (suffixes.some(suffix => suffix === null) || new Set(suffixes).size !== 1) {
+        targetConflicts.set(styleCode, '最终名称无法确认为同一摄影源命名规则，或自定义内容/日期不同；请在审核表统一最终文件夹名和目标路径')
+        continue
+      }
+      const finalName = `${styleCode} ${suffixes[0]}`.trim()
+      for (const job of group) {
+        job.folder_name = finalName
+        job.relative_path = [job.parent_path, finalName].filter(Boolean).join('/')
+        job.cloud_target = `${job.mount_name}//${job.relative_path}`
+        job.selection_note = [job.selection_note, `同款摄影文件夹名称不同，已统一目标文件夹为“${finalName}”；多个摄影来源合并处理`].filter(Boolean).join('；')
+      }
+    }
     const targetsByStyle = new Map()
     for (const job of rowJobs) {
       if (!targetsByStyle.has(job.style_code)) targetsByStyle.set(job.style_code, new Set())
@@ -568,11 +616,15 @@
         source_folder_paths: affected.flatMap(job => job.source_folder_paths),
         source_folder_count: unique(affected.flatMap(job => job.source_folder_paths)).length,
         files: affected.flatMap(job => job.files),
-      }, '需复核', '', `同一款号在审核表中出现 ${targets.size} 个不同云盘目标路径，整款未执行`))
+      }, '需复核', '', `同一款号在审核表中出现 ${targets.size} 个不同云盘目标路径：${targetConflicts.get(styleCode) || '无法统一目标'}；整款未执行`))
     }
 
     const jobs = []
     for (const job of groups.values()) {
+      if (blockedStyles.has(job.style_code)) {
+        results.push(resultRow(job, '需复核', '', '同款存在需复核或来源校验失败的款色；为避免形成不完整款号文件夹，整款不复制、不重命名'))
+        continue
+      }
       job.color_codes = unique(job.color_codes)
       job.marker_jpg_names = unique(job.marker_jpg_names)
       job.selection_notes = unique(job.selection_notes)
@@ -601,13 +653,25 @@
   }
 
   async function fetchJson(url, options = {}) {
-    const response = await fetch(url, { credentials: 'include', ...options })
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText || url}`)
-    const payload = await response.json()
-    if (payload?.code != null && ![0, 200].includes(Number(payload.code))) {
-      throw new Error(compact(payload.message || payload.msg || `接口返回 ${payload.code}`))
+    // Copy submission must not be retried after an ambiguous request timeout.
+    const controller = !options.signal && !String(url).endsWith('/file/copy')
+      && typeof AbortController !== 'undefined' ? new AbortController() : null
+    const timeout = controller ? setTimeout(() => controller.abort(), SEARCH_REQUEST_TIMEOUT_MS) : null
+    try {
+      const response = await fetch(url, { credentials: 'include', ...options,
+        ...(controller ? { signal: controller.signal } : {}) })
+      if (!response.ok) throw new Error(response.status + ' ' + (response.statusText || url))
+      const payload = await response.json()
+      if (payload?.code != null && ![0, 200].includes(Number(payload.code))) {
+        throw new Error(compact(payload.message || payload.msg || ('接口返回 ' + payload.code)))
+      }
+      return payload?.data ?? payload
+    } catch (error) {
+      if (controller?.signal.aborted) throw new Error('云盘读取请求超时（10秒）')
+      throw error
+    } finally {
+      if (timeout != null) clearTimeout(timeout)
     }
-    return payload?.data ?? payload
   }
 
   async function fetchMounts() {
@@ -628,10 +692,11 @@
     return candidates.find(Array.isArray)
   }
 
-  function extractFolderTotal(payload, fallback) {
+  function extractFolderTotal(payload) {
     const values = [payload?.total, payload?.count, payload?.data?.total, payload?.data?.count]
-    const found = values.map(Number).find(Number.isFinite)
-    return found == null ? fallback : found
+    const found = values.filter(value => value != null && compact(value) !== '').map(Number)
+      .find(value => Number.isInteger(value) && value >= 0)
+    return found == null ? null : found
   }
 
   async function fetchFolderPage(mountId, fullpath, start, method, endpoint) {
@@ -654,18 +719,27 @@
       ['POST', '/fengcloud/1/file/list'],
     ]
     const errors = []
+    const startedAt = Date.now()
     for (const [method, endpoint] of attempts) {
       try {
         const all = []
+        const seenPages = new Set()
         let start = 0
         while (true) {
+          if (seenPages.size >= 40) throw new Error('列目录超过40页，请缩小处理范围')
+          if (Date.now() - startedAt >= SEARCH_TOTAL_TIMEOUT_MS) throw new Error('列目录总等待超过20秒')
           const payload = await fetchFolderPage(mountId, fullpath, start, method, endpoint)
           const rawItems = extractFolderItems(payload)
           if (!Array.isArray(rawItems)) throw new Error(`${method} ${endpoint} 未返回列表`)
           const items = rawItems.map(item => normalizeListedItem(item, fullpath))
+          const signature = JSON.stringify(items.map(item => item.fullpath).sort())
+          if (items.length && seenPages.has(signature)) throw new Error('列目录返回重复分页，无法确认完整内容')
+          if (items.length) seenPages.add(signature)
           all.push(...items)
           start += items.length
-          if (!items.length || start >= extractFolderTotal(payload, start)) break
+          const total = extractFolderTotal(payload)
+          if (!items.length && total != null && start < total) throw new Error('列目录提前返回空页，内容不完整')
+          if (!items.length || (total != null ? start >= total : items.length < LIST_PAGE_SIZE)) break
         }
         return { ok: true, items: all }
       } catch (error) {
@@ -759,11 +833,10 @@
     const target = normalizeCloudSourceFile(targetItem)
     const sourceRelative = slashPath(sourceFile?.source_relative_path).toLowerCase()
     const targetRelative = slashPath(targetItem?.target_relative_path).toLowerCase()
-    if (sourceRelative && targetRelative && sourceRelative !== targetRelative) return false
-    if (source.filehash && target.filehash) return source.filehash === target.filehash
-    if (source.filename.toLowerCase() !== target.filename.toLowerCase()) return false
-    if (source.filesize > 0 && target.filesize > 0) return source.filesize === target.filesize
-    return true
+    if (sourceRelative && sourceRelative !== targetRelative) return false
+    return /^[a-f0-9]{40}$/.test(source.filehash) && source.filehash === target.filehash
+      && source.filesize > 0 && source.filesize === target.filesize
+      && source.filename.toLowerCase() === target.filename.toLowerCase()
   }
 
   function cloudCopyState(job, tree) {
@@ -772,6 +845,10 @@
     let matched = 0
     const sourceFiles = job.structured_files?.length ? job.structured_files : job.files || []
     for (const sourceFile of sourceFiles) {
+      const source = normalizeCloudSourceFile(sourceFile)
+      if (!/^[a-f0-9]{40}$/.test(source.filehash) || !(source.filesize > 0)) {
+        throw new Error('源文件缺少有效SHA-1指纹或大小，无法核验：' + source.filename)
+      }
       const index = available.findIndex(item => cloudSourceMatchesItem(sourceFile, item))
       if (index >= 0) {
         available.splice(index, 1)
@@ -837,8 +914,18 @@
 
   async function searchCloudItems(mountId, keyword) {
     const all = []
+    const seenPages = new Set()
+    const startedAt = Date.now()
     let start = 0
+    let pageCount = 0
     while (true) {
+      if (pageCount >= SEARCH_MAX_PAGES) {
+        throw new Error(`搜索款号“${compact(keyword)}”超过 ${SEARCH_MAX_PAGES} 页，已停止异常分页`)
+      }
+      const remainingMs = SEARCH_TOTAL_TIMEOUT_MS - (Date.now() - startedAt)
+      if (remainingMs <= 0) {
+        throw new Error(`搜索款号“${compact(keyword)}”总耗时超过 ${SEARCH_TOTAL_TIMEOUT_MS / 1000} 秒`)
+      }
       const body = new URLSearchParams({
         size: String(LIST_PAGE_SIZE),
         start: String(start),
@@ -846,16 +933,45 @@
         mount_id: String(mountId || ''),
         scope: SEARCH_SCOPE,
       })
-      const payload = await fetchJson('/fengcloud/2/file/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      })
-      const items = Array.isArray(payload?.list) ? payload.list : []
-      const total = Number(payload?.total || 0)
+      const controller = typeof AbortController === 'undefined' ? null : new AbortController()
+      const requestTimeoutMs = Math.min(SEARCH_REQUEST_TIMEOUT_MS, remainingMs)
+      const timeout = controller
+        ? setTimeout(() => controller.abort(), requestTimeoutMs)
+        : null
+      let payload
+      try {
+        payload = await fetchJson('/fengcloud/2/file/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+          ...(controller ? { signal: controller.signal } : {}),
+        })
+      } catch (error) {
+        if (controller?.signal?.aborted) {
+          throw new Error(`搜索款号“${compact(keyword)}”单页等待超过 ${Math.ceil(requestTimeoutMs / 1000)} 秒`)
+        }
+        throw error
+      } finally {
+        if (timeout != null) clearTimeout(timeout)
+      }
+      const items = extractFolderItems(payload)
+      if (!Array.isArray(items)) throw new Error('云盘搜索接口未返回列表')
+      const total = extractFolderTotal(payload)
+      const pageSignature = items.map(item => slashPath(
+        item?.fullpath || item?.full_path || item?.path || `${item?.filename || item?.name || ''}:${item?.id || ''}`,
+      ).toLocaleLowerCase()).join('\n')
+      if (items.length && seenPages.has(pageSignature)) {
+        throw new Error(`搜索款号“${compact(keyword)}”返回重复分页，已停止循环`)
+      }
+      if (items.length) seenPages.add(pageSignature)
       all.push(...items)
       start += items.length
-      if (!items.length || start >= total) break
+      pageCount += 1
+      if (!items.length && total != null && start < total) throw new Error('搜索提前返回空页，内容不完整')
+      if (!items.length || (total != null ? start >= total : items.length < LIST_PAGE_SIZE)) break
+      if (Date.now() - startedAt >= SEARCH_TOTAL_TIMEOUT_MS) {
+        throw new Error(`搜索款号“${compact(keyword)}”总耗时超过 ${SEARCH_TOTAL_TIMEOUT_MS / 1000} 秒`)
+      }
     }
     return all
   }
@@ -872,6 +988,66 @@
 
   function pathEquals(left, right) {
     return slashPath(left).toLowerCase() === slashPath(right).toLowerCase()
+  }
+
+  function parentPathOf(fullpath) {
+    const parts = slashPath(fullpath).split('/').filter(Boolean)
+    parts.pop()
+    return parts.join('/')
+  }
+
+  function isExactStyleFolderName(name, styleCode) {
+    const text = compact(name)
+    return text.startsWith(styleCode) && !/^\d$/.test(text.slice(styleCode.length, styleCode.length + 1))
+  }
+
+  function hasExactPathSegment(fullpath, segment) {
+    return slashPath(fullpath).split('/').some(part => compact(part) === segment)
+  }
+
+  function styleFolderCandidates(job, items) {
+    const byPath = new Map()
+    for (const rawItem of items || []) {
+      const item = normalizeListedItem(rawItem, '')
+      if (!isDirectory(item) || !isExactStyleFolderName(item.filename, job.style_code)) continue
+      if (!hasExactPathSegment(parentPathOf(item.fullpath), STYLE_SEARCH_PATH_SEGMENT)) continue
+      const key = slashPath(item.fullpath).toLocaleLowerCase()
+      if (key && !byPath.has(key)) byPath.set(key, item)
+    }
+    return [...byPath.values()]
+  }
+
+  function updateCurrentJob(updatedJob, newShared = shared) {
+    const index = Number(newShared.job_index || 0)
+    const jobs = [...(newShared.jobs || [])]
+    jobs[index] = updatedJob
+    return { ...newShared, jobs }
+  }
+
+  function prepareExistingFolderJob(job, folder, options = {}) {
+    const intendedFolderName = job.intended_folder_name || job.folder_name
+    const intendedRelativePath = job.intended_relative_path || job.relative_path
+    const intendedCloudTarget = job.requested_cloud_target || job.cloud_target
+    const existingParentPath = parentPathOf(folder.fullpath)
+    return {
+      ...job,
+      intended_folder_name: intendedFolderName,
+      intended_relative_path: intendedRelativePath,
+      requested_cloud_target: intendedCloudTarget,
+      intended_parent_path: job.intended_parent_path || job.parent_path,
+      existing_folder_name: folder.filename,
+      existing_folder_path: slashPath(folder.fullpath),
+      parent_path: existingParentPath,
+      relative_path: slashPath(folder.fullpath),
+      folder_name: folder.filename,
+      cloud_target: `${job.mount_name}//${slashPath(folder.fullpath)}`,
+      reuse_existing_folder: true,
+      allow_existing_extras: true,
+      rename_after_upload: Boolean(options.renameAfterUpload),
+      fast_existing_reuse: Boolean(options.fastReuse),
+      force_review_after_success: Boolean(job.force_review_after_success || options.forceReview),
+      existing_folder_note: compact(options.note),
+    }
   }
 
   function isWithinPath(fullpath, parentPath) {
@@ -1016,6 +1192,14 @@
   function breadcrumbContains(name) {
     const target = compact(name).toLocaleLowerCase()
     if (!target) return false
+    const routeHash = compact(location?.hash)
+    const queryIndex = routeHash.indexOf('?')
+    if (queryIndex >= 0) {
+      try {
+        const routePath = slashPath(new URLSearchParams(routeHash.slice(queryIndex + 1)).get('path') || '')
+        if (routePath.split('/').some(segment => compact(segment).toLocaleLowerCase() === target)) return true
+      } catch (_) {}
+    }
     const selectors = [
       '[class*="breadcrumb"]', '[class*="Breadcrumb"]',
       '[class*="crumb"]', '[class*="Crumb"]',
@@ -1023,7 +1207,12 @@
     ].join(',')
     return [...document.querySelectorAll(selectors)]
       .filter(visible)
-      .some(element => textOf(element).toLocaleLowerCase().includes(target))
+      .some(element => {
+        const text = textOf(element).toLocaleLowerCase()
+        if (text === target) return true
+        return text.split(/\s*(?:\/|>|›|»|→)\s*/)
+          .some(segment => compact(segment).toLocaleLowerCase() === target)
+      })
   }
 
   function folderEntryElement(name) {
@@ -1143,6 +1332,72 @@
     return cdpClicks([click], nextPhaseName, 900, { ...shared, phase_retries: 0 })
   }
 
+  function renameFolderInput() {
+    // 只认本款旧名称，不能复用上一款残留输入框或当前搜索框。
+    const matches = [...document.querySelectorAll('input')].filter(input =>
+      visible(input) && !input.disabled && !input.readOnly
+      && !/搜索|search/i.test(`${input.type || ''} ${input.placeholder || ''}`)
+      && compact(input.value) === compact(currentJob().folder_name))
+    return matches.length === 1 ? matches[0] : null
+  }
+
+  function retryRenameSelection(reason) {
+    const retries = Number(shared.phase_retries || 0) + 1
+    if (retries > 8) {
+      const pending = shared.pending_completion || {}
+      return appendAndAdvance(currentJob(), '需复核', pending.cloud_count,
+        `${compact(pending.note)}；本次源文件已核验完成，但重命名未完成：${reason}；保留原目录“${currentJob().folder_name}”，预期名称“${currentJob().intended_folder_name}”`)
+    }
+    return nextPhase('select_rename_folder', 600, {
+      ...shared, phase_retries: retries, rename_input_waits: 0, rename_last_error: reason,
+    })
+  }
+
+  function renameFolderClick(folder) {
+    const click = center(folder)
+    if (!click) return null
+    const hit = document.elementFromPoint(click.x, click.y)
+    // 有遮挡或不在可视区域时，不把坐标点到其他行/上传浮层。
+    return hit && (hit === folder || folder.contains(hit)) ? click : null
+  }
+
+  function fillRenameFolderName(name, nextPhaseName) {
+    const input = renameFolderInput()
+    if (!input) {
+      const waits = Number(shared.rename_input_waits || 0) + 1
+      if (waits < 4) {
+        return nextPhase('fill_rename_folder_name', 500, { ...shared, rename_input_waits: waits })
+      }
+      return retryRenameSelection('按 F2 后未找到与本款旧名称一致的重命名输入框')
+    }
+    const dialog = input.closest('[role="dialog"],.el-dialog,.dialog')
+    input.focus?.()
+    if (typeof input.select === 'function') input.select()
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    if (setter) setter.call(input, name)
+    else input.value = name
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    if (!dialog) {
+      submitInlineFolderName(input)
+      return nextPhase(nextPhaseName, 900, { ...shared, phase_retries: 0 })
+    }
+    const buttons = [...dialog.querySelectorAll('button,[role="button"]')].filter(visible)
+    const confirm = buttons.find(element => /^(确定|保存|重命名)$/.test(textOf(element)))
+    const click = center(confirm)
+    if (!click) {
+      const retries = Number(shared.phase_retries || 0) + 1
+      if (retries > 8) {
+        const renameJob = currentJob()
+        const pending = shared.pending_completion || {}
+        return appendAndAdvance(renameJob, '需复核', pending.cloud_count,
+          `${compact(pending.note)}；已通过 F2 打开重命名窗口，但没有找到“确定/保存”按钮，未自动改名`)
+      }
+      return nextPhase('select_rename_folder', 600, { ...shared, phase_retries: retries })
+    }
+    return cdpClicks([click], nextPhaseName, 900, { ...shared, phase_retries: 0 })
+  }
+
   function appendAndAdvance(job, status, cloudCount, note) {
     const next = {
       ...shared,
@@ -1171,8 +1426,26 @@
       ambiguous_retry_file_count: 0,
       pending_cloud_files: [],
       cloud_copy_response: null,
+      pending_completion: null,
+      rename_input_waits: 0,
+      rename_last_error: '',
     }
-    return next.job_index >= (next.jobs || []).length ? complete(next) : nextPhase('navigate_parent', 200, next)
+    return next.job_index >= (next.jobs || []).length ? complete(next) : nextPhase('screen_style_folder', 200, next)
+  }
+
+  function finishVerifiedJob(job, status, cloudCount, note) {
+    const notes = [job.existing_folder_note, note].map(compact).filter(Boolean)
+    const unifiedName = (job.selection_notes || []).some(value => compact(value).includes('同款摄影文件夹名称不同，已统一目标文件夹为'))
+    const finalStatus = job.force_review_after_success || unifiedName ? '需复核' : status
+    if (unifiedName) notes.push('本次源文件已核验完整；因摄影源名称不同而统一目标名称，请复核最终命名（不影响本次复制执行）')
+    if (job.rename_after_upload && job.folder_name !== job.intended_folder_name) {
+      return nextPhase('navigate_rename_parent', 200, {
+        ...shared,
+        phase_retries: 0,
+        pending_completion: { status: finalStatus, cloud_count: cloudCount, note: notes.join('；') },
+      })
+    }
+    return appendAndAdvance(job, finalStatus, cloudCount, notes.join('；'))
   }
 
   function currentJob() {
@@ -1235,11 +1508,199 @@
       source_mode: 'cloud',
       source_mount_name: PHOTOGRAPHY_MOUNT_NAME,
     }
-    return runnable.length ? nextPhase('navigate_parent', 100, initialized) : complete(initialized)
+    return runnable.length ? nextPhase('screen_style_folder', 100, initialized) : complete(initialized)
   }
 
   const job = currentJob()
   if (!job) return complete(shared)
+
+  if (phase === 'screen_style_folder') {
+    if (job.mount_name !== STYLE_SEARCH_MOUNT_NAME) {
+      return nextPhase('navigate_parent', 100, { ...shared, phase_retries: 0 })
+    }
+    let candidates
+    try {
+      candidates = styleFolderCandidates(job, await searchCloudItems(job.mount_id, job.style_code))
+    } catch (error) {
+      return retryOrReview('screen_style_folder',
+        `在“${STYLE_SEARCH_MOUNT_NAME}”全库筛查款号 ${job.style_code} 失败：${compact(error?.message || error)}；该款未复制、未重命名`,
+        STYLE_SEARCH_MAX_RETRIES)
+    }
+    const sameParent = candidates.filter(item => pathEquals(parentPathOf(item.fullpath), job.parent_path))
+    // 已确认同款目录内部的款色子目录属于原结构，不是另一个业务位置。
+    const otherParents = candidates.filter(item => !pathEquals(parentPathOf(item.fullpath), job.parent_path)
+      && !sameParent.some(root => !pathEquals(item.fullpath, root.fullpath) && isWithinPath(item.fullpath, root.fullpath)))
+    if (otherParents.length) {
+      const foundPaths = otherParents.map(item => slashPath(item.fullpath)).slice(0, 5)
+      return appendAndAdvance(job, '需复核', '',
+        `在“${STYLE_SEARCH_MOUNT_NAME}”全库的“${STYLE_SEARCH_PATH_SEGMENT}”业务路径发现同款文件夹位于其他目录：${foundPaths.join('；')}；本次推导路径：${job.cloud_target}；未复制、未重命名`)
+    }
+    const exact = sameParent.filter(item => item.filename === job.folder_name)
+    const oldFolders = sameParent.filter(item => item.filename !== job.folder_name)
+    if (exact.length > 1) {
+      return appendAndAdvance(job, '需复核', '', `同一目标父目录发现 ${exact.length} 个准确最终名称文件夹，未复制`)
+    }
+    if (exact.length === 1) {
+      const note = oldFolders.length
+        ? `准确最终名称已存在，同时发现其他同款文件夹：${oldFolders.map(item => item.filename).join('、')}；已把本次摄影源文件放入准确最终名称，其他文件夹未处理`
+        : '准确最终名称已存在，已复用该文件夹'
+      const updatedJob = prepareExistingFolderJob(job, exact[0], {
+        fastReuse: true,
+        forceReview: oldFolders.length > 0,
+        note,
+      })
+      return nextPhase('navigate_existing_parent', 100, updateCurrentJob(updatedJob, { ...shared, phase_retries: 0 }))
+    }
+    if (oldFolders.length > 1) {
+      return appendAndAdvance(job, '需复核', '',
+        `同一目标父目录发现多个旧同款文件夹：${oldFolders.map(item => item.filename).join('、')}；无法唯一确定，未复制、未重命名`)
+    }
+    if (oldFolders.length === 1) {
+      const oldFolder = oldFolders[0]
+      const updatedJob = prepareExistingFolderJob(job, oldFolder, {
+        renameAfterUpload: true,
+        fastReuse: true,
+        note: `发现唯一旧同款文件夹“${oldFolder.filename}”，已复用并将在本次摄影源文件核验通过后重命名为“${job.folder_name}”`,
+      })
+      return nextPhase('navigate_existing_parent', 100, updateCurrentJob(updatedJob, { ...shared, phase_retries: 0 }))
+    }
+    const direct = await findCloudFolder(job.mount_id, job.parent_path, job.folder_name)
+    if (direct.ok && direct.folder) {
+      const updatedJob = prepareExistingFolderJob(job, direct.folder, {
+        fastReuse: true,
+        note: '最终名称文件夹已通过目标父路径接口确认，已复用该文件夹',
+      })
+      return nextPhase('navigate_existing_parent', 100, updateCurrentJob(updatedJob, { ...shared, phase_retries: 0 }))
+    }
+    return nextPhase('navigate_parent', 100, { ...shared, phase_retries: 0 })
+  }
+
+  if (phase === 'navigate_existing_parent') {
+    if (!job.fast_existing_reuse || !job.reuse_existing_folder) {
+      return nextPhase('navigate_parent', 100, { ...shared, phase_retries: 0 })
+    }
+    const targetHash = buildFolderHashRoute(job.mount_id, job.parent_path)
+    if (location.hash !== targetHash) location.hash = targetHash
+    return nextPhase('check_parent', 900, { ...shared, phase_retries: 0 })
+  }
+
+  if (phase === 'navigate_rename_parent') {
+    if (!job.rename_after_upload || !job.intended_folder_name) {
+      return appendAndAdvance(job, '需复核', '', '复制核验完成，但缺少待重命名文件夹信息')
+    }
+    const pending = shared.pending_completion || {}
+    const finalFolder = await findCloudFolder(job.mount_id, job.parent_path, job.intended_folder_name)
+    if (!finalFolder.ok) {
+      const retries = Number(shared.phase_retries || 0) + 1
+      if (retries > 8) {
+        return appendAndAdvance(job, '需复核', pending.cloud_count,
+          `${compact(pending.note)}；本次摄影源文件已核验完成，但改名前无法确认最终名称是否已存在：${finalFolder.error || '未知错误'}；未执行改名`)
+      }
+      return nextPhase('navigate_rename_parent', 600, { ...shared, phase_retries: retries })
+    }
+    if (finalFolder.folder) {
+      return appendAndAdvance(job, '需复核', pending.cloud_count,
+        `${compact(pending.note)}；准备重命名时发现最终名称文件夹“${job.intended_folder_name}”已经存在，为避免目录冲突，未执行改名`)
+    }
+    const targetHash = buildFolderHashRoute(job.mount_id, job.parent_path)
+    if (location.hash !== targetHash) location.hash = targetHash
+    return nextPhase('select_rename_folder', 1200, {
+      ...shared, phase_retries: 0, rename_input_waits: 0, rename_last_error: '',
+    })
+  }
+
+  if (['select_rename_folder', 'click_rename_folder', 'press_rename_f2', 'fill_rename_folder_name'].includes(phase)
+    && location.hash !== buildFolderHashRoute(job.mount_id, job.parent_path)) {
+    return retryRenameSelection('重命名时页面不在预期父目录')
+  }
+
+  if (phase === 'select_rename_folder') {
+    if (renameFolderInput()) return nextPhase('fill_rename_folder_name', 0, shared)
+    const folder = folderEntryElement(job.folder_name)
+    const click = center(folder)
+    if (!click) {
+      const scrolled = scrollFolderList()
+      if (!scrolled && Number(shared.phase_retries || 0) >= 8) {
+        const pending = shared.pending_completion || {}
+        return appendAndAdvance(job, '需复核', pending.cloud_count,
+          `${compact(pending.note)}；本次源文件已核验完成，但页面没有找到旧文件夹“${job.folder_name}”，未能重命名为“${job.intended_folder_name}”`)
+      }
+      return retryOrReview('select_rename_folder', `正在查找待重命名文件夹“${job.folder_name}”`, 40)
+    }
+    folder.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    return nextPhase('click_rename_folder', 250, shared)
+  }
+
+  if (phase === 'click_rename_folder') {
+    const folder = folderEntryElement(job.folder_name)
+    const click = renameFolderClick(folder)
+    if (!click) return retryRenameSelection('旧目录不在可点击位置或被其他窗口遮挡')
+    return cdpClicks([click], 'press_rename_f2', 600, shared)
+  }
+
+  if (phase === 'press_rename_f2') {
+    if (renameFolderInput()) return nextPhase('fill_rename_folder_name', 0, shared)
+    const target = folderEntryElement(job.folder_name)
+    if (!renameFolderClick(target)) return retryRenameSelection('点击后旧目录位置已变化或被遮挡')
+    const selected = target.closest('[aria-selected="true"],[data-selected="true"],.selected,.is-selected,.current-row,.active')
+    if (!selected || selected === document.body || selected === document.documentElement) {
+      return retryRenameSelection('无法确认旧目录已选中，未发送 F2')
+    }
+    // 前一款提交后焦点可能留在旧输入框；从当前目录派发，确保事件进入当前页面。
+    document.activeElement?.blur?.()
+    const previousTabIndex = target.getAttribute('tabindex')
+    target.setAttribute('tabindex', '-1')
+    target.focus({ preventScroll: true })
+    if (document.activeElement !== target) {
+      if (previousTabIndex === null) target.removeAttribute('tabindex')
+      else target.setAttribute('tabindex', previousTabIndex)
+      return retryRenameSelection('无法把键盘焦点移到旧目录，未发送 F2')
+    }
+    const eventInit = {
+      key: 'F2', code: 'F2', keyCode: 113, which: 113,
+      bubbles: true, cancelable: true,
+    }
+    target.dispatchEvent(new KeyboardEvent('keydown', eventInit))
+    target.dispatchEvent(new KeyboardEvent('keyup', eventInit))
+    if (previousTabIndex === null) target.removeAttribute('tabindex')
+    else target.setAttribute('tabindex', previousTabIndex)
+    return nextPhase('fill_rename_folder_name', 500, { ...shared, rename_input_waits: 0 })
+  }
+
+  if (phase === 'fill_rename_folder_name') {
+    return fillRenameFolderName(job.intended_folder_name, 'verify_renamed_folder')
+  }
+
+  if (phase === 'verify_renamed_folder') {
+    const finalFolder = await findCloudFolder(job.mount_id, job.parent_path, job.intended_folder_name)
+    const oldFolder = await findCloudFolder(job.mount_id, job.parent_path, job.folder_name)
+    if (finalFolder.ok && finalFolder.folder && oldFolder.ok && !oldFolder.folder) {
+      const pending = shared.pending_completion || {}
+      const outputJob = {
+        ...job,
+        folder_name: job.intended_folder_name,
+        relative_path: job.intended_relative_path,
+        cloud_target: job.requested_cloud_target,
+        rename_after_upload: false,
+      }
+      return appendAndAdvance(outputJob, pending.status || '复制成功', pending.cloud_count,
+        `${compact(pending.note)}；旧文件夹已核验后重命名：${job.existing_folder_name} → ${job.intended_folder_name}`)
+    }
+    if ((!finalFolder.ok || !oldFolder.ok) && Number(shared.phase_retries || 0) >= 8) {
+      const pending = shared.pending_completion || {}
+      return appendAndAdvance(job, '需复核', pending.cloud_count,
+        `${compact(pending.note)}；本次摄影源文件已核验完成，但重命名结果无法确认：${finalFolder.error || oldFolder.error || '未知错误'}`)
+    }
+    if (Number(shared.phase_retries || 0) >= 12) {
+      const pending = shared.pending_completion || {}
+      return appendAndAdvance(job, '需复核', pending.cloud_count,
+        `${compact(pending.note)}；本次摄影源文件已核验完成，但旧名称仍存在或新名称尚未出现，请人工确认重命名结果`)
+    }
+    return nextPhase('verify_renamed_folder', 1200, {
+      ...shared,
+      phase_retries: Number(shared.phase_retries || 0) + 1,
+    })
+  }
 
   if (phase === 'navigate_parent') {
     const targetHash = buildFolderHashRoute(job.mount_id, '')
@@ -1491,13 +1952,13 @@
     const inspected = await inspectCloudCopy(job)
     if (!inspected.ok) return retryOrReview('copy_cloud_files', `复制前无法读取云盘目标目录：${inspected.error}`, 8)
     const unexpectedItems = [...inspected.unexpected_files, ...(inspected.unexpected_directories || [])]
-    if (unexpectedItems.length) {
+    if (unexpectedItems.length && !job.allow_existing_extras) {
       const names = unique(unexpectedItems.map(item => item.filename)).slice(0, 8)
       return appendAndAdvance(job, '需复核', inspected.count,
         `${mergeSummary(job)}；目标目录存在 ${unexpectedItems.length} 个不属于本次审核源文件结构的文件或文件夹（${names.join('、')}），为避免覆盖或混入文件，未执行复制`)
     }
     if (!inspected.missing_files.length && !(inspected.missing_directories || []).length) {
-      return appendAndAdvance(job, '跳过', inspected.count,
+      return finishVerifiedJob(job, '跳过', inspected.count,
         `${mergeSummary(job)}；目标目录已包含完整源文件夹结构，已按相对路径及 filehash/文件大小校验；未重复复制`)
     }
     if (inspected.has_partial_existing_structure) {
@@ -1522,7 +1983,7 @@
   if (phase === 'verify_cloud_copy') {
     const inspected = await inspectCloudCopy(job)
     if (inspected.ok && !inspected.missing_files.length && !(inspected.missing_directories || []).length) {
-      return appendAndAdvance(job, '复制成功', inspected.count,
+      return finishVerifiedJob(job, '复制成功', inspected.count,
         `${mergeSummary(job)}；已在森马云盘服务器端复制并按原相对路径保留完整文件夹结构；目标文件按相对路径及 filehash/文件大小校验通过，源文件未下载到本地`)
     }
     const startedAt = Number(shared.wait_started_at || Date.now())
