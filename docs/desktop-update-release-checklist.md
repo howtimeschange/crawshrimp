@@ -5,11 +5,11 @@ This checklist is the required evidence record before claiming desktop updater r
 ## Release Identity
 
 - Release scope (`PATCH` / `MINOR` / `MAJOR`): `PATCH`
-- Version selection rationale: `v2.5.3` 之后的 8 个提交修复任务重放、批量发布、生图恢复、视频历史和媒体预览，并对齐运行时文档；未新增独立产品模块或改变核心架构，按维护补丁升版。
-- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.4`
+- Version selection rationale: 上新运营助手从 v1.3.6 更新至 v2.0.1，新增 SCM 洗唛/电子吊牌下载并调整分图及云盘上传流程；属于适配器级变更，按 PATCH 升版。
+- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.5`
 - Source commit: `PENDING`
-- Old version under test: `v2.5.3`
-- New version under test: `v2.5.4`
+- Old version under test: `v2.5.4`
+- New version under test: `v2.5.5`
 - GitHub main build run ID: `PENDING`
 - GitHub tag build run ID: `PENDING`
 - Formal release URL: `PENDING`
