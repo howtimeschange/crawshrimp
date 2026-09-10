@@ -1208,8 +1208,8 @@ def create_ai_video_job_with_run(
     job_source = dict(job_payload or {})
     run_source = dict(run_payload or {})
     now = _now_iso()
-    job_uid = str(job_source.get("id") or job_source.get("job_uid") or "").strip() or f"avj_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
-    run_uid = str(run_source.get("id") or run_source.get("run_uid") or "").strip() or f"avr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    job_uid = str(job_source.get("id") or job_source.get("job_uid") or "").strip() or f"avj_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}"
+    run_uid = str(run_source.get("id") or run_source.get("run_uid") or "").strip() or f"avr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}"
     job_request_uid = str(job_source.get("requestUid") or job_source.get("request_uid") or "").strip()
     run_request_uid = str(run_source.get("requestUid") or run_source.get("request_uid") or job_request_uid).strip()
     if not job_request_uid or not run_request_uid:
@@ -1515,7 +1515,7 @@ def list_ai_video_assets(job_uid: str = "") -> list[dict]:
 def create_ai_video_run(payload: Optional[Mapping[str, Any]] = None) -> dict:
     source = dict(payload or {})
     now = _now_iso()
-    run_uid = str(source.get("id") or source.get("run_uid") or "").strip() or f"avr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    run_uid = str(source.get("id") or source.get("run_uid") or "").strip() or f"avr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}"
     request_uid = str(source.get("requestUid") or source.get("request_uid") or "").strip()
     if not request_uid:
         raise ValueError("requestUid is required")

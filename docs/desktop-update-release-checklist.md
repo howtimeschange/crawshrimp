@@ -4,12 +4,12 @@ This checklist is the required evidence record before claiming desktop updater r
 
 ## Release Identity
 
-- Release scope (`PATCH` / `MINOR` / `MAJOR`): `MINOR`
-- Version selection rationale: `v2.2.2` 之后新增短视频文案与批量上传、SHEIN 图包下载、鞋品深绘上传包、按风格参考图和桌面主题等独立用户能力；组合变更按最高等级归类为功能级。
-- Target version selected under the [release versioning policy](release-versioning.md): `v2.3.0`
+- Release scope (`PATCH` / `MINOR` / `MAJOR`): `PATCH`
+- Version selection rationale: `v2.5.3` 之后的 8 个提交修复任务重放、批量发布、生图恢复、视频历史和媒体预览，并对齐运行时文档；未新增独立产品模块或改变核心架构，按维护补丁升版。
+- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.4`
 - Source commit: `PENDING`
-- Old version under test: `v2.2.2`
-- New version under test: `v2.3.0`
+- Old version under test: `v2.5.3`
+- New version under test: `v2.5.4`
 - GitHub main build run ID: `PENDING`
 - GitHub tag build run ID: `PENDING`
 - Formal release URL: `PENDING`

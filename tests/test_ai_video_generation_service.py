@@ -95,6 +95,28 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
         default_output_patcher.start()
         self.addCleanup(default_output_patcher.stop)
 
+    def test_video_ids_preserve_uuid_entropy_when_short_prefixes_collide(self):
+        from datetime import datetime
+        from uuid import UUID
+
+        identifiers = [UUID(hex=f"abcd{index:028x}") for index in range(6)]
+        with patch.object(data_sink, "datetime") as clock, \
+                patch.object(data_sink.uuid, "uuid4", side_effect=identifiers):
+            clock.now.return_value = datetime(2026, 9, 10, 12, 0, 0)
+            first = data_sink.create_ai_video_job_with_run({"requestUid": "collision-a"})
+            second = data_sink.create_ai_video_job_with_run({"requestUid": "collision-b"})
+            retry_a = data_sink.create_ai_video_run({
+                "jobId": first["job"]["id"], "requestUid": "collision-retry-a",
+            })
+            retry_b = data_sink.create_ai_video_run({
+                "jobId": second["job"]["id"], "requestUid": "collision-retry-b",
+            })
+        self.assertNotEqual(first["job"]["id"], second["job"]["id"])
+        runs = [first["run"], second["run"], retry_a, retry_b]
+        self.assertEqual(len({run["id"] for run in runs}), 4)
+        for run in runs:
+            self.assertEqual(data_sink.get_ai_video_run(run["id"])["requestUid"], run["requestUid"])
+
     def _write_image(self, name: str, size=(512, 512)) -> Path:
         path = self.root / name
         Image.new("RGB", size, color=(20, 120, 200)).save(path, format="JPEG")
