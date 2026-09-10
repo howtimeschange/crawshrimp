@@ -321,12 +321,58 @@ function deleteAuthorizedWorkspaceImage({
   return { ok: true, path: canonicalFile }
 }
 
+function deleteAuthorizedWorkspaceVideos({ workspaceRoot, filePaths = [], fsApi = fs } = {}) {
+  const root = authorizedWorkspaceRoot(workspaceRoot, { fsApi })
+  // Validate the entire batch before deleting anything, including canonical parents.
+  const targets = [...new Set(filePaths)].map(filePath => {
+    const raw = String(filePath || '').trim()
+    if (!raw) throw new Error('缺少本地视频路径')
+    const resolved = path.resolve(raw)
+    if (!BALA_VIDEO_EXTENSIONS.has(path.extname(resolved).toLowerCase())) {
+      throw new Error('只能删除工作区内的视频文件')
+    }
+    let missing = false
+    try {
+      const stat = fsApi.lstatSync(resolved)
+      if (stat.isSymbolicLink()) throw new Error('禁止删除符号链接')
+      if (!stat.isFile()) throw new Error('只能删除普通视频文件，不能删除目录')
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      missing = true
+    }
+    const canonical = missing ? canonicalMissingPath(resolved, fsApi) : canonicalPath(resolved, fsApi)
+    assertDescendant(root, canonical)
+    return { path: canonical, missing }
+  })
+  const failed = []
+  const deleted = []
+  for (const target of targets) {
+    if (target.missing) continue
+    try {
+      fsApi.unlinkSync(target.path)
+      deleted.push(target.path)
+    } catch (error) {
+      failed.push({ path: target.path, error: error.message })
+    }
+  }
+  return {
+    ok: failed.length === 0,
+    deleted_count: deleted.length,
+    deleted_paths: deleted,
+    missing_count: targets.filter(target => target.missing).length,
+    failed_count: failed.length,
+    failed,
+    error: failed.map(item => item.error).join('；'),
+  }
+}
+
 module.exports = {
   BALA_IMAGE_EXTENSIONS,
   BALA_VIDEO_EXTENSIONS,
   BALA_WORKSPACE_MANIFEST_FILENAME,
   authorizeBalaWorkspaceRoot,
   deleteAuthorizedWorkspaceImage,
+  deleteAuthorizedWorkspaceVideos,
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   listAuthorizedBalaWorkspaceImages,

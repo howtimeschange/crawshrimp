@@ -318,7 +318,7 @@ test('workspace file sync scans local videos and restores result records', () =>
 
   assert.match(source, /normalizeBalaVideoLocalPath/)
   assert.match(source, /restoreBalaVideoResultsFromWorkspaceFiles/)
-  assert.match(syncSource, /restoreBalaVideoResultsFromWorkspaceFiles\(\{\s*tasks: videoTasks,\s*results: videoResults,\s*files,/)
+  assert.match(syncSource, /restoreBalaVideoResultsFromWorkspaceFiles\(\{\s*tasks: videoTasks,\s*results: videoResults,\s*files: files\.filter/)
   assert.match(syncSource, /upsertVideoResults\(restored\)/)
   assert.match(syncSource, /task\.status = '已完成'/)
   assert.match(syncSource, /listBalaWorkspaceImages\(workspace\)/)

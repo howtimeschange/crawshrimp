@@ -1353,7 +1353,7 @@
         </header>
         <div class="aiv-confirm-copy">
           <strong>{{ pendingVideoHistoryCleanup.items.length }} 条历史记录将被清除</strong>
-          <span id="aiv-video-cleanup-description">“仅清除记录”会保留本地 MP4；删除文件仅作用于抓虾登记的任务输出视频。</span>
+          <span id="aiv-video-cleanup-description">“仅清除记录”会保留本地 MP4，且不再自动恢复该记录；删除文件仅作用于本次选中的工作区视频或已登记的任务输出视频。</span>
           <div v-if="videoHistoryCleanupError" class="aiv-inline-error" role="alert">{{ videoHistoryCleanupError }}</div>
         </div>
         <footer class="aiv-modal-foot">
@@ -2208,6 +2208,7 @@ import {
   rebaseBalaMaterialRowsToWorkspace,
   reconcileBalaWorkspaceFiles,
   restoreBalaVideoResultsFromWorkspaceFiles,
+  repairBalaVideoDraftAssociations,
   resolveBalaAssetPreviewSource,
   resolveBalaVersionPreviewSource,
   resolveBalaVideoPlaybackSource,
@@ -2709,6 +2710,12 @@ const reviewStyles = reactive([])
 
 const videoJobs = reactive([])
 const videoTasks = reactive([])
+const videoHistoryHiddenPaths = reactive(new Set())
+
+function restoreVideoHistoryHiddenPaths(paths = []) {
+  videoHistoryHiddenPaths.clear()
+  for (const path of toBalaBridgeStringArray(paths)) videoHistoryHiddenPaths.add(path)
+}
 const videoResults = reactive([])
 const selectedVideoTaskIds = reactive(new Set())
 const videoTaskStatusFilter = ref('all')
@@ -2803,6 +2810,7 @@ function workspaceSnapshot() {
     video: {
       tasks: videoTasks.map(persistedVideoTask),
       results: videoResults.map(persistedVideoResult),
+      hiddenPaths: [...videoHistoryHiddenPaths],
     },
   }
 }
@@ -2840,9 +2848,11 @@ function restoreWorkspaceVideoManifest(snapshot = {}, workspace = workspaceDir.v
     restored = true
   }
   const video = snapshot.video || {}
-  const tasks = Array.isArray(video.tasks) ? video.tasks.map(persistedVideoTask).filter(item => item.id) : []
-  const results = Array.isArray(video.results) ? video.results.map(persistedVideoResult).filter(item => item.id) : []
-  if (tasks.length || results.length) {
+  restoreVideoHistoryHiddenPaths(video.hiddenPaths || [])
+  const savedTasks = Array.isArray(video.tasks) ? video.tasks.map(persistedVideoTask).filter(item => item.id) : []
+  const savedResults = Array.isArray(video.results) ? video.results.map(persistedVideoResult).filter(item => item.id) : []
+  const { tasks, results } = repairBalaVideoDraftAssociations(savedTasks, savedResults)
+  if (tasks.length || results.length || videoHistoryHiddenPaths.size) {
     videoTasks.splice(0, videoTasks.length, ...tasks)
     videoResults.splice(0, videoResults.length, ...results)
     restored = true
@@ -3000,8 +3010,10 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   variantReferencePaths.value = Array.isArray(image.variantReferencePaths) ? image.variantReferencePaths.filter(Boolean) : []
 
   const video = snapshot.video || {}
-  const tasks = Array.isArray(video.tasks) ? video.tasks.map(persistedVideoTask).filter(item => item.id) : []
-  const results = Array.isArray(video.results) ? video.results.map(persistedVideoResult).filter(item => item.id) : []
+  restoreVideoHistoryHiddenPaths(video.hiddenPaths || [])
+  const savedTasks = Array.isArray(video.tasks) ? video.tasks.map(persistedVideoTask).filter(item => item.id) : []
+  const savedResults = Array.isArray(video.results) ? video.results.map(persistedVideoResult).filter(item => item.id) : []
+  const { tasks, results } = repairBalaVideoDraftAssociations(savedTasks, savedResults)
   videoTasks.splice(0, videoTasks.length, ...tasks)
   videoResults.splice(0, videoResults.length, ...results)
   videoTaskDraft.outputDir = workspace
@@ -4095,6 +4107,7 @@ async function loadLocalVideoPreview(path = '') {
 }
 
 function mediaPlaybackSource(item = {}) {
+  if (videoHistoryCleanupBusy.value) return ''
   const localPath = localVideoPathFor(item)
   const localPreview = localPath ? localVideoPreviews[localPath] : ''
   const localPlayback = localVideoPlaybackUrl(localPreview, item, localPath)
@@ -4315,10 +4328,11 @@ function applyWorkspaceFileSync(files = []) {
 }
 
 function applyWorkspaceVideoFileSync(files = []) {
+  if (videoHistoryCleanupBusy.value) return
   const restored = restoreBalaVideoResultsFromWorkspaceFiles({
     tasks: videoTasks,
     results: videoResults,
-    files,
+    files: files.filter(file => !videoHistoryHiddenPaths.has(String(file.path || file.localPath || '').trim())),
   })
   if (!restored.length) return
   upsertVideoResults(restored)
@@ -4617,6 +4631,7 @@ function resetWorkflowWorkspace() {
   videoJobs.splice(0, videoJobs.length)
   videoTasks.splice(0, videoTasks.length)
   videoResults.splice(0, videoResults.length)
+  videoHistoryHiddenPaths.clear()
   activeAction.value = 'face_swap'
   selectedModel.value = null
   replaceSourceModelAssignments({})
@@ -8998,7 +9013,9 @@ function createVideoTaskFromDraft() {
     ? templateSamples.find(item => item.id === videoTaskDraft.templateId) || null
     : null
   const providerName = providerLabel(videoTaskDraft.provider)
-  const currentTask = videoTasks.find(task => task.id === editingVideoTaskId.value)
+  const editedTask = videoTasks.find(task => task.id === editingVideoTaskId.value)
+  // Editing a submitted/completed task creates a fresh attempt and preserves its video.
+  const currentTask = editedTask && isVideoTaskSubmittable(editedTask) ? editedTask : null
   const taskIndex = videoTasks.length + 1
   const gen = videoTaskGenerationParams(videoTaskDraft)
   const nextTask = {
@@ -9102,6 +9119,19 @@ function isBridgeCloneError(error) {
 async function deleteVideoHistoryLocalFiles(paths = []) {
   const localPaths = toBalaBridgeStringArray(paths)
   if (!localPaths.length) return { ok: true, failed_count: 0 }
+  if (typeof window.cs?.deleteBalaWorkspaceVideos === 'function'
+    && localPaths.every(path => pathInsideDirectory(path, workspaceDir.value))) {
+    releaseWorkspaceVideoPreviews(localPaths)
+    // Release native media handles before unlinking on Windows.
+    for (const item of videoResults.filter(item => localPaths.includes(videoResultLocalPath(item)))) {
+      const element = videoResultElements.get(String(item.id || ''))
+      if (!element) continue
+      element.pause()
+      element.removeAttribute('src')
+      element.load()
+    }
+    return await window.cs.deleteBalaWorkspaceVideos(workspaceDir.value, localPaths)
+  }
   try {
     return await window.cs.deleteFiles(localPaths)
   } catch (error) {
@@ -9172,12 +9202,13 @@ async function clearVideoHistoryRecords(items = []) {
   const cleared = clearBalaVideoTaskHistory(videoResults, items)
   if (!cleared.taskRefIds.length) return
   const removed = videoResults.filter(item => !cleared.results.includes(item))
+  for (const path of removed.map(videoResultLocalPath).filter(Boolean)) videoHistoryHiddenPaths.add(path)
   releaseWorkspaceVideoPreviews(removed.map(videoResultLocalPath))
   videoResults.splice(0, videoResults.length, ...cleared.results)
   removeClearedVideoTasks(cleared.taskRefIds)
   resetVideoResultPoll()
   for (const item of removed) {
-    delete videoResultElements[String(item.id || '')]
+    videoResultElements.delete(String(item.id || ''))
     if (videoResultToPlayId.value === item.id) videoResultToPlayId.value = ''
   }
   await flushWorkspaceManifest()

@@ -896,3 +896,30 @@ test('workflow preserves selected-material filtering, readable tokens, focus, an
   assert.match(appSource, /--on-orange: #17131A/)
   assert.match(appSource, /--text3: #8e8ca4/)
 })
+
+
+test('a single old video cannot complete a new or differently submitted task for the same style', () => {
+  const oldPath = '/workspace/209426107202_seedance_cgt-old-attempt.mp4'
+  const tasks = [
+    { id: 'new-draft', styleCode: '209426107202', status: '待预检', prompt: 'different prompt' },
+    { id: 'new-submitted', styleCode: '209426107202', providerTaskId: 'cgt-new-attempt' },
+  ]
+  const recovered = restoreBalaVideoResultsFromWorkspaceFiles({
+    tasks,
+    files: [{ path: oldPath, styleCode: '209426107202' }],
+  })
+  assert.equal(recovered.length, 1)
+  assert.equal(recovered[0].taskRefId, '')
+  assert.equal(recovered[0].providerKey, 'local-workspace')
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible(tasks[0]), true)
+})
+
+test('workspace scan never reassigns an output already owned by another task', () => {
+  const videoPath = '/workspace/209426107202_seedance_cgt-old-attempt.mp4'
+  const recovered = restoreBalaVideoResultsFromWorkspaceFiles({
+    tasks: [{ id: 'new-draft', styleCode: '209426107202' }],
+    results: [{ id: 'old-task', taskRefId: 'old-task', path: videoPath }],
+    files: [{ path: videoPath }],
+  })
+  assert.deepEqual(recovered, [])
+})

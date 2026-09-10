@@ -503,6 +503,9 @@ export function createDevCsBridge() {
     deleteBalaWorkspaceImage: async () => {
       throw devModeError('浏览器开发模式不能安全删除本地图片，请在 Electron 开发壳中操作')
     },
+    deleteBalaWorkspaceVideos: async () => {
+      throw devModeError('浏览器开发模式不能安全删除本机视频，请在 Electron 开发壳中操作')
+    },
     getBalaWorkspaceVideoMedia: async () => {
       throw devModeError('浏览器开发模式不能安全流式预览本机视频，请在 Electron 开发壳中查看')
     },

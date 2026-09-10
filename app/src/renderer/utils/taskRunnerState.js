@@ -20,3 +20,8 @@ export function mergeTaskLiveStatus(task, status) {
     },
   }
 }
+
+export function stoppedTaskResultMessage(result = {}) {
+  const reason = String(result.error || '').trim()
+  return `■ 已停止，保留 ${result.records ?? result.records_count ?? 0} 条结果${reason ? `；${reason}` : ''}`
+}

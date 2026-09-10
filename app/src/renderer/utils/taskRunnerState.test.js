@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   mergeTaskLiveStatus,
+  stoppedTaskResultMessage,
   shouldResetTaskValues,
   taskIdentityKey,
 } from './taskRunnerState.js'
@@ -86,4 +87,13 @@ test('mergeTaskLiveStatus applies full live progress snapshots for instance runn
   assert.equal(merged.live.buyer_id, '208326100202')
   assert.equal(merged.live.search_completed_codes, 6)
   assert.equal(merged.live.generation_completed_jobs, 12)
+})
+
+
+test('persisted stopped runs retain the reason and record count shown by live runs', () => {
+  assert.equal(stoppedTaskResultMessage({ records_count: 4, error: 'backend restarted' }),
+    '■ 已停止，保留 4 条结果；backend restarted')
+  assert.equal(stoppedTaskResultMessage({ records: 0, records_count: 4, error: 'user stopped' }),
+    '■ 已停止，保留 0 条结果；user stopped')
+  assert.equal(stoppedTaskResultMessage({ records_count: 4 }), '■ 已停止，保留 4 条结果')
 })

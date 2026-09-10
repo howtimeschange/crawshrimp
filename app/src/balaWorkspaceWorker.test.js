@@ -40,3 +40,24 @@ test('large workspace scans leave the main loop responsive and preserve hashes, 
     fs.rmSync(workspaceRoot, { recursive: true, force: true })
   }
 })
+
+test('video history worker persists hidden records and deletes an unregistered video after restart', async () => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bala-video-cleanup-'))
+  const video = path.join(workspaceRoot, '209426107202_seedance_cgt-old.mp4')
+  let worker = createWorkspaceFileWorker()
+  try {
+    fs.writeFileSync(video, 'video')
+    const payload = { workspaceDir: workspaceRoot, video: { tasks: [], results: [], hiddenPaths: [video] } }
+    await worker.run('writeAuthorizedBalaWorkspaceManifest', { workspaceRoot, payload })
+    await worker.close()
+    worker = createWorkspaceFileWorker()
+    assert.deepEqual(await worker.run('readAuthorizedBalaWorkspaceManifest', { workspaceRoot }), payload)
+    assert.equal(fs.existsSync(video), true)
+    assert.equal((await worker.run('deleteAuthorizedWorkspaceVideos', { workspaceRoot, filePaths: [video] })).ok, true)
+    assert.equal(fs.existsSync(video), false)
+    assert.equal((await worker.run('deleteAuthorizedWorkspaceVideos', { workspaceRoot, filePaths: [video] })).missing_count, 1)
+  } finally {
+    await worker.close()
+    fs.rmSync(workspaceRoot, { recursive: true, force: true })
+  }
+})

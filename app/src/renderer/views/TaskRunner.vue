@@ -1078,7 +1078,7 @@ import TaskOutputDrawer from './TaskOutputDrawer.vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
-import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState'
+import { shouldResetTaskValues, taskIdentityKey, stoppedTaskResultMessage } from '../utils/taskRunnerState'
 import { buildEmbeddedCloudApprovalUrl, isTrustedCloudApprovalBoardUrl } from '../utils/cloudApprovalUrl'
 import { collectDownloadedMaterialRows } from '../utils/balaAiVideoWorkflow'
 import {
@@ -1653,6 +1653,9 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
         isRunning.value = true
         currentRunId = live.run_id ?? last?.id ?? null
         emit('status-change', live)
+      } else if (last?.status === 'stopped' && activeTaskIdentityKey === taskIdentityKey(adapterId, task)) {
+        // Keep the persisted stop reason visible after reopening this task.
+        lastResult.value = { ok: false, msg: stoppedTaskResultMessage(last) }
       }
       if (isInstanceMode.value || last?.output_files) {
         await refreshOutputFiles()
@@ -3119,7 +3122,7 @@ async function finishRun(result, options = {}) {
     if (isInstanceMode.value) emit('instance-updated')
     lastResult.value = {
       ok: false,
-      msg: options.message || `■ 已停止，保留 ${result.records ?? result.records_count ?? 0} 条结果${result.error ? `；${result.error}` : ''}`,
+      msg: options.message || stoppedTaskResultMessage(result),
     }
   } else if (result.status === 'error') {
     if (isInstanceMode.value) emit('instance-updated')

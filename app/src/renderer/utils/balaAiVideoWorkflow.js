@@ -1958,7 +1958,8 @@ function findWorkspaceVideoForTask({ task = {}, result = {}, files = [] } = {}) 
     if (exact) return exact
   }
 
-  return candidates.length === 1 ? candidates[0] : null
+  // A style identifies the garment, never a particular generation attempt.
+  return null
 }
 
 function workspaceVideoCanRestoreAsLocalResult(file = {}) {
@@ -1986,13 +1987,34 @@ function videoTaskResultLabel(task = {}) {
   return compact(template || task?.templateTitle || task?.templateName) || '不选模板'
 }
 
+// Repair drafts that older versions marked complete solely by a same-style file scan.
+export function repairBalaVideoDraftAssociations(tasks = [], results = []) {
+  const repairedTaskIds = new Set()
+  const repairedResults = results.map(result => {
+    const task = tasks.find(item => compact(item.id) === compact(result.taskRefId))
+    if (!task || result.progressSource !== 'local-workspace'
+      || videoIdentityTokens(task, result).length || result.videoUrl || result.video_url) return result
+    const localPath = normalizeBalaVideoLocalPath(result)
+    if (!localPath) return result
+    repairedTaskIds.add(task.id)
+    return {
+      ...result, id: workspaceVideoLocalResultId({ path: localPath }), taskRefId: '',
+      provider: '本地视频', providerKey: 'local-workspace', template: '本地恢复',
+    }
+  })
+  return {
+    tasks: tasks.map(task => repairedTaskIds.has(task.id) ? { ...task, status: '待预检' } : task),
+    results: repairedResults.filter((result, index) => repairedResults.findIndex(item => item.id === result.id) === index),
+  }
+}
+
 export function restoreBalaVideoResultsFromWorkspaceFiles({ tasks = [], results = [], files = [] } = {}) {
   const normalizedFiles = (files || []).map(normalizedWorkspaceVideoFile).filter(Boolean)
   if (!normalizedFiles.length) return []
 
   const restored = []
   const restoredResultIds = new Set()
-  const usedFilePaths = new Set()
+  const usedFilePaths = new Set((results || []).map(normalizeBalaVideoLocalPath).filter(Boolean))
   const restoreWithFile = (result, file) => {
     restored.push(result)
     restoredResultIds.add(compact(result?.id))

@@ -6,7 +6,7 @@ const files = require('./balaWorkspaceFiles')
 const operations = new Set([
   'listAuthorizedBalaWorkspaceImages', 'listAuthorizedBalaWorkspaceVideos',
   'deleteAuthorizedWorkspaceImage', 'readAuthorizedBalaWorkspaceManifest',
-  'writeAuthorizedBalaWorkspaceManifest',
+  'writeAuthorizedBalaWorkspaceManifest', 'deleteAuthorizedWorkspaceVideos',
 ])
 
 if (!isMainThread) {

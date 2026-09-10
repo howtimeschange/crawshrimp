@@ -3147,6 +3147,12 @@ secureHandle('delete-bala-workspace-image', async (_, workspaceRoot, filePath) =
   })
 })
 
+secureHandle('delete-bala-workspace-videos', async (_, workspaceRoot, filePaths) => {
+  return workspaceFileWorker.run('deleteAuthorizedWorkspaceVideos', {
+    workspaceRoot, filePaths: toPlainFilePathArray(filePaths),
+  })
+})
+
 secureHandle('get-bala-workspace-video-media', async (_, workspaceRoot, filePath) => {
   const media = getAuthorizedBalaWorkspaceVideo({
     filePath,

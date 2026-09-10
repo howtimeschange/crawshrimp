@@ -9,6 +9,7 @@ const path = require('node:path')
 const {
   authorizeBalaWorkspaceRoot,
   deleteAuthorizedWorkspaceImage,
+  deleteAuthorizedWorkspaceVideos,
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   listAuthorizedBalaWorkspaceImages,
@@ -337,4 +338,39 @@ test('large workspace hashes only changed files and prunes deleted file versions
     fs.utimesSync(file, stat.atime, stat.mtime)
     reads = 0; scan(); assert.equal(reads, 1)
   } finally { fs.rmSync(workspaceRoot, { recursive: true, force: true }) }
+})
+
+
+test('workspace video cleanup deletes unregistered MP4 files and is retryable when already missing', () => {
+  withTempTree(({ workspace }) => {
+    const video = path.join(workspace, '209426107202_seedance_cgt-old.mp4')
+    fs.writeFileSync(video, 'video')
+    const args = { workspaceRoot: workspace, filePaths: [video] }
+    assert.equal(deleteAuthorizedWorkspaceVideos(args).deleted_count, 1)
+    assert.equal(fs.existsSync(video), false)
+    assert.equal(deleteAuthorizedWorkspaceVideos(args).missing_count, 1)
+  })
+})
+
+test('workspace video cleanup validates every target before unlink and rejects escape paths', () => {
+  withTempTree(({ workspace, outside }) => {
+    const video = path.join(workspace, 'keep.mp4')
+    const external = path.join(outside, 'keep.mp4')
+    fs.writeFileSync(video, 'video')
+    fs.writeFileSync(external, 'external')
+    const directory = path.join(workspace, 'folder.mp4')
+    fs.mkdirSync(directory)
+    const link = path.join(workspace, 'link.mp4')
+    fs.symlinkSync(external, link)
+    const linkedDirectory = path.join(workspace, 'linked')
+    fs.symlinkSync(outside, linkedDirectory, 'dir')
+    const text = path.join(workspace, 'keep.txt')
+    fs.writeFileSync(text, 'text')
+    for (const invalid of [external, workspace, directory, link, text,
+      path.join(linkedDirectory, 'keep.mp4'), path.join(linkedDirectory, 'missing.mp4')]) {
+      assert.throws(() => deleteAuthorizedWorkspaceVideos({ workspaceRoot: workspace, filePaths: [video, invalid] }))
+      assert.equal(fs.existsSync(video), true)
+      assert.equal(fs.existsSync(external), true)
+    }
+  })
 })
