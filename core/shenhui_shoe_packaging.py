@@ -518,7 +518,8 @@ SHOE_GLOBAL_PAGE_MAX_PAGES = 8
 SHOE_MULTIMODAL_IMAGE_INPUT_LIMIT = 10
 SHOE_POSE_MODEL_MAX_ATTEMPTS = 3
 SHOE_LABEL_OCR_MODEL_MAX_ATTEMPTS = 3
-SHOE_POSE_MODEL_TIMEOUT_SECONDS = 60
+SHOE_POSE_MODEL_TIMEOUT_SECONDS = 120
+SHOE_POSE_FULL_SHEET_TIMEOUT_SECONDS = 240
 SHOE_LABEL_OCR_TIMEOUT_SECONDS = 60
 SHOE_POSE_TIMEOUT_PROBE_SECONDS = 180
 SHOE_LABEL_OCR_TIMEOUT_PROBE_SECONDS = 180
@@ -666,7 +667,7 @@ def _is_auto_shoe_model_id(model_id: str) -> bool:
 
 def _is_timeout_like_llm_error(exc: Exception | str) -> bool:
     text = _text(exc).lower()
-    return any(
+    return bool(re.search(r"\bhttp\s+(408|504|524)\b", text)) or any(
         marker in text
         for marker in (
             "timeout",
@@ -3740,7 +3741,7 @@ def _shoe_targeted_slot_prompt(
     """Ask one model route to arbitrate exactly one unresolved semantic slot."""
 
     target_slot = shenhui_shoe_rules.normalize_slot_name(target_slot)
-    if target_slot not in SHOE_FULL_POSE_REQUIRED_CONSENSUS_SLOTS:
+    if target_slot not in SHOE_FOCUSED_POSE_SLOTS:
         raise ShoeSelectionError(f"不支持的鞋品单槽位裁决：{target_slot or '空'}")
     candidate_sheet_count = max(1, int(candidate_sheet_count or 1))
     if candidate_sheet_count == 1:
@@ -3781,6 +3782,12 @@ def _shoe_targeted_slot_prompt(
         ),
         "yq2": "完整鞋底平铺并朝向镜头，不接受局部鞋底、斜角鞋身或普通侧视图",
         "yq3": "无遮挡的完整单鞋外侧面，鞋头到鞋跟完整可见；内侧、竖立、鞋底和功能卡图都不合格",
+        "yx": (
+            "完整鞋子主体与功能吊牌或功能卡同框，允许卡片遮住部分鞋身；"
+            "单独吊牌、单独鞋垫、鞋盒、普通鞋图和局部特写都不合格。"
+            "鞋与卡同框时 asset_type 应为 shoe，feature_card=true；"
+            "只有卡片而没有完整鞋子时 asset_type=other，complete=false"
+        ),
     }
     candidate_text = "\n".join(
         f"{candidate_id}={filename}"
@@ -4016,7 +4023,7 @@ def _create_targeted_slot_contact_sheets(
     """Render large, stable-ID panels for one exact-template arbitration."""
 
     target_slot = shenhui_shoe_rules.normalize_slot_name(target_slot)
-    if target_slot not in SHOE_FULL_POSE_REQUIRED_CONSENSUS_SLOTS:
+    if target_slot not in SHOE_FOCUSED_POSE_SLOTS:
         raise ShoeSelectionError(
             f"不支持的鞋品单槽位候选面板：{target_slot or '空'}"
         )
@@ -5748,6 +5755,140 @@ def _focused_candidate_ids_from_page_payloads(
     }
 
 
+def _review_missing_shoe_feature_card(
+    payload: dict[str, Any],
+    *,
+    candidate_ids: dict[str, str],
+    candidate_entries: list[dict[str, Any]],
+    contact_sheet: str,
+    style_code: str,
+    color_code: str,
+    shoe_category: str,
+    model_ids: list[str],
+    required_votes: int,
+    invoke: Any,
+    log: Any,
+) -> dict[str, Any]:
+    """Review nominated optional yx images before treating them as absent."""
+    if _text((payload.get("slots") or {}).get("yx")) or not candidate_entries:
+        return payload
+    nominated = {
+        _text(fact.get("filename"))
+        for evidence in payload.get("_candidate_facts_by_model") or []
+        for fact in evidence.get("candidate_facts") or []
+        if fact.get("feature_card") and fact.get("complete")
+    }
+    entries_by_name = {_text(entry.get("filename")): entry for entry in candidate_entries}
+    review_ids = {
+        key: filename for key, filename in candidate_ids.items()
+        if filename in nominated and filename in entries_by_name
+    }
+    if not review_ids:
+        return payload
+    target = Path(contact_sheet).with_name(f"{color_code}-optional-yx.jpg")
+    sheets, rendered_ids = _create_targeted_slot_contact_sheets(
+        "yx", review_ids, entries_by_name, target, round_index=1,
+    )
+    if rendered_ids != review_ids:
+        raise ShoeSelectionError("鞋品功能吊牌复核候选编号不一致")
+    image_inputs = [str(sheet) for sheet in sheets]
+    _ensure_pose_image_input_limit(
+        image_inputs, style_code=style_code, color_code=color_code,
+        pose_strategy="optional_yx",
+    )
+    batch = {
+        "batch_index": 1,
+        "candidate_ids": review_ids,
+        "image_inputs": image_inputs,
+        "user_prompt": _shoe_targeted_slot_prompt(
+            style_code, color_code, review_ids, shoe_category,
+            target_slot="yx", candidate_sheet_count=len(sheets),
+            has_reference_image=False,
+        ),
+    }
+    log(f"鞋品功能吊牌候选复核：{style_code}-{color_code}，{len(review_ids)} 张候选")
+    responses: list[dict[str, Any]] = []
+    routes: set[str] = set()
+    errors: list[str] = []
+    reviewed: dict[str, Any] = {}
+    vote: dict[str, Any] = {}
+    remaining = list(dict.fromkeys(model_ids))
+    while remaining:
+        wave_size = max(1, required_votes - len(routes))
+        wave, remaining = remaining[:wave_size], remaining[wave_size:]
+        results = _run_pose_model_wave(wave, lambda model: invoke(batch, model))
+        for model, result in zip(wave, results):
+            if not result.get("ok"):
+                errors.append(f"{model}: {_text(result.get('error'))}")
+                continue
+            route = _text(result.get("route_model_id"))
+            if not route or route in routes:
+                continue
+            routes.add(route)
+            response = _restrict_pose_payload_to_target_slot(
+                dict(result["payload"]), review_ids, "yx",
+            )
+            response["_model_id"] = route
+            responses.append(response)
+        if responses:
+            reviewed = _consensus_pose_payload(
+                responses, review_ids, shoe_category, required_votes=required_votes,
+            )
+            vote = (reviewed.get("_model_votes") or {}).get("yx") or {}
+            if vote.get("status") == "locked":
+                break
+    result = dict(payload)
+    evidence = {
+        "status": "locked" if vote.get("status") == "locked" else "unresolved_optional",
+        "candidate_ids": review_ids, "contact_sheets": image_inputs,
+        "routes": sorted(routes), "required_votes": required_votes,
+        "model_votes": reviewed.get("_model_votes") or {},
+        "candidate_facts_by_model": reviewed.get("_candidate_facts_by_model") or [],
+        "errors": errors,
+    }
+    result["_targeted_slot_consensus"] = {
+        **(payload.get("_targeted_slot_consensus") or {}), "yx": evidence,
+    }
+    if vote.get("status") == "locked":
+        result["slots"] = {**payload["slots"], "yx": reviewed["slots"]["yx"]}
+        result["_model_votes"] = {**(payload.get("_model_votes") or {}), "yx": vote}
+        result["_candidate_facts_by_model"] = [
+            *(reviewed.get("_candidate_facts_by_model") or []),
+            *(payload.get("_candidate_facts_by_model") or []),
+        ]
+        result["_consensus_issues"] = [
+            issue for issue in payload.get("_consensus_issues") or []
+            if issue.get("slot") != "yx"
+        ]
+        log(f"鞋品功能吊牌已通过独立模型复核：{style_code}-{color_code}，{review_ids[vote['selected']]}")
+    else:
+        log(f"[warn] 鞋品功能吊牌候选未达独立模型共识，保留缺图告警：{style_code}-{color_code}")
+    return result
+
+
+def _retry_shoe_single_sheet_as_pages(kwargs: dict[str, Any]) -> dict[str, Any]:
+    target = Path(kwargs["contact_sheet"]).with_name(
+        Path(kwargs["contact_sheet"]).stem + "-retry-pages.jpg"
+    )
+    sheets, rendered_ids = _create_global_page_contact_sheets(
+        kwargs["candidate_entries"], target,
+    )
+    if rendered_ids != kwargs["candidate_ids"]:
+        raise ShoeSelectionError("鞋品分页复核候选编号不一致，拒绝继续")
+    retry_kwargs = dict(kwargs)
+    retry_kwargs.update(
+        pose_strategy=SHOE_POSE_STRATEGY_GLOBAL_PAGES,
+        contact_sheet=str(sheets[0]),
+        contact_sheets=[str(sheet) for sheet in sheets],
+        overview_contact_sheet="",
+    )
+    evidence_path = _text(kwargs.get("pose_evidence_path"))
+    if evidence_path:
+        path = Path(evidence_path)
+        retry_kwargs["pose_evidence_path"] = str(path.with_name(path.stem + "-pages.json"))
+    return _default_analyze_color(**retry_kwargs)
+
+
 def _default_analyze_color(**kwargs) -> dict[str, Any]:
     candidate_ids = kwargs["candidate_ids"]
     contact_sheets = kwargs.get("contact_sheets") or [kwargs["contact_sheet"]]
@@ -5910,12 +6051,21 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
         batch_input: dict[str, Any],
         current_model_id: str,
         *,
-        timeout_seconds: float = SHOE_POSE_MODEL_TIMEOUT_SECONDS,
+        timeout_seconds: float | None = None,
         max_attempts: int = SHOE_POSE_MODEL_MAX_ATTEMPTS,
         timeout_probe: bool = False,
     ) -> dict[str, Any]:
         batch_index = int(batch_input["batch_index"])
         batch_candidate_ids = batch_input["candidate_ids"]
+        if timeout_seconds is None:
+            # A full colour sheet asks for facts for every candidate. The real
+            # 24-image request takes over two minutes even on a healthy route;
+            # the small-page deadline discarded every configured model.
+            timeout_seconds = (
+                SHOE_POSE_FULL_SHEET_TIMEOUT_SECONDS
+                if len(batch_candidate_ids) > SHOE_GLOBAL_PAGE_CHUNK_SIZE
+                else SHOE_POSE_MODEL_TIMEOUT_SECONDS
+            )
         last_error = ""
         timeout_like = False
         configuration_error = False
@@ -6205,6 +6355,24 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                 errors.append(
                     f"{current_model_id}: 批次{batch_index}/{total_batches} {error_text}"
                 )
+
+        if (
+            pose_strategy == SHOE_POSE_STRATEGY_SINGLE_SHEET
+            and SHOE_GLOBAL_PAGE_CHUNK_SIZE < len(candidate_ids)
+            <= SHOE_GLOBAL_PAGE_CHUNK_SIZE * SHOE_GLOBAL_PAGE_MAX_PAGES
+            and candidate_entries
+            and len(routes_by_batch.get(1, set())) >= required_model_votes
+            and missing_required_consensus_slots(batch_inputs[0])
+        ):
+            # Preserve independent semantic validation, but give ambiguous
+            # full-sheet candidates the existing paged/focused/targeted review.
+            # More votes on the same tiny thumbnails cannot resolve the detail.
+            log(
+                f"鞋品全量大图存在槽位分歧：{style_code}-{color_code}，"
+                "自动转分页及单槽位复核"
+            )
+            flush_pose_evidence("fallback_global_pages")
+            return _retry_shoe_single_sheet_as_pages(kwargs)
 
     pending_batches = [
         item
@@ -7139,6 +7307,15 @@ def _default_analyze_color(**kwargs) -> dict[str, Any]:
                 for item in consensus_payloads
                 for evidence in (item.get("_candidate_facts_by_model") or [])
             ]
+        payload = _review_missing_shoe_feature_card(
+            payload, candidate_ids=candidate_ids, candidate_entries=candidate_entries,
+            contact_sheet=str(contact_sheets[0]), style_code=style_code,
+            color_code=color_code, shoe_category=kwargs.get("shoe_category") or "",
+            model_ids=[model for model in model_ids if model not in disabled_models],
+            required_votes=required_model_votes,
+            invoke=lambda batch, model: analyze_batch_with_model(batch, model, max_attempts=1),
+            log=log,
+        )
         _validate_pose_payload_references(payload, candidate_ids)
         if errors:
             payload["_model_attempt_warnings"] = "；".join(errors[:5])

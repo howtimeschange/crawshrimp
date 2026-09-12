@@ -3650,6 +3650,22 @@ def _prepare_shenhui_shoe_package_rows(
     return report_rows
 
 
+def _require_shenhui_shoe_package_result(data_rows: list, run_params: dict) -> None:
+    """Raw download fallback is recoverable output, not a completed package."""
+    if run_params.get("__shenhui_shoe_package_refs"):
+        return
+    reasons = list(dict.fromkeys(
+        str(row.get("备注") or row.get("规则告警") or "").strip()
+        for row in data_rows or []
+        if isinstance(row, dict)
+        and str(row.get("备注") or row.get("规则告警") or "").strip()
+    ))
+    detail = "；".join(reasons[:3]) or "未生成任何可用的鞋品图包"
+    raise shenhui_shoe_packaging.ShoeSelectionError(
+        f"鞋品图包整理失败（0 个图包），已下载原素材将保留：{detail}"
+    )
+
+
 _SHENHUI_LABEL_TILE_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 _SHENHUI_LABEL_TILE_PDF_SUFFIXES = {".pdf"}
 _SHENHUI_NEW_ARRIVAL_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -5092,7 +5108,7 @@ def _finalize_shenhui_new_arrival_outputs(
             final_refs.append(str(relocated))
             log(f"Shenhui shoe package moved to output folder: {relocated}")
 
-        if export_folder and not final_refs:
+        if not final_refs:
             final_refs.extend(
                 _fallback_export_shenhui_shoe_downloaded_materials(
                     data_rows=data_rows,
@@ -8590,8 +8606,6 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         async def export_shenhui_shoe_partial_rows_on_error(error_message: str) -> tuple[list[dict], list[str]]:
             if (adapter_id, task_id) != ("shenhui-new-arrival", "prepare_shoe_upload_package") or not runner:
                 return [], []
-            if not str(run_params.get("export_folder") or "").strip():
-                return [], []
             recovered_rows = recover_shenhui_shoe_partial_rows(data)
             recovered_rows = _apply_final_export_guards(adapter_id, task_id, recovered_rows)
             runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
@@ -8773,6 +8787,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 log=log,
                 progress=report_shoe_organize_progress,
             )
+            _require_shenhui_shoe_package_result(data, run_params)
             raw_count = len(data)
         deduped_count = len(data)
         log(f"Script complete. Records: {raw_count}")

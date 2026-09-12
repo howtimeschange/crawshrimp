@@ -14,6 +14,7 @@ from core.api_server import (
     _compress_shenhui_label_tile_image_if_beneficial,
     _finalize_shenhui_new_arrival_outputs,
     _prepare_shenhui_shoe_package_rows,
+    _require_shenhui_shoe_package_result,
     _serialize_task_param,
     _shenhui_shoe_box_label_candidate_result,
 )
@@ -26,6 +27,18 @@ SHOE_PACKAGING_PATH = ROOT / "core" / "shenhui_shoe_packaging.py"
 
 
 class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
+    def test_shoe_raw_fallback_is_failure_and_preserves_report_reason(self):
+        rows = [{"输入款号": "204426141029", "处理动作": "失败款跳过",
+                 "规则告警": "整理失败，已跳过该款", "备注": "00316 姿势识别请求超时"}]
+        with self.assertRaisesRegex(ValueError, "0 个图包.*00316 姿势识别请求超时"):
+            _require_shenhui_shoe_package_result(rows, {"__shenhui_shoe_package_refs": []})
+        self.assertEqual(rows[0]["备注"], "00316 姿势识别请求超时")
+        _require_shenhui_shoe_package_result(rows, {"__shenhui_shoe_package_refs": ["successful-style"]})
+
+    def test_empty_shoe_result_cannot_be_reported_as_done(self):
+        with self.assertRaisesRegex(ValueError, "未生成任何可用的鞋品图包"):
+            _require_shenhui_shoe_package_result([], {})
+
     def test_apparel_label_processor_is_called_only_for_prepare_upload_package(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

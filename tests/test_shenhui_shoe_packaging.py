@@ -84,6 +84,97 @@ def _required_pose_candidate_ids(*extra_ids):
 
 
 class ShenhuiShoePackagingRuleTests(unittest.TestCase):
+    def test_full_sheet_disagreement_uses_paged_review_after_independent_quorum(self):
+        calls = []
+        ids = {f"I{i:02d}": f"photo{i}.jpg" for i in range(1, 25)}
+
+        def recognize(**kwargs):
+            calls.append(kwargs["model_id"])
+            return ({"shoe_category": "运动", "candidates": [
+                _candidate_fact("I01", "tmz5", filename="photo1.jpg")
+            ]}, type("Route", (), {"model_id": kwargs["model_id"]})())
+
+        with patch.object(shenhui_shoe_packaging.llm_gateway, "generate_multimodal_json", side_effect=recognize), \
+             patch.object(shenhui_shoe_packaging, "_retry_shoe_single_sheet_as_pages", return_value={"paged": True}) as retry:
+            result = shenhui_shoe_packaging._default_analyze_color(
+                style_code="204426141029", color_code="00316", shoe_category="运动",
+                contact_sheet="all.jpg", contact_sheets=["all.jpg"], pose_strategy="single_sheet",
+                reference_image="main.jpg", yq_reference_image="yq.jpg",
+                candidate_ids=ids, candidate_entries=[{"filename": name, "path": name} for name in ids.values()],
+                model_id="model-a", fallback_model_ids=["model-b", "model-c"],
+            )
+        self.assertEqual(result, {"paged": True})
+        self.assertCountEqual(calls, ["model-a", "model-b"])
+        retry.assert_called_once()
+        self.assertEqual(retry.call_args.args[0]["candidate_ids"], ids)
+
+    def test_paged_retry_keeps_every_candidate_and_original_validation_settings(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            entries = []
+            ids = {}
+            for i in range(1, 25):
+                path = root / f"photo{i}.jpg"
+                Image.new("RGB", (24, 24), "white").save(path)
+                entries.append({"filename": path.name, "path": path})
+                ids[f"I{i:02d}"] = path.name
+            kwargs = dict(contact_sheet=str(root / "all.jpg"), candidate_entries=entries,
+                          candidate_ids=ids, model_id="model-a", fallback_model_ids=["model-b"],
+                          consensus_required_votes=2, shoe_category="运动",
+                          pose_evidence_path=str(root / "evidence.json"))
+            with patch.object(shenhui_shoe_packaging, "_default_analyze_color", return_value={"validated": True}) as analyze:
+                self.assertEqual(shenhui_shoe_packaging._retry_shoe_single_sheet_as_pages(kwargs), {"validated": True})
+            forwarded = analyze.call_args.kwargs
+            self.assertEqual(forwarded["pose_strategy"], "global_pages")
+            self.assertEqual(len(forwarded["contact_sheets"]), 2)
+            self.assertTrue(all(Path(p).is_file() for p in forwarded["contact_sheets"]))
+            for key in ("candidate_ids", "model_id", "fallback_model_ids", "consensus_required_votes", "shoe_category"):
+                self.assertEqual(forwarded[key], kwargs[key])
+            self.assertNotEqual(forwarded["pose_evidence_path"], kwargs["pose_evidence_path"])
+
+    def test_upstream_timeout_status_uses_timeout_fallback(self):
+        for status in (408, 504, 524):
+            self.assertTrue(shenhui_shoe_packaging._is_timeout_like_llm_error(
+                f'文本模型接口返回 HTTP {status}：{{"error":"bad_response_status_code"}}'
+            ))
+        self.assertFalse(shenhui_shoe_packaging._is_timeout_like_llm_error("HTTP 401: invalid key"))
+
+    def test_full_colour_sheet_has_time_to_return_candidate_facts(self):
+        for count, timeout in [(12, 120), (24, 240)]:
+            with self.subTest(candidate_count=count):
+                calls = []
+                candidate_ids = _required_pose_candidate_ids(
+                    *(f"I{i:02d}" for i in range(11, count + 1))
+                )
+
+                def recognize(**kwargs):
+                    calls.append(kwargs)
+                    if count == 24 and kwargs["timeout_seconds"] < 144:
+                        raise shenhui_shoe_packaging.llm_gateway.LlmGatewayError(
+                            "请求超过总时长 60 秒"
+                        )
+                    return ({
+                        "color_name": "粉色00316",
+                        "shoe_category": "婴童",
+                        "candidates": _required_pose_candidate_facts(),
+                    }, type("Route", (), {"model_id": kwargs["model_id"]})())
+
+                with patch.object(
+                    shenhui_shoe_packaging.llm_gateway,
+                    "generate_multimodal_json", side_effect=recognize,
+                ):
+                    result = shenhui_shoe_packaging._default_analyze_color(
+                        style_code="204426141029", color_code="00316",
+                        contact_sheet="all.jpg", contact_sheets=["all.jpg"],
+                        pose_strategy="single_sheet",
+                        reference_image="main.jpg", yq_reference_image="yq.jpg",
+                        candidate_ids=candidate_ids, shoe_category="婴童",
+                        model_id="model-a", fallback_model_ids=["model-b"],
+                    )
+                self.assertEqual(result["slots"]["tmz1"], "I01")
+                self.assertEqual({call["model_id"] for call in calls}, {"model-a", "model-b"})
+                self.assertEqual({call["timeout_seconds"] for call in calls}, {timeout})
+
     def test_pose_work_items_interleave_models_within_each_batch(self):
         batches = [
             {"batch_index": index, "candidate_ids": {}}
@@ -8091,7 +8182,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
             self.assertEqual(payload["slots"]["yq"][2], "I09")
             self.assertIn(
-                ("model-a", shenhui_shoe_packaging.SHOE_POSE_MODEL_TIMEOUT_SECONDS),
+                ("model-a", shenhui_shoe_packaging.SHOE_POSE_FULL_SHEET_TIMEOUT_SECONDS),
                 focused_calls,
             )
             self.assertNotIn(

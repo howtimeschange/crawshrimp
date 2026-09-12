@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 from core import adapter_loader, api_server
 from core import data_sink
@@ -23,6 +24,69 @@ class AsgiResponse:
 
 
 class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shoe_all_failed_exports_raw_files_and_marks_run_failed(self):
+        await self._assert_shoe_all_failed_exports_raw_files(use_export_folder=True)
+
+    async def test_shoe_all_failed_preserves_raw_files_in_default_output_folder(self):
+        await self._assert_shoe_all_failed_exports_raw_files(use_export_folder=False)
+
+    async def _assert_shoe_all_failed_exports_raw_files(self, *, use_export_folder):
+        from core.models import AdapterManifest
+        from PIL import Image
+        manifest = AdapterManifest.model_validate({
+            "id": "shenhui-new-arrival", "name": "鞋品", "version": "1.0.0",
+            "entry_url": "https://example.invalid",
+            "tasks": [{"id": "prepare_shoe_upload_package", "name": "鞋品",
+                       "script": "shoe.js", "skip_auth": True, "params": [], "output": []}],
+        })
+        tab = {"id": "tab-1", "url": manifest.entry_url, "webSocketDebuggerUrl": "ws://example.invalid"}
+        bridge = SimpleNamespace(get_tabs=lambda: [tab], find_tab=lambda _: tab,
+                                 new_tab=lambda _: tab,
+                                 get_tab_ws_url=lambda _: tab["webSocketDebuggerUrl"])
+        jid = "shenhui-new-arrival::prepare_shoe_upload_package"
+        with tempfile.TemporaryDirectory() as tmpdir, contextlib.ExitStack() as stack:
+            root = Path(tmpdir)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            source = runtime / "GUDO8001.jpg"
+            Image.new("RGB", (20, 20)).save(source)
+            script = root / "shoe.js"
+            script.write_text("// test")
+            download = {"输入款号": "204426141029", "颜色": "00316",
+                        "原文件名": source.name, "本地文件": str(source), "下载结果": "已下载"}
+            failed = {"输入款号": "204426141029", "处理动作": "失败款跳过",
+                      "规则告警": "00316 姿势识别超时"}
+            runner = SimpleNamespace(runtime_output_files=[str(source)],
+                                     run_script_file=AsyncMock(return_value=[download]))
+            for target, value in [
+                ("adapter_loader.scan_all", None),
+                ("adapter_loader.get_adapter", manifest),
+                ("adapter_loader.resolve_adapter_file", script),
+                ("get_bridge", bridge), ("data_sink.begin_run", 987654321),
+                ("data_sink.prepare_artifact_dir", str(runtime)),
+                ("data_sink.heartbeat_run", None),
+                ("_default_output_root_for_runtime", root / "default-export"),
+                ("shenhui_shoe_packaging.prepare_shoe_packages_skip_failed_styles", ([failed], {})),
+            ]:
+                stack.enter_context(patch("core.api_server." + target, return_value=value))
+            stack.enter_context(patch("core.js_runner.JSRunner", return_value=runner))
+            finish = stack.enter_context(patch("core.api_server.data_sink.finish_run"))
+            fail = stack.enter_context(patch("core.api_server.data_sink.fail_run"))
+            stack.enter_context(patch.dict(api_server._run_status))
+            stack.enter_context(patch.dict(api_server._run_logs))
+            params = {"mode": "new"}
+            if use_export_folder:
+                params["export_folder"] = str(root / "export")
+            with self.assertRaisesRegex(ValueError, "0 个图包"):
+                await api_server._execute_task("shenhui-new-arrival", "prepare_shoe_upload_package",
+                                              params)
+            finish.assert_not_called()
+            fail.assert_called_once()
+            self.assertIn("00316 姿势识别超时", fail.call_args.args[1])
+            self.assertEqual(api_server._run_status[jid]["status"], "error")
+            refs = [Path(p) for p in fail.call_args.kwargs["output_files"]]
+            self.assertTrue(any(p.is_dir() and list(p.rglob("GUDO8001.jpg")) for p in refs))
+
     async def _api_request(self, method: str, path: str, json_body: dict | None = None) -> AsgiResponse:
         body = json.dumps(json_body or {}).encode("utf-8") if json_body is not None else b""
         messages = []
