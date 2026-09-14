@@ -1,0 +1,50 @@
+{
+  "ok": true,
+  "job_uid": "9404012d9bbd47e3921db7312e2162fd",
+  "status": "completed",
+  "model_key": "semir/gpt-image-2",
+  "expected": 2,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-9404012d-7f77f319.png",
+      "bytes": 1936415,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "9cf3c83875721ebc9ce7f8fb97b795287ba633dfce7b75a387dd9d1a3db02dc1"
+    },
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-9404012d-19e89a03.png",
+      "bytes": 2032127,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "8a9abbab637962363c8a4cd01831ad1ffb18631c04157283144c4b7ddd8d6d6e"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "semir/gpt-image-2"
+    },
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "semir/gpt-image-2"
+    }
+  ],
+  "input_preserved": true,
+  "surface": "workbench-batch",
+  "model": "semir/gpt-image-2",
+  "seconds": 30.42,
+  "generation_transport": "real provider; no mocked executor"
+}

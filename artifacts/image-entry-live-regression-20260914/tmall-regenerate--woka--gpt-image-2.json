@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "previous",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 2,
+  "original_preserved": false,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-regenerate-woka-gpt-image-2/-ai-1-1-live-regenerate-woka-gpt-image-2-retry-20260914201651-407358.png",
+      "bytes": 1801936,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "133136e911f9b0e0e3b70b1d5d58823973c6ee61e6c58611a2aecdfda9d085f3"
+    }
+  ],
+  "model_key": "woka/gpt-image-2",
+  "surface": "tmall-regenerate",
+  "model": "woka/gpt-image-2",
+  "seconds": 51.79,
+  "generation_transport": "real provider; no mocked executor"
+}

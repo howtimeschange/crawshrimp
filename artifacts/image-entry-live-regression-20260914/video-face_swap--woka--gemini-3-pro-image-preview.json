@@ -1,0 +1,23 @@
+{
+  "ok": false,
+  "job_uid": "aae64072162641ea9296c9c1a983a613",
+  "status": "failed",
+  "model_key": "woka/gemini-3-pro-image-preview",
+  "expected": 1,
+  "files": [],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "failed",
+      "error": "提交回执未知，请先核实远端任务；禁止直接重试以避免重复计费。Remote end closed connection without response",
+      "error_code": "UNKNOWN_SUBMIT_RESULT",
+      "attempts": null,
+      "model_key": "woka/gemini-3-pro-image-preview"
+    }
+  ],
+  "surface": "video-face_swap",
+  "model": "woka/gemini-3-pro-image-preview",
+  "seconds": 62.3,
+  "generation_transport": "real provider; no mocked executor"
+}

@@ -1,0 +1,21 @@
+{
+  "ok": false,
+  "job_uid": "65a8ebd7bb204f9081415c48705cf992",
+  "status": "落图失败",
+  "error": "buyer show material usage requires style_color_code and model_cloud_path",
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/buyer-woka-gemini-3.1-flash-image-preview/woka_gemini-3.1-flash-image-preview_001_TEST00001_AI买家秀.jpg",
+      "bytes": 541410,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "b466334b0afa57ddba144f2528ed219c39a7a7fdbef369d473f64a5b998e808b"
+    }
+  ],
+  "surface": "buyer-show",
+  "model": "woka/gemini-3.1-flash-image-preview",
+  "seconds": 27.6,
+  "generation_transport": "real provider; no mocked executor"
+}

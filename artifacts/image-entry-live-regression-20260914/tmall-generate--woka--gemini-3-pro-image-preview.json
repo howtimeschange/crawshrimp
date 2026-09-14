@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "TEST00001-ai-2-live-generate-woka-gemini-3-pro-image-preview-manual-20260914201625-181e51-b0974c30",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 3,
+  "original_preserved": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-generate-woka-gemini-3-pro-image-preview/TEST00001-ai-2-live-generate-woka-gemini-3-pro-image-preview-manual-20260914201625-181e51.jpg",
+      "bytes": 519481,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "7f2a8ac1a14090d1148889e6b3e83db8ec56488e84d45d3df607ac73846d1647"
+    }
+  ],
+  "model_key": "woka/gemini-3-pro-image-preview",
+  "surface": "tmall-generate",
+  "model": "woka/gemini-3-pro-image-preview",
+  "seconds": 26.54,
+  "generation_transport": "real provider; no mocked executor"
+}

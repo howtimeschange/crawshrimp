@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "job_uid": "70431f052f5544fe81f28912f332b48e",
+  "status": "completed",
+  "model_key": "woka/gpt-image-2",
+  "expected": 1,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-70431f05-f8d34ef8.png",
+      "bytes": 1050753,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "621bd77f86f186a74824dfa2db2ebf5c54d5dddd75572d5bf0e1cda5f994f62b"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "woka/gpt-image-2"
+    }
+  ],
+  "initial_error": "{'code': '', 'message': 'Invalid token (request id: 202609141223449226361288268d9d6IyW5RlF2)', 'type': 'new_api_error'}",
+  "initial_attempts": 1,
+  "fault_injection": "deliberate invalid credential sent to actual provider; retry uses saved valid key",
+  "surface": "manual-retry",
+  "model": "woka/gpt-image-2",
+  "seconds": 24.45,
+  "generation_transport": "real provider; no mocked executor"
+}

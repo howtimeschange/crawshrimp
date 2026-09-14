@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "TEST00001-ai-2-live-face-swap-semir-gemini-3.1-flash-image-preview-manual-20260914201746-a2c209-51815a6c",
+  "status": "pending",
+  "source_asset_id": "previous",
+  "model_id": "100女/45°侧脸2.jpg",
+  "asset_count": 3,
+  "original_preserved": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-face-swap-semir-gemini-3.1-flash-image-preview/TEST00001-ai-2-live-face-swap-semir-gemini-3.1-flash-image-preview-manual-20260914201746-a2c209.png",
+      "bytes": 1425931,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "026da592e2924610c404860a89f5aeb188bcb5b84f9ffa3fbfc6ec4ddba89abc"
+    }
+  ],
+  "model_key": "semir/gemini-3.1-flash-image-preview",
+  "surface": "tmall-face-swap",
+  "model": "semir/gemini-3.1-flash-image-preview",
+  "seconds": 17.16,
+  "generation_transport": "real provider; no mocked executor"
+}

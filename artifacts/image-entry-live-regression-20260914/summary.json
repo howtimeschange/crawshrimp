@@ -1,0 +1,18 @@
+{
+  "scope": "crawshrimp desktop local entrances; cloud excluded by user",
+  "cases": 78,
+  "passed": 75,
+  "images": 81,
+  "native_ui_additional_cases": 2,
+  "native_ui_passed": 2,
+  "provider": {
+    "woka": {
+      "passed": 36,
+      "total": 39
+    },
+    "semir": {
+      "passed": 39,
+      "total": 39
+    }
+  }
+}

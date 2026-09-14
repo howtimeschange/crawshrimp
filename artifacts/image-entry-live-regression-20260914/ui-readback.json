@@ -1,0 +1,25 @@
+{
+  "job_uid": "6ae1e91957044d909a0086560416a973",
+  "title": "真实入口回归 · 沃卡与森马 · UI",
+  "status": "completed",
+  "prompt_preserved": true,
+  "runs": [
+    {
+      "run_uid": "9a7043da217f4c409bebc5b7b37fb83f",
+      "model_key": "woka/gemini-3.1-flash-image-preview",
+      "status": "completed",
+      "submission_attempts": 1,
+      "output_count": 1,
+      "created_at": "2026-09-14T12:26:02Z"
+    },
+    {
+      "run_uid": "2b1abd4f8f884f9b8026de7851af4630",
+      "model_key": "semir/gpt-image-2",
+      "status": "completed",
+      "submission_attempts": 1,
+      "output_count": 1,
+      "created_at": "2026-09-14T12:36:03Z"
+    }
+  ],
+  "ui_observation": "Native source Electron: selected model, clicked generate, both completed result cards visible without page refresh; original round retained"
+}

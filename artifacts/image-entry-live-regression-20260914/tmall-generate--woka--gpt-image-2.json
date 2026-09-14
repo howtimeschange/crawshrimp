@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "TEST00001-ai-2-live-generate-woka-gpt-image-2-manual-20260914201620-ad6f56-6d503e94",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 3,
+  "original_preserved": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-generate-woka-gpt-image-2/TEST00001-ai-2-live-generate-woka-gpt-image-2-manual-20260914201620-ad6f56.png",
+      "bytes": 1771053,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "5145392e02633685e543aa50d12edb272a2ab015649f763bab90f6cae237e298"
+    }
+  ],
+  "model_key": "woka/gpt-image-2",
+  "surface": "tmall-generate",
+  "model": "woka/gpt-image-2",
+  "seconds": 41.64,
+  "generation_transport": "real provider; no mocked executor"
+}

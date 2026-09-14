@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/cloud-machine-receipts/TEST00001-ai-1-cloud-machine-woka-gpt-image-2-manual-20260914202248-f9b18f.png",
+      "bytes": 1670975,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "a483ba294e0a164cc3d8536436d7ca3865fe82e75b7134336af207d4cafe36de"
+    }
+  ],
+  "model_key": "woka/gpt-image-2",
+  "cloud_control_plane": "local storage and lease fixture, NOT deployed cloud enrollment/dispatch/upload",
+  "status": "succeeded",
+  "surface": "cloud-machine",
+  "model": "woka/gpt-image-2",
+  "seconds": 32.72,
+  "generation_transport": "real provider; no mocked executor"
+}

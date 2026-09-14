@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "previous",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 2,
+  "original_preserved": false,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-regenerate-semir-gemini-3.1-flash-image-preview/-ai-1-live-regenerate-semir-gemini-3.1-flash-image-preview-retry-20260914201714-e1e416.png",
+      "bytes": 1390035,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "5bdbe6bf8663d97c39f8171b082a6eb069682ecdfe941df96a43469f1e19df85"
+    }
+  ],
+  "model_key": "semir/gemini-3.1-flash-image-preview",
+  "surface": "tmall-regenerate",
+  "model": "semir/gemini-3.1-flash-image-preview",
+  "seconds": 31.02,
+  "generation_transport": "real provider; no mocked executor"
+}

@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "TEST00001-ai-2-live-generate-semir-gemini-3.1-flash-image-preview-manual-20260914201642-c6429d-a6f82954",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 3,
+  "original_preserved": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-generate-semir-gemini-3.1-flash-image-preview/TEST00001-ai-2-live-generate-semir-gemini-3.1-flash-image-preview-manual-20260914201642-c6429d.png",
+      "bytes": 1394277,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "a17fdb162c82a86e6501eef5aaca0031d06351cd87bfac90a77355275f18b0dc"
+    }
+  ],
+  "model_key": "semir/gemini-3.1-flash-image-preview",
+  "surface": "tmall-generate",
+  "model": "semir/gemini-3.1-flash-image-preview",
+  "seconds": 18.97,
+  "generation_transport": "real provider; no mocked executor"
+}

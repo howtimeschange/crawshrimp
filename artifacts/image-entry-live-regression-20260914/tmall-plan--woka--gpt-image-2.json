@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "status": "已生成",
+  "error": "",
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/tmall-plan-woka-gpt-image-2/TEST00001-ai-1.png",
+      "bytes": 1736082,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "2ef32cb0bf910b5c61a45f835f87e4b149e96bf6915caee1683e9ccaebc2d38b"
+    }
+  ],
+  "custom_fields": {
+    "自定义1": "创意拍",
+    "自定义10": "浅灰色摄影棚"
+  },
+  "resolved_prompt": "保持人物与服装不变，背景改为 浅灰色摄影棚，自然光线。\n\n商品属性：款号=TEST00001；品类=上装；性别=女",
+  "model_key": "woka/gpt-image-2",
+  "surface": "tmall-plan",
+  "model": "woka/gpt-image-2",
+  "seconds": 46.52,
+  "generation_transport": "real provider; no mocked executor"
+}

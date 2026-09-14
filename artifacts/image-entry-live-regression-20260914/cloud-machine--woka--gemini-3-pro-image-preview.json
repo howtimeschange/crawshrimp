@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/cloud-machine-receipts/TEST00001-ai-1-cloud-machine-woka-gemini-3-pro-image-preview-manual-20260914202254-00ba07.jpg",
+      "bytes": 479542,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "0a093006b9d4fa45d07f32da85ea54c0b657e95d89c11b5d8cacf8abb66d0163"
+    }
+  ],
+  "model_key": "woka/gemini-3-pro-image-preview",
+  "cloud_control_plane": "local storage and lease fixture, NOT deployed cloud enrollment/dispatch/upload",
+  "status": "succeeded",
+  "surface": "cloud-machine",
+  "model": "woka/gemini-3-pro-image-preview",
+  "seconds": 41.24,
+  "generation_transport": "real provider; no mocked executor"
+}

@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "job_uid": "cffe8a1a1ed14cd0aa6c14129635c17c",
+  "status": "已生成",
+  "error": "",
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/buyer-woka-gpt-image-2/woka_gpt-image-2_001_TEST00001_AI买家秀_2.png",
+      "bytes": 6397253,
+      "size": [
+        2048,
+        2048
+      ],
+      "sha256": "c9e2525bc8bf9e266eca409a841ec93a1c0f49a7f9d06c7377429abef8658639"
+    }
+  ],
+  "reused_paid_generation": true,
+  "surface": "buyer-show",
+  "model": "woka/gpt-image-2",
+  "seconds": 0.01,
+  "generation_transport": "real provider; no mocked executor"
+}

@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/cloud-outputs/cloud-direct-edit--woka--gemini-3.1-flash-image-preview-0.png",
+      "bytes": 382052,
+      "sha256": "6b4ccd559f2bec0ec006e97375ab7425bc60cd2692b400af549d28f028eb2619",
+      "size": [
+        1024,
+        1024
+      ]
+    }
+  ],
+  "surface": "cloud-direct-edit",
+  "model": "woka/gemini-3.1-flash-image-preview",
+  "seconds": 20.79,
+  "execution": "actual Worker generation function, actual fetch; local Node runtime, not deployed Worker/UI",
+  "decoded_verified": true
+}

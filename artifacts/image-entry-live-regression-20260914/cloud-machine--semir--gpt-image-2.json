@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/cloud-machine-receipts/TEST00001-ai-1-cloud-machine-semir-gpt-image-2-manual-20260914202301-b32389.png",
+      "bytes": 1798357,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "166123266cdb02a33775527678e576fa9409f4f7aabadd5019551cdd99c1e14f"
+    }
+  ],
+  "model_key": "semir/gpt-image-2",
+  "cloud_control_plane": "local storage and lease fixture, NOT deployed cloud enrollment/dispatch/upload",
+  "status": "succeeded",
+  "surface": "cloud-machine",
+  "model": "semir/gpt-image-2",
+  "seconds": 24.04,
+  "generation_transport": "real provider; no mocked executor"
+}

@@ -1,0 +1,50 @@
+{
+  "ok": true,
+  "job_uid": "145ac155378e4cfe8ffcec78ccb34427",
+  "status": "completed",
+  "model_key": "woka/gemini-3.1-flash-image-preview",
+  "expected": 2,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-145ac155-7b81033a.jpg",
+      "bytes": 599076,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "38a3703589a5d8fff59b780804917199ef7a233009e662488a5c150b9134ea78"
+    },
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-145ac155-44a720d8.jpg",
+      "bytes": 649142,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "c89f0cab4fdb10b2496ead59128cd8c3a48797d2f352203f183288dcaa57f950"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "woka/gemini-3.1-flash-image-preview"
+    },
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "woka/gemini-3.1-flash-image-preview"
+    }
+  ],
+  "input_preserved": true,
+  "surface": "workbench-batch",
+  "model": "woka/gemini-3.1-flash-image-preview",
+  "seconds": 34.66,
+  "generation_transport": "real provider; no mocked executor"
+}

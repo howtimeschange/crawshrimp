@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "TEST00001-ai-2-live-face-swap-semir-gpt-image-2-manual-20260914201745-e0bc8c-99f4138f",
+  "status": "pending",
+  "source_asset_id": "previous",
+  "model_id": "100女/45°侧脸2.jpg",
+  "asset_count": 3,
+  "original_preserved": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-face-swap-semir-gpt-image-2/TEST00001-ai-2-live-face-swap-semir-gpt-image-2-manual-20260914201745-e0bc8c.png",
+      "bytes": 1730800,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "4c528d9802ca634d5ee92c9f300a2a58f550ec28dc99309429fb1756ec05b8b4"
+    }
+  ],
+  "model_key": "semir/gpt-image-2",
+  "surface": "tmall-face-swap",
+  "model": "semir/gpt-image-2",
+  "seconds": 27.52,
+  "generation_transport": "real provider; no mocked executor"
+}

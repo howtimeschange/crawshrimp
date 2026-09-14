@@ -1,0 +1,23 @@
+{
+  "ok": false,
+  "job_uid": "7f93dd934d364e4ea39c9a82287eb701",
+  "status": "failed",
+  "model_key": "woka/gemini-3.1-flash-image-preview",
+  "expected": 1,
+  "files": [],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "failed",
+      "error": "供应商响应未包含图片：{}",
+      "error_code": "",
+      "attempts": 0,
+      "model_key": "woka/gemini-3.1-flash-image-preview"
+    }
+  ],
+  "surface": "video-pose_swap",
+  "model": "woka/gemini-3.1-flash-image-preview",
+  "seconds": 19.92,
+  "generation_transport": "real provider; no mocked executor"
+}

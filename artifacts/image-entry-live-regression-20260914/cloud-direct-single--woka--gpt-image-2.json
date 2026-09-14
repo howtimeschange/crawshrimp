@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/cloud-outputs/cloud-direct-single--woka--gpt-image-2-0.png",
+      "bytes": 1684732,
+      "sha256": "a01ca8f90ab5b2e0108beab0a4773f88b5cb797be319712e64afb6fd8f5af91c",
+      "size": [
+        1024,
+        1024
+      ]
+    }
+  ],
+  "surface": "cloud-direct-single",
+  "model": "woka/gpt-image-2",
+  "seconds": 60.4,
+  "execution": "actual Worker generation function, actual fetch; local Node runtime, not deployed Worker/UI",
+  "decoded_verified": true
+}

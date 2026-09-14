@@ -1,0 +1,8 @@
+{
+  "ok": false,
+  "error": "HTTP 400: {\"detail\":\"Remote end closed connection without response\"}",
+  "surface": "tmall-face-swap",
+  "model": "woka/gpt-image-2",
+  "seconds": 65.6,
+  "generation_transport": "real provider; no mocked executor"
+}

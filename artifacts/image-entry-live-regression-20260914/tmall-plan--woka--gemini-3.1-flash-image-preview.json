@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "status": "已生成",
+  "error": "",
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/tmall-plan-woka-gemini-3.1-flash-image-preview/TEST00001-ai-1.jpg",
+      "bytes": 450574,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "3511fc4f0715a6db7c99effccd5fde006a503d8c5d4a8454a7d4c4c1cbf42a57"
+    }
+  ],
+  "custom_fields": {
+    "自定义1": "创意拍",
+    "自定义10": "浅灰色摄影棚"
+  },
+  "resolved_prompt": "保持人物与服装不变，背景改为 浅灰色摄影棚，自然光线。\n\n商品属性：款号=TEST00001；品类=上装；性别=女",
+  "model_key": "woka/gemini-3.1-flash-image-preview",
+  "surface": "tmall-plan",
+  "model": "woka/gemini-3.1-flash-image-preview",
+  "seconds": 13.14,
+  "generation_transport": "real provider; no mocked executor"
+}

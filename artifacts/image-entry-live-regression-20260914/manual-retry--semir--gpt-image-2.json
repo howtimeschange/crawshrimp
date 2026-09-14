@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "job_uid": "c671eebd1abf456193fba392fd6402fa",
+  "status": "completed",
+  "model_key": "semir/gpt-image-2",
+  "expected": 1,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-c671eebd-55694759.png",
+      "bytes": 1469360,
+      "size": [
+        1370,
+        1148
+      ],
+      "sha256": "2d27257f2fbb3fcef55b32e615dba8218b14b766eabdde3fc6aeadf8e5094a97"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "semir/gpt-image-2"
+    }
+  ],
+  "initial_error": "{'message': 'HTTP 401'}",
+  "initial_attempts": 1,
+  "fault_injection": "deliberate invalid credential sent to actual provider; retry uses saved valid key",
+  "surface": "manual-retry",
+  "model": "semir/gpt-image-2",
+  "seconds": 24.29,
+  "generation_transport": "real provider; no mocked executor"
+}

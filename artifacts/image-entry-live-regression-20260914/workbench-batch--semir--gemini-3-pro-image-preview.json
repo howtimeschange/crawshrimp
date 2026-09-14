@@ -1,0 +1,50 @@
+{
+  "ok": true,
+  "job_uid": "e1dae571e1fa4870ab5cf679dc190746",
+  "status": "completed",
+  "model_key": "semir/gemini-3-pro-image-preview",
+  "expected": 2,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-e1dae571-85383f09.png",
+      "bytes": 838825,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "f4d05086e591df96d128d6878dcb8f506945b2240c5f2a9ab6cbf8f1f0b7661f"
+    },
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-e1dae571-ff4c1307.png",
+      "bytes": 1262254,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "a7e19e0d8ad562e9f0cbd4a7495b52d0ae04b16021aec404848b112ee632af88"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "semir/gemini-3-pro-image-preview"
+    },
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "semir/gemini-3-pro-image-preview"
+    }
+  ],
+  "input_preserved": true,
+  "surface": "workbench-batch",
+  "model": "semir/gemini-3-pro-image-preview",
+  "seconds": 55.8,
+  "generation_transport": "real provider; no mocked executor"
+}

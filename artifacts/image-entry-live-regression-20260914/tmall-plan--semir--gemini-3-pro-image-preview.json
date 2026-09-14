@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "status": "已生成",
+  "error": "",
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/tmall-plan-semir-gemini-3-pro-image-preview/TEST00001-ai-1.png",
+      "bytes": 1056572,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "77695b0a65525b7aa68c78bcef1228a2a8088b32d18aee50f417fd8d780580c2"
+    }
+  ],
+  "custom_fields": {
+    "自定义1": "创意拍",
+    "自定义10": "浅灰色摄影棚"
+  },
+  "resolved_prompt": "保持人物与服装不变，背景改为 浅灰色摄影棚，自然光线。\n\n商品属性：款号=TEST00001；品类=上装；性别=女",
+  "model_key": "semir/gemini-3-pro-image-preview",
+  "surface": "tmall-plan",
+  "model": "semir/gemini-3-pro-image-preview",
+  "seconds": 26.15,
+  "generation_transport": "real provider; no mocked executor"
+}

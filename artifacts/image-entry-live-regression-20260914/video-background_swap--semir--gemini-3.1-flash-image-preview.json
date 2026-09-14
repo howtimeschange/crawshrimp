@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "job_uid": "599cf68b3f82435cac544e11f9c36ce5",
+  "status": "completed",
+  "model_key": "semir/gemini-3.1-flash-image-preview",
+  "expected": 1,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-599cf68b-85d11fb4.png",
+      "bytes": 1373390,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "974c4268cffc936bbd5ce184d1b2a8884bf67548a019e43d08b17de3cc19675d"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "semir/gemini-3.1-flash-image-preview"
+    }
+  ],
+  "surface": "video-background_swap",
+  "model": "semir/gemini-3.1-flash-image-preview",
+  "seconds": 17.76,
+  "generation_transport": "real provider; no mocked executor"
+}

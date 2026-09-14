@@ -1,0 +1,8 @@
+{
+  "ok": false,
+  "error": "[{'源图序号': '', '源图文件': '', '款号': '', '操作类型': 'AI换脸', '模特ID': '', '模特分组': '', '模特年龄段': '', '模特性别': '', '模特表情': '', '背景Prompt': '', '服装图文件': '', '搭配参考图文件': '', '同款不同色参考图文件': '', '姿势Prompt': '', '完整Prompt': '', 'AI任务UID': '', 'AI任务标题': '', '提交状态': '未创建', '批次UID': '', '运行UID': '', '1XM任务ID': '', '轮询URL': '', '审批批次UID': '', '审批看板': '', '下一步Provider': '', 'AI生图工作台': 'AI 生图', '执行结果': '失败', '备注': '无法读取巴拉模特库 manifest: Adapter directory not found: bala-ai-video-assistant'}]",
+  "surface": "video-face_swap",
+  "model": "woka/gpt-image-2",
+  "seconds": 0.0,
+  "generation_transport": "real provider; no mocked executor"
+}

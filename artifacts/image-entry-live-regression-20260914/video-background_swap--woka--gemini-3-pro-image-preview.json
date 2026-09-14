@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "job_uid": "093fd8015317497987fa99445cb27244",
+  "status": "completed",
+  "model_key": "woka/gemini-3-pro-image-preview",
+  "expected": 1,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-093fd801-df9daf6e.jpg",
+      "bytes": 470297,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "cd1e4c7b8e14f0f25441ed40e8f83cb12902ad82f0d6aae282a4807c4e14e4c8"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "woka/gemini-3-pro-image-preview"
+    }
+  ],
+  "surface": "video-background_swap",
+  "model": "woka/gemini-3-pro-image-preview",
+  "seconds": 27.27,
+  "generation_transport": "real provider; no mocked executor"
+}

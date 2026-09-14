@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/cloud-machine-receipts/TEST00001-ai-1-cloud-machine-semir-gemini-3.1-flash-image-preview-manual-20260914202301-ae0b58.png",
+      "bytes": 1365235,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "7b70e8299fc3eec538487dc42932ee3f344c564dd8d5a13fc7482cf570d4b629"
+    }
+  ],
+  "model_key": "semir/gemini-3.1-flash-image-preview",
+  "cloud_control_plane": "local storage and lease fixture, NOT deployed cloud enrollment/dispatch/upload",
+  "status": "succeeded",
+  "surface": "cloud-machine",
+  "model": "semir/gemini-3.1-flash-image-preview",
+  "seconds": 15.56,
+  "generation_transport": "real provider; no mocked executor"
+}

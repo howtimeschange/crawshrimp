@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/cloud-outputs/cloud-direct-single--semir--gpt-image-2-0.png",
+      "bytes": 1642118,
+      "sha256": "6bef97176bfbab2298c203b385806a8b624e47a0f756a0e08c1b98ba642e296f",
+      "size": [
+        1312,
+        1199
+      ]
+    }
+  ],
+  "surface": "cloud-direct-single",
+  "model": "semir/gpt-image-2",
+  "seconds": 26.6,
+  "execution": "actual Worker generation function, actual fetch; local Node runtime, not deployed Worker/UI",
+  "decoded_verified": true
+}

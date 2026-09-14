@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "previous",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 2,
+  "original_preserved": false,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-regenerate-semir-gpt-image-2/-ai-1-live-regenerate-semir-gpt-image-2-retry-20260914201703-80de69.png",
+      "bytes": 1748683,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "1954815ad22c614ff497f6c2880e45be6ad10bf8af657c47c0d8dca83d190f51"
+    }
+  ],
+  "model_key": "semir/gpt-image-2",
+  "surface": "tmall-regenerate",
+  "model": "semir/gpt-image-2",
+  "seconds": 24.31,
+  "generation_transport": "real provider; no mocked executor"
+}

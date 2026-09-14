@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "job_uid": "edf10293c7b44f969dd82820a047c4ad",
+  "status": "completed",
+  "model_key": "woka/gpt-image-2",
+  "expected": 1,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-edf10293-42fc458575aed1b0.png",
+      "bytes": 1785047,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "7891e9da96c83efff0d9e1b1b98f01a40c89e2757f710dd89beab4b86a6ce6bb"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "woka/gpt-image-2"
+    }
+  ],
+  "surface": "video-face_swap",
+  "model": "woka/gpt-image-2",
+  "seconds": 43.93,
+  "generation_transport": "real provider; no mocked executor"
+}

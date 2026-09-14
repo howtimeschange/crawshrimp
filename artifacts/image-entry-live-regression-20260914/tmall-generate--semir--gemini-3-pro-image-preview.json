@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "TEST00001-ai-2-live-generate-semir-gemini-3-pro-image-preview-manual-20260914201645-7d30c0-d2f568c2",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 3,
+  "original_preserved": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-generate-semir-gemini-3-pro-image-preview/TEST00001-ai-2-live-generate-semir-gemini-3-pro-image-preview-manual-20260914201645-7d30c0.png",
+      "bytes": 1099870,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "e92e44d2ea9714379c66365101673d25af7a014ed68143ad44d7f36428c7d23e"
+    }
+  ],
+  "model_key": "semir/gemini-3-pro-image-preview",
+  "surface": "tmall-generate",
+  "model": "semir/gemini-3-pro-image-preview",
+  "seconds": 44.54,
+  "generation_transport": "real provider; no mocked executor"
+}

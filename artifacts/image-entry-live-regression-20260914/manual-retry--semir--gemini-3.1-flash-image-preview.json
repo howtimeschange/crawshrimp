@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "job_uid": "7e40ad4158e442709ae53ca89846ed0f",
+  "status": "completed",
+  "model_key": "semir/gemini-3.1-flash-image-preview",
+  "expected": 1,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-7e40ad41-222e66f3.png",
+      "bytes": 1142181,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "8df569a3dce6b6d044d70392f237f000c89aeab66981acc37572bcf3b132c755"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "semir/gemini-3.1-flash-image-preview"
+    }
+  ],
+  "initial_error": "{'message': 'HTTP 401'}",
+  "initial_attempts": 1,
+  "fault_injection": "deliberate invalid credential sent to actual provider; retry uses saved valid key",
+  "surface": "manual-retry",
+  "model": "semir/gemini-3.1-flash-image-preview",
+  "seconds": 15.25,
+  "generation_transport": "real provider; no mocked executor"
+}

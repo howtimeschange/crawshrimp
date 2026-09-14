@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "job_uid": "4123f209d5384c42bd2c9eee03c6ee75",
+  "status": "completed",
+  "model_key": "woka/gemini-3-pro-image-preview",
+  "expected": 1,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-4123f209-5cb58ca6.jpg",
+      "bytes": 571821,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "c131f6798fb0965e94306de1ca8104fe6fad407b0c8c8fa5be2fe5f6e71a6d23"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": "",
+      "attempts": 1,
+      "model_key": "woka/gemini-3-pro-image-preview"
+    }
+  ],
+  "initial_error": "{'code': '', 'message': 'Invalid token (request id: 202609141223451367169698268d9d6nE6ks1Ru)', 'type': 'new_api_error'}",
+  "initial_attempts": 1,
+  "fault_injection": "deliberate invalid credential sent to actual provider; retry uses saved valid key",
+  "surface": "manual-retry",
+  "model": "woka/gemini-3-pro-image-preview",
+  "seconds": 21.42,
+  "generation_transport": "real provider; no mocked executor"
+}

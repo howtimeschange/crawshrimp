@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "job_uid": "977bd6193c6c4fb3b8a228ba49adf4da",
+  "status": "completed",
+  "model_key": "semir/gpt-image-2",
+  "expected": 1,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/ai-image-cache/result-977bd619-b8358a49.png",
+      "bytes": 1806717,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "999be7aa0d6b72a40adc3ad9400d6cab0408ad2991460ef7e5cb897838ce0033"
+    }
+  ],
+  "error": "",
+  "error_code": null,
+  "runs": [
+    {
+      "status": "completed",
+      "error": "",
+      "error_code": null,
+      "attempts": 1,
+      "model_key": "semir/gpt-image-2"
+    }
+  ],
+  "input_preserved": true,
+  "surface": "workbench-edit",
+  "model": "semir/gpt-image-2",
+  "seconds": 24.25,
+  "generation_transport": "real provider; no mocked executor"
+}

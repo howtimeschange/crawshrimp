@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "TEST00001-ai-2-live-face-swap-woka-gemini-3.1-flash-image-preview-manual-20260914201730-cfe905-88236594",
+  "status": "pending",
+  "source_asset_id": "previous",
+  "model_id": "100女/45°侧脸2.jpg",
+  "asset_count": 3,
+  "original_preserved": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-face-swap-woka-gemini-3.1-flash-image-preview/TEST00001-ai-2-live-face-swap-woka-gemini-3.1-flash-image-preview-manual-20260914201730-cfe905.jpg",
+      "bytes": 410329,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "5c4da6c1fea00b046aa0a1341ae1e0f7c8900839eebb98412bfffeff17e3f766"
+    }
+  ],
+  "model_key": "woka/gemini-3.1-flash-image-preview",
+  "surface": "tmall-face-swap",
+  "model": "woka/gemini-3.1-flash-image-preview",
+  "seconds": 168.73,
+  "generation_transport": "real provider; no mocked executor"
+}

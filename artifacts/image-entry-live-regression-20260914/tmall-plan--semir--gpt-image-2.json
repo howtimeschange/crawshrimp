@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "status": "已生成",
+  "error": "",
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/tmall-plan-semir-gpt-image-2/TEST00001-ai-1.png",
+      "bytes": 1815698,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "d5e10e33910b8b6a0a88a7c1c6ff214078065e648d7499879c812fca655bba8e"
+    }
+  ],
+  "custom_fields": {
+    "自定义1": "创意拍",
+    "自定义10": "浅灰色摄影棚"
+  },
+  "resolved_prompt": "保持人物与服装不变，背景改为 浅灰色摄影棚，自然光线。\n\n商品属性：款号=TEST00001；品类=上装；性别=女",
+  "model_key": "semir/gpt-image-2",
+  "surface": "tmall-plan",
+  "model": "semir/gpt-image-2",
+  "seconds": 25.86,
+  "generation_transport": "real provider; no mocked executor"
+}

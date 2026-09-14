@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/cloud-outputs/cloud-direct-edit--semir--gemini-3-pro-image-preview-0.png",
+      "bytes": 882725,
+      "sha256": "f33a60dd6c9efc0156510840f9532339c34ce9f9f64e008d9aa1789e7441c24c",
+      "size": [
+        1024,
+        1024
+      ]
+    }
+  ],
+  "surface": "cloud-direct-edit",
+  "model": "semir/gemini-3-pro-image-preview",
+  "seconds": 26.18,
+  "execution": "actual Worker generation function, actual fetch; local Node runtime, not deployed Worker/UI",
+  "decoded_verified": true
+}

@@ -1,0 +1,21 @@
+{
+  "ok": false,
+  "job_uid": "5b28bc1a936f48ab9295db520f9c7d1e",
+  "status": "落图失败",
+  "error": "buyer show material usage requires style_color_code and model_cloud_path",
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/buyer-semir-gpt-image-2/semir_gpt-image-2_001_TEST00001_AI买家秀.png",
+      "bytes": 1894395,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "605fc4aa9eb39ad9bd4237f38bbfcbe06e5b1cc15a163d513636adf41127e386"
+    }
+  ],
+  "surface": "buyer-show",
+  "model": "semir/gpt-image-2",
+  "seconds": 25.39,
+  "generation_transport": "real provider; no mocked executor"
+}

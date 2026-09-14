@@ -1,0 +1,21 @@
+{
+  "ok": false,
+  "job_uid": "a989b846c86842069a0318a2812d7d80",
+  "status": "落图失败",
+  "error": "buyer show material usage requires style_color_code and model_cloud_path",
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/buyer-semir-gemini-3.1-flash-image-preview/semir_gemini-3.1-flash-image-preview_001_TEST00001_AI买家秀.png",
+      "bytes": 1453442,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "6f814a188c360b7a6a72fc2c79e666115fb76e0a18cce03822198d6ba7afb8aa"
+    }
+  ],
+  "surface": "buyer-show",
+  "model": "semir/gemini-3.1-flash-image-preview",
+  "seconds": 16.29,
+  "generation_transport": "real provider; no mocked executor"
+}

@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "TEST00001-ai-2-live-generate-semir-gpt-image-2-manual-20260914201629-a1c978-1816b224",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 3,
+  "original_preserved": true,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-generate-semir-gpt-image-2/TEST00001-ai-2-live-generate-semir-gpt-image-2-manual-20260914201629-a1c978.png",
+      "bytes": 1757742,
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "99f064fe9aa3ba26d7dfb52edb559a707d0ccff0377a8734beecd452cc6dbd63"
+    }
+  ],
+  "model_key": "semir/gpt-image-2",
+  "surface": "tmall-generate",
+  "model": "semir/gpt-image-2",
+  "seconds": 33.92,
+  "generation_transport": "real provider; no mocked executor"
+}

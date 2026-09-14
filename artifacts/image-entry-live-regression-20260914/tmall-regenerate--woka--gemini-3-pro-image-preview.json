@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "asset_id": "previous",
+  "status": "pending",
+  "source_asset_id": null,
+  "model_id": null,
+  "asset_count": 2,
+  "original_preserved": false,
+  "files": [
+    {
+      "path": "/tmp/crawshrimp-entry-live-regression-20260914/live-regenerate-woka-gemini-3-pro-image-preview/-ai-1-live-regenerate-woka-gemini-3-pro-image-preview-retry-20260914201701-b93577.jpg",
+      "bytes": 497109,
+      "size": [
+        1024,
+        1024
+      ],
+      "sha256": "4f223081aa4f814273b400d4f6973f394d587520c7b66b2088e882cd51c2b973"
+    }
+  ],
+  "model_key": "woka/gemini-3-pro-image-preview",
+  "surface": "tmall-regenerate",
+  "model": "woka/gemini-3-pro-image-preview",
+  "seconds": 22.93,
+  "generation_transport": "real provider; no mocked executor"
+}
