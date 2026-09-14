@@ -228,3 +228,12 @@ test('custom fields select creative/co-shoot prompts across sheets with AND sema
   assert.equal(missed.rows.length, 0)
   assert.match(missed.invalidRows[0].备注, /自定义10=不匹配/)
 })
+
+test('downloaded single-sheet template is generic but explicit custom mismatches remain blocked', async () => {
+  const api = await loadExports()
+  const workflows = api.normalizeWorkflowRows([{ 款号: '001', 品类: '长裤' }]).rows
+  const prompts = api.normalizePromptLibrary({ sheet_name: 'tmall-ai-prompt-library-templat', headers: ['字段名', '描述内容'], rows: [{ 字段名: '标准站姿', 描述内容: '保持服装' }] })
+  assert.equal(api.buildGenerationRows(workflows, prompts, {}).rows.length, 1)
+  workflows[0].custom_fields = { 自定义10: '不匹配' }
+  assert.equal(api.buildGenerationRows(workflows, prompts, {}).rows.length, 0)
+})

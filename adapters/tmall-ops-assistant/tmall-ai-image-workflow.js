@@ -256,7 +256,7 @@
     if (Object.keys(fields).length) return true
     const group = compact(workflow.category || options.prompt_sheet)
     if (!group) return true
-    return prompt.sheet_name === group || prompt.field_name.includes(group)
+    return /^(tmall-ai-prompt-library-templat.*|sheet[0-9]+|工作表[0-9]+|通用|默认)$/i.test(compact(prompt.sheet_name)) || prompt.sheet_name === group || prompt.field_name.includes(group)
   }
 
   function promptSortKey(prompt, workflow = {}) {

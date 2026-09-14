@@ -9,6 +9,25 @@ from core import api_server, bala_ai_model_library
 
 
 class CustomFieldsTests(unittest.TestCase):
+    def test_downloaded_generic_templates_match_with_empty_custom_fields(self):
+        m = load_script()
+        workflow = m.WorkflowItem(2, '001', '', '长裤', '男')
+        for group in ('tmall-ai-prompt-library-template222', 'tmall-ai-prompt-library-templat', 'Sheet1'):
+            prompts = m.prompt_items_from_cloud_templates([{'group_name': group, 'field_name': '标准站姿', 'prompt': '保持服装'}])
+            self.assertEqual(len(m.select_prompts(workflow, prompts)), 1)
+            workflow.custom_fields = {'自定义1': '创意拍'}
+            self.assertEqual(m.select_prompts(workflow, prompts), [])
+            workflow.custom_fields = {}
+
+    def test_all_unmatched_fails_before_cloud_download(self):
+        import asyncio
+        m = load_script()
+        args = m.build_parser().parse_args([])
+        with patch.object(m, 'read_workbook_table', return_value={'rows': [{'款号': '001', '品类': '长裤', '自定义1': '创意拍'}]}), patch.object(m, 'load_prompt_library_for_args', return_value=m.prompt_items_from_cloud_templates([{'group_name': '上装', 'field_name': '普通', 'prompt': '普通图'}])), patch.object(m, 'CDPBridge') as bridge:
+            with self.assertRaisesRegex(RuntimeError, '全部 1 款未匹配'):
+                asyncio.run(m.run_chain_rows(args, Path('/tmp/unused')))
+            bridge.assert_not_called()
+
     def test_ten_fields_roundtrip_and_explicit_matching_before_priority(self):
         m = load_script()
         workflow, _ = m.normalize_workflow_rows({'rows': [{'款号': '001', '品类': '外套', '自定义1': '合拍', '自定义10': '春节', '自定义11': '忽略'}]})

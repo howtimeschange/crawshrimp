@@ -239,7 +239,7 @@ tasks:
         templates:
           - file: templates/tmall-ai-prompt-library-template.csv
             label: AI 测图提示词导入模板
-            description: 与 AI 测图提示词库一致：字段名、尺寸、格式、描述内容、女性优先度、男性/中性优先度；后方预留自定义1～10，与款号表同名字段对应；支持多 sheet 与第 4 行表头。
+            description: 与 AI 测图提示词库一致：字段名、尺寸、格式、描述内容、女性优先度、男性/中性优先度；后方预留自定义1～10，与款号表同名字段对应；支持多 sheet 与第 4 行表头。内置单表模板视为通用分组，自定义字段留空也可匹配；旧的上装/下装等分组继续按品类匹配。
             version: "2026.07.01.2"
         hint: 支持用户提供的“AI 测图提示词库.xlsx”；后端会按多 sheet 和真实表头格式读取。
       - id: cloud_prompt_library_id
