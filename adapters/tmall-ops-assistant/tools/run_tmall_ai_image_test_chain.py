@@ -2128,7 +2128,8 @@ def generate_approval_asset_for_item(
     return asset
 
 
-def face_swap_approval_asset(batch: dict[str, Any], asset_id: str, model_id: str, instruction: str = "") -> dict[str, Any]:
+def prepare_face_swap_inputs(batch: dict[str, Any], asset_id: str, model_id: str, instruction: str = ""):
+    """Validate local inputs before reserving a paid submission."""
     from core.bala_ai_model_library import load_model_library, resolve_model_image_path
     from core.api_server import _bala_face_swap_prompt
 
@@ -2143,6 +2144,13 @@ def face_swap_approval_asset(batch: dict[str, Any], asset_id: str, model_id: str
         raise ValueError("所选模特不存在，请重新选择")
     model_path = resolve_model_image_path(model_id)
     prompt = _bala_face_swap_prompt(source_path, model, instruction)
+    defaults = approval_generation_defaults(batch, item, source.get("generation_row"))
+    require_one_xm_key_for_generation(resolve_one_xm_settings(), model=defaults["model"], image_size=defaults["image_size"], key_tier=defaults["one_xm_key_tier"])
+    return item, source, source_path, model, model_path, prompt
+
+
+def face_swap_approval_asset(batch: dict[str, Any], asset_id: str, model_id: str, instruction: str = "") -> dict[str, Any]:
+    item, source, source_path, model, model_path, prompt = prepare_face_swap_inputs(batch, asset_id, model_id, instruction)
     # Generate using the existing provider/retry executor, without overwriting the source or stale batch state.
     working = json_safe(batch)
     working["json_path"] = ""

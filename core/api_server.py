@@ -11618,6 +11618,7 @@ class TmallApprovalFaceSwapRequest(BaseModel):
     asset_id: str
     model_id: str
     instruction: str = ""
+    request_id: str = ""
 
 
 class TmallApprovalGenerateRequest(BaseModel):
@@ -11820,6 +11821,12 @@ def _safe_tmall_generation_confirmation_items(batch: dict, items: list[dict]) ->
 def get_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
     batch = _load_tmall_approval_batch(batch_id)
     _validate_tmall_approval_token(batch, token)
+    from core.tmall_face_swap_submission import blocked_assets, UNKNOWN_MESSAGE
+    blocked = blocked_assets(batch)
+    for item in batch.get('items', []):
+        for asset in item.get('assets', []):
+            asset['face_swap_blocked'] = asset.get('id') in blocked
+            asset['face_swap_message'] = UNKNOWN_MESSAGE if asset['face_swap_blocked'] else ''
     return batch
 
 
@@ -11941,13 +11948,18 @@ async def face_swap_tmall_ai_image_approval_asset(batch_id: str, req: TmallAppro
     if str(batch.get("status") or "") in {"generating", "submitting", "creating"}:
         raise HTTPException(409, "当前批次正在执行，请完成后再换脸")
     module = _load_tmall_ai_image_chain_module()
+    from core.tmall_face_swap_submission import execute, SubmissionBlocked
     try:
-        asset = await asyncio.to_thread(module.face_swap_approval_asset, batch, req.asset_id, req.model_id, req.instruction)
+        module.prepare_face_swap_inputs(batch, req.asset_id, req.model_id, req.instruction)
+        asset = await asyncio.to_thread(execute, batch, req.asset_id, req.request_id or secrets.token_hex(16),
+            lambda: module.face_swap_approval_asset(batch, req.asset_id, req.model_id, req.instruction))
         return {"ok": True, "asset": asset}
+    except SubmissionBlocked as exc:
+        return {"ok": False, "error_code": exc.code, "error": str(exc), "retry_allowed": False}
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(400, str(exc)) from exc
+        return {"ok": False, "error_code": "FACE_SWAP_REJECTED", "error": str(exc), "retry_allowed": True}
 
 
 @app.post("/tmall-ai-image-approval/api/{batch_id}/generate")

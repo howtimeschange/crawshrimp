@@ -455,7 +455,7 @@
         </section>
       </div>
 
-      <TmallFaceSwapDialog :open="faceSwap.open" :busy="faceSwap.busy" :error="faceSwap.error"
+      <TmallFaceSwapDialog :open="faceSwap.open" :busy="faceSwap.busy" :blocked="Boolean(faceSwap.asset?.face_swap_blocked)" :error="faceSwap.error"
         :title="`${faceSwap.item?.style_code || ''} · ${faceSwap.asset?.label || 'AI 图'}`"
         :source-url="faceSwap.asset ? imageUrlWithVersion(faceSwap.asset) : ''"
         :result-url="faceSwap.result ? imageUrlWithVersion(faceSwap.result) : ''"
@@ -1776,27 +1776,39 @@ async function submitManualGenerate() {
 
 function openFaceSwap(item, asset) {
   if (faceSwap.value.busy || !asset?.path || asset.kind !== 'ai') return
-  faceSwap.value = { open: true, busy: false, item, asset, error: '', result: null }
+  faceSwap.value = { open: true, busy: false, item, asset, error: asset.face_swap_message || '', result: null, requestId: crypto.randomUUID() }
 }
 
 async function submitFaceSwap(payload) {
   const current = faceSwap.value
-  if (current.busy || !current.asset?.id || !payload.model_id) return
+  if (current.busy || current.asset?.face_swap_blocked || !current.asset?.id || !payload.model_id) return
   const ref = { ...approvalRef.value }
   current.busy = true
   current.error = ''
+  let responseReceived = false
   try {
     if (!window.cs?.faceSwapTmallApprovalAsset) throw new Error('当前客户端尚未载入换脸能力，请更新客户端后重试')
-    const result = await window.cs.faceSwapTmallApprovalAsset(ref.batchId, ref.token, { asset_id: current.asset.id, ...payload })
+    const result = await window.cs.faceSwapTmallApprovalAsset(ref.batchId, ref.token, { asset_id: current.asset.id, ...payload, request_id: current.requestId })
+    responseReceived = true
+    if (result?.error_code === 'UNKNOWN_SUBMIT_RESULT') {
+      current.asset.face_swap_blocked = true
+      current.asset.face_swap_message = result.error
+    }
     if (result?.detail || result?.error || !result?.asset?.id) throw new Error(result?.detail || result?.error || '换脸没有返回结果图片')
     if (ref.batchId !== approvalRef.value.batchId) return
     current.result = result.asset
     const item = (batch.value?.items || []).find(item => item.id === current.item.id) || current.item
-    item.assets = [...(item.assets || []), result.asset]
+    item.assets = [...(item.assets || []).filter(asset => asset.id !== result.asset.id), result.asset]
     selectAsset(item, result.asset)
     emit('batch-updated', batch.value)
     showToast('换脸完成，新图已加入待审批；原图保留')
-  } catch (err) { current.error = err?.message || String(err) }
+  } catch (err) {
+    if (!responseReceived) {
+      current.asset.face_swap_blocked = true
+      current.asset.face_swap_message = '未收到换脸提交回执，请重新打开审批批次查看状态；核实前请勿重复提交。原图仍保留。'
+    }
+    current.error = current.asset.face_swap_message || err?.message || String(err)
+  }
   finally { current.busy = false }
 }
 
