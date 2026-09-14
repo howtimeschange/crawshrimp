@@ -527,6 +527,7 @@ describe('prompt routes', () => {
           templates: [{
             group_name: '上装',
             field_name: '正面标准站姿',
+            custom_fields: { 自定义1: '合拍', 自定义10: '春节' },
             source_field_id: 'rX2NWyE',
             field_order: 4,
             visible: true,
@@ -557,6 +558,7 @@ describe('prompt routes', () => {
             id: templateId,
             group_name: '上装',
             field_name: '正面标准站姿',
+            custom_fields: { 自定义1: '合拍', 自定义10: '春节' },
             source_field_id: 'rX2NWyE',
             field_order: 4,
             visible: false,
@@ -588,6 +590,7 @@ describe('prompt routes', () => {
     expect(exportBody.templates[0]).toMatchObject({
       group_name: '上装',
       field_name: '正面标准站姿',
+      custom_fields: { 自定义1: '合拍', 自定义10: '春节' },
       source_field_id: 'rX2NWyE',
       field_order: 4,
       visible: false,
@@ -773,6 +776,7 @@ describe('prompt routes', () => {
     const body = await response.json() as { templates: Array<Record<string, unknown>> }
     expect(body.templates).toEqual([
       {
+        custom_fields: {},
         template_id: 2,
         version_id: 2,
         group_name: 'main',
@@ -800,7 +804,7 @@ describe('prompt routes', () => {
       new Request('https://example.test/api/prompt-templates/2', {
         method: 'PATCH',
         headers: managerHeaders(),
-        body: JSON.stringify({ prompt_text: 'draft prompt B changed after publish', priority: 1 }),
+        body: JSON.stringify({ prompt_text: 'draft prompt B changed after publish', priority: 1, custom_fields: { 自定义1: '草稿修改' } }),
       }),
       fakeEnv(state),
     )
@@ -816,6 +820,7 @@ describe('prompt routes', () => {
     const body = await response.json() as { templates: Array<Record<string, unknown>> }
     expect(body.templates.map((template) => template.prompt_text)).toContain('published prompt B')
     expect(body.templates.map((template) => template.prompt_text)).not.toContain('draft prompt B changed after publish')
+    expect(body.templates.find((template) => template.prompt_text === 'published prompt B')?.custom_fields).toEqual({})
     expect(JSON.parse(state.versions.find((version) => version.template_id === 2)?.snapshot_json || '{}').prompt_text).toBe('published prompt B')
   })
 

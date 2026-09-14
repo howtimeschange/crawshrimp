@@ -68,6 +68,7 @@ interface TemplateInput {
   reference_fields: string[]
   word_count: number | null
   field_type: string
+  custom_fields: Record<string, string>
   female_priority: number | null
   male_neutral_priority: number | null
   category_rules: string[]
@@ -91,6 +92,7 @@ interface ResolvedTemplate {
   reference_fields: string[]
   word_count: number | null
   field_type: string
+  custom_fields: Record<string, string>
   female_priority: number | null
   male_neutral_priority: number | null
   category_rules: string[]
@@ -342,6 +344,7 @@ export async function updatePromptTemplate(request: Request, env: Env): Promise<
     reference_fields: body.reference_fields ?? parseStringArray(existing.reference_fields_json),
     word_count: body.word_count ?? existing.word_count,
     field_type: body.field_type ?? existing.field_type,
+    custom_fields: body.custom_fields ?? fromJsonObject(existing.excel_meta_json).custom_fields,
     female_priority: body.female_priority ?? priorityValue(existing.excel_meta_json, 'female_priority'),
     male_neutral_priority: body.male_neutral_priority ?? priorityValue(existing.excel_meta_json, 'male_neutral_priority'),
     category_rules: body.category_rules ?? parseStringArray(existing.category_rules_json),
@@ -602,6 +605,7 @@ function templateInput(raw: unknown): TemplateInput | Response {
     reference_fields: Array.isArray(input.reference_fields) ? arrayOfStrings(input.reference_fields) : splitReferenceFields(input.reference_fields),
     word_count: integerOrNull(input.word_count),
     field_type: stringInput(input.field_type),
+    custom_fields: customFields(input.custom_fields),
     female_priority: integerOrNull(input.female_priority),
     male_neutral_priority: integerOrNull(input.male_neutral_priority),
     category_rules: arrayOfStrings(input.category_rules),
@@ -627,6 +631,7 @@ function publicTemplate(template: PromptTemplateRow): Record<string, unknown> {
     reference_fields: parseStringArray(template.reference_fields_json),
     word_count: numberOrNull(template.word_count),
     field_type: stringFrom(template.field_type, ''),
+    custom_fields: customFields(fromJsonObject(template.excel_meta_json).custom_fields),
     female_priority: priorityValue(template.excel_meta_json, 'female_priority'),
     male_neutral_priority: priorityValue(template.excel_meta_json, 'male_neutral_priority'),
     category_rules: parseStringArray(template.category_rules_json),
@@ -654,6 +659,7 @@ function snapshotFor(template: PromptTemplateRow, versionNo: number, scenario: s
     reference_fields: parseStringArray(template.reference_fields_json),
     word_count: numberOrNull(template.word_count),
     field_type: stringFrom(template.field_type, ''),
+    custom_fields: customFields(fromJsonObject(template.excel_meta_json).custom_fields),
     female_priority: priorityValue(template.excel_meta_json, 'female_priority'),
     male_neutral_priority: priorityValue(template.excel_meta_json, 'male_neutral_priority'),
     category_rules: parseStringArray(template.category_rules_json),
@@ -700,6 +706,7 @@ function resolvedTemplateFor(template: PromptTemplateRow, version?: PromptTempla
       reference_fields: arrayOfStrings(snapshot.reference_fields),
       word_count: numberOrNull(snapshot.word_count ?? template.word_count),
       field_type: stringFrom(snapshot.field_type, stringFrom(template.field_type, '')),
+      custom_fields: customFields(snapshot.custom_fields),
       female_priority: numberOrNull(snapshot.female_priority ?? priorityValue(template.excel_meta_json, 'female_priority')),
       male_neutral_priority: numberOrNull(snapshot.male_neutral_priority ?? priorityValue(template.excel_meta_json, 'male_neutral_priority')),
       category_rules: arrayOfStrings(snapshot.category_rules),
@@ -751,6 +758,7 @@ function priorityValue(value: string, key: string): number | null {
 
 function excelMetaFor(template: TemplateInput): Record<string, unknown> {
   return {
+    custom_fields: template.custom_fields,
     female_priority: template.female_priority,
     male_neutral_priority: template.male_neutral_priority,
   }
@@ -782,4 +790,9 @@ function stringFrom(value: unknown, fallback: string): string {
 function numberFrom(value: unknown, fallback: number): number {
   const numberValue = Number(value)
   return Number.isFinite(numberValue) ? numberValue : fallback
+}
+
+function customFields(value: unknown): Record<string, string> {
+  const fields = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  return Object.fromEntries(Array.from({ length: 10 }, (_, i) => `自定义${i + 1}`).map(name => [name, String(fields[name] ?? '').replace(/\s+/g, ' ').trim()]).filter(([, value]) => value))
 }

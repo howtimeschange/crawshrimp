@@ -30,6 +30,18 @@ DEFAULT_CONFIG = {
             "gemini_3_1_flash_image_preview_key": "",
             "gemini_3_pro_image_preview_key": "",
         },
+        "image": {"custom_providers": []},
+        "woka": {
+            "base_url": "https://4.0.wk-best.com/v1",
+            "gemini_base_url": "https://4.0.wk-best.com/v1beta",
+            "api_key": "",
+        },
+        "semir": {
+            "base_url": "https://ai-aigw.semir.com/overseas-image/v1",
+            "gemini_base_url": "https://ai-aigw.semir.com/overseas-image-gemini/v1beta",
+            "gpt_api_key": "",
+            "gemini_api_key": "",
+        },
         "video": {
             "seedance_api_key": "",
             "seedance_base_url": "https://ark.cn-beijing.volces.com",

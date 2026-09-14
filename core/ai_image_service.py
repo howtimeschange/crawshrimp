@@ -23,6 +23,9 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from core import data_sink, runtime_paths
+from core.image_inputs import normalize_inputs, snapshot_params, compile_input_prompt
+from core.image_connection_info import connection_info
+from core.image_providers import split_model, config_id as provider_config_id, create_image_client, is_gemini_model
 from core.one_xm_image import (
     DEFAULT_BASE_URL,
     FAILED_STATUSES,
@@ -46,6 +49,7 @@ NANO_BANANA_MODELS = {
     "gemini-3.1-flash-image-preview",
     "gemini-3-pro-image-preview",
 }
+NANO_BANANA_MODELS |= {f"{provider}/{model}" for provider in ("woka", "semir") for model in tuple(NANO_BANANA_MODELS)}
 GPT_IMAGE_QUALITIES = {"auto", "low", "medium", "high"}
 NANO_BANANA_RESOLUTIONS = {"1K", "2K", "4K"}
 _WORKBENCH_JOB_LOCKS: dict[str, threading.RLock] = {}
@@ -113,7 +117,7 @@ def _requested_image_count(source: Mapping[str, Any], *, default: int = 1, max_c
 
 
 def _normalized_batch_requested_count(source: Mapping[str, Any], model: str) -> int:
-    if _compact(model) in NANO_BANANA_MODELS:
+    if is_gemini_model(model):
         return 1
     return _requested_image_count({"n": source.get("count")}, default=1, max_count=8)
 
@@ -158,6 +162,19 @@ def _validated_gpt_image_size(size: Any) -> str:
     return f"{width}x{height}"
 
 
+def _nano_aspect_ratio(params: Mapping[str, Any]) -> str:
+    if _compact(params.get("ratio")):
+        return _compact(params.get("ratio"))
+    dimensions = _parse_pixel_size(params.get("size"))
+    if dimensions:
+        from math import gcd
+        width, height = dimensions
+        divisor = gcd(width, height)
+        if divisor:
+            return f"{width // divisor}:{height // divisor}"
+    return "1:1"
+
+
 def _nano_resolution(params: Mapping[str, Any]) -> str:
     for raw in (params.get("resolution"), params.get("size"), params.get("quality")):
         value = _compact(raw).upper()
@@ -180,6 +197,13 @@ def _settings_value(settings: Mapping[str, Any], config_id: str, alias: str = ""
 def select_model_key(job_or_params: Mapping[str, Any], settings: Mapping[str, Any]) -> tuple[str, str]:
     params = _params(job_or_params)
     model = _compact(job_or_params.get("model_key") or params.get("model") or params.get("model_key") or "gpt-image-2")
+    provider, canonical_model = split_model(model)
+    if provider != "1xm":
+        key_id = provider_config_id(provider, canonical_model)
+        key = _settings_value(settings, key_id)
+        if not key:
+            raise MissingModelKeyError(f"设置菜单未配置图片模型 API Key: {key_id}", config_id=key_id)
+        return key_id, key
     if model == "gemini-3.1-flash-image-preview":
         key = _settings_value(settings, GEMINI_FLASH_CONFIG_ID)
         if not key:
@@ -209,19 +233,7 @@ def select_model_key(job_or_params: Mapping[str, Any], settings: Mapping[str, An
 
 
 def _param_input_assets(params: Mapping[str, Any]) -> list[dict[str, Any]]:
-    assets: list[dict[str, Any]] = []
-    main_path = _compact(params.get("main_image_path"))
-    if main_path:
-        assets.append({"kind": "main", "path": main_path, "sort_order": 0})
-    references = params.get("reference_image_paths")
-    if isinstance(references, str):
-        references = [references]
-    if isinstance(references, list):
-        for index, path in enumerate(references, start=1):
-            value = _compact(path)
-            if value:
-                assets.append({"kind": "reference", "path": value, "sort_order": index})
-    return assets
+    return [{**item, "kind": item["role"], "sort_order": i} for i, item in enumerate(normalize_inputs(params))]
 
 
 def _asset_role_label(kind: str) -> str:
@@ -266,11 +278,11 @@ def build_workbench_one_xm_payload(
     params = _params(job)
     model = _compact(job.get("model_key") or params.get("model") or "gpt-image-2") or "gpt-image-2"
     prompt = _compact(job.get("prompt") or params.get("prompt"))
-    if model in NANO_BANANA_MODELS:
+    if is_gemini_model(model):
         payload: dict[str, Any] = {
-            "model": model,
+            "model": split_model(model)[1],
             "prompt": prompt,
-            "size": _compact(params.get("ratio")) or "1:1",
+            "size": _nano_aspect_ratio(params),
             "quality": _nano_resolution(params),
         }
     else:
@@ -290,7 +302,7 @@ def build_workbench_one_xm_payload(
         if output_format not in {"png", "jpeg", "webp"}:
             output_format = "png"
         payload = {
-            "model": model,
+            "model": split_model(model)[1],
             "prompt": prompt,
             "size": _validated_gpt_image_size(params.get("size") or "1024x1024"),
             "quality": quality,
@@ -307,23 +319,15 @@ def build_workbench_one_xm_payload(
         else:
             payload["mask"] = _asset_data_url("mask", mask_value, file_to_data_url_fn)
 
-    input_assets = _param_input_assets(params) or list(assets or [])
-    ordered_assets = sorted(input_assets, key=lambda item: (int(item.get("sort_order") or 0), int(item.get("id") or 0)))
-    images = []
-    for asset in ordered_assets:
-        if _compact(asset.get("kind")).lower() != "main":
-            continue
-        path = _compact(asset.get("path"))
-        if path:
-            images.append(_asset_data_url("main", path, file_to_data_url_fn))
-    for asset in ordered_assets:
-        if _compact(asset.get("kind")).lower() != "reference":
-            continue
-        path = _compact(asset.get("path"))
-        if path:
-            images.append(_asset_data_url("reference", path, file_to_data_url_fn))
+    try:
+        ordered_inputs = normalize_inputs(params, assets)
+    except ValueError as exc:
+        raise AiImageInputAssetError(str(exc)) from exc
+    images = [_asset_data_url(item['role'], item['path'], file_to_data_url_fn) for item in ordered_inputs]
     if images:
-        payload["image"] = images[:10]
+        payload["image"] = images
+    payload['prompt'] = compile_input_prompt(prompt, params, ordered_inputs)
+
     return payload
 
 
@@ -585,6 +589,10 @@ def _safe_summary(result: Mapping[str, Any], output_files: list[str], tier: str)
         "image_urls": [str(url) for url in result.get("image_urls") or []],
         "output_files": output_files,
         "error": _sanitize_error(result.get("error")),
+        **({"error_code": result["error_code"]} if result.get("error_code") else {}),
+        "submission_retries_managed": bool(result.get("submission_retries_managed")),
+        "submission_attempts": int(result.get("submission_attempts") or (result.get("raw") or {}).get("submission_attempts") or 0),
+        "submission_retry_history": result.get("submission_retry_history") or (result.get("raw") or {}).get("submission_retry_history") or [],
         "warning": "",
         "create_attempts": int(result.get("create_attempts") or 0),
         "poll_attempts": int(result.get("poll_attempts") or 0),
@@ -627,10 +635,26 @@ def _normalized_edit_source(params: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _workbench_input_snapshot(params: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "main_image_path": _compact(params.get("main_image_path")),
-        "reference_image_paths": _string_list(params.get("reference_image_paths")),
-    }
+    return {"main_image_path": _compact(params.get("main_image_path")),
+            "reference_image_paths": _string_list(params.get("reference_image_paths")),
+            **{key: snapshot_params(params)[key] for key in ("input_assets", "main_image_paths") if key in params}}
+
+
+def _generation_snapshot(job, params, prompt=None, count=None):
+    return {"schema_version": 2, "prompt": job.get('prompt', '') if prompt is None else prompt,
+            "model_key": job.get('model_key', 'gpt-image-2'), "output_dir": job.get('output_dir', ''),
+            "params": {**_workbench_input_snapshot(params), **snapshot_params(params),
+                       **({'input_assets': job['_resolved_input_assets']} if '_resolved_input_assets' in job else {}),
+                       **({'n': count} if count is not None else {})},
+            "connection": dict(job.get('_connection_info') or {})}
+
+
+def _attach_connection(job, settings, key, tier):
+    info = connection_info(job.get('model_key') or 'gpt-image-2', settings, key, tier)
+    expected = _params(job).get('expected_connection_version')
+    if expected and expected != info['version']:
+        raise ValueError('连接配置已变化，请检查并确认使用当前配置后再生成')
+    return {**job, '_connection_info': info}
 
 
 def _legacy_run_from_summary(job: Mapping[str, Any], summary: Mapping[str, Any]) -> dict | None:
@@ -674,13 +698,20 @@ def _merge_run_summary(job: Mapping[str, Any], latest_summary: Mapping[str, Any]
     image_urls = _string_list(latest_summary.get("image_urls"))
     run_record = {
         "run_uid": _compact(latest_summary.get("run_uid") or latest_summary.get("task_id")) or f"run-{len(previous_runs) + 1}",
-        "created_at": _now_iso(),
+        "created_at": job.get("_started_at") or _now_iso(),
+        "completed_at": _now_iso(),
+        "elapsed_seconds": round(time.monotonic() - job.get("_started_monotonic", time.monotonic()), 3),
         "prompt": _compact(job.get("prompt") or params.get("prompt")),
         "model_key": _compact(job.get("model_key") or params.get("model") or "gpt-image-2"),
         "model_key_tier": _compact(latest_summary.get("model_key_tier")),
         "size": _compact(params.get("size")),
         "ratio": _compact(params.get("ratio")),
+        "quality": _compact(params.get('quality')),
+        "response_format": _compact(params.get('response_format') or params.get('output_format')),
+        "requested_count": _requested_image_count(job),
         "input_params": _workbench_input_snapshot(params),
+        "generation_snapshot": _generation_snapshot(job, params),
+        "connection": dict(job.get("_connection_info") or {}),
         "status": status,
         "task_id": _compact(latest_summary.get("task_id")),
         "poll_url": _compact(latest_summary.get("poll_url")),
@@ -688,6 +719,9 @@ def _merge_run_summary(job: Mapping[str, Any], latest_summary: Mapping[str, Any]
         "output_files": output_files,
         "warning": _compact(latest_summary.get("warning")),
         "error": _compact(latest_summary.get("error")),
+        **({"error_code": latest_summary["error_code"]} if latest_summary.get("error_code") else {}),
+        "submission_attempts": latest_summary.get("submission_attempts", 0),
+        "submission_retry_history": latest_summary.get("submission_retry_history", []),
     }
     edit_source = _normalized_edit_source(params)
     if edit_source:
@@ -846,6 +880,7 @@ def _workbench_run_patch(
     except (TypeError, ValueError):
         poll_after = 5.0
     patch: dict[str, Any] = {
+        **({"submission_attempts": task["submission_attempts"], "submission_retry_history": task.get("submission_retry_history", [])} if task.get("submission_attempts") else {}),
         "provider_status": provider_status,
         "poll_after": max(0.0, poll_after),
     }
@@ -880,10 +915,12 @@ def _is_transient_workbench_failure(error: Any) -> bool:
 
 
 def _workbench_retry_payload(job: Mapping[str, Any], run: Mapping[str, Any]) -> dict[str, Any]:
-    current_params = _params(job)
+    snapshot = run.get("generation_snapshot") or {}
+    current_params = snapshot.get("params") if snapshot.get("schema_version") == 2 else _params(job)
     input_params = run.get("input_params") if isinstance(run.get("input_params"), Mapping) else {}
     params = {
         **current_params,
+        **input_params,
         "size": _compact(run.get("size")) or current_params.get("size"),
         "ratio": _compact(run.get("ratio")) or current_params.get("ratio"),
         "quality": _compact(run.get("quality")) or current_params.get("quality"),
@@ -903,7 +940,7 @@ def _workbench_retry_payload(job: Mapping[str, Any], run: Mapping[str, Any]) -> 
         },
         data_sink.list_ai_image_assets(_compact(job.get("job_uid"))),
     )
-    if model in NANO_BANANA_MODELS:
+    if is_gemini_model(model):
         payload.pop("n", None)
     else:
         payload["n"] = int(run.get("requested_count") or 1)
@@ -964,6 +1001,11 @@ def _rebuild_workbench_summary(summary: Mapping[str, Any], runs: list[dict[str, 
     rebuilt = {
         **dict(summary),
         "ok": "completed" in statuses,
+        "partial_success": "completed" in statuses and "failed" in statuses,
+        "completed_runs": sum(run.get("status") == "completed" for run in runs),
+        "failed_runs": sum(run.get("status") == "failed" for run in runs),
+        "requested_images": sum(int(run.get("requested_count") or 1) for run in runs),
+        "returned_images": len(image_urls),
         "runs": runs,
         "image_urls": image_urls,
         "output_files": output_files,
@@ -996,6 +1038,12 @@ def _update_workbench_run(job_uid: str, run_uid: str, patch: Mapping[str, Any], 
         if not restart and current.get('status') in {'completed', 'failed'} and patch.get('status', current['status']) != current['status']:
             return job
         runs[run_index] = {**runs[run_index], **dict(patch)}
+        if patch.get('status') in {'completed', 'failed'}:
+            runs[run_index]['completed_at'] = _now_iso()
+            try:
+                started = datetime.fromisoformat(str(current.get('created_at')).replace('Z', '+00:00'))
+                runs[run_index]['elapsed_seconds'] = max(0, round((datetime.now(timezone.utc) - started).total_seconds(), 3))
+            except (ValueError, TypeError): pass
         rebuilt, job_status = _rebuild_workbench_summary(summary, runs)
         return data_sink.update_ai_image_job(job_uid, {"status": job_status, "summary": rebuilt})
 
@@ -1035,7 +1083,9 @@ def _submit_workbench_attempt(job_uid: str, run: Mapping[str, Any], client: OneX
             if result.get('status') in {'queued', 'running'} and not (result.get('task_id') or result.get('poll_url')):
                 result = _unknown_submission_patch('Provider 未返回任务句柄')
         except RejectedOneXMImageError as exc:
-            result = {'status': 'failed', 'provider_status': 'failed', 'error': _sanitize_error(exc, [getattr(client, 'api_key', '')])}
+            result = {'status': 'failed', 'provider_status': 'failed', 'error': _sanitize_error(exc, [getattr(client, 'api_key', '')]),
+                      'submission_attempts': getattr(exc, 'submission_attempts', 0),
+                      'submission_retry_history': getattr(exc, 'submission_retry_history', [])}
         except Exception as exc:
             result = _unknown_submission_patch(_sanitize_error(exc, [getattr(client, 'api_key', '')]))
         return _update_workbench_run(job_uid, run_uid, result, expected_run=snapshot)
@@ -1185,7 +1235,7 @@ def refresh_workbench_run_once(
             },
         }
         _, api_key = select_model_key(run_job, resolved_settings)
-        client = client_factory(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
+        client = create_image_client(run_job, resolved_settings, api_key, legacy_factory=client_factory)
         try:
             current = client.get_task(poll_url)
         except (OneXMImageError, OSError, http.client.HTTPException) as exc:
@@ -1248,7 +1298,7 @@ def retry_workbench_run(
         },
     }
     _, api_key = select_model_key(retry_job, resolved_settings)
-    client = client_factory(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
+    client = create_image_client(retry_job, resolved_settings, api_key, legacy_factory=client_factory)
     manual_retry_count = max(0, int(run.get("manual_retry_count") or 0)) + 1
     manual_retry_history = [
         dict(item)
@@ -1334,7 +1384,7 @@ def recover_workbench_runs(*, settings=None, client_factory=OneXMImageClient, po
                                       'model_key_tier': run.get('model_key_tier') or _params(job).get('model_key_tier'),
                                       'size': run.get('size') or _params(job).get('size')}}
                 _, key = select_model_key(run_job, resolved)
-                client = client_factory(key, base_url=_compact(resolved.get('base_url')) or DEFAULT_BASE_URL)
+                client = create_image_client(run_job, resolved, key, legacy_factory=client_factory)
                 _schedule_workbench_poll(uid, run_uid, client, poll_submitter=poll_submitter, stop_event=stop_event)
             except Exception:
                 logger.warning('Unable to resume image poll for %s/%s; will retry', uid, run_uid, exc_info=True)
@@ -1384,6 +1434,7 @@ def submit_workbench_batch(
     prompts: list[Mapping[str, Any] | str],
     *,
     request_uid: str = "",
+    input_snapshot: Mapping[str, Any] | None = None,
     settings: Mapping[str, Any] | None = None,
     client_factory: Callable[..., OneXMImageClient] = OneXMImageClient,
     executor_factory: Callable[..., ThreadPoolExecutor] = ThreadPoolExecutor,
@@ -1392,6 +1443,8 @@ def submit_workbench_batch(
     job = data_sink.get_ai_image_job(job_uid)
     if not job:
         raise ValueError(f"AI image job not found: {job_uid}")
+    if input_snapshot is not None:
+        job = {**job, **{key: input_snapshot[key] for key in ("title", "prompt", "model_key", "output_dir", "params") if key in input_snapshot}}
     model = _compact(job.get("model_key") or _params(job).get("model") or "gpt-image-2")
 
     normalized_prompts: list[dict[str, Any]] = []
@@ -1419,9 +1472,11 @@ def submit_workbench_batch(
         from core.api_server import _resolve_one_xm_settings
 
         resolved_settings = _resolve_one_xm_settings()
-    _, api_key = select_model_key(job, resolved_settings)
-    client = client_factory(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
+    tier, api_key = select_model_key(job, resolved_settings)
+    job = _attach_connection(job, resolved_settings, api_key, tier)
+    client = create_image_client(job, resolved_settings, api_key, legacy_factory=client_factory)
     assets = data_sink.list_ai_image_assets(job_uid)
+    job = {**job, "_resolved_input_assets": normalize_inputs(_params(job), assets)}
     params = {**_params(job), "n": 1}
     base_payload = build_workbench_one_xm_payload(
         {**job, "prompt": normalized_prompts[0]["prompt"], "params": params},
@@ -1447,6 +1502,8 @@ def submit_workbench_batch(
             "quality": _compact(params.get("quality")),
             "response_format": _compact(params.get("response_format") or params.get("output_format")),
             "input_params": _workbench_input_snapshot(params),
+            "generation_snapshot": _generation_snapshot(job, params, prompt_item['prompt'], prompt_item['count']),
+            "connection": dict(job.get('_connection_info') or {}),
             "status": "queued",
             "provider_status": "pending_submission",
             "task_id": "",
@@ -1480,8 +1537,8 @@ def submit_workbench_batch(
         _WORKBENCH_ACTIVE_SUBMISSIONS.update((job_uid, run['run_uid']) for run in batch_runs)
 
     def create_one(run: Mapping[str, Any]) -> dict:
-        payload = {**base_payload, 'prompt': run['prompt']}
-        if model in NANO_BANANA_MODELS:
+        payload = {**base_payload, 'prompt': compile_input_prompt(run['prompt'], params, normalize_inputs(params, assets))}
+        if is_gemini_model(model):
             payload.pop('n', None)
         else:
             payload['n'] = int(run.get('requested_count') or 1)
@@ -1493,7 +1550,7 @@ def submit_workbench_batch(
         return updated
 
     try:
-        with executor_factory(max_workers=min(len(batch_runs), 100)) as executor:
+        with executor_factory(max_workers=min(len(batch_runs), 3 if getattr(client, 'manages_submission_retries', False) else 100)) as executor:
             futures = [executor.submit(create_one, run) for run in batch_runs]
             for future in as_completed(futures):
                 future.result()
@@ -1523,6 +1580,7 @@ def run_job_with_one_xm(
     job_uid: str,
     *,
     settings: Mapping[str, Any] | None = None,
+    input_snapshot: Mapping[str, Any] | None = None,
     runner: Callable[..., dict[str, Any]] = run_image_task_until_done,
     downloader: Callable[[str, Path], None] = _default_downloader,
     file_to_data_url_fn: Callable[[str], str] = file_to_data_url,
@@ -1530,6 +1588,8 @@ def run_job_with_one_xm(
     job = data_sink.get_ai_image_job(job_uid)
     if not job:
         raise ValueError(f"AI image job not found: {job_uid}")
+    if input_snapshot is not None:
+        job = {**job, **{key: input_snapshot[key] for key in ("title", "prompt", "model_key", "output_dir", "params") if key in input_snapshot}}
     resolved_settings = dict(settings or {})
     if not resolved_settings:
         from core.api_server import _resolve_one_xm_settings
@@ -1543,9 +1603,12 @@ def run_job_with_one_xm(
     except MissingModelKeyError as exc:
         _record_workbench_failed_run(job, run_uid, exc, tier=exc.config_id)
         raise
+    job = _attach_connection(job, resolved_settings, api_key, tier)
+    job = {**job, '_started_at': _now_iso(), '_started_monotonic': time.monotonic()}
     assets = data_sink.list_ai_image_assets(job_uid)
     try:
         payload = build_one_xm_payload(job, assets, file_to_data_url_fn=file_to_data_url_fn)
+        job = {**job, "_resolved_input_assets": normalize_inputs(_params(job), assets)}
         if not payload.get("prompt"):
             raise ValueError("AI image job prompt is required")
         requested_count = _requested_image_count(payload)
@@ -1553,7 +1616,7 @@ def run_job_with_one_xm(
         message = _record_workbench_failed_run(job, run_uid, exc, tier=tier, secrets=[api_key])
         raise ValueError(message) from exc
 
-    client = OneXMImageClient(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
+    client = create_image_client(job, resolved_settings, api_key, legacy_factory=OneXMImageClient)
     data_sink.update_ai_image_job(job_uid, {"status": "running"})
     try:
         result = runner(
@@ -1566,8 +1629,14 @@ def run_job_with_one_xm(
             poll_timeout_seconds=600,
         )
     except Exception as exc:
+        managed = bool(getattr(client, "manages_submission_retries", False))
+        unknown = managed and not isinstance(exc, RejectedOneXMImageError)
         summary = _safe_summary(
-            {"ok": False, "run_uid": run_uid, "error": _sanitize_error(exc, [api_key])},
+            {"ok": False, "run_uid": run_uid, "error": _sanitize_error(exc, [api_key]),
+             "submission_retries_managed": managed,
+             "submission_attempts": getattr(exc, "submission_attempts", 0),
+             "submission_retry_history": getattr(exc, "submission_retry_history", []),
+             **({"error_code": "UNKNOWN_SUBMIT_RESULT"} if unknown else {})},
             [],
             tier,
         )
@@ -1576,6 +1645,7 @@ def run_job_with_one_xm(
         return {"ok": False, "job_uid": job_uid, "summary": summary}
 
     normalized_result = dict(result or {})
+    normalized_result["submission_retries_managed"] = bool(getattr(client, "manages_submission_retries", False))
     if normalized_result.get("ok"):
         normalized_result["image_urls"] = [
             str(url)
@@ -1623,10 +1693,24 @@ def materialize_remote_image(
     source_url = _compact(url)
     if not source_url:
         raise ValueError("图片地址不能为空")
-    if not (source_url.startswith("http://") or source_url.startswith("https://")):
-        raise ValueError("仅支持物化远程图片地址")
+    if not source_url.startswith(("http://", "https://", "data:image/")):
+        raise ValueError("仅支持 HTTP 或图片 data URL")
     if not allow_unlisted and source_url not in _known_result_urls(job):
         raise ValueError("图片 URL 不属于当前任务结果")
+
+    if source_url.startswith("data:image/"):
+        cache_key = hashlib.sha256(source_url.encode()).hexdigest()[:16]
+        existing = (job.get("summary") or {}).get("result_cache", {}).get(cache_key)
+        if existing and Path(existing).is_file():
+            _validate_downloaded_image(Path(existing))
+            return {"ok": True, "job_uid": job_uid, "path": existing}
+        result = materialize_data_url_image(job_uid, source_url, filename="result", allow_unlisted=allow_unlisted)
+        latest = data_sink.get_ai_image_job(job_uid)
+        if latest:
+            summary = dict(latest.get("summary") or {})
+            summary["result_cache"] = {**summary.get("result_cache", {}), cache_key: result["path"]}
+            data_sink.update_ai_image_job(job_uid, {"summary": summary})
+        return result
 
     cache_dir = runtime_paths.child_dir("ai-image-cache")
     suffix = _extension_from_url(source_url)
@@ -1733,7 +1817,7 @@ def copy_assets_to_directory(
     for asset in assets or []:
         source_url = _compact(asset.get("url"))
         source_path = _compact(asset.get("path"))
-        if source_url.startswith("http://") or source_url.startswith("https://"):
+        if source_url.startswith(("http://", "https://", "data:image/")):
             suffix = _extension_from_url(source_url)
             temporary = _unique_path(target_dir / f".download-{uuid4().hex[:12]}{suffix}")
             try:

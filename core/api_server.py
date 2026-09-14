@@ -69,6 +69,7 @@ from core.browser_session import open_browser_session
 from core.dev_harness import run_harness_capture, run_harness_eval, run_harness_snapshot
 from core.dev_harness_models import DevHarnessCaptureRequest, DevHarnessEvalRequest, DevHarnessSnapshotRequest
 from core.knowledge_service import ensure_knowledge_index, rebuild_knowledge_index, search_knowledge
+from core.image_providers import provider_settings, create_image_client, split_model
 from core.one_xm_image import DEFAULT_BASE_URL as ONE_XM_DEFAULT_BASE_URL
 from core.one_xm_image import OneXMImageClient, OneXMImageError, file_to_data_url, run_image_task_until_done
 from core.probe_models import ProbeRequest
@@ -3223,6 +3224,7 @@ def _bala_create_ai_image_job_row(
         "output_format": str(run_params.get("output_format") or "png").strip() or "png",
         "n": 1,
         "model_key_tier": str(run_params.get("model_key_tier") or "4k").strip() or "4k",
+        **({"ratio": str(run_params["ratio"])} if run_params.get("ratio") else {}),
         "main_image_path": str(source_path),
         "reference_image_paths": reference_paths,
         "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
@@ -6009,6 +6011,7 @@ def _resolve_one_xm_settings() -> dict:
         or ONE_XM_DEFAULT_BASE_URL
     )
     return {
+        **provider_settings(cfg, os.environ),
         "base_url": base_url,
         "2k": (
             _nested_config_value(cfg, "ai.1xm.gpt_image_2k_key")
@@ -6097,10 +6100,19 @@ def _prepare_one_xm_payload(row: dict) -> dict:
         if raw_payload.get(optional_key):
             payload[optional_key] = raw_payload.get(optional_key)
 
+    if 'input_assets' in raw_payload or 'main_image_paths' in raw_payload:
+        from core.image_inputs import normalize_inputs, compile_input_prompt
+        inputs = normalize_inputs(raw_payload)
+        payload['image'] = [file_to_data_url(item['path']) for item in inputs]
+        payload['prompt'] = compile_input_prompt(payload['prompt'], raw_payload, inputs)
+        return payload
+
     reference_paths = _parse_internal_list(row.get("__1xm_reference_paths")) or _parse_internal_list(row.get("参考图文件"))
     images = []
     image_errors = []
-    for raw_path in reference_paths[:10]:
+    if len(reference_paths) > 10:
+        raise ValueError(f"输入图片共 {len(reference_paths)} 张，最多支持 10 张，请减少后重试")
+    for raw_path in reference_paths:
         try:
             images.append(file_to_data_url(raw_path))
         except Exception as exc:
@@ -6133,7 +6145,8 @@ def _run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dic
         patched["备注"] = "缺少最终提示词"
         return patched
 
-    client = OneXMImageClient(api_key, base_url=one_xm_settings.get("base_url") or ONE_XM_DEFAULT_BASE_URL)
+    client = create_image_client({"model_key": payload.get("model")}, one_xm_settings, api_key, legacy_factory=OneXMImageClient)
+    payload["model"] = split_model(payload.get("model"))[1]
     result = run_image_task_until_done(
         client,
         payload,
@@ -11021,6 +11034,7 @@ class AiImageBatchPromptRequest(BaseModel):
 
 
 class AiImageBatchRunRequest(BaseModel):
+    input_snapshot: Optional[AiImageJobRequest] = None
     request_uid: str = ""
     prompts: list[AiImageBatchPromptRequest] = []
 
@@ -11101,8 +11115,8 @@ def read_local_image_preview(req: LocalImagePreviewRequest):
         raise HTTPException(404, "图片文件不存在") from exc
     if not path.is_file():
         raise HTTPException(400, "图片文件不存在")
-    if stat.st_size > 25 * 1024 * 1024:
-        raise HTTPException(400, "图片超过 25MB，无法预览")
+    if stat.st_size > 20 * 1024 * 1024:
+        raise HTTPException(400, f"{path.name}：{stat.st_size / 1024 / 1024:.2f} MB，超过单张 20 MB 上限")
     data_url = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
     return {"ok": True, "path": str(path), "data_url": data_url}
 
@@ -11160,11 +11174,11 @@ def delete_ai_image_job(job_uid: str):
 
 
 @app.post("/ai-image/jobs/{job_uid}/run")
-def run_ai_image_job(job_uid: str):
+def run_ai_image_job(job_uid: str, req: Optional[AiImageJobRequest] = None):
     if not data_sink.get_ai_image_job(job_uid):
         raise HTTPException(404, f"AI image job not found: {job_uid}")
     try:
-        return ai_image_service.run_job_with_one_xm(job_uid)
+        return ai_image_service.run_job_with_one_xm(job_uid, **({"input_snapshot": _model_payload(req)} if req is not None else {}))
     except ai_image_service.MissingModelKeyError as exc:
         raise HTTPException(400, {
             "message": str(exc),
@@ -11188,6 +11202,7 @@ def batch_run_ai_image_job(job_uid: str, req: AiImageBatchRunRequest):
             job_uid,
             prompts,
             request_uid=req.request_uid,
+            **({"input_snapshot": _model_payload(req.input_snapshot)} if req.input_snapshot is not None else {}),
         )
     except ai_image_service.MissingModelKeyError as exc:
         raise HTTPException(400, {
@@ -11599,6 +11614,12 @@ class TmallApprovalRegenerateRequest(BaseModel):
     reference_paths: Optional[List[str]] = None
 
 
+class TmallApprovalFaceSwapRequest(BaseModel):
+    asset_id: str
+    model_id: str
+    instruction: str = ""
+
+
 class TmallApprovalGenerateRequest(BaseModel):
     item_id: str = ""
     style_code: str = ""
@@ -11906,6 +11927,22 @@ async def regenerate_tmall_ai_image_approval_asset(batch_id: str, req: TmallAppr
             prompt=req.prompt or "",
             reference_paths=safe_reference_paths,
         )
+        return {"ok": True, "asset": asset}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/tmall-ai-image-approval/api/{batch_id}/face-swap")
+async def face_swap_tmall_ai_image_approval_asset(batch_id: str, req: TmallApprovalFaceSwapRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    if str(batch.get("status") or "") in {"generating", "submitting", "creating"}:
+        raise HTTPException(409, "当前批次正在执行，请完成后再换脸")
+    module = _load_tmall_ai_image_chain_module()
+    try:
+        asset = await asyncio.to_thread(module.face_swap_approval_asset, batch, req.asset_id, req.model_id, req.instruction)
         return {"ok": True, "asset": asset}
     except HTTPException:
         raise
@@ -13921,6 +13958,29 @@ def chrome_tabs():
                 for t in tabs if t.get('type') == 'page']
     except ConnectionError as e:
         raise HTTPException(503, str(e))
+
+
+
+
+class ImageConnectionRequest(BaseModel):
+    model_key: str
+    key_tier: str = ''
+
+
+@app.post('/ai-image/connections/check')
+def check_image_connection(req: ImageConnectionRequest):
+    from core.image_diagnostics import check_connection, error_category
+    try:
+        return check_connection(req.model_key, req.key_tier)
+    except ValueError as exc:
+        category, message = error_category(exc)
+        return {'ok': False, 'category': category, 'message': message}
+
+
+@app.get('/ai-image/call-history')
+def image_call_history(provider: str = ''):
+    from core.image_diagnostics import call_history
+    return call_history(provider)
 
 
 if __name__ == "__main__":

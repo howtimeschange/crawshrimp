@@ -1,6 +1,8 @@
 import * as XLSX from 'xlsx'
+const CUSTOM_FIELDS = Array.from({ length: 10 }, (_, i) => `自定义${i + 1}`)
 
 export interface PromptTemplateExcelRow {
+  custom_fields?: Record<string, string>
   group_name: string
   field_name: string
   source_field_id: string
@@ -17,7 +19,7 @@ export interface PromptTemplateExcelRow {
   enabled: boolean
 }
 
-const HEADER_ALIASES: Record<keyof Omit<PromptTemplateExcelRow, 'group_name' | 'enabled'>, string[]> = {
+const HEADER_ALIASES: Record<keyof Omit<PromptTemplateExcelRow, 'group_name' | 'enabled' | 'custom_fields'>, string[]> = {
   field_name: ['字段名'],
   source_field_id: ['字段 ID', '字段ID'],
   field_order: ['字段顺序'],
@@ -38,7 +40,7 @@ export function rowsToPromptTemplates(sheetName: string, rows: unknown[][]): Pro
 
   const headers = rows[headerIndex].map(cellText)
   const indexByHeader = new Map(headers.map((header, index) => [header, index]))
-  const column = (key: keyof Omit<PromptTemplateExcelRow, 'group_name' | 'enabled'>) => {
+  const column = (key: keyof Omit<PromptTemplateExcelRow, 'group_name' | 'enabled' | 'custom_fields'>) => {
     const alias = HEADER_ALIASES[key].find((name) => indexByHeader.has(name))
     return alias === undefined ? -1 : Number(indexByHeader.get(alias))
   }
@@ -58,6 +60,7 @@ export function rowsToPromptTemplates(sheetName: string, rows: unknown[][]): Pro
   }
 
   return rows.slice(headerIndex + 1).map((row) => ({
+    custom_fields: Object.fromEntries(CUSTOM_FIELDS.map(name => [name, valueAt(row, indexByHeader.get(name) ?? -1)]).filter(([, value]) => value)),
     group_name: sheetName.trim(),
     field_name: valueAt(row, indices.field_name),
     source_field_id: valueAt(row, indices.source_field_id),
@@ -98,7 +101,7 @@ export function exportPromptWorkbook(libraryName: string, rows: PromptTemplateEx
       [`${groupName} 字段描述`],
       [`导出库：${libraryName}`],
       [],
-      ['字段名', '字段 ID', '字段顺序', '在当前视图', '尺寸', '格式', '引用字段', '描述内容', '字数', '字段类型', '女性优先度', '男性/中性优先度'],
+      ['字段名', '字段 ID', '字段顺序', '在当前视图', '尺寸', '格式', '引用字段', '描述内容', '字数', '字段类型', '女性优先度', '男性/中性优先度', ...CUSTOM_FIELDS],
       ...groupRows.map((row) => [
         row.field_name,
         row.source_field_id,
@@ -112,6 +115,7 @@ export function exportPromptWorkbook(libraryName: string, rows: PromptTemplateEx
         row.field_type,
         row.female_priority ?? '',
         row.male_neutral_priority ?? '',
+        ...CUSTOM_FIELDS.map(name => row.custom_fields?.[name] || ''),
       ]),
     ]
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(sheetRows), safeSheetName(groupName))

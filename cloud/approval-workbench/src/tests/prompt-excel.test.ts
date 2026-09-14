@@ -23,3 +23,9 @@ describe('prompt Excel mapping', () => {
     })
   })
 })
+
+it('reads all ten reserved fields without interpreting their business values', () => {
+  const headers = ['字段名', '描述内容', ...Array.from({ length: 10 }, (_, i) => `自定义${i + 1}`)]
+  const result = rowsToPromptTemplates('模板', [headers, ['合拍', '场景', '合拍', ...Array(8).fill(''), '春节']])
+  expect(result[0].custom_fields).toEqual({ 自定义1: '合拍', 自定义10: '春节' })
+})

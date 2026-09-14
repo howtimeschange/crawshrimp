@@ -31,6 +31,7 @@ const MODEL_ALIASES: Record<string, string> = {
 
 export async function createAndPollOneXmImageTask(env: Env, input: OneXmImageInput): Promise<OneXmImageTaskResult> {
   const model = canonicalOneXmModel(input.model)
+  if (/^(woka|semir)\//.test(model)) return createCompatibleImage(env, input)
   const apiKey = resolveOneXmApiKey(env, model)
   if (!apiKey) throw oneXmError(`Missing 1XM API key for ${model}`, 400)
   const baseUrl = oneXmBaseUrl(env)
@@ -38,6 +39,83 @@ export async function createAndPollOneXmImageTask(env: Env, input: OneXmImageInp
   const deadlineAt = Date.now() + timeoutMs
   const task = await createImageTask(baseUrl, apiKey, buildImageTaskPayload(env, model, input), input.idempotencyKey, deadlineAt)
   return settleImageTask(env, baseUrl, apiKey, task, deadlineAt)
+}
+
+/** OpenAI multipart edits and Gemini inlineData, using server-side credentials. */
+async function createCompatibleImage(env: Env, input: OneXmImageInput): Promise<OneXmImageTaskResult> {
+  const [provider, model] = input.model.split('/')
+  const gemini = model.startsWith('gemini-')
+  const key = provider === 'woka' ? env.WOKA_IMAGE_API_KEY : gemini ? env.SEMIR_IMAGE_GEMINI_API_KEY : env.SEMIR_IMAGE_GPT_API_KEY
+  if (!key) throw oneXmError(`Missing ${provider} image API key for ${model}`, 400)
+  const root = provider === 'woka'
+    ? (gemini ? env.WOKA_IMAGE_GEMINI_BASE_URL || 'https://4.0.wk-best.com/v1beta' : env.WOKA_IMAGE_BASE_URL || 'https://4.0.wk-best.com/v1')
+    : (gemini ? env.SEMIR_IMAGE_GEMINI_BASE_URL || 'https://ai-aigw.semir.com/overseas-image-gemini/v1beta' : env.SEMIR_IMAGE_BASE_URL || 'https://ai-aigw.semir.com/overseas-image/v1')
+  const headers: Record<string, string> = {}
+  let url: string
+  let body: BodyInit
+  if (gemini) {
+    headers['x-goog-api-key'] = key
+    headers['Content-Type'] = 'application/json'
+    url = root.replace(/\/$/, '').replace(/\/models\/[^/]+:generateContent$/, '') + `/models/${model}:generateContent`
+    body = JSON.stringify({
+      contents: [{ parts: [{ text: input.prompt }, ...input.imageDataUrls.map(dataUrl => ({ inlineData: { mimeType: mimeFromDataUrl(dataUrl), data: dataUrl.split(',')[1] } }))] }],
+      generationConfig: { responseModalities: ['TEXT', 'IMAGE'], imageConfig: { aspectRatio: normalizeGeminiSize(input.size), imageSize: normalizeGeminiQuality(input.quality) } },
+    })
+  } else {
+    headers.Authorization = `Bearer ${key}`
+    const format = normalizeOutputFormat(input.outputFormat)
+    const payload = { model, prompt: input.prompt, size: normalizeGptImageSize(input.size), quality: normalizeGptImageQuality(input.quality), n: normalizeCount(input.count), output_format: format === 'jpg' ? 'jpeg' : format }
+    url = root.replace(/\/$/, '').replace(/\/images\/(generations|edits)$/, '') + `/images/${input.imageDataUrls.length ? 'edits' : 'generations'}`
+    if (input.imageDataUrls.length) {
+      const form = new FormData()
+      for (const [name, value] of Object.entries(payload)) form.append(name, String(value))
+      for (const [index, dataUrl] of input.imageDataUrls.entries()) {
+        const mime = mimeFromDataUrl(dataUrl)
+        form.append(input.imageDataUrls.length > 1 ? 'image[]' : 'image', new Blob([new Uint8Array(dataUrlToBytes(dataUrl)).buffer], { type: mime }), `reference-${index}.${extensionForMime(mime, 'png')}`)
+      }
+      body = form
+    } else {
+      headers['Content-Type'] = 'application/json'
+      body = JSON.stringify(payload)
+    }
+  }
+  const dataUrls: string[] = []
+  // Gemini returns one image per call. Honor count with bounded explicit calls.
+  const calls = gemini ? normalizeCount(input.count) : 1
+  for (let index = 0; index < calls; index += 1) {
+    const { response, result } = await submitCompatibleImage(url, headers, body)
+    if (!response.ok || result.error) throw oneXmError(`Upstream ${response.status}: ${formatUpstreamError(result)}`.replaceAll(key, '[redacted]'), response.ok ? 502 : response.status)
+    if (gemini) {
+      for (const candidate of result.candidates || []) {
+        for (const part of candidate.content?.parts || []) {
+          const inline = part.inlineData || part.inline_data
+          if (inline?.data) dataUrls.push(`data:${inline.mimeType || inline.mime_type || 'image/png'};base64,${inline.data}`)
+        }
+      }
+    } else {
+      // Honor the provider output MIME for Base64 responses.
+      for (const item of result.data || []) if (item.b64_json) {
+        item.url = `data:image/${input.outputFormat === 'jpg' ? 'jpeg' : input.outputFormat || 'png'};base64,${item.b64_json}`
+        delete item.b64_json
+      }
+      dataUrls.push(...await extractImageDataUrls(result, DEFAULT_FETCH_TIMEOUT_MS))
+    }
+  }
+  if (!dataUrls.length) throw oneXmError('Model returned no image.', 502)
+  return { status: 'completed', dataUrls, task: { status: 'completed', model: input.model } }
+}
+
+async function submitCompatibleImage(url: string, headers: Record<string, string>, body: BodyInit): Promise<{ response: Response; result: Record<string, any> }> {
+  for (let attempt = 1; ; attempt += 1) {
+    // A thrown fetch (timeout/disconnect) is deliberately never resubmitted.
+    const response = await fetchWithTimeout(url, { method: 'POST', headers, body }, 240_000)
+    const result = await readJsonResponse(response) as Record<string, any>
+    const error = JSON.stringify(result.error || {}).toLowerCase()
+    const permanent = ['model_not_found', 'no available channel', 'support the requested model', 'quota', 'insufficient', 'balance', 'billing'].some(code => error.includes(code))
+    const transient = response.status === 429 || (response.status === 503 && ['overload', 'busy', 'temporarily', 'service_unavailable', 'capacity'].some(code => error.includes(code)))
+    if (attempt >= 3 || permanent || !transient) return { response, result }
+    await sleep(1000 * 2 ** (attempt - 1))
+  }
 }
 
 export async function settleOneXmImageTask(env: Env, task: unknown, modelOverride?: string): Promise<OneXmImageTaskResult> {

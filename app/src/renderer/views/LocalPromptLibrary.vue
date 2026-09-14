@@ -170,6 +170,11 @@
                     placeholder="输入完整生图 Prompt"
                     @input="resizePromptTextarea"
                   ></textarea>
+                  <details class="lpl-custom-fields">
+                    <summary>自定义匹配字段 · {{ Object.values(template.custom_fields || {}).filter(Boolean).length }}/10</summary>
+                    <p>与款号表中的同名字段对应，填写的字段须同时匹配。</p>
+                    <div><label v-for="name in PROMPT_CUSTOM_FIELDS" :key="name"><span>{{ name }}</span><input v-model="template.custom_fields[name]" :aria-label="name" :disabled="!selectedLocalLibrary" /></label></div>
+                  </details>
                 </div>
                 <div class="lpl-template-cell action">
                   <button type="button" class="lpl-icon danger" :disabled="!selectedLocalLibrary" aria-label="删除 Prompt" @click="removePromptRow(template)">删除</button>
@@ -190,6 +195,7 @@ import { computed, nextTick, onMounted, onUnmounted, onUpdated, ref, watch } fro
 import {
   DEFAULT_PROMPT_LIBRARY_NAME,
   PROMPT_IMPORT_HEADER_ROWS,
+  PROMPT_CUSTOM_FIELDS,
   PROMPT_SCENARIOS,
   cloudPromptLibraryNotice,
   createLocalPromptUid,
@@ -1180,4 +1186,8 @@ onUpdated(resizePromptTextareas)
     border-bottom: none;
   }
 }
+.lpl-custom-fields { margin-top: 8px; font-size: 12px; color: var(--text2); }
+.lpl-custom-fields summary { cursor: pointer; }
+.lpl-custom-fields > div { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+.lpl-custom-fields label { display: grid; gap: 4px; }
 </style>

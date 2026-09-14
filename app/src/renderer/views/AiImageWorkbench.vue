@@ -63,52 +63,41 @@
         <section
           class="aiw-material-box"
           :class="{ 'drag-over': dragOverTarget === 'main' }"
-          @dragenter.prevent="dragOverTarget = 'main'"
+          data-input-role="main"
+          @dragenter.prevent="handleResultDragOver"
           @dragover.prevent="handleResultDragOver"
-          @dragleave="clearDragOver('main')"
+          @dragleave="clearDragOver($event, 'main')"
           @drop.prevent="dropResultAsMain"
+          tabindex="0" aria-label="主图上传区"
+          @paste="handleInputPaste($event, 'main')"
         >
           <div class="aiw-panel-head">
-            <span>主图</span>
+            <span>主图 {{ mainPaths(form).length }}/6</span>
             <button type="button" @click="chooseMainImage">
               <span class="aiw-icon-button-content">
-                <AiwIcon name="image" />{{ form.mainImagePath ? '重新选择' : '选择文件' }}
+                <AiwIcon name="image" />{{ mainPaths(form).length ? '添加文件' : '选择文件' }}
               </span>
             </button>
           </div>
-          <button v-if="!form.mainImagePath" class="aiw-upload-tile" type="button" @click="chooseMainImage">
+          <button v-if="!mainPaths(form).length" class="aiw-upload-tile" type="button" @click="chooseMainImage">
             <strong>点击上传主图</strong>
-            <span>用于主体保持、商品参考或图生图</span>
+            <span>选择、拖拽或粘贴多张图片 · 单张不超过 20 MB</span>
           </button>
-          <div v-else class="aiw-picked-asset">
-            <div class="aiw-thumb">
-              <img
-                v-if="imagePreviewSrc(form.mainImagePath)"
-                :src="imagePreviewSrc(form.mainImagePath)"
-                :alt="pathLabel(form.mainImagePath)"
-                @error="markPreviewBroken(form.mainImagePath)"
-              />
-              <div v-else class="aiw-preview-fallback">
-                <strong>{{ previewInitial(form.mainImagePath) }}</strong>
-              </div>
-            </div>
-            <div>
-              <strong>{{ pathLabel(form.mainImagePath) }}</strong>
-              <span>{{ form.mainImagePath }}</span>
-            </div>
-            <button type="button" @click="removeMainImage">
-              <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
-            </button>
-          </div>
+          <AiImageDropFeedback :capacity="inputDropCapacity(form, 'main')" :active="dragOverTarget === 'main'" :busy="inputImportTarget === 'main'" />
+          <AiImageMaterialList :items="materialEntries(form, 'main')" role="main" :offset="0" :disabled="inputImportBusy"
+            @reorder="(from, to) => reorderImageInput(form, 'main', from, to)" @move="(index, offset) => moveInput(form, 'main', index, offset)" @remove="removeMainImage" @preview-error="markPreviewBroken" />
         </section>
 
         <section
           class="aiw-material-box"
           :class="{ 'drag-over': dragOverTarget === 'reference' }"
-          @dragenter.prevent="dragOverTarget = 'reference'"
+          data-input-role="reference"
+          @dragenter.prevent="handleResultDragOver"
           @dragover.prevent="handleResultDragOver"
-          @dragleave="clearDragOver('reference')"
+          @dragleave="clearDragOver($event, 'reference')"
           @drop.prevent="dropResultAsReference"
+          tabindex="0" aria-label="参考图上传区"
+          @paste="handleInputPaste($event, 'reference')"
         >
           <div class="aiw-panel-head">
             <span>参考图</span>
@@ -116,39 +105,28 @@
               <span class="aiw-icon-button-content"><AiwIcon name="plus" />添加文件</span>
             </button>
           </div>
-          <button class="aiw-upload-tile compact" type="button" @click="chooseReferenceImages">
+          <button v-if="!form.referenceImagePaths.length" class="aiw-upload-tile compact" type="button" @click="chooseReferenceImages">
             <strong>点击添加参考图</strong>
-            <span>可多选，最多建议 8 张</span>
+            <span>支持拖拽、粘贴 · 单张 20 MB，主图与参考图合计最多 10 张</span>
           </button>
-          <div v-if="form.referenceImagePaths.length" class="aiw-reference-grid">
-            <article v-for="(path, index) in form.referenceImagePaths" :key="`${path}-${index}`" class="aiw-reference-card">
-              <div class="aiw-thumb">
-                <img
-                  v-if="imagePreviewSrc(path)"
-                  :src="imagePreviewSrc(path)"
-                  :alt="pathLabel(path)"
-                  @error="markPreviewBroken(path)"
-                />
-                <div v-else class="aiw-preview-fallback">
-                  <strong>{{ previewInitial(path) }}</strong>
-                </div>
-              </div>
-              <span>{{ pathLabel(path) }}</span>
-              <button type="button" @click="removeReferencePath(index)">
-                <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
-              </button>
-            </article>
-          </div>
+          <AiImageDropFeedback :capacity="inputDropCapacity(form, 'reference')" :active="dragOverTarget === 'reference'" :busy="inputImportTarget === 'reference'" />
+          <AiImageMaterialList :items="materialEntries(form, 'reference')" role="reference" :offset="mainPaths(form).length" :disabled="inputImportBusy"
+            @reorder="(from, to) => reorderImageInput(form, 'reference', from, to)" @move="(index, offset) => moveInput(form, 'reference', index, offset)" @remove="removeReferencePath" @preview-error="markPreviewBroken" />
         </section>
+        <div v-if="inputImportIssues.length" class="aiw-import-issues" role="status"><strong>部分素材未导入</strong><p v-for="(issue, index) in inputImportIssues" :key="index">{{ issue.name }} · {{ issue.reason }}</p><button type="button" @click="inputImportIssues = []">收起</button></div>
+        <details v-if="inputAssetsForState(form).length" class="aiw-input-map"><summary>素材清单 · {{ inputAssetsForState(form).length }}/10 张</summary><p v-for="(asset, index) in inputAssetsForState(form)" :key="asset.id">图 {{ index + 1 }} · {{ asset.role === 'main' ? '主图' : '参考图' }} · {{ asset.name || pathLabel(asset.path) }}</p><small>单张上限为 20 × 1024 × 1024 字节，不自动压缩。</small></details>
+        <div v-if="connectionNotice" class="aiw-import-issues" role="alert">{{ connectionNotice }}<button type="button" @click="acceptCurrentConnection">检查并使用当前配置</button></div>
+
 
         <section class="aiw-material-box">
           <div class="aiw-panel-head">
-            <span>下次生成参数</span>
+            <span>下次生成参数</span><button v-if="recentConnection" type="button" @click="useRecentConnection">最近：{{ recentConnection.config_name }}</button>
           </div>
           <div class="aiw-task-fields" aria-label="生成参数">
             <label class="aiw-field aiw-field-wide">
               <span>模型</span>
               <select v-model="form.modelId" @change="syncModelDefaults">
+                <option v-if="!AI_IMAGE_MODELS.some(model => model.id === form.modelId)" :value="form.modelId" disabled>所选模型已移除，请重新选择</option>
                 <option v-for="model in AI_IMAGE_MODELS" :key="model.id" :value="model.id">{{ model.label }}</option>
               </select>
             </label>
@@ -180,10 +158,6 @@
               <span>张数</span>
               <input v-model.number="form.count" type="number" min="1" :max="activeNanoBanana ? 1 : 8" :disabled="activeNanoBanana" />
             </label>
-            <div class="aiw-key-status" :class="{ missing: Boolean(activeMissingKey) }">
-              <span>Key 状态</span>
-              <strong>{{ activeMissingKey ? '未配置' : '可生成' }}</strong>
-            </div>
           </div>
         </section>
 
@@ -213,7 +187,11 @@
         </section>
 
         <section class="aiw-generate-card">
-          <button class="aiw-primary-action" type="button" :disabled="generating || Boolean(advancedJsonError)" @click="generate">
+          <span v-if="generationConfigMessage" id="aiw-generation-config-message" class="aiw-generation-config" role="alert"><AiwIcon name="alert-circle" /><strong>{{ generationConfigMessage }}</strong></span>
+          <button v-if="generationConfigMessage" class="aiw-primary-action aiw-config-action" type="button" aria-describedby="aiw-generation-config-message" @click="openSettings">
+            <span class="aiw-icon-button-content"><AiwIcon name="settings" />去配置</span>
+          </button>
+          <button v-else class="aiw-primary-action" type="button" :disabled="generating || inputImportBusy || Boolean(advancedJsonError)" @click="generate">
             <span class="aiw-icon-button-content"><AiwIcon name="wand" />{{ generateLabel }}</span>
           </button>
           <small v-if="errorMessage" role="alert">{{ errorMessage }}</small>
@@ -338,7 +316,7 @@
                   </div>
                   <div v-else class="aiw-failed-preview">
                     <strong>{{ item.error_code === 'UNKNOWN_SUBMIT_RESULT' ? '提交结果待核实' : '生成失败' }}</strong>
-                    <span>{{ generationFailureMessage(item.error) }}</span>
+                    <span>{{ generationFailureMessage(item.error, item.error_code) }}</span>
                     <small v-if="retrySummaryText(item)">{{ retrySummaryText(item) }}</small>
                     <div class="aiw-failed-actions">
                       <button v-if="item.error_code !== 'UNKNOWN_SUBMIT_RESULT'" type="button" :disabled="retryingRunUids.has(item.runUid)" @click.stop="retryFailedRun(item)">
@@ -358,6 +336,7 @@
                       <span>{{ item.model || activeModel.label }} · {{ item.size || form.size }}</span>
                     </div>
                     <div class="aiw-result-card-actions">
+                      <button type="button" @click.stop="reuseResultInputs(item)">沿用参数</button>
                       <button type="button" @click.stop="setAsMain(item)">
                         <span class="aiw-icon-button-content"><AiwIcon name="image" />设为主图</span>
                       </button>
@@ -499,46 +478,29 @@
               />
             </label>
 
-            <section class="aiw-batch-source-box">
+            <section class="aiw-batch-source-box" tabindex="0" aria-label="批量主图上传区" data-input-role="main" data-input-batch="true" :class="{ 'drag-over': dragOverTarget === 'batch-main' }" @dragenter.prevent="handleResultDragOver" @dragover.prevent="handleResultDragOver" @dragleave="clearDragOver($event, 'batch-main')" @drop.prevent="handleExternalImageDrop($event, 'main', true)" @paste="handleInputPaste($event, 'main', true)">
               <div class="aiw-panel-head">
                 <span>主图</span>
                 <button type="button" :disabled="batchGenerationDialog.submitting" @click="chooseBatchMainImage">
-                  <span class="aiw-icon-button-content"><AiwIcon name="image" />{{ batchGenerationDialog.mainImagePath ? '替换' : '选择' }}</span>
+                  <span class="aiw-icon-button-content"><AiwIcon name="image" />{{ mainPaths(batchGenerationDialog).length ? '添加' : '选择' }}</span>
                 </button>
               </div>
               <button
-                v-if="!batchGenerationDialog.mainImagePath"
+                v-if="!mainPaths(batchGenerationDialog).length"
                 type="button"
                 class="aiw-upload-tile compact"
                 :disabled="batchGenerationDialog.submitting"
                 @click="chooseBatchMainImage"
               >
                 <strong>选择批量主图</strong>
-                <span>所有 Prompt 默认共用这一张主图</span>
+                <span>所有 Prompt 共用已选主图</span>
               </button>
-              <div v-else class="aiw-picked-asset compact">
-                <div class="aiw-thumb">
-                  <img
-                    v-if="imagePreviewSrc(batchGenerationDialog.mainImagePath)"
-                    :src="imagePreviewSrc(batchGenerationDialog.mainImagePath)"
-                    :alt="pathLabel(batchGenerationDialog.mainImagePath)"
-                    @error="markPreviewBroken(batchGenerationDialog.mainImagePath)"
-                  />
-                  <div v-else class="aiw-preview-fallback">
-                    <strong>{{ previewInitial(batchGenerationDialog.mainImagePath) }}</strong>
-                  </div>
-                </div>
-                <div>
-                  <strong>{{ pathLabel(batchGenerationDialog.mainImagePath) }}</strong>
-                  <span>{{ batchGenerationDialog.mainImagePath }}</span>
-                </div>
-                <button type="button" :disabled="batchGenerationDialog.submitting" @click="batchGenerationDialog.mainImagePath = ''">
-                  <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
-                </button>
-              </div>
+          <AiImageDropFeedback :capacity="inputDropCapacity(batchGenerationDialog, 'main')" :active="dragOverTarget === 'batch-main'" :busy="inputImportTarget === 'batch-main'" />
+          <AiImageMaterialList :items="materialEntries(batchGenerationDialog, 'main')" role="main" :offset="0" :disabled="batchGenerationDialog.submitting || inputImportBusy"
+            @reorder="(from, to) => reorderImageInput(batchGenerationDialog, 'main', from, to)" @move="(index, offset) => moveInput(batchGenerationDialog, 'main', index, offset)" @remove="removeBatchMainImage" @preview-error="markPreviewBroken" />
             </section>
 
-            <section class="aiw-batch-source-box">
+            <section class="aiw-batch-source-box" tabindex="0" aria-label="批量参考图上传区" data-input-role="reference" data-input-batch="true" :class="{ 'drag-over': dragOverTarget === 'batch-reference' }" @dragenter.prevent="handleResultDragOver" @dragover.prevent="handleResultDragOver" @dragleave="clearDragOver($event, 'batch-reference')" @drop.prevent="handleExternalImageDrop($event, 'reference', true)" @paste="handleInputPaste($event, 'reference', true)">
               <div class="aiw-panel-head">
                 <span>参考图</span>
                 <button type="button" :disabled="batchGenerationDialog.submitting" @click="chooseBatchReferenceImages">
@@ -554,29 +516,9 @@
                 <strong>添加批量参考图</strong>
                 <span>会随每条 Prompt 一起提交</span>
               </button>
-              <div v-if="batchGenerationDialog.referenceImagePaths.length" class="aiw-batch-reference-list">
-                <article
-                  v-for="(path, index) in batchGenerationDialog.referenceImagePaths"
-                  :key="`${path}-${index}`"
-                  class="aiw-reference-card"
-                >
-                  <div class="aiw-thumb">
-                    <img
-                      v-if="imagePreviewSrc(path)"
-                      :src="imagePreviewSrc(path)"
-                      :alt="pathLabel(path)"
-                      @error="markPreviewBroken(path)"
-                    />
-                    <div v-else class="aiw-preview-fallback">
-                      <strong>{{ previewInitial(path) }}</strong>
-                    </div>
-                  </div>
-                  <span>{{ pathLabel(path) }}</span>
-                  <button type="button" :disabled="batchGenerationDialog.submitting" @click="removeBatchReferencePath(index)">
-                    <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
-                  </button>
-                </article>
-              </div>
+          <AiImageDropFeedback :capacity="inputDropCapacity(batchGenerationDialog, 'reference')" :active="dragOverTarget === 'batch-reference'" :busy="inputImportTarget === 'batch-reference'" />
+          <AiImageMaterialList :items="materialEntries(batchGenerationDialog, 'reference')" role="reference" :offset="mainPaths(batchGenerationDialog).length" :disabled="batchGenerationDialog.submitting || inputImportBusy"
+            @reorder="(from, to) => reorderImageInput(batchGenerationDialog, 'reference', from, to)" @move="(index, offset) => moveInput(batchGenerationDialog, 'reference', index, offset)" @remove="removeBatchReferencePath" @preview-error="markPreviewBroken" />
             </section>
 
             <section class="aiw-batch-source-box aiw-batch-settings-box">
@@ -624,10 +566,6 @@
                     <option v-for="format in AI_IMAGE_FORMATS" :key="format" :value="format">{{ format.toUpperCase() }}</option>
                   </select>
                 </label>
-                <div class="aiw-key-status aiw-field-wide" :class="{ missing: Boolean(batchMissingKey) }">
-                  <span>Key 状态</span>
-                  <strong>{{ batchMissingKey ? '未配置' : '可生成' }}</strong>
-                </div>
               </div>
             </section>
           </aside>
@@ -695,11 +633,13 @@
         </div>
 
         <footer class="aiw-batch-footer">
-          <small v-if="batchGenerationDialog.error" role="alert">{{ batchGenerationDialog.error }}</small>
+          <small v-if="batchConfigMessage" class="aiw-generation-config" role="alert"><AiwIcon name="alert-circle" /><strong>{{ batchConfigMessage }}</strong></small>
+          <small v-else-if="batchGenerationDialog.error" role="alert">{{ batchGenerationDialog.error }}</small>
           <span v-else>将在当前任务下提交 {{ batchPromptStats.promptCount }} 条生成记录，预计 {{ batchPromptStats.totalImages }} 张图；最多添加 20 条 Prompt。</span>
           <div>
             <button type="button" :disabled="batchGenerationDialog.submitting" @click="closeBatchGenerationDialog">取消</button>
-            <button
+            <button v-if="batchConfigMessage" type="button" class="aiw-primary-action aiw-config-action" @click="openSettings"><span class="aiw-icon-button-content"><AiwIcon name="settings" />去配置</span></button>
+            <button v-else
               type="button"
               class="aiw-primary-action"
               :class="{ loading: batchGenerationDialog.submitting }"
@@ -898,7 +838,9 @@
               <span>可选</span>
             </button>
           </section>
-          <button
+          <span v-if="generationConfigMessage" class="aiw-generation-config" role="alert"><AiwIcon name="alert-circle" /><strong>{{ generationConfigMessage }}</strong></span>
+          <button v-if="generationConfigMessage" class="aiw-primary-action aiw-config-action" type="button" @click="openSettings"><span class="aiw-icon-button-content"><AiwIcon name="settings" />去配置</span></button>
+          <button v-else
             class="aiw-primary-action"
             type="button"
             :class="{ loading: lightboxEditBusy }"
@@ -934,6 +876,10 @@
 </template>
 
 <script setup>
+import AiImageMaterialList from '../components/AiImageMaterialList.vue'
+import AiImageDropFeedback from '../components/AiImageDropFeedback.vue'
+import { reorderImageInput, inputDropCapacity, isInputSortTransfer } from '../utils/aiImageDrag.mjs'
+import { assertImageFiles, assertImageInputCount, mergeImageInputs, mainPaths, materialKey, inputAssetsForState, inputStateFromParams, serializeInputs, moveInput } from '../utils/aiImageInputs.mjs'
 import { computed, h, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, shallowReactive, watch } from 'vue'
 import {
   AI_IMAGE_FORMATS,
@@ -941,6 +887,8 @@ import {
   AI_IMAGE_QUALITIES,
   AI_IMAGE_RATIOS,
   defaultAiImageForm,
+  refreshAiImageProviders,
+  AI_IMAGE_PROVIDER_SETTINGS as settings,
   defaultSizeForRatio,
   getAiImageModel,
   isNanoBananaModel,
@@ -999,6 +947,7 @@ const AIW_ANNOTATION_COLORS = [
   { id: 'black', label: '黑色', hex: '#111111' },
 ]
 const AIW_ICON_NODES = {
+  'alert-circle': [{ tag: 'circle', attrs: { cx: '12', cy: '12', r: '9' } }, { tag: 'path', attrs: { d: 'M12 7v6M12 16h.01' } }],
   plus: [{ tag: 'path', attrs: { d: 'M12 5v14M5 12h14' } }],
   folder: [
     { tag: 'path', attrs: { d: 'M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z' } },
@@ -1088,7 +1037,6 @@ const AiwIcon = {
 
 const form = reactive(defaultAiImageForm())
 const jobs = ref([])
-const settings = ref({})
 const currentJob = ref(null)
 const selectedResults = reactive(new Set())
 const taskSidebarOpen = ref(true)
@@ -1134,7 +1082,7 @@ const batchGenerationDialog = reactive({
   submitting: false,
   error: '',
   titlePrefix: '',
-  mainImagePath: '',
+  mainImagePath: '', mainImagePaths: [], inputAssetDetails: {}, expectedConnectionVersion: '',
   referenceImagePaths: [],
   modelId: '',
   ratio: '1:1',
@@ -1156,6 +1104,7 @@ const deleteTaskDialog = reactive({
 })
 const draggingResultKey = ref('')
 const dragOverTarget = ref('')
+const inputImportTarget = ref('')
 let autosaveTimer = null
 let restoringState = false
 let lightboxAnnotationExportResolve = null
@@ -1177,11 +1126,17 @@ const dialogReturnFocus = {
 const activeModel = computed(() => getAiImageModel(form.modelId))
 const activeNanoBanana = computed(() => isNanoBananaModel(form.modelId))
 const activeMissingKey = computed(() => missingKeyForModel(form.modelId, settings.value))
+const generationConfigMessage = computed(() => !AI_IMAGE_MODELS.some(model => model.id === form.modelId)
+  ? '所选模型已移除，请重新选择或配置'
+  : activeMissingKey.value ? '未配置 Key，暂时无法生成' : '')
 const batchActiveModel = computed(() => getAiImageModel(batchGenerationDialog.modelId || form.modelId))
 const batchNanoBanana = computed(() => isNanoBananaModel(batchActiveModel.value.id))
 const batchSizeOptions = computed(() => sizeOptionsForModel(batchActiveModel.value.id, batchGenerationDialog.ratio))
 const batchQualityOptions = computed(() => qualityOptionsForModel(batchActiveModel.value.id))
 const batchMissingKey = computed(() => missingKeyForModel(batchActiveModel.value.id, settings.value))
+const batchConfigMessage = computed(() => !AI_IMAGE_MODELS.some(model => model.id === (batchGenerationDialog.modelId || form.modelId))
+  ? '所选模型已移除，请重新选择或配置'
+  : batchMissingKey.value ? '未配置 Key，暂时无法生成' : '')
 const activeJobUid = computed(() => currentJob.value?.job_uid || '')
 const generationBelongsToCurrentJob = computed(() => generationBelongsToJob(generatingJobUid.value, activeJobUid.value))
 const persistedCurrentJob = computed(() => mergeCurrentJobRecord(currentJob.value, jobs.value))
@@ -1257,13 +1212,9 @@ const statusAnnouncement = computed(() => {
 })
 const errorAnnouncement = computed(() => deleteTaskDialog.error || batchGenerationDialog.error || errorMessage.value || '')
 const selectedResultItems = computed(() => resultCards.value.filter((item) => selectedResults.has(resultKey(item))))
-const generateLabel = computed(() => advancedJsonError.value
-  ? '修正高级 JSON'
-  : activeMissingKey.value
-    ? '配置'
-    : generating.value
-      ? generationBelongsToCurrentJob.value ? '生成中...' : '其他任务生成中'
-      : '开始生成')
+const generateLabel = computed(() => generating.value
+  ? generationBelongsToCurrentJob.value ? '生成中...' : '其他任务生成中'
+  : '开始生成')
 const batchPromptCards = computed(() => batchGenerationDialog.prompts)
 const batchPromptStats = computed(() => summarizeBatchPrompts(batchPromptCards.value, {
   forceSingle: batchNanoBanana.value,
@@ -1313,6 +1264,8 @@ const taskRecords = computed(() => {
 })
 onMounted(async () => {
   document.addEventListener('keydown', handleWorkbenchDialogKeydown)
+  window.addEventListener('dragend', resetInputDrag)
+  window.addEventListener('drop', resetInputDrag)
   syncNarrowWorkbench()
   window.addEventListener('resize', syncNarrowWorkbench)
   restorePersistedWorkbench()
@@ -1332,6 +1285,8 @@ onActivated(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleWorkbenchDialogKeydown)
+  window.removeEventListener('dragend', resetInputDrag)
+  window.removeEventListener('drop', resetInputDrag)
   window.removeEventListener('resize', syncNarrowWorkbench)
   if (autosaveTimer) clearTimeout(autosaveTimer)
   if (loadingMessageTimer) clearInterval(loadingMessageTimer)
@@ -1451,6 +1406,7 @@ function formSnapshot() {
     prompt: form.prompt,
     advancedJson: form.advancedJson,
     mainImagePath: form.mainImagePath,
+    mainImagePaths: mainPaths(form), inputAssetDetails: structuredClonePlain(form.inputAssetDetails), expectedConnectionVersion: form.expectedConnectionVersion,
     referenceImagePaths: [...form.referenceImagePaths],
   }
 }
@@ -1459,6 +1415,7 @@ function applyFormSnapshot(snapshot = {}) {
   const next = {
     ...defaultAiImageForm({ modelId: snapshot.modelId }),
     ...snapshot,
+    mainImagePaths: mainPaths(snapshot), inputAssetDetails: structuredClonePlain(snapshot.inputAssetDetails),
     referenceImagePaths: filterGeneratedAnnotationReferences(snapshot.referenceImagePaths),
   }
   Object.assign(form, next)
@@ -1475,42 +1432,26 @@ function filterGeneratedAnnotationReferences(paths = []) {
     .filter((path) => path && !isGeneratedAnnotationReferencePath(path))
 }
 
-function clearSubmittedTaskInputs(snapshot = formSnapshot(), jobUid = activeJobUid.value) {
+function retainSubmittedTaskInputs(snapshot = formSnapshot(), jobUid = activeJobUid.value) {
   const targetJobUid = String(jobUid || '').trim()
-  const clearedSnapshot = {
-    ...snapshot,
-    prompt: '',
-    mainImagePath: '',
-    referenceImagePaths: [],
-  }
   if (targetJobUid && targetJobUid !== activeJobUid.value) {
-    taskDrafts[targetJobUid] = {
-      ...clearedSnapshot,
-      submittedInputsCleared: true,
-    }
-    persistWorkbenchState()
-    return
+    taskDrafts[targetJobUid] = { ...snapshot, submittedInputsCleared: false }
+  } else {
+    // Do not overwrite edits made while a batch submission was in flight.
+    saveDraftForCurrentTask()
   }
-  restoringState = true
-  applyFormSnapshot(clearedSnapshot)
-  restoringState = false
-  saveDraftForCurrentTask({ submittedInputsCleared: true })
   persistWorkbenchState()
 }
 
 function saveDraftForCurrentTask(extra = {}) {
   const key = activeJobUid.value || 'latest'
-  const existing = taskDrafts[key] || {}
-  taskDrafts[key] = {
-    ...formSnapshot(),
-    ...(existing.submittedInputsCleared ? { submittedInputsCleared: true } : {}),
-    ...extra,
-  }
+  taskDrafts[key] = { ...formSnapshot(), submittedInputsCleared: false, ...extra }
 }
 
 function mergeJobWithDraft(job = {}, options = {}) {
   if (!options.includeGeneratedDrafts && hasGeneratedResults(job)) return job
-  const draft = taskDrafts[job.job_uid] || {}
+  const savedDraft = taskDrafts[job.job_uid] || {}
+  const draft = savedDraft.submittedInputsCleared ? {} : savedDraft
   const params = job.params && typeof job.params === 'object' ? job.params : {}
   const draftParams = {
     size: draft.size,
@@ -1520,6 +1461,8 @@ function mergeJobWithDraft(job = {}, options = {}) {
     n: draft.count,
     model_key_tier: draft.model_key_tier,
     main_image_path: draft.mainImagePath,
+    ...(Array.isArray(draft.mainImagePaths) ? serializeInputs(draft) : {}),
+    expected_connection_version: draft.expectedConnectionVersion,
     reference_image_paths: draft.referenceImagePaths,
   }
   return {
@@ -1609,6 +1552,8 @@ async function restoreInitialTask() {
 }
 
 function syncModelDefaults() {
+  form.expectedConnectionVersion = ''
+  connectionNotice.value = ''
   const model = activeModel.value
   form.model_key = model.key
   form.model_key_tier = model.keyTier
@@ -1631,6 +1576,7 @@ function syncRatioFromSize() {
 }
 
 function syncBatchModelDefaults() {
+  batchGenerationDialog.expectedConnectionVersion = ''
   const model = batchActiveModel.value
   batchGenerationDialog.size = sizeForModel(model.id, batchGenerationDialog.ratio, model.size)
   if (batchNanoBanana.value) {
@@ -1657,6 +1603,8 @@ function syncBatchRatioFromSize() {
 }
 
 function resetForm() {
+  connectionNotice.value = ''
+  inputImportIssues.value = []
   const currentTitle = form.title || currentJob.value?.title || 'AI 生图任务'
   Object.assign(form, defaultAiImageForm({ title: currentTitle, output_dir: form.output_dir }))
   selectedResults.clear()
@@ -1676,6 +1624,8 @@ function resetForm() {
 }
 
 function openSettings() {
+  saveDraftForCurrentTask()
+  persistWorkbenchState()
   emit('open-settings', 'ai-1xm')
 }
 
@@ -1692,32 +1642,156 @@ async function choosePath(opts = {}) {
   }
 }
 
+const inputImportBusy = ref(false)
+const inputImportIssues = ref([])
+const connectionNotice = ref('')
+const recentConnection = ref(null)
+function structuredClonePlain(value) { return JSON.parse(JSON.stringify(value || {})) }
+function inputMeta(state, role, path) {
+  state.inputAssetDetails ||= {}
+  const key = materialKey(role, path)
+  state.inputAssetDetails[key] ||= {}
+  return state.inputAssetDetails[key]
+}
+function inputDisplayName(state, role, path) { return inputMeta(state, role, path).name || pathLabel(path) }
+function inputFileInfo(state, role, path) {
+  const item = inputMeta(state, role, path)
+  return [item.mime?.replace('image/', '').toUpperCase() || path.split('.').pop()?.toUpperCase(), item.size ? (item.size / 1024 / 1024).toFixed(2) + ' MB' : '大小待重新导入确认'].join(' · ')
+}
+function materialEntries(state, role) {
+  return (role === 'main' ? mainPaths(state) : state.referenceImagePaths).map(path => ({
+    path, name: inputDisplayName(state, role, path), info: inputFileInfo(state, role, path), preview: imagePreviewSrc(path),
+  }))
+}
+function inputImportError(error, batch = false) {
+  const message = String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')
+  if (batch) batchGenerationDialog.error = message
+  else errorMessage.value = message
+}
+async function importInputSelection(target, sources, { batch = false, clipboard = false } = {}) {
+  if (inputImportBusy.value) { inputImportError(new Error('图片正在导入，请稍后再试'), batch); return }
+  if (batch && batchGenerationDialog.submitting) return
+  const ownerJobUid = activeJobUid.value
+  inputImportBusy.value = true
+  inputImportTarget.value = (batch ? 'batch-' : '') + target
+  inputImportIssues.value = []
+  const state = batch ? batchGenerationDialog : form
+  let accepted = 0
+  let duplicates = 0
+  try {
+    if (!window.cs?.importAiImageInput) throw new Error('图片导入服务未就绪，请重启抓虾客户端')
+    const selection = clipboard ? [null] : sources
+    for (const source of selection) {
+      let sourcePath = ''
+      try {
+        let item
+        if (clipboard) item = await window.cs.pasteAiImageInput()
+        else {
+          assertImageFiles([source])
+          let input
+          if (typeof source === 'string') sourcePath = source
+          else { try { sourcePath = window.cs.getLocalImageFilePath?.(source) || '' } catch {} }
+          input = sourcePath ? { path: sourcePath } : { name: source.name, bytes: new Uint8Array(await source.arrayBuffer()) }
+          item = await window.cs.importAiImageInput(input)
+        }
+        if (activeJobUid.value !== ownerJobUid || (batch && !batchGenerationDialog.open)) return
+        const alreadyPresent = (target === 'main' ? mainPaths(state) : state.referenceImagePaths).includes(item.path)
+        Object.assign(state, mergeImageInputs(state, target, [item.path]))
+        const existing = inputMeta(state, target, item.path)
+        Object.assign(existing, item, { id: materialKey(target, item.path), role: target })
+        if (alreadyPresent) duplicates++
+        else accepted++
+        await refreshImagePreview(item.path, { force: true })
+        if (sourcePath) await window.cs.rememberImageInputDirectory?.(target, sourcePath)
+      } catch (error) {
+        if (activeJobUid.value !== ownerJobUid) return
+        inputImportIssues.value.push({ name: typeof source === 'string' ? pathLabel(source) : source?.name || '剪贴板图片', reason: String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') })
+      }
+    }
+    if (inputImportIssues.value.length) inputImportError(new Error(`已导入 ${accepted} 张，${inputImportIssues.value.length} 张未导入：` + inputImportIssues.value.map(item => item.name + '：' + item.reason).join('；')), batch)
+    else if (batch) batchGenerationDialog.error = ''
+    else clearGenerateError()
+    announceStatus(`已添加 ${accepted} 张${duplicates ? `，${duplicates} 张已存在` : ''}${inputImportIssues.value.length ? `，${inputImportIssues.value.length} 张未导入` : ''}；还可添加 ${inputDropCapacity(state, target).remaining} 张${target === 'main' ? '主图' : '参考图'}`)
+  } catch (error) { inputImportError(error, batch) }
+  finally { inputImportBusy.value = false; inputImportTarget.value = '' }
+}
+
+function useRecentConnection() {
+  const recent = recentConnection.value
+  if (!recent) return
+  const id = modelIdForJob({ model_key: recent.model_key, params: { model_key_tier: recent.key_tier } })
+  const selected = AI_IMAGE_MODELS.find(model => model.id === id && model.key === recent.model_key)
+  if (!selected) { errorMessage.value = '最近使用的模型已移除，请重新选择配置'; return }
+  form.modelId = id
+  syncModelDefaults()
+  announceStatus('已选择最近使用的供应商和模型，素材与提示词保持不变')
+}
+
+async function acceptCurrentConnection() {
+  const result = await window.cs.checkImageConnection({ model_key: activeModel.value.key, key_tier: activeModel.value.keyTier })
+  if (!result.ok) { connectionNotice.value = result.message; return }
+  form.expectedConnectionVersion = result.connection.version
+  connectionNotice.value = ''
+  announceStatus('已检查并采用当前连接配置，点击开始生成即可提交')
+}
+
+async function reuseResultInputs(item) {
+  if (generating.value || inputImportBusy.value) return
+  try {
+    const owner = await window.cs.getAiImageJob(resultOwnerJobUid(item))
+    const run = (owner?.summary?.runs || []).find(run => run.run_uid === item.runUid)
+    const snapshot = run?.generation_snapshot
+    if (snapshot?.schema_version !== 2) throw new Error('这条旧记录没有完整参数快照，无法准确沿用；请手动检查素材与参数')
+    const modelId = modelIdForJob(snapshot)
+    const model = AI_IMAGE_MODELS.find(model => model.id === modelId && model.key === snapshot.model_key)
+    if (!model) throw new Error('这条记录使用的供应商或模型已移除，请先恢复相应配置')
+    if (activeJobUid.value !== owner.job_uid) await restoreJob(owner)
+    const params = snapshot.params || {}
+    restoringState = true
+    applyFormSnapshot({ ...defaultAiImageForm({ title: form.title }), ...inputStateFromParams(params),
+      prompt: snapshot.prompt, modelId, model_key: snapshot.model_key, model_key_tier: params.model_key_tier,
+      ratio: params.ratio || '1:1', size: params.size, quality: params.quality || 'auto', format: params.response_format || params.output_format || 'png',
+      count: params.n || 1, output_dir: snapshot.output_dir || '',
+      advancedJson: JSON.stringify(Object.fromEntries(['background', 'output_compression', 'mask'].filter(key => key in params).map(key => [key, params[key]])), null, 2),
+      expectedConnectionVersion: snapshot.connection?.version || '',
+    })
+    restoringState = false
+    saveDraftForCurrentTask()
+    persistWorkbenchState()
+    closeLightbox()
+    compactPane.value = 'inputs'
+    const check = await window.cs.checkImageConnection({ model_key: snapshot.model_key, key_tier: params.model_key_tier || '' })
+    connectionNotice.value = !check.ok ? check.message : snapshot.connection?.version && snapshot.connection.version !== check.connection.version ? '这轮生成使用的连接配置已变化，请检查并确认使用当前配置。' : ''
+    await Promise.all(inputAssetsForState(form).map(asset => refreshImagePreview(asset.path)))
+    announceStatus('已恢复所选轮次的全部输入；修改后开始生成会新增记录')
+  } catch (error) { inputImportError(error) }
+  finally { restoringState = false }
+}
+
 async function chooseMainImage() {
-  const path = await choosePath({
-    title: '选择主图文件',
-    images: true,
-  })
-  if (path) {
-    clearGenerateError()
-    form.mainImagePath = path
-    await refreshImagePreview(path, { force: true })
-  }
+  const path = await choosePath({ title: '选择主体素材', images: true, multi: true, imageRole: 'main' })
+  if (path?.length) await importInputSelection('main', Array.isArray(path) ? path : [path])
 }
 
 async function chooseReferenceImages() {
-  const paths = await choosePath({
-    title: '选择参考图文件',
-    images: true,
-    multi: true,
-  })
-  const nextPaths = (Array.isArray(paths) ? paths : [paths])
-    .map((path) => String(path || '').trim())
-    .filter(Boolean)
-  if (nextPaths.length) clearGenerateError()
-  for (const path of nextPaths) {
-    if (!form.referenceImagePaths.includes(path)) form.referenceImagePaths.push(path)
-    await refreshImagePreview(path, { force: true })
-  }
+  const paths = await choosePath({ title: '选择参考图文件', images: true, multi: true, imageRole: 'reference' })
+  if (paths?.length) await importInputSelection('reference', Array.isArray(paths) ? paths : [paths])
+}
+
+function handleInputPaste(event, target, batch = false) {
+  const files = Array.from(event.clipboardData?.files || [])
+  if (!files.length) return
+  event.preventDefault()
+  void importInputSelection(target, files, { batch })
+}
+
+async function handleExternalImageDrop(event, target, batch = false) {
+  dragOverTarget.value = ''
+  if (isInputSortTransfer(event.dataTransfer)) return true
+  const files = Array.from(event.dataTransfer?.files || [])
+  if (!files.length) return false
+  await importInputSelection(target, files, { batch })
+  return true
 }
 
 async function chooseOutputFolder() {
@@ -1738,10 +1812,10 @@ async function chooseDirectory(title = '选择文件夹') {
 
 async function loadSettings() {
   try {
-    settings.value = typeof window?.cs?.getSettings === 'function' ? await window.cs.getSettings() : {}
+    if (typeof window?.cs?.getSettings === 'function') await refreshAiImageProviders(() => window.cs.getSettings())
+    try { recentConnection.value = (await window.cs.imageCallHistory?.())?.recent || null } catch {}
   } catch (error) {
     logs.value.push(`读取设置失败：${error.message || error}`)
-    settings.value = {}
   }
 }
 
@@ -1839,6 +1913,8 @@ function clearGenerateError() {
 }
 
 function buildJobPayload(options = {}) {
+  if (!options.silentAdvanced) assertImageInputCount(mainPaths(form), form.referenceImagePaths)
+  if (!AI_IMAGE_MODELS.some(model => model.id === form.modelId)) throw new Error('所选模型已移除，请重新选择模型')
   const normalizedSize = sizeForModel(form.modelId, form.ratio, form.size)
   if (normalizedSize !== form.size) form.size = normalizedSize
   const requestedCount = activeNanoBanana.value ? 1 : normalizeImageCount(form.count)
@@ -1850,8 +1926,8 @@ function buildJobPayload(options = {}) {
     response_format: form.format,
     n: requestedCount,
     model_key_tier: activeModel.value.keyTier,
-    main_image_path: form.mainImagePath,
-    reference_image_paths: [...form.referenceImagePaths],
+    ...serializeInputs(form),
+    expected_connection_version: form.expectedConnectionVersion || undefined,
   }
   params.size = sizeForModel(form.modelId, form.ratio, params.size)
   params.n = requestedCount
@@ -1866,6 +1942,8 @@ function buildJobPayload(options = {}) {
 }
 
 function buildBatchJobPayload(snapshot = {}, card = {}, index = 0) {
+  assertImageInputCount(mainPaths(snapshot), snapshot.referenceImagePaths)
+  if (!AI_IMAGE_MODELS.some(model => model.id === (snapshot.modelId || form.modelId))) throw new Error('所选模型已移除，请重新选择模型')
   const model = getAiImageModel(snapshot.modelId || form.modelId)
   const ratio = snapshot.ratio || form.ratio
   const normalizedSize = sizeForModel(model.id, ratio, snapshot.size || form.size)
@@ -1881,8 +1959,8 @@ function buildBatchJobPayload(snapshot = {}, card = {}, index = 0) {
     response_format: batchSnapshot.format || form.format,
     n: requestedCount,
     model_key_tier: model.keyTier,
-    main_image_path: batchSnapshot.mainImagePath || '',
-    reference_image_paths: [...(Array.isArray(batchSnapshot.referenceImagePaths) ? batchSnapshot.referenceImagePaths : [])],
+    ...serializeInputs(batchSnapshot),
+    expected_connection_version: batchSnapshot.expectedConnectionVersion || undefined,
   }
   params.n = requestedCount
   params.model_key_tier = model.keyTier
@@ -1980,6 +2058,8 @@ function nextTaskTitle() {
 
 async function createNewTask() {
   if (generating.value) return
+  connectionNotice.value = ''
+  inputImportIssues.value = []
   saveDraftForCurrentTask()
   if (autosaveTimer) clearTimeout(autosaveTimer)
   autosaveTimer = null
@@ -2038,6 +2118,8 @@ function openBatchGenerationDialog() {
   batchGenerationDialog.submitting = false
   batchGenerationDialog.error = ''
   batchGenerationDialog.titlePrefix = snapshot.title || nextTaskTitle()
+  Object.assign(batchGenerationDialog, inputStateFromParams(serializeInputs(snapshot)))
+  batchGenerationDialog.expectedConnectionVersion = snapshot.expectedConnectionVersion || ''
   batchGenerationDialog.mainImagePath = snapshot.mainImagePath || ''
   batchGenerationDialog.referenceImagePaths = [...snapshot.referenceImagePaths]
   Object.assign(batchGenerationDialog, batchSettingsFromForm(snapshot))
@@ -2053,7 +2135,7 @@ function openBatchGenerationDialog() {
       createBatchPromptCard({ title: 'Prompt 3' }),
     ]
   }
-  void refreshImagePreview(batchGenerationDialog.mainImagePath)
+  mainPaths(batchGenerationDialog).forEach((path) => void refreshImagePreview(path))
   batchGenerationDialog.referenceImagePaths.forEach((path) => void refreshImagePreview(path))
 }
 
@@ -2085,29 +2167,14 @@ function removeBatchPromptCard(card) {
 
 async function chooseBatchMainImage() {
   if (batchGenerationDialog.submitting) return
-  const path = await choosePath({ title: '选择批量生成主图', images: true })
-  if (!path) return
-  batchGenerationDialog.mainImagePath = path
-  await refreshImagePreview(path, { force: true })
+  const path = await choosePath({ title: '选择批量生成主图', images: true, multi: true, imageRole: 'main' })
+  if (path?.length) await importInputSelection('main', Array.isArray(path) ? path : [path], { batch: true })
 }
 
 async function chooseBatchReferenceImages() {
   if (batchGenerationDialog.submitting) return
-  const paths = await choosePath({
-    title: '选择批量生成参考图',
-    images: true,
-    multi: true,
-  })
-  const nextPaths = (Array.isArray(paths) ? paths : [paths])
-    .map((path) => String(path || '').trim())
-    .filter(Boolean)
-  batchGenerationDialog.referenceImagePaths = appendUniquePaths([
-    ...batchGenerationDialog.referenceImagePaths,
-    ...nextPaths,
-  ])
-  for (const path of nextPaths) {
-    await refreshImagePreview(path, { force: true })
-  }
+  const paths = await choosePath({ title: '选择批量生成参考图', images: true, multi: true, imageRole: 'reference' })
+  if (paths?.length) await importInputSelection('reference', Array.isArray(paths) ? paths : [paths], { batch: true })
 }
 
 function removeBatchReferencePath(index) {
@@ -2156,11 +2223,12 @@ async function submitBatchGeneration() {
     batchGenerationDialog.error = error?.message || String(error)
     return
   }
-  if (batchMissingKey.value) {
-    openSettings()
+  if (batchConfigMessage.value) {
+    batchGenerationDialog.error = batchConfigMessage.value
     return
   }
-  if (generating.value || batchGenerationDialog.submitting) return
+  if (generating.value || batchGenerationDialog.submitting || inputImportBusy.value) return
+  if (connectionNotice.value) { batchGenerationDialog.error = connectionNotice.value; return }
   const promptCards = batchPromptCards.value
     .map((card) => ({
       ...card,
@@ -2177,6 +2245,8 @@ async function submitBatchGeneration() {
   const batchSnapshot = {
     ...snapshot,
     titlePrefix: batchGenerationDialog.titlePrefix || snapshot.title || nextTaskTitle(),
+    ...inputStateFromParams(serializeInputs(batchGenerationDialog)),
+    expectedConnectionVersion: batchGenerationDialog.expectedConnectionVersion,
     mainImagePath: batchGenerationDialog.mainImagePath,
     referenceImagePaths: [...batchGenerationDialog.referenceImagePaths],
     modelId: batchGenerationDialog.modelId,
@@ -2210,6 +2280,7 @@ async function submitBatchGeneration() {
     logs.value.push(`提交批量生成：${promptStats.promptCount} 条 Prompt，预计 ${promptStats.totalImages} 张图`)
     const batchResult = await window.cs.batchRunAiImageJob(jobUid, {
       request_uid: requestUid,
+      input_snapshot: sharedPayload,
       prompts: promptCards.map((card, index) => ({
         title: card.title || `Prompt ${index + 1}`,
         prompt: card.prompt,
@@ -2221,7 +2292,7 @@ async function submitBatchGeneration() {
     if (activeJobUid.value === jobUid) currentJob.value = acceptedJob
     upsertJob(acceptedJob)
     compactPane.value = 'results'
-    clearSubmittedTaskInputs(snapshot, jobUid)
+    retainSubmittedTaskInputs(snapshot, jobUid)
     batchGenerationDialog.open = false
     closeBatchPromptLibraryPicker()
     logs.value.push(`批量任务已提交：${promptStats.promptCount} 条 Prompt，预计 ${promptStats.totalImages} 张图`)
@@ -2248,22 +2319,23 @@ async function generate() {
     errorMessage.value = error?.message || String(error)
     return
   }
-  if (activeMissingKey.value) {
-    openSettings()
+  if (generationConfigMessage.value) {
+    errorMessage.value = generationConfigMessage.value
     return
   }
-  if (generating.value) return
+  if (generating.value || inputImportBusy.value) return
+  if (connectionNotice.value) { errorMessage.value = connectionNotice.value; return }
   generating.value = true
   compactPane.value = 'results'
   selectedResults.clear()
   logs.value.push('创建 AI 生图任务')
   try {
+    const payload = structuredClonePlain(buildJobPayload())
+    const submittedSnapshot = formSnapshot()
     const activeTask = await ensureCurrentTask()
     const jobUid = activeTask?.job_uid
     if (!jobUid) throw new Error('后端未返回 job_uid')
     const previousSummary = currentJob.value?.summary || activeTask.summary || {}
-    const payload = buildJobPayload()
-    const submittedSnapshot = formSnapshot()
     generatingJobUid.value = jobUid
     generatingSnapshot.value = submittedSnapshot
     const submittingJob = {
@@ -2276,8 +2348,8 @@ async function generate() {
     if (activeJobUid.value === jobUid) currentJob.value = submittingJob
     upsertJob(submittingJob)
     logs.value.push(`提交生成任务：${jobUid}`)
-    clearSubmittedTaskInputs(submittedSnapshot, jobUid)
-    const runResult = await window.cs.runAiImageJob(jobUid)
+    retainSubmittedTaskInputs(submittedSnapshot, jobUid)
+    const runResult = await window.cs.runAiImageJob(jobUid, payload)
     const latest = await window.cs.getAiImageJob(jobUid)
     const completedJob = latest || activeTask
     if (activeJobUid.value === jobUid) currentJob.value = latest || activeTask
@@ -2293,6 +2365,7 @@ async function generate() {
     await loadJobs()
   } catch (error) {
     errorMessage.value = normalizeGenerateError(error)
+    if (errorMessage.value.includes('连接配置已变化')) connectionNotice.value = errorMessage.value
     logs.value.push(`生成失败：${errorMessage.value}`)
   } finally {
     generating.value = false
@@ -2327,33 +2400,6 @@ function forgetStaleJob(jobUid) {
   if (pendingActiveJobUid.value === uid) pendingActiveJobUid.value = ''
 }
 
-async function createInputAssets(jobUid) {
-  const calls = []
-  if (form.mainImagePath) {
-    calls.push(window.cs.createAiImageAsset({
-      job_uid: jobUid,
-      kind: 'main',
-      source_type: 'local',
-      path: form.mainImagePath,
-      sort_order: 0,
-      meta: { role: 'main' },
-    }))
-  }
-  form.referenceImagePaths
-    .map((path) => String(path || '').trim())
-    .filter(Boolean)
-    .forEach((path, index) => {
-      calls.push(window.cs.createAiImageAsset({
-        job_uid: jobUid,
-        kind: 'reference',
-        source_type: 'local',
-        path,
-        sort_order: index + 1,
-        meta: { role: 'reference' },
-      }))
-    })
-  await Promise.all(calls)
-}
 
 function collectResultCards(job) {
   return collectResultQueues(job).flatMap((queue) => queue.items || [])
@@ -2389,6 +2435,7 @@ function workbenchRunPlaceholders(job, run, index) {
       requested_count: Number(run.requested_count || 1),
       retry_count: Number(run.retry_count || 0),
       retry_history: Array.isArray(run.retry_history) ? run.retry_history : [],
+      submission_retry_history: Array.isArray(run.submission_retry_history) ? run.submission_retry_history : [],
       manual_retry_count: Number(run.manual_retry_count || 0),
       modelKey: run.model_key || job?.model_key || '',
       modelKeyTier: run.model_key_tier || job?.params?.model_key_tier || '',
@@ -2533,6 +2580,7 @@ function latestTaskGenerationAt(job = {}) {
 }
 
 function taskMetaLine(job = {}) {
+  if (job.summary?.partial_success && !hasActiveRuns(job)) return '部分成功'
   if (latestTaskFailure(job) && !generationBelongsToJob(generatingJobUid.value, job.job_uid)) return '生成失败'
   const generatedAt = latestTaskGenerationAt(job)
   return generatedAt ? `最近生成 ${formatDateTime(generatedAt)}` : '尚未生成'
@@ -2543,6 +2591,7 @@ function taskResultLine(job = {}) {
   const count = generatedResultCards(job).length
   const runCount = Array.isArray(summary.runs) ? summary.runs.length : (count ? 1 : 0)
   if (generationBelongsToJob(generatingJobUid.value, job.job_uid)) return '正在生成'
+  if (summary.partial_success) return `已有 ${count} 张结果 · ${summary.failed_runs} 组失败`
   const failure = latestTaskFailure(job)
   if (count && failure) return `已有 ${count} 张结果 · 上次失败：${compactTaskFailureText(failure)}`
   if (count) return `已有 ${count} 张结果 · ${runCount} 组生成`
@@ -2754,12 +2803,28 @@ function endResultDrag() {
 }
 
 function handleResultDragOver(event) {
-  if (event?.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+  const transfer = event.dataTransfer
+  if (!transfer) return
+  const { inputRole: role, inputBatch } = event.currentTarget.dataset
+  const batch = inputBatch === 'true'
+  if (isInputSortTransfer(transfer) || (!Array.from(transfer.types || []).includes('Files') && (batch || !draggingResultKey.value))) {
+    transfer.dropEffect = 'none'
+    dragOverTarget.value = ''
+    return
+  }
+  const capacity = inputDropCapacity(batch ? batchGenerationDialog : form, role)
+  dragOverTarget.value = (batch ? 'batch-' : '') + role
+  transfer.dropEffect = !inputImportBusy.value && !(batch && batchGenerationDialog.submitting) && capacity.remaining ? 'copy' : 'none'
 }
 
-function clearDragOver(target) {
+function clearDragOver(event, target) {
+  if (event.currentTarget.contains(event.relatedTarget)) return
   if (dragOverTarget.value === target) dragOverTarget.value = ''
 }
+
+function resetInputDrag() { dragOverTarget.value = '' }
+watch(activeJobUid, resetInputDrag)
+watch(() => batchGenerationDialog.open, resetInputDrag)
 
 function resolveDroppedResult(event) {
   const key = String(event?.dataTransfer?.getData('text/plain') || draggingResultKey.value || '').trim()
@@ -2768,6 +2833,7 @@ function resolveDroppedResult(event) {
 }
 
 async function dropResultAsMain(event) {
+  if (await handleExternalImageDrop(event, 'main')) { dragOverTarget.value = ''; return }
   const item = resolveDroppedResult(event)
   dragOverTarget.value = ''
   if (!item) return
@@ -2775,6 +2841,7 @@ async function dropResultAsMain(event) {
 }
 
 async function dropResultAsReference(event) {
+  if (await handleExternalImageDrop(event, 'reference')) { dragOverTarget.value = ''; return }
   const item = resolveDroppedResult(event)
   dragOverTarget.value = ''
   if (!item) return
@@ -3100,10 +3167,10 @@ function restoreFailedRunInputs(item) {
     form.count = 1
   }
   const inputParams = item?.inputParams && typeof item.inputParams === 'object' ? item.inputParams : {}
-  form.mainImagePath = String(inputParams.main_image_path || '')
-  form.referenceImagePaths = appendUniquePaths(Array.isArray(inputParams.reference_image_paths) ? inputParams.reference_image_paths : [])
+  Object.assign(form, inputStateFromParams(inputParams))
+
   errorMessage.value = ''
-  void refreshImagePreview(form.mainImagePath)
+  mainPaths(form).forEach((path) => void refreshImagePreview(path))
   form.referenceImagePaths.forEach((path) => void refreshImagePreview(path))
   scheduleTaskAutosave()
   compactPane.value = 'inputs'
@@ -3115,7 +3182,7 @@ async function materializeResultForInput(item) {
   if (!key) return ''
   const remoteUrl = String(item?.url || '').trim()
   const localPath = String(item?.path || '').trim()
-  if (!/^https?:\/\//i.test(remoteUrl)) return localPath || key
+  if (!/^(https?:\/\/|data:image\/)/i.test(remoteUrl)) return localPath || key
   const ownerJobUid = resultOwnerJobUid(item)
   if (!ownerJobUid) {
     if (localPath) return localPath
@@ -3151,8 +3218,7 @@ async function setAsMain(item) {
   try {
     const key = await materializeResultForInput(item)
     if (!key) return
-    form.mainImagePath = key
-    void refreshImagePreview(key, { force: true })
+    await importInputSelection('main', [key])
   } catch (error) {
     errorMessage.value = error.message || String(error)
   }
@@ -3161,26 +3227,42 @@ async function setAsMain(item) {
 async function addAsReference(item) {
   try {
     const key = await materializeResultForInput(item)
-    if (key && !form.referenceImagePaths.includes(key)) form.referenceImagePaths.push(key)
-    void refreshImagePreview(key, { force: true })
+    if (key) await importInputSelection('reference', [key])
   } catch (error) {
     errorMessage.value = error.message || String(error)
   }
 }
 
 async function chooseLightboxEditReferences() {
-  const paths = await choosePath({
-    title: '选择二次修改参考图',
-    images: true,
-    multi: true,
-  })
-  const nextPaths = (Array.isArray(paths) ? paths : [paths])
-    .map((path) => String(path || '').trim())
-    .filter(Boolean)
-  for (const path of nextPaths) {
-    if (!lightboxEditReferencePaths.value.includes(path)) lightboxEditReferencePaths.value.push(path)
-    await refreshImagePreview(path, { force: true })
-  }
+  if (inputImportBusy.value || lightboxEditBusy.value) return
+  const sessionKey = lightboxEditSessionKey.value
+  const paths = await choosePath({ title: '选择二次修改参考图', images: true, multi: true, imageRole: 'reference' })
+  const nextPaths = (Array.isArray(paths) ? paths : [paths]).filter(Boolean)
+  if (!nextPaths.length || lightboxEditSessionKey.value !== sessionKey) return
+  inputImportBusy.value = true
+  const issues = []
+  let accepted = 0
+  let duplicates = 0
+  try {
+    for (const path of nextPaths) {
+      try {
+        const item = await window.cs.importAiImageInput({ path })
+        if (lightboxEditSessionKey.value !== sessionKey) return
+        const references = appendUniquePaths([...lightboxEditReferencePaths.value, item.path])
+        assertImageInputCount('result-main', appendUniquePaths([
+          ...filterGeneratedAnnotationReferences(form.referenceImagePaths), ...references,
+        ]))
+        lightboxEditReferencePaths.value = references
+        Object.assign(inputMeta(form, 'reference', item.path), item)
+        if (alreadyPresent) duplicates++
+        else accepted++
+        await refreshImagePreview(item.path, { force: true })
+        await window.cs.rememberImageInputDirectory?.('reference', path)
+      } catch (error) { issues.push(`${pathLabel(path)}：${String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')}`) }
+    }
+    if (issues.length) inputImportError(new Error(`已导入 ${accepted} 张，${issues.length} 张未导入：${issues.join('；')}`))
+    else clearGenerateError()
+  } finally { inputImportBusy.value = false }
 }
 
 function removeLightboxEditReference(index) {
@@ -3216,8 +3298,9 @@ async function submitLightboxEdit() {
     placeholder = appendLightboxEditPlaceholder(sourceItem, nextPrompt, { activate: false })
     const annotationDataUrl = await requestLightboxAnnotationExport()
     activateLightboxEditPlaceholder(placeholder)
-    const mainPath = await materializeResultForInput(sourceItem)
-    if (!mainPath) throw new Error('当前图片无法作为二次修改主图')
+    const sourcePath = await materializeResultForInput(sourceItem)
+    if (!sourcePath) throw new Error('当前图片无法作为二次修改主图')
+    const { path: mainPath } = await window.cs.importAiImageInput({ path: sourcePath })
     await refreshImagePreview(mainPath, { force: true })
     logs.value.push(`基于 ${sourceItem.label || pathLabel(mainPath)} 发起二次修改`)
     await runLightboxEditGeneration({
@@ -3337,7 +3420,7 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
   }
   const snapshot = formSnapshot()
   const placeholder = existingPlaceholder || appendLightboxEditPlaceholder(sourceItem, prompt)
-  let submittedInputsCleared = false
+  let editInputsRetained = false
   let jobUid = ''
   activateLightboxEditPlaceholder(placeholder)
   selectedResults.clear()
@@ -3351,11 +3434,13 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     restoringState = true
     form.prompt = effectivePrompt
     form.mainImagePath = mainPath
+    form.mainImagePaths = [mainPath]
     form.referenceImagePaths = appendUniquePaths([
       ...retainedSnapshotReferences,
       ...referencePaths,
       annotationPath,
     ])
+    assertImageInputCount(mainPaths(form), form.referenceImagePaths)
     form.count = 1
     const basePayload = buildJobPayload({ silentAdvanced: true })
     const payload = {
@@ -3378,9 +3463,9 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     }
     if (activeJobUid.value === jobUid) currentJob.value = submittingJob
     upsertJob(submittingJob)
-    clearSubmittedTaskInputs(snapshot, jobUid)
-    submittedInputsCleared = true
-    const runResult = await window.cs.runAiImageJob(jobUid)
+    retainSubmittedTaskInputs(formSnapshot(), jobUid)
+    editInputsRetained = true
+    const runResult = await window.cs.runAiImageJob(jobUid, payload)
     const latest = await window.cs.getAiImageJob(jobUid)
     const completedJob = latest || submittingJob
     if (activeJobUid.value === jobUid) currentJob.value = completedJob
@@ -3395,7 +3480,7 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     removeLightboxEditPlaceholder(placeholder)
     throw error
   } finally {
-    if (!submittedInputsCleared && activeJobUid.value === jobUid) {
+    if (!editInputsRetained && activeJobUid.value === jobUid) {
       restoringState = true
       applyFormSnapshot(snapshot)
       restoringState = false
@@ -3410,9 +3495,19 @@ function removeReferencePath(index) {
   forgetImagePreview(removed)
 }
 
-function removeMainImage() {
-  forgetImagePreview(form.mainImagePath)
-  form.mainImagePath = ''
+function removeBatchMainImage(index) {
+  const paths = mainPaths(batchGenerationDialog)
+  paths.splice(index, 1)
+  batchGenerationDialog.mainImagePaths = paths
+  batchGenerationDialog.mainImagePath = paths[0] || ''
+}
+
+function removeMainImage(index = 0) {
+  const paths = mainPaths(form)
+  const [removed] = paths.splice(index, 1)
+  forgetImagePreview(removed)
+  form.mainImagePaths = paths
+  form.mainImagePath = paths[0] || ''
 }
 
 async function restoreJob(job, options = {}) {
@@ -3447,8 +3542,8 @@ async function restoreJob(job, options = {}) {
     persistWorkbenchState()
     return null
   }
-  const submittedDraft = detail?.job_uid ? taskDrafts[detail.job_uid] : null
-  const submittedInputsCleared = Boolean(submittedDraft?.submittedInputsCleared)
+  connectionNotice.value = ''
+  inputImportIssues.value = []
   const formDetail = mergeJobWithDraft(detail, { includeGeneratedDrafts: true })
   mergeResultCacheFromJob(detail)
   restoringState = true
@@ -3477,20 +3572,24 @@ async function restoreJob(job, options = {}) {
   }
   const assets = Array.isArray(detail.assets) ? detail.assets : []
   const mainAsset = assets.find((asset) => asset.kind === 'main' && asset.path)
-  if (!submittedInputsCleared && !form.mainImagePath) form.mainImagePath = mainAsset?.path || ''
-  if (!submittedInputsCleared && !form.referenceImagePaths.length) {
+  if (!Object.prototype.hasOwnProperty.call(formDetail.params || {}, 'main_image_path') && !form.mainImagePath) form.mainImagePath = mainAsset?.path || ''
+  if (!Object.prototype.hasOwnProperty.call(formDetail.params || {}, 'reference_image_paths') && !form.referenceImagePaths.length) {
     form.referenceImagePaths = assets
       .filter((asset) => asset.kind === 'reference' && asset.path)
       .map((asset) => asset.path)
       .filter((path) => !isGeneratedAnnotationReferencePath(path))
   }
+  Object.assign(form, inputStateFromParams({
+    main_image_path: form.mainImagePath, reference_image_paths: form.referenceImagePaths, ...formDetail.params,
+  }))
+  form.expectedConnectionVersion = formDetail.params?.expected_connection_version || ''
   taskDrafts[detail.job_uid] = {
     ...formSnapshot(),
-    ...(submittedInputsCleared ? { submittedInputsCleared: true } : {}),
+    submittedInputsCleared: false,
   }
   restoringState = false
   await Promise.all([
-    refreshImagePreview(form.mainImagePath),
+    ...mainPaths(form).map(path => refreshImagePreview(path)),
     ...form.referenceImagePaths.map((path) => refreshImagePreview(path)),
     ...resultCards.value.flatMap((item) => resultPreviewCandidates(item).map((key) => refreshImagePreview(key, { force: true }))),
   ])
@@ -3762,6 +3861,10 @@ function localFileUrl(path) {
 </script>
 
 <style scoped>
+.aiw-input-map, .aiw-import-issues { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; line-height: 1.6; }
+.aiw-import-issues { color: #f2b87d; }
+.aiw-input-map p, .aiw-import-issues p { margin: 4px 0; overflow-wrap: anywhere; }
+
 .aiw-workbench {
   height: 100%;
   min-height: 0;
@@ -3974,7 +4077,9 @@ function localFileUrl(path) {
   border-top: 1px solid var(--border);
 }
 
-.aiw-material-box.drag-over {
+.aiw-material-box, .aiw-batch-source-box { position: relative; }
+
+.aiw-material-box.drag-over, .aiw-batch-source-box.drag-over {
   border-color: rgba(var(--orange-rgb), 0.62);
   background: rgba(var(--orange-rgb), 0.08);
   box-shadow: inset 0 0 0 1px rgba(var(--orange-rgb), 0.26);
@@ -5864,4 +5969,11 @@ button.active,
       scroll-behavior: auto !important;
     }
   }
+.aiw-generation-config { display: flex; align-items: center; justify-content: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--red) 35%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--red) 10%, var(--bg2)); font-size: 13px; line-height: 1.5; color: var(--red); }
+.aiw-generation-config strong { font-weight: 650; }
+.aiw-generation-config .aiw-icon { flex-shrink: 0; }
+.aiw-primary-action.aiw-config-action { background: #dc2626; border-color: #dc2626; color: #fff; }
+.aiw-primary-action.aiw-config-action:hover { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+.aiw-primary-action.aiw-config-action:focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
+.aiw-primary-action:disabled { background: var(--bg3); border-color: var(--border); color: var(--text2); opacity: .65; cursor: not-allowed; }
 </style>

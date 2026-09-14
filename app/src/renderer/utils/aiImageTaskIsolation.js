@@ -15,7 +15,7 @@ export function isBuyerShowWorkflowJob(job = {}) {
 }
 
 export function isAiImageWorkbenchHiddenJob(job = {}) {
-  return isAiVideoWorkflowJob(job) || isBuyerShowWorkflowJob(job)
+  return job?.params?.surface === 'image-provider-test' || isAiVideoWorkflowJob(job) || isBuyerShowWorkflowJob(job)
 }
 
 export function selectRestorableAiImageJob({

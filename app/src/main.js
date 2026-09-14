@@ -4,7 +4,8 @@
 delete process.env.ELECTRON_RUN_AS_NODE
 
 const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session, powerMonitor, protocol } = require('electron')
-const { Notification } = require('electron')
+const { Notification, clipboard, nativeImage } = require('electron')
+const { assertImageInputSize, importImageInput, rememberImageInputDirectory, imageInputDirectory } = require('./aiImageInputFiles')
 const { autoUpdater } = require('electron-updater')
 const path   = require('path')
 const fs     = require('fs')
@@ -814,7 +815,7 @@ function readLocalImageDataUrl(rawPath = '') {
   if (!imagePath || !mime) throw new Error('请选择 PNG、JPG、WEBP 或 GIF 图片')
   const stat = fs.statSync(imagePath)
   if (!stat.isFile()) throw new Error('图片文件不存在')
-  if (stat.size > 25 * 1024 * 1024) throw new Error('图片超过 25MB，无法预览')
+  assertImageInputSize(stat.size, imagePath)
   const raw = fs.readFileSync(imagePath)
   return {
     ok: true,
@@ -1601,6 +1602,7 @@ function normalizeLocalPromptTemplate(template = {}) {
   const maleNeutralPriority = localNumberOrNull(template.male_neutral_priority)
   const priority = localNumberOrNull(template.priority) ?? femalePriority ?? maleNeutralPriority ?? 100
   return {
+    custom_fields: Object.fromEntries(Array.from({ length: 10 }, (_, i) => `自定义${i + 1}`).map(name => [name, String(template.custom_fields?.[name] ?? '').replace(/\s+/g, ' ').trim()]).filter(([, value]) => value)),
     local_uid: String(template.local_uid || localPromptUid('prompt')),
     group_name: String(template.group_name || '').trim(),
     field_name: String(template.field_name || '').trim(),
@@ -1735,6 +1737,7 @@ function localPromptLibraryForSync(libraryUid) {
 function cloudPromptPayloadForLibrary(library) {
   const normalized = normalizeLocalPromptLibrary(library)
   const templates = normalized.templates.map(template => ({
+    custom_fields: template.custom_fields,
     group_name: template.group_name,
     field_name: template.field_name,
     source_field_id: template.source_field_id,
@@ -2606,12 +2609,12 @@ secureHandle('set-ai-image-job-pinned', async (_, jobUid, pinned) =>
   apiCall('PATCH', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/pin`, { pinned: Boolean(pinned) }))
 secureHandle('delete-ai-image-job', async (_, jobUid) =>
   apiCall('DELETE', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}`))
-secureHandle('run-ai-image-job', async (_, jobUid) =>
-  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/run`, {}, { timeoutMs: 20 * 60 * 1000 }))
+secureHandle('run-ai-image-job', async (_, jobUid, snapshot) =>
+  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/run`, snapshot || null, { timeoutMs: 20 * 60 * 1000 }))
 secureHandle('batch-run-ai-image-job', async (_, jobUid, payload) =>
-  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/batch-run`, payload || {}))
+  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/batch-run`, payload || {}, { timeoutMs: 20 * 60 * 1000 }))
 secureHandle('retry-ai-image-run', async (_, jobUid, runUid) =>
-  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/runs/${encodeURIComponent(String(runUid || ''))}/retry`, {}))
+  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/runs/${encodeURIComponent(String(runUid || ''))}/retry`, {}, { timeoutMs: 20 * 60 * 1000 }))
 secureHandle('save-as-ai-image-job', async (_, jobUid, payload) =>
   apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/save-as`, payload || {}))
 secureHandle('materialize-ai-image-result', async (_, jobUid, payload) =>
@@ -2788,6 +2791,10 @@ secureHandle('regenerate-tmall-approval-asset', async (_, batchId, token, payloa
     payload || {},
     { timeoutMs: 20 * 60 * 1000 },
   )
+})
+
+secureHandle('face-swap-tmall-approval-asset', async (_, batchId, token, payload) => {
+  return apiCall('POST', `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/face-swap?${approvalTokenQuery(token)}`, payload || {}, { timeoutMs: 20 * 60 * 1000 })
 })
 
 secureHandle('generate-tmall-approval-asset', async (_, batchId, token, payload) => {
@@ -3112,7 +3119,7 @@ secureHandle('browse-file', async (_, opts = {}) => {
           : [{ name: '所有文件', extensions: ['*'] }])
   const res = await dialog.showOpenDialog(mainWindow, {
     title: opts.title || '选择文件',
-    defaultPath: opts.defaultPath || undefined,
+    defaultPath: opts.imageRole ? imageInputDirectory(getCrawshrimpDataDir(), opts.imageRole) : opts.defaultPath || undefined,
     properties: props,
     filters,
   })
@@ -3223,6 +3230,24 @@ secureHandle('write-bala-workspace-manifest', async (_, workspaceRoot, payload) 
     workspaceRoot,
     payload,
   })
+})
+
+function importWorkbenchImage(input) {
+  const result = importImageInput(input, { dataDir: getCrawshrimpDataDir(), canDecode: bytes => !nativeImage.createFromBuffer(bytes).isEmpty() })
+  authorizeLocalMediaRoot(path.dirname(result.path))
+  return result
+}
+
+secureHandle('remember-image-input-directory', async (_, role, sourcePath) => {
+  rememberImageInputDirectory(getCrawshrimpDataDir(), role, sourcePath)
+  return { ok: true }
+})
+
+secureHandle('import-ai-image-input', async (_, input) => importWorkbenchImage(input))
+secureHandle('paste-ai-image-input', async () => {
+  const image = clipboard.readImage()
+  if (image.isEmpty()) throw new Error('剪贴板中没有图片，请先复制图片或截图')
+  return importWorkbenchImage({ name: '剪贴板图片.png', bytes: image.toPNG() })
 })
 
 secureHandle('read-local-image-preview', async (_, filePath) => {

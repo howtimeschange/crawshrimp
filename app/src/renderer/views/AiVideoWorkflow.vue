@@ -6071,6 +6071,7 @@ function resolveSelectedAiImageGenerationParams() {
     model,
     modelKey: model.key,
     modelKeyTier: model.keyTier,
+    ratio,
     size,
     quality: qualityOptions.length ? quality : undefined,
     outputFormat: 'png',
@@ -6371,6 +6372,7 @@ async function startAiImageGeneration() {
       model: generation.modelKey,
       model_key_tier: generation.modelKeyTier,
       image_size: generation.size,
+      ratio: generation.ratio,
       quality: generation.quality,
       output_format: generation.outputFormat,
     })
@@ -6387,6 +6389,7 @@ async function startAiImageGeneration() {
       model: generation.modelKey,
       model_key_tier: generation.modelKeyTier,
       image_size: generation.size,
+      ratio: generation.ratio,
       quality: generation.quality,
       output_format: generation.outputFormat,
     }
@@ -8553,6 +8556,7 @@ async function runPreviewImageEdit() {
       surface: 'ai-video-workflow',
       workspace_dir: workspaceDir.value,
       size: generation.size,
+      ratio: generation.ratio,
       quality: generation.quality,
       response_format: generation.outputFormat,
       n: 1,

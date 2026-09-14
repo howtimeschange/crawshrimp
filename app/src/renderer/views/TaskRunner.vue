@@ -252,7 +252,7 @@
 
             <template v-else-if="param.type === 'select'">
               <select v-model="values[param.id]" class="select">
-                <option v-for="opt in param.options" :key="opt.value" :value="opt.value">
+                <option v-for="opt in imageAwareParamOptions(param)" :key="opt.value" :value="opt.value">
                   {{ opt.label }}
                 </option>
               </select>
@@ -1580,7 +1580,7 @@ function reconcileValuesWithParams(params = []) {
 
     if (p.type === 'select') {
       const current = next[p.id]
-      const valid = new Set((p.options || []).map(opt => opt?.value))
+      const valid = new Set(imageAwareParamOptions(p).map(opt => opt?.value))
       if (valid.size && !valid.has(current)) {
         next[p.id] = normalizeSelectFallback(p)
         changed = true
@@ -1968,6 +1968,15 @@ function isCurrentTmallAiImageChainTask() {
 
 function hasOwnParamValue(source, key) {
   return !!source && typeof source === 'object' && Object.prototype.hasOwnProperty.call(source, key)
+}
+
+function imageAwareParamOptions(param) {
+  const imageTask = ['bala_ai_face_background_generate', 'buyer_show_ai_generate', 'tmall_ai_image_test_chain'].includes(props.task?.id)
+  if (imageTask && ['model', 'model_id'].includes(param.id)) {
+    const known = new Set((param.options || []).map(option => option.value))
+    return [...(param.options || []), ...AI_IMAGE_MODELS.filter(model => model.custom && !known.has(model.id)).map(model => ({ value: model.id, label: model.label }))]
+  }
+  return param.options || []
 }
 
 function normalizedTmallAiImageRatio(value) {

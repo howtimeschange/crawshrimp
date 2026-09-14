@@ -12,10 +12,13 @@ export function formatAiImageRunStatus(status) {
   return STATUS_LABELS[normalized] || String(status || '').trim()
 }
 
-export function generationFailureMessage(error) {
+export function generationFailureMessage(error, errorCode = '') {
   const message = String(error?.message || error || '').trim()
+  if (errorCode === 'UNKNOWN_SUBMIT_RESULT' || /回执未知|UNKNOWN_SUBMIT_RESULT/.test(message)) {
+    return '连接中断，无法确认供应商是否已受理。已停止自动提交，请先核实供应商记录，避免重复计费。'
+  }
   if (/(?:status code|http)\s*(?:502|503|504)\b|bad gateway|service unavailable|gateway timeout|upstream timeout|timed out|timeout/i.test(message)) {
-    return '上游生图服务响应超时。系统已完成自动重试，你可以重试本队列。'
+    return '上游生图服务暂时不可用。请查看重试记录后再决定是否重试。'
   }
   if (/rate limit|too many requests|\b429\b/i.test(message)) {
     return '上游服务当前请求较多。请稍后重试本队列。'
@@ -38,7 +41,8 @@ export function promptLibraryFailureMessage(error) {
 
 export function retrySummaryText(run = {}) {
   const historyCount = Array.isArray(run.retry_history) ? run.retry_history.length : 0
-  const automaticCount = Math.max(0, Number(run.retry_count) || 0, historyCount)
+  const submissionRetries = Array.isArray(run.submission_retry_history) ? run.submission_retry_history.length : 0
+  const automaticCount = Math.max(0, Number(run.retry_count) || 0, historyCount) + submissionRetries
   const manualCount = Math.max(0, Number(run.manual_retry_count) || 0)
   return [
     automaticCount ? `已自动重试 ${automaticCount} 次` : '',

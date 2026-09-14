@@ -148,6 +148,9 @@ interface ImageResourceRow {
 const ALLOWED_KINDS = new Set(['source', 'reference', 'ai', 'table', 'log', 'result'])
 const SUBMIT_MACHINE_MAX_AGE_MS = 2 * 60 * 1000
 const GENERATION_MODELS = new Set(['gpt-image-2', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'])
+for (const provider of ['woka', 'semir']) {
+  for (const model of ['gpt-image-2', 'gpt-image-2.5', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview']) GENERATION_MODELS.add(`${provider}/${model}`)
+}
 const GENERATION_SIZES = new Set(['1:1', '3:4', '4:3', '16:9', '9:16', '1024x1024', '1536x1024', '1024x1536', '2048x2048', '4096x4096'])
 const GENERATION_QUALITIES = new Set(['auto', 'low', 'medium', 'high', 'standard', '1K', '2K', '4K'])
 const GENERATION_FORMATS = new Set(['png', 'jpeg', 'jpg', 'webp'])

@@ -1,6 +1,10 @@
 export const PROMPT_SCENARIOS = ['裂变图', '创意拍摄']
 export const DEFAULT_PROMPT_LIBRARY_NAME = 'AI 测图提示词库 本地版'
-export const PROMPT_IMPORT_HEADER_ROWS = [4, 3, 5]
+export const PROMPT_IMPORT_HEADER_ROWS = [1, 4, 3, 5]
+export const PROMPT_CUSTOM_FIELDS = Array.from({ length: 10 }, (_, i) => `自定义${i + 1}`)
+export function normalizePromptCustomFields(value = {}) {
+  return Object.fromEntries(PROMPT_CUSTOM_FIELDS.map(name => [name, String(value?.[name] ?? '').replace(/\s+/g, ' ').trim()]).filter(([, value]) => value))
+}
 
 export function cloudPromptLibraryNotice(error, options = {}) {
   if (options.silent) return ''
@@ -84,6 +88,7 @@ export function normalizePromptTemplate(template = {}) {
   const priority = explicitPriority ?? femalePriority ?? maleNeutralPriority ?? 100
 
   return {
+    custom_fields: normalizePromptCustomFields(template.custom_fields),
     local_uid: String(template.local_uid || ''),
     id: template.id,
     library_id: template.library_id,
@@ -166,6 +171,7 @@ export function buildPromptLibraryTaskSelection(library = {}) {
   const templates = normalized.templates
     .filter(template => template.enabled !== false && template.field_name && template.prompt_text)
     .map(template => ({
+      custom_fields: template.custom_fields,
       group_name: template.group_name,
       field_name: template.field_name,
       field_order: template.field_order,
@@ -190,6 +196,7 @@ export function buildCloudPromptLibraryPayload(library = {}) {
     name: normalized.name,
     scenario: normalized.scenario,
     templates: normalized.templates.map(template => ({
+      custom_fields: template.custom_fields,
       group_name: template.group_name,
       field_name: template.field_name,
       source_field_id: template.source_field_id,
@@ -219,6 +226,7 @@ export function createLocalPromptUid(prefix = 'prompt') {
 
 function promptTemplateFromWorkbookRow(sheetName, row = {}) {
   return normalizePromptTemplate({
+    custom_fields: normalizePromptCustomFields(row),
     group_name: String(sheetName || '').trim() || 'Prompt',
     field_name: workbookValue(row, 'field_name'),
     source_field_id: workbookValue(row, 'source_field_id'),

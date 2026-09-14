@@ -210,3 +210,21 @@ test('manifest registers only the Bala full-chain AI image task with both import
   assert.match(manifest, /tmall-ai-image-test-workflow-template\.csv/)
   assert.match(manifest, /tmall-ai-prompt-library-template\.csv/)
 })
+
+test('custom fields select creative/co-shoot prompts across sheets with AND semantics', async () => {
+  const api = await loadExports()
+  const workflow = api.normalizeWorkflowRows([{ 款号: '001', 品类: '外套', 自定义1: '合拍', 自定义10: '春节' }]).rows
+  const prompts = api.normalizePromptLibrary({ sheets: { 模板: { headers: ['字段名', '描述内容', '自定义1', '自定义10'], rows: [
+    { 字段名: '合拍春节', 描述内容: '合拍场景 {{自定义10}}', 自定义1: '合拍', 自定义10: '春节' },
+    { 字段名: '合拍中秋', 描述内容: '合拍', 自定义1: '合拍', 自定义10: '中秋' },
+    { 字段名: '默认', 描述内容: '默认' },
+  ] } } })
+  const plan = api.buildGenerationRows(workflow, prompts, { max_prompts_per_style: 10 })
+  assert.equal(plan.rows.length, 1)
+  assert.equal(plan.rows[0].提示词字段名, '合拍春节')
+  assert.match(plan.rows[0].最终提示词, /合拍场景 春节/)
+  workflow[0].custom_fields.自定义10 = '不匹配'
+  const missed = api.buildGenerationRows(workflow, prompts)
+  assert.equal(missed.rows.length, 0)
+  assert.match(missed.invalidRows[0].备注, /自定义10=不匹配/)
+})

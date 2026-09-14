@@ -21,7 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -198,6 +198,8 @@ def row_value(row: Mapping[str, Any], aliases: Iterable[str]) -> str:
 def parse_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [compact(item) for item in value if compact(item)]
+    if str(value or "").strip().startswith("data:image/"):
+        return [line.strip() for line in str(value).splitlines() if line.strip()]
     return [item.strip() for item in re.split(r"[\n\r,，、；;]+", str(value or "")) if item.strip()]
 
 
@@ -220,6 +222,20 @@ def json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
+CUSTOM_FIELD_NAMES = tuple(f"自定义{i}" for i in range(1, 11))
+
+
+def custom_fields_from_row(row: Mapping[str, Any]) -> dict[str, str]:
+    nested = row.get("custom_fields") if isinstance(row.get("custom_fields"), Mapping) else {}
+    return {name: value for name in CUSTOM_FIELD_NAMES
+            if (value := row_value(row, [name]) or compact(nested.get(name)))}
+
+
+def matches_custom_fields(prompt: PromptItem, workflow: WorkflowItem) -> bool:
+    return all(compact(prompt.custom_fields.get(name)) == value
+               for name, value in workflow.custom_fields.items() if name in CUSTOM_FIELD_NAMES and value)
+
+
 def workflow_to_dict(workflow: WorkflowItem | Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(workflow, WorkflowItem):
         return {
@@ -230,8 +246,10 @@ def workflow_to_dict(workflow: WorkflowItem | Mapping[str, Any]) -> dict[str, An
             "gender": workflow.gender,
             "prompt_name": workflow.prompt_name,
             "skc_code": workflow.skc_code,
+            "custom_fields": dict(workflow.custom_fields),
         }
     return {
+        "custom_fields": custom_fields_from_row(workflow or {}),
         "row_no": int((workflow or {}).get("row_no") or (workflow or {}).get("表格行号") or 0),
         "style_code": compact((workflow or {}).get("style_code") or (workflow or {}).get("款号")),
         "item_id": compact((workflow or {}).get("item_id") or (workflow or {}).get("商品ID")),
@@ -252,6 +270,7 @@ def workflow_from_dict(value: Mapping[str, Any]) -> WorkflowItem:
         gender=compact(data.get("gender")),
         prompt_name=compact(data.get("prompt_name")),
         skc_code=compact(data.get("skc_code")),
+        custom_fields=custom_fields_from_row(data),
     )
 
 
@@ -1904,7 +1923,7 @@ def approval_generation_defaults(batch: Mapping[str, Any], item: Mapping[str, An
         or image_ratio_label(image_size)
     )
     return {
-        "model": compact(source_row.get("模型") or existing_row.get("模型") or run_params.get("model")) or "gpt-image-2",
+        "model": compact(source_row.get("模型") or source_payload.get("model") or existing_row.get("模型") or existing_payload.get("model") or run_params.get("model")) or "gpt-image-2",
         "image_size": image_size,
         "ratio": ratio,
         "quality": normalize_quality(source_row.get("质量") or existing_row.get("质量") or run_params.get("quality") or "auto"),
@@ -2003,6 +2022,8 @@ def generate_approval_asset_for_item(
     prompt: str = "",
     main_image_path: str = "",
     reference_paths: list[str] | None = None,
+    source_generation_row: Mapping[str, Any] | None = None,
+    image_count: int | None = None,
 ) -> dict[str, Any]:
     item = find_approval_item(batch, item_id=item_id, style_code=style_code)
     final_prompt = compact(prompt)
@@ -2014,7 +2035,9 @@ def generate_approval_asset_for_item(
     refs = [main_path, *parse_list(reference_paths)]
     refs = list(dict.fromkeys([ref for ref in refs if compact(ref)]))
     workflow = workflow_from_dict(item.get("workflow") or item)
-    defaults = approval_generation_defaults(batch, item)
+    defaults = approval_generation_defaults(batch, item, source_generation_row)
+    if image_count is not None:
+        defaults["count"] = normalize_generation_image_count(image_count, 1)
     ai_assets = [asset for asset in item.get("assets") or [] if isinstance(asset, Mapping) and asset.get("kind") == "ai"]
     prompt_index = len(ai_assets) + 1
     generation_row = {
@@ -2105,6 +2128,46 @@ def generate_approval_asset_for_item(
     return asset
 
 
+def face_swap_approval_asset(batch: dict[str, Any], asset_id: str, model_id: str, instruction: str = "") -> dict[str, Any]:
+    from core.bala_ai_model_library import load_model_library, resolve_model_image_path
+    from core.api_server import _bala_face_swap_prompt
+
+    item, source = find_approval_asset(batch, asset_id)
+    if source.get("kind") != "ai" or not compact(source.get("path")):
+        raise ValueError("请选择已生成的 AI 结果进行换脸")
+    source_path = Path(source["path"]).expanduser()
+    if not source_path.is_file():
+        raise ValueError("原生成图文件不存在，无法换脸")
+    model = next((entry for entry in load_model_library().get("items", []) if entry.get("id") == model_id), None)
+    if model is None:
+        raise ValueError("所选模特不存在，请重新选择")
+    model_path = resolve_model_image_path(model_id)
+    prompt = _bala_face_swap_prompt(source_path, model, instruction)
+    # Generate using the existing provider/retry executor, without overwriting the source or stale batch state.
+    working = json_safe(batch)
+    working["json_path"] = ""
+    working["board_path"] = ""
+    generated = generate_approval_asset_for_item(
+        working, item_id=compact(item.get("id")), style_code=compact(item.get("style_code")),
+        prompt=prompt, main_image_path=str(source_path), reference_paths=[str(model_path)],
+        source_generation_row=source.get("generation_row"), image_count=1,
+    )
+    generated.update({
+        "label": f"换脸 · {compact(source.get('label')) or 'AI 图'}",
+        "operation_type": "face_swap", "source_asset_id": asset_id, "source_path": str(source_path),
+        "model_id": model_id, "model_label": compact(model.get("group_label") or model.get("name") or model_id),
+        "prompt_instruction": compact(instruction), "status": "pending",
+    })
+    # Other approvals may have changed while the provider was running; append to the latest saved batch.
+    json_path = Path(compact(batch.get("json_path")))
+    latest = json.loads(json_path.read_text(encoding="utf-8")) if json_path.is_file() else batch
+    latest_item, _ = find_approval_asset(latest, asset_id)
+    latest_item.setdefault("assets", []).append(generated)
+    latest["updated_at"] = generated["updated_at"]
+    save_approval_batch(latest)
+    return generated
+
+
 def normalize_quality(value: object) -> str:
     text = compact(value).lower()
     return text if text in {"auto", "standard", "low", "medium", "high"} else "auto"
@@ -2135,7 +2198,7 @@ def require_one_xm_key_for_generation(settings: Mapping[str, Any], *, model: str
             "model_key_tier": compact(key_tier).lower() or "auto",
         }, settings)
     except ai_image_service.MissingModelKeyError as exc:
-        raise RuntimeError(f"未配置 1XM Key：{exc}") from exc
+        raise RuntimeError(f"未配置生图供应商 Key：{exc}") from exc
     return config_id
 
 
@@ -2239,6 +2302,7 @@ class WorkflowItem:
     gender: str
     prompt_name: str = ""
     skc_code: str = ""
+    custom_fields: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -2251,6 +2315,7 @@ class PromptItem:
     prompt: str
     female_priority: int
     neutral_priority: int
+    custom_fields: dict[str, str] = field(default_factory=dict)
 
 
 def normalize_workflow_rows(table: Mapping[str, Any], limit: int | None = None) -> tuple[list[WorkflowItem], list[dict[str, Any]]]:
@@ -2268,6 +2333,7 @@ def normalize_workflow_rows(table: Mapping[str, Any], limit: int | None = None) 
             item_id=item_id,
             category=row_value(row, ["品类（后期匹配）", "品类", "类目", "提示词分组", "promptSheet"]),
             gender=row_value(row, ["模特性别", "性别", "男女", "gender"]) or "中性",
+            custom_fields=custom_fields_from_row(row),
             prompt_name=row_value(row, ["提示词字段名", "提示词名称", "字段名", "promptName"]),
             skc_code=row_value(row, ["SKC编码", "SKC", "款色编码", "款色号", "最优销售色号", "销售色号", "色号"]),
         ))
@@ -2328,14 +2394,18 @@ def read_prompt_library(path: str) -> list[PromptItem]:
     workbook_path = Path(path).expanduser()
     if not workbook_path.is_file():
         raise RuntimeError(f"File not found: {workbook_path}")
-    wb = openpyxl.load_workbook(workbook_path, read_only=False, data_only=True)
+    wb = None
+    if workbook_path.suffix.lower() == ".csv":
+        import csv
+        with workbook_path.open(encoding="utf-8-sig", newline="") as handle:
+            tables = [(workbook_path.stem, list(csv.reader(handle)))]
+    else:
+        wb = openpyxl.load_workbook(workbook_path, read_only=False, data_only=True)
+        tables = ((ws.title, ws.iter_rows(values_only=True)) for ws in wb.worksheets)
     prompts: list[PromptItem] = []
     try:
-        for ws in wb.worksheets:
-            raw_rows = [
-                [compact(value) for value in row]
-                for row in ws.iter_rows(values_only=True)
-            ]
+        for sheet_name, source_rows in tables:
+            raw_rows = [[compact(value) for value in row] for row in source_rows]
             _, parsed_rows = normalize_header_row(raw_rows)
 
             for index, row in enumerate(parsed_rows, start=1):
@@ -2347,7 +2417,8 @@ def read_prompt_library(path: str) -> list[PromptItem]:
                 if in_view and not is_truthy(in_view):
                     continue
                 prompts.append(PromptItem(
-                    sheet_name=compact(ws.title),
+                    custom_fields=custom_fields_from_row(row),
+                    sheet_name=compact(sheet_name),
                     field_name=field_name,
                     field_order=to_int(row_value(row, ["字段顺序"]), index),
                     size_label=row_value(row, ["尺寸"]),
@@ -2357,7 +2428,8 @@ def read_prompt_library(path: str) -> list[PromptItem]:
                     neutral_priority=to_int(row_value(row, ["男性/中性优先度", "男性优先度", "中性优先度"]), 0),
                 ))
     finally:
-        wb.close()
+        if wb is not None:
+            wb.close()
     return prompts
 
 
@@ -2378,6 +2450,7 @@ def prompt_items_from_cloud_templates(templates: object) -> list[PromptItem]:
             continue
         priority = to_int(item.get("priority"), index)
         prompts.append(PromptItem(
+            custom_fields=custom_fields_from_row(item),
             sheet_name=compact(item.get("group_name") or item.get("sheet_name") or item.get("category")) or "上装",
             field_name=field_name,
             field_order=to_int(item.get("field_order"), index),
@@ -2436,16 +2509,17 @@ def is_risky_default_prompt(prompt: PromptItem) -> bool:
 def select_prompts(workflow: WorkflowItem, prompts: list[PromptItem], limit: int = 1) -> list[PromptItem]:
     prompt_names = set(parse_list(workflow.prompt_name))
     group = category_to_prompt_sheet(workflow.category)
+    candidates = [prompt for prompt in prompts if matches_custom_fields(prompt, workflow)]
     matched = [
         prompt
-        for prompt in prompts
-        if prompt.sheet_name == group and (not prompt_names or prompt.field_name in prompt_names)
+        for prompt in candidates
+        if (workflow.custom_fields or prompt.sheet_name == group) and (not prompt_names or prompt.field_name in prompt_names)
     ]
-    if not matched and prompt_names:
-        matched = [prompt for prompt in prompts if prompt.field_name in prompt_names]
+    if not matched and (prompt_names or workflow.custom_fields):
+        matched = [prompt for prompt in candidates if not prompt_names or prompt.field_name in prompt_names]
     if not matched:
         return []
-    if not prompt_names:
+    if not prompt_names and not workflow.custom_fields:
         safe_matched = [prompt for prompt in matched if not is_risky_default_prompt(prompt)]
         if safe_matched:
             matched = safe_matched
@@ -2471,13 +2545,15 @@ def build_prompt_text(prompt: PromptItem, workflow: WorkflowItem) -> str:
         "{{商品ID}}": workflow.item_id,
         "{{品类}}": workflow.category,
         "{{性别}}": workflow.gender,
+        **{f"{{{{{name}}}}}": workflow.custom_fields.get(name, "") for name in CUSTOM_FIELD_NAMES},
     }.items():
         text = text.replace(key, value)
     guard = (
         "生成约束：只以参考图中的当前主商品为主体；严格保持主商品颜色、图案、版型、面料不变；"
         "禁止把参考图里的其他颜色、条纹叠放衣物、配件或多款组合当成主商品；禁止换色、混款、增加不存在的款式。"
     )
-    body = f"{text}\n\n{guard}"
+    # Explicit template matching lets the business Prompt define creative/co-shoot composition.
+    body = text if workflow.custom_fields else f"{text}\n\n{guard}"
     return f"{body}\n\n商品属性：{suffix}" if suffix else body
 
 
@@ -2519,6 +2595,7 @@ def make_generation_row(
         "商品ID": workflow.item_id,
         "品类": workflow.category,
         "性别": workflow.gender,
+        **{name: workflow.custom_fields.get(name, "") for name in CUSTOM_FIELD_NAMES},
         "提示词分组": prompt.sheet_name,
         "提示词字段名": prompt.field_name,
         "提示词序号": prompt_index,
@@ -4222,6 +4299,8 @@ def normalize_tmall_upload_image(path: str, *, size: tuple[int, int] = TMALL_UPL
 
 
 def guess_image_suffix(url: str, fallback: str = ".jpg") -> str:
+    if url.startswith("data:image/"):
+        return {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(url[5:].split(";")[0], fallback)
     match = IMAGE_EXT_RE.search(url)
     if not match:
         return fallback
@@ -4829,7 +4908,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tmall-readback-delay-seconds", type=float, default=5.0, help="Delay after task.online before readback.")
     parser.add_argument("--ratio", default="")
     parser.add_argument("--image-size", default="1536x2048")
-    parser.add_argument("--model", default="gpt-image-2")
+    parser.add_argument("--model", default="gpt-image-2", help="模型名；沃卡/森马使用 woka/ 或 semir/ 前缀，例如 woka/gpt-image-2")
     parser.add_argument("--ai-image-count", type=int, default=4)
     parser.add_argument("--generation-concurrency", type=int, default=100)
     parser.add_argument("--reference-mode", default="main_only", choices=["main_only", "main_and_detail"])
@@ -4962,7 +5041,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 "性别": workflow.gender,
                 "SKC编码": workflow.skc_code,
                 "执行结果": "未匹配到提示词",
-                "备注": f"映射分组={category_to_prompt_sheet(workflow.category)}",
+                "备注": "自定义字段未匹配：" + "；".join(f"{k}={v}" for k, v in workflow.custom_fields.items()) if workflow.custom_fields else f"映射分组={category_to_prompt_sheet(workflow.category)}",
             }]})
             if wait_for_control:
                 await wait_for_control({

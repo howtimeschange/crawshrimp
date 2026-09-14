@@ -18,7 +18,7 @@ test('AI image run statuses use operator-facing Chinese labels', () => {
 test('transient provider failures explain recovery without exposing raw gateway text', () => {
   assert.equal(
     generationFailureMessage('bad response status code 504'),
-    '上游生图服务响应超时。系统已完成自动重试，你可以重试本队列。',
+    '上游生图服务暂时不可用。请查看重试记录后再决定是否重试。',
   )
 })
 
@@ -34,4 +34,10 @@ test('retry summary reports automatic and manual recovery attempts', () => {
     retrySummaryText({ retry_count: 2, manual_retry_count: 1 }),
     '已自动重试 2 次 · 已手动重试 1 次',
   )
+})
+
+test('unknown synchronous receipts never suggest resubmission', () => {
+  assert.match(generationFailureMessage('HTTP 504', 'UNKNOWN_SUBMIT_RESULT'), /已停止自动提交/)
+  assert.match(generationFailureMessage('提交回执未知，HTTP 502'), /先核实供应商记录/)
+  assert.equal(retrySummaryText({ submission_retry_history: [{ attempt: 1 }, { attempt: 2 }] }), '已自动重试 2 次')
 })

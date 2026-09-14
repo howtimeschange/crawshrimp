@@ -424,80 +424,15 @@
           <div class="panel-head">
             <div>
               <p class="panel-kicker">AI 生图</p>
-              <h3>1XM 图片模型</h3>
+              <h3>图片模型供应商</h3>
             </div>
             <span :class="['badge', hasAnyFieldConfigured(ai1xmKeyFields) ? 'on' : 'off']">
               {{ hasAnyFieldConfigured(ai1xmKeyFields) ? '已配置' : '未配置' }}
             </span>
           </div>
 
-          <div class="panel-layout">
-            <div class="form-stack">
-              <div class="field">
-                <label>1XM Base URL</label>
-                <input
-                  v-model="cfg['ai.1xm.base_url']"
-                  placeholder="https://one-xm-proxy.crawshrimp.com/v1"
-                  class="input"
-                />
-              </div>
-              <div class="split-fields">
-                <div class="field">
-                  <label>GPT Image 2K Key</label>
-                  <input
-                    v-model="cfg['ai.1xm.gpt_image_2k_key']"
-                    placeholder="sk-..."
-                    class="input"
-                    type="password"
-                    autocomplete="off"
-                  />
-                </div>
-                <div class="field">
-                  <label>GPT Image 4K Key</label>
-                  <input
-                    v-model="cfg['ai.1xm.gpt_image_4k_key']"
-                    placeholder="sk-..."
-                    class="input"
-                    type="password"
-                    autocomplete="off"
-                  />
-                </div>
-              </div>
-              <div class="split-fields">
-                <div class="field">
-                  <label>Gemini 3.1 Flash Image Preview Key</label>
-                  <input
-                    v-model="cfg['ai.1xm.gemini_3_1_flash_image_preview_key']"
-                    placeholder="sk-..."
-                    class="input"
-                    type="password"
-                    autocomplete="off"
-                  />
-                </div>
-                <div class="field">
-                  <label>Gemini 3 Pro Image Preview Key</label>
-                  <input
-                    v-model="cfg['ai.1xm.gemini_3_pro_image_preview_key']"
-                    placeholder="sk-..."
-                    class="input"
-                    type="password"
-                    autocomplete="off"
-                  />
-                </div>
-              </div>
-              <PanelActions panel-id="ai-1xm" @save="savePanel('ai-1xm')" />
-            </div>
-            <div class="side-note">
-              <strong>密钥状态</strong>
-              <div class="key-states">
-                <span :class="['key-pill', isFieldConfigured('ai.1xm.gpt_image_2k_key') ? 'on' : 'off']">2K</span>
-                <span :class="['key-pill', isFieldConfigured('ai.1xm.gpt_image_4k_key') ? 'on' : 'off']">4K</span>
-                <span :class="['key-pill', isFieldConfigured('ai.1xm.gemini_3_1_flash_image_preview_key') ? 'on' : 'off']">G31</span>
-                <span :class="['key-pill', isFieldConfigured('ai.1xm.gemini_3_pro_image_preview_key') ? 'on' : 'off']">G3P</span>
-              </div>
-              <p>密钥只保存在本机抓虾配置中，任务运行时由后端读取。</p>
-            </div>
-          </div>
+          <ImageProviderSettings :config="cfg" :save="saveImageProviderConfig" />
+
         </section>
 
         <section v-else-if="activePanelId === 'ai-llm'" key="ai-llm" class="panel">
@@ -863,6 +798,8 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
+import ImageProviderSettings from '../components/ImageProviderSettings.vue'
+import { configureAiImageProviders, CUSTOM_IMAGE_PROVIDERS_FIELD } from '../utils/aiImageModels.js'
 import {
   AI_VIDEO_CONNECTION_DEFAULTS,
   AI_VIDEO_CREDENTIAL_FIELDS,
@@ -935,7 +872,10 @@ const cloudCapabilityOptions = [
   { value: 'submit_tmall_material_test', label: 'submit_tmall_material_test' },
   { value: 'crawl_tmall_material_test_data', label: 'crawl_tmall_material_test_data' },
 ]
+const imageProviderFields = ['ai.woka.base_url', 'ai.woka.gemini_base_url', 'ai.woka.api_key', 'ai.semir.base_url', 'ai.semir.gemini_base_url', 'ai.semir.gpt_api_key', 'ai.semir.gemini_api_key']
 const ai1xmKeyFields = [
+  CUSTOM_IMAGE_PROVIDERS_FIELD,
+  ...imageProviderFields.filter(field => field.endsWith('_key')),
   'ai.1xm.gpt_image_2k_key',
   'ai.1xm.gpt_image_4k_key',
   'ai.1xm.gemini_3_1_flash_image_preview_key',
@@ -1016,7 +956,7 @@ const menuGroups = [
     label: 'AI 能力',
     desc: '图片 / 文本 / 视频模型',
     children: [
-      { id: 'ai-1xm', label: '1XM 图片模型', statusKeys: ai1xmKeyFields },
+      { id: 'ai-1xm', label: '图片模型供应商', statusKeys: ai1xmKeyFields },
       { id: 'ai-llm', label: '文本大模型', statusKeys: llmKeyFields },
       { id: 'ai-video', label: '视频模型', statusKeys: aiVideoKeyFields },
     ],
@@ -1036,7 +976,7 @@ const panelFields = {
   'notify-custom': ['notify.custom_webhook'],
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
-  'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
+  'ai-1xm': [CUSTOM_IMAGE_PROVIDERS_FIELD, ...imageProviderFields, 'ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
   'ai-llm': [...LLM_PANEL_FIELDS],
   'ai-video': ['ai.video.seedance_api_key', 'ai.video.seedance_base_url', 'ai.video.bailian_api_key', 'ai.video.bailian_workspace_id', 'ai.video.bailian_region', 'ai.video.bailian_base_url', 'ai.video.bailian_upload_api_key', 'ai.video.bailian_uploads_url'],
   'cloud-approval': ['cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
@@ -1151,6 +1091,10 @@ function flattenSettings(source, prefix = '', target = {}) {
 
 function normalizedSettings(raw) {
   const flat = flattenSettings(raw || {})
+  if (!flat['ai.woka.base_url']) flat['ai.woka.base_url'] = 'https://4.0.wk-best.com/v1'
+  if (!flat['ai.woka.gemini_base_url']) flat['ai.woka.gemini_base_url'] = 'https://4.0.wk-best.com/v1beta'
+  if (!flat['ai.semir.base_url']) flat['ai.semir.base_url'] = 'https://ai-aigw.semir.com/overseas-image/v1'
+  if (!flat['ai.semir.gemini_base_url']) flat['ai.semir.gemini_base_url'] = 'https://ai-aigw.semir.com/overseas-image-gemini/v1beta'
   if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://one-xm-proxy.crawshrimp.com/v1'
   for (const [key, value] of Object.entries(LLM_DEFAULTS)) {
     if (!flat[key]) flat[key] = value
@@ -1171,6 +1115,7 @@ function normalizedSettings(raw) {
 
 async function load() {
   const flat = normalizedSettings(await window.cs.getSettings() || {})
+  configureAiImageProviders(flat)
   cfg.value = { ...flat }
   savedCfg.value = { ...flat }
   await loadCloudStatus()
@@ -1204,6 +1149,7 @@ function selectInputText(event) {
 }
 
 function isFieldConfigured(key) {
+  if (key === CUSTOM_IMAGE_PROVIDERS_FIELD) return (cfg.value[key] || []).some(provider => Boolean(provider.api_key))
   if (aiVideoKeyFields.includes(key)) return isAiVideoCredentialConfigured(cfg.value, key)
   if (key === LLM_API_KEY_FIELD) return isLlmConfigured(cfg.value)
   if (key === DEEPSEEK_API_KEY_FIELD) return isDeepSeekConfigured(cfg.value)
@@ -1259,6 +1205,19 @@ function selectedCloudCapabilities() {
   const capabilities = normalizeCloudCapabilities(cfg.value['cloud_approval.capabilities'])
   cfg.value['cloud_approval.capabilities'] = capabilities
   return capabilities
+}
+
+async function saveImageProviderConfig(patch) {
+  const result = typeof window.cs.patchSettings === 'function'
+    ? await window.cs.patchSettings(patch)
+    : await window.cs.saveSettings({ ...savedCfg.value, ...patch })
+  const readback = normalizedSettings(await window.cs.getSettings() || {})
+  for (const key of Object.keys(patch)) {
+    cfg.value[key] = readback[key]
+    savedCfg.value[key] = readback[key]
+  }
+  configureAiImageProviders(readback)
+  return result
 }
 
 async function savePanel(panelId, options = {}) {

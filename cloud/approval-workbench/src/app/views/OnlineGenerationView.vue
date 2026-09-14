@@ -45,10 +45,15 @@ interface SelectableResource {
 }
 
 const modelOptions = [
-  { value: 'gpt-image-2', label: 'GPT Image 2' },
-  { value: 'gemini-3.1-flash-image-preview', label: 'Gemini 3.1 Flash Image' },
-  { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
+  { value: 'gpt-image-2', label: '1XM · GPT Image 2' },
+  { value: 'gemini-3.1-flash-image-preview', label: '1XM · Gemini 3.1 Flash Image' },
+  { value: 'gemini-3-pro-image-preview', label: '1XM · Gemini 3 Pro Image' },
 ]
+for (const [provider, label] of [['woka', '沃卡'], ['semir', '森马网关']]) {
+  for (const [model, name] of [['gpt-image-2', 'GPT Image 2'], ['gemini-3.1-flash-image-preview', 'Nano Banana 2'], ['gemini-3-pro-image-preview', 'Nano Banana Pro']]) {
+    modelOptions.push({ value: `${provider}/${model}`, label: `${label} · ${name}` })
+  }
+}
 const sizeOptions = ['1:1', '3:4', '4:3', '16:9', '9:16', '1024x1024', '1536x1024', '1024x1536', '2048x2048', '4096x4096']
 const qualityOptions = ['auto', 'low', 'medium', 'high', 'standard', '1K', '2K', '4K']
 const formatOptions = ['png', 'jpg', 'webp']

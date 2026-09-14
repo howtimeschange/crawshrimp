@@ -2,6 +2,13 @@ export interface Env {
   DB: D1Database
   ASSETS: R2Bucket
   SESSION_TTL_SECONDS?: string
+  WOKA_IMAGE_BASE_URL?: string
+  WOKA_IMAGE_GEMINI_BASE_URL?: string
+  WOKA_IMAGE_API_KEY?: string
+  SEMIR_IMAGE_BASE_URL?: string
+  SEMIR_IMAGE_GEMINI_BASE_URL?: string
+  SEMIR_IMAGE_GPT_API_KEY?: string
+  SEMIR_IMAGE_GEMINI_API_KEY?: string
   ONE_XM_BASE_URL?: string
   ONE_XM_API_KEY?: string
   ONE_XM_GPT_IMAGE_2_KEY?: string

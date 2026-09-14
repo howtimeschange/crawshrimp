@@ -11,6 +11,10 @@
   const PROMPT_NAME_ALIASES = ['提示词字段名', '提示词名称', '字段名', 'promptName', 'prompt_name']
   const MATERIAL_PATH_ALIASES = ['素材图文件', '参考图文件', '本地素材图', '本地参考图', '图片路径', 'image_path']
   const MATERIAL_URL_ALIASES = ['素材图URL', '参考图URL', '图片URL', 'image_url']
+  const CUSTOM_FIELD_NAMES = Array.from({ length: 10 }, (_, i) => `自定义${i + 1}`)
+  function customFields(row) {
+    return Object.fromEntries(CUSTOM_FIELD_NAMES.map(name => [name, rowValue(row, [name]) || compact(row?.custom_fields?.[name])]).filter(([, value]) => value))
+  }
   const COUNT_ALIASES = ['生成数量', '张数', 'n']
 
   function compact(value) {
@@ -139,6 +143,7 @@
         category: rowValue(row, CATEGORY_ALIASES) || compact(options.default_category),
         gender: rowValue(row, GENDER_ALIASES) || compact(options.default_gender),
         prompt_name: rowValue(row, PROMPT_NAME_ALIASES),
+        custom_fields: customFields(row),
         material_paths: parseListInput(rowValue(row, MATERIAL_PATH_ALIASES)),
         material_urls: parseListInput(rowValue(row, MATERIAL_URL_ALIASES)),
         count: Math.max(1, normalizeNumber(rowValue(row, COUNT_ALIASES), 1)),
@@ -224,6 +229,7 @@
         prompts.push({
           sheet_name: compact(sheetName),
           field_name: fieldName,
+          custom_fields: customFields(row),
           field_id: rowValue(row, ['字段 ID', '字段ID']),
           field_order: normalizeNumber(rowValue(row, ['字段顺序']), index + 1),
           size_label: rowValue(row, ['尺寸']) || compact(options.default_size_label),
@@ -245,6 +251,9 @@
   function promptMatchesWorkflow(prompt, workflow, options = {}) {
     const requestedNames = parseListInput(workflow.prompt_name || options.prompt_names)
     if (requestedNames.length && !requestedNames.some(name => compact(name) === prompt.field_name)) return false
+    const fields = workflow.custom_fields || {}
+    if (Object.entries(fields).some(([name, value]) => value && compact(prompt.custom_fields?.[name]) !== value)) return false
+    if (Object.keys(fields).length) return true
     const group = compact(workflow.category || options.prompt_sheet)
     if (!group) return true
     return prompt.sheet_name === group || prompt.field_name.includes(group)
@@ -275,7 +284,7 @@
       workflow.gender ? `性别=${workflow.gender}` : '',
     ].filter(Boolean)
     const suffix = metadata.length ? `\n\n商品属性：${metadata.join('；')}` : ''
-    return `${prompt.prompt}${suffix}`
+    return CUSTOM_FIELD_NAMES.reduce((text, name) => text.split(`{{${name}}}`).join(workflow.custom_fields?.[name] || ''), `${prompt.prompt}${suffix}`)
       .replace(/\{\{款号\}\}/g, workflow.style_code || '')
       .replace(/\{\{商品ID\}\}/g, workflow.item_id || '')
       .replace(/\{\{品类\}\}/g, workflow.category || '')
@@ -304,7 +313,7 @@
           商品ID: workflow.item_id,
           品类: workflow.category,
           执行结果: '未匹配到提示词',
-          备注: workflow.category ? `提示词库中未找到分组：${workflow.category}` : '未填写品类/提示词分组，且未命中默认提示词',
+          备注: Object.keys(workflow.custom_fields || {}).length ? `未匹配自定义字段：${Object.entries(workflow.custom_fields).map(([k,v]) => `${k}=${v}`).join('；')}` : workflow.category ? `提示词库中未找到分组：${workflow.category}` : '未填写品类/提示词分组，且未命中默认提示词',
         })
         continue
       }
@@ -332,6 +341,7 @@
           商品ID: workflow.item_id,
           品类: workflow.category,
           性别: workflow.gender,
+          ...Object.fromEntries(CUSTOM_FIELD_NAMES.map(name => [name, workflow.custom_fields?.[name] || ''])),
           提示词分组: prompt.sheet_name,
           提示词字段名: prompt.field_name,
           尺寸: size,

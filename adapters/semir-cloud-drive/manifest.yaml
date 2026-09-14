@@ -386,13 +386,25 @@ tasks:
         ui_span: third
         options:
           - value: gpt-image-2k
-            label: GPT Image 2K
+            label: 1XM · GPT Image 2K
           - value: gpt-image-4k
-            label: GPT Image 4K
+            label: 1XM · GPT Image 4K
           - value: gemini-3.1-flash-image-preview
-            label: Gemini Flash
+            label: 1XM · Gemini Flash
           - value: gemini-3-pro-image-preview
-            label: Gemini Pro
+            label: 1XM · Gemini Pro
+          - value: woka/gpt-image-2
+            label: 沃卡 · GPT Image 2
+          - value: woka/gemini-3.1-flash-image-preview
+            label: 沃卡 · Nano Banana 2
+          - value: woka/gemini-3-pro-image-preview
+            label: 沃卡 · Nano Banana Pro
+          - value: semir/gpt-image-2
+            label: 森马网关 · GPT Image 2
+          - value: semir/gemini-3.1-flash-image-preview
+            label: 森马网关 · Nano Banana 2
+          - value: semir/gemini-3-pro-image-preview
+            label: 森马网关 · Nano Banana Pro
       - id: max_model_images_per_row
         type: number
         label: 单行最多模拍图

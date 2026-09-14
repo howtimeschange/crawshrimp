@@ -55,6 +55,15 @@ BUYER_SHOW_MODEL_OPTIONS = {
         "resolution": "2K",
     },
 }
+for _provider in ("woka", "semir"):
+    for _model in ("gpt-image-2", "gpt-image-2.5", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview"):
+        _id = f"{_provider}/{_model}"
+        BUYER_SHOW_MODEL_OPTIONS[_id] = {
+            "model_id": _id, "model": _id, "model_key_tier": "2k",
+            "provider_family": "nano-banana" if _model.startswith("gemini-") else "gpt-image",
+            **({"resolution": "1K"} if _model.startswith("gemini-") else {}),
+        }
+
 DEFAULT_BUYER_SHOW_MODEL_ID = "gpt-image-4k"
 BUYER_SHOW_SIZE_OPTIONS = [
     {"ratio": "1:1", "size_2k": "2048x2048", "size_4k": "2880x2880", "width": 1, "height": 1},
@@ -256,6 +265,13 @@ def _resolve_buyer_show_model_params(run_params: Mapping[str, Any]) -> dict:
         or run_params.get("ai_model_id")
         or run_params.get("buyer_show_model_id")
     )
+    candidate = model_id or _compact(run_params.get("model") or run_params.get("model_key"))
+    if candidate.startswith("custom-") and "/" in candidate:
+        from core.image_providers import is_gemini_model
+        nano = is_gemini_model(candidate)
+        return {"model_id": candidate, "model": candidate, "model_key_tier": "2k",
+                "provider_family": "nano-banana" if nano else "gpt-image",
+                **({"resolution": "1K"} if nano else {})}
     if model_id in BUYER_SHOW_MODEL_OPTIONS:
         return dict(BUYER_SHOW_MODEL_OPTIONS[model_id])
 
@@ -541,6 +557,8 @@ def _run_buyer_show_ai_job_with_retry(
         last_result = result if isinstance(result, dict) else {}
         summary = last_result.get("summary") if isinstance(last_result.get("summary"), Mapping) else {}
         if last_result.get("ok"):
+            return last_result
+        if summary.get("error_code") == "UNKNOWN_SUBMIT_RESULT" or summary.get("submission_retries_managed"):
             return last_result
         error = summary.get("error") or "AI 生图失败"
         if attempt >= safe_attempts:

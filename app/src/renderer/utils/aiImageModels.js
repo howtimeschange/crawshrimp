@@ -1,8 +1,13 @@
-export const AI_IMAGE_MODELS = [
+import { shallowReactive, shallowRef } from 'vue'
+
+export const AI_IMAGE_PROVIDER_SETTINGS = shallowRef({})
+let providerConfigRevision = 0
+
+export const AI_IMAGE_MODELS = shallowReactive([
   {
     id: 'gpt-image-2k',
     key: 'gpt-image-2',
-    label: 'GPT Image 2K',
+    label: '1XM · GPT Image 2K',
     configId: 'ai.1xm.gpt_image_2k_key',
     size: '1024x1024',
     keyTier: '2k',
@@ -11,7 +16,7 @@ export const AI_IMAGE_MODELS = [
   {
     id: 'gpt-image-4k',
     key: 'gpt-image-2',
-    label: 'GPT Image 4K',
+    label: '1XM · GPT Image 4K',
     configId: 'ai.1xm.gpt_image_4k_key',
     size: '2880x2880',
     keyTier: '4k',
@@ -20,7 +25,7 @@ export const AI_IMAGE_MODELS = [
   {
     id: 'gemini-3.1-flash-image-preview',
     key: 'gemini-3.1-flash-image-preview',
-    label: 'Gemini 3.1 Flash Image Preview',
+    label: '1XM · Gemini 3.1 Flash Image Preview',
     configId: 'ai.1xm.gemini_3_1_flash_image_preview_key',
     size: '1K',
     keyTier: 'ai.1xm.gemini_3_1_flash_image_preview_key',
@@ -29,13 +34,62 @@ export const AI_IMAGE_MODELS = [
   {
     id: 'gemini-3-pro-image-preview',
     key: 'gemini-3-pro-image-preview',
-    label: 'Gemini 3 Pro Image Preview',
+    label: '1XM · Gemini 3 Pro Image Preview',
     configId: 'ai.1xm.gemini_3_pro_image_preview_key',
     size: '2K',
     keyTier: 'ai.1xm.gemini_3_pro_image_preview_key',
     providerFamily: 'nano-banana',
   },
-]
+])
+
+// Provider-qualified keys survive scripts, saved jobs, retries and cloud dispatch.
+for (const [provider, label] of [['woka', '沃卡'], ['semir', '森马网关']]) {
+  for (const [key, name, family] of [
+    ['gpt-image-2', 'GPT Image 2', 'gpt-image'],
+    ['gemini-3.1-flash-image-preview', 'Nano Banana 2', 'nano-banana'],
+    ['gemini-3-pro-image-preview', 'Nano Banana Pro', 'nano-banana'],
+  ]) {
+    AI_IMAGE_MODELS.push({
+      id: `${provider}/${key}`, key: `${provider}/${key}`, label: `${label} · ${name}`,
+      provider, providerFamily: family,
+      configId: `ai.${provider}.${provider === 'woka' ? 'api_key' : family === 'nano-banana' ? 'gemini_api_key' : 'gpt_api_key'}`,
+      size: family === 'nano-banana' ? '1K' : '1024x1024', keyTier: '2k',
+    })
+  }
+}
+
+export const CUSTOM_IMAGE_PROVIDERS_FIELD = 'ai.image.custom_providers'
+
+export function customImageProviders(settings = {}) {
+  const value = settings[CUSTOM_IMAGE_PROVIDERS_FIELD] ?? settings.ai?.image?.custom_providers
+  return Array.isArray(value) ? value : []
+}
+
+export function configureAiImageProviders(settings = {}) {
+  AI_IMAGE_PROVIDER_SETTINGS.value = settings
+  providerConfigRevision += 1
+  const models = []
+  for (const provider of customImageProviders(settings)) {
+    if (!/^custom-[a-z0-9-]+$/.test(provider.id || '')) continue
+    for (const model of provider.models || []) {
+      const nano = provider.protocol === 'gemini' || (provider.protocol === 'one_xm' && model.startsWith('gemini-'))
+      const id = `${provider.id}/${model}`
+      models.push({ id, key: id, provider: provider.id, label: `${provider.name} · ${model}`,
+        configId: `ai.image.custom.${provider.id}.api_key`, providerFamily: nano ? 'nano-banana' : 'gpt-image',
+        size: nano ? '1K' : '1024x1024', keyTier: '2k', custom: true })
+    }
+  }
+  const builtin = AI_IMAGE_MODELS.filter(model => !model.custom)
+  AI_IMAGE_MODELS.splice(0, AI_IMAGE_MODELS.length, ...builtin, ...models)
+}
+
+// Ignore a slow read that started before a newer configuration was saved.
+export async function refreshAiImageProviders(readSettings) {
+  const revision = providerConfigRevision
+  const settings = await readSettings()
+  if (revision === providerConfigRevision) configureAiImageProviders(settings || {})
+  return AI_IMAGE_PROVIDER_SETTINGS.value
+}
 
 export const AI_IMAGE_SIZE_OPTIONS = [
   { size: '1024x1024', ratio: '1:1', tier: '2k' },
@@ -88,7 +142,7 @@ export function sizeOptionsForModel(modelId, ratio) {
   if (isNanoBananaModel(model.id)) return [...NANO_BANANA_RESOLUTIONS]
   const normalizedRatio = AI_IMAGE_RATIOS.includes(ratio) ? ratio : '1:1'
   return AI_IMAGE_SIZE_OPTIONS
-    .filter((option) => option.ratio === normalizedRatio && option.tier === model.keyTier)
+    .filter((option) => option.ratio === normalizedRatio && (model.provider || option.tier === model.keyTier))
     .map((option) => option.size)
 }
 
@@ -189,6 +243,7 @@ export function defaultAiImageForm(overrides = {}) {
     prompt: '',
     advancedJson: '',
     mainImagePath: '',
+    mainImagePaths: [], inputAssetDetails: {}, expectedConnectionVersion: '',
     referenceImagePaths: [],
     ...overrides,
     modelId: model.id,
@@ -203,8 +258,17 @@ export function normalizeSettings(settings = {}) {
   const direct = settings && typeof settings === 'object' ? settings : {}
   const ai = direct.ai && typeof direct.ai === 'object' ? direct.ai : {}
   const oneXm = ai['1xm'] && typeof ai['1xm'] === 'object' ? ai['1xm'] : {}
+  const providerKeys = {}
+  for (const custom of customImageProviders(direct)) {
+    providerKeys[`ai.image.custom.${custom.id}.api_key`] = custom.api_key || ''
+  }
+  for (const model of AI_IMAGE_MODELS.filter(item => item.provider && !item.custom)) {
+    const [, provider, field] = model.configId.split('.')
+    providerKeys[model.configId] = direct[model.configId] ?? ai[provider]?.[field] ?? ''
+  }
   return {
     ...direct,
+    ...providerKeys,
     'ai.1xm.gpt_image_2k_key': direct['ai.1xm.gpt_image_2k_key'] ?? oneXm.gpt_image_2k_key ?? direct['2k'] ?? '',
     'ai.1xm.gpt_image_4k_key': direct['ai.1xm.gpt_image_4k_key'] ?? oneXm.gpt_image_4k_key ?? direct['4k'] ?? '',
     'ai.1xm.gemini_3_1_flash_image_preview_key':

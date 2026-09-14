@@ -62,6 +62,7 @@ test('parsePromptWorkbookSheets reads cloud prompt template sheets into local te
   assert.equal(templates.length, 2)
   assert.deepEqual(templates[0], {
     local_uid: '',
+    custom_fields: {},
     id: undefined,
     library_id: undefined,
     group_name: '裂变图',
@@ -240,6 +241,7 @@ test('buildPromptLibraryTaskSelection embeds local templates without requiring c
   assert.equal(selection.cloud_prompt_library_source, 'local')
   assert.deepEqual(JSON.parse(selection.cloud_prompt_templates_json), {
     templates: [{
+      custom_fields: {},
       group_name: '上装',
       field_name: '正面图',
       field_order: null,
@@ -299,6 +301,7 @@ test('buildCloudPromptLibraryPayload strips local metadata and keeps cloud-compa
     scenario: '裂变图',
     templates: [
       {
+        custom_fields: {},
         group_name: '上装',
         field_name: '正面图',
         source_field_id: '',
@@ -320,4 +323,12 @@ test('buildCloudPromptLibraryPayload strips local metadata and keeps cloud-compa
       },
     ],
   })
+})
+
+test('ten custom fields survive workbook import, normalization, local task selection and cloud payload', () => {
+  const templates = parsePromptWorkbookSheets({ sheets: { 模板: { rows: [{ 字段名: '合拍', 描述内容: '两人合拍', 自定义1: '合拍', 自定义10: ' 春节 ', 自定义11: '忽略' }] } } })
+  const library = { library_uid: 'custom', templates }
+  assert.deepEqual(templates[0].custom_fields, { 自定义1: '合拍', 自定义10: '春节' })
+  assert.deepEqual(JSON.parse(buildPromptLibraryTaskSelection(library).cloud_prompt_templates_json).templates[0].custom_fields, templates[0].custom_fields)
+  assert.deepEqual(buildCloudPromptLibraryPayload(library).templates[0].custom_fields, templates[0].custom_fields)
 })

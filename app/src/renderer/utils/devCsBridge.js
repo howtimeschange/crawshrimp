@@ -226,6 +226,7 @@ function normalizeDevPromptLibrary(library = {}) {
     created_at: String(library.created_at || now),
     updated_at: String(library.updated_at || now),
     templates: (Array.isArray(library.templates) ? library.templates : []).map(template => ({
+      custom_fields: Object.fromEntries(Array.from({ length: 10 }, (_, i) => `自定义${i + 1}`).map(name => [name, String(template.custom_fields?.[name] ?? '').replace(/\s+/g, ' ').trim()]).filter(([, value]) => value)),
       local_uid: String(template.local_uid || devPromptUid('prompt')),
       group_name: String(template.group_name || '').trim(),
       field_name: String(template.field_name || '').trim(),
@@ -360,6 +361,8 @@ export function createDevCsBridge() {
     retryAiImageRun: (uid, runUid) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/runs/${encodePathPart(runUid)}/retry`, {}),
     saveAsAiImageJob: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/save-as`, payload || {}),
     materializeAiImageResult: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/materialize`, payload || {}),
+    checkImageConnection: (payload) => apiCall('POST', '/ai-image/connections/check', payload),
+    imageCallHistory: (provider = '') => apiCall('GET', `/ai-image/call-history?provider=${encodeURIComponent(provider)}`),
     createAiImageAsset: (payload) => apiCall('POST', '/ai-image/assets', payload || {}),
     createAiImageCanvas: (payload) => apiCall('POST', '/ai-image/canvases', payload || {}),
 
@@ -436,6 +439,7 @@ export function createDevCsBridge() {
     saveTmallApprovalDecisions: (batchId, token, decisions) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/decisions?token=${encodeURIComponent(String(token || ''))}`, { decisions: decisions || {} }),
     importTmallApprovalReferenceFiles: (batchId, token, paths) => apiCall('POST', `/tmall-ai-image-approval-local/api/${encodePathPart(batchId)}/reference-files?token=${encodeURIComponent(String(token || ''))}`, { paths: Array.isArray(paths) ? paths : [] }),
     regenerateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/regenerate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
+    faceSwapTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/face-swap?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     generateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/generate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalGeneration: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit-generation?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalBatch: (batchId, token) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit?token=${encodeURIComponent(String(token || ''))}`, {}),

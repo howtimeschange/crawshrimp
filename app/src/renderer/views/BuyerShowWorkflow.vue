@@ -288,10 +288,10 @@ const BUYER_SHOW_MODEL_LABELS = {
   'gemini-3.1-flash-image-preview': 'Gemini Flash',
   'gemini-3-pro-image-preview': 'Gemini Pro',
 }
-const buyerShowModelOptions = AI_IMAGE_MODELS.map(model => ({
+const buyerShowModelOptions = computed(() => AI_IMAGE_MODELS.map(model => ({
   ...model,
   label: BUYER_SHOW_MODEL_LABELS[model.id] || model.label,
-}))
+})))
 
 const activeStep = ref('match')
 const excelPath = ref(DEFAULT_EXCEL_PATH)
@@ -388,9 +388,9 @@ const overallProgress = computed(() => {
 })
 const isResumeMode = computed(() => ['resume', 'recover', 'resume_recover', 'resume-recover'].includes(String(executeMode.value || '').toLowerCase()))
 const selectedAiModel = computed(() => (
-  buyerShowModelOptions.find(model => model.id === selectedModelId.value)
-  || buyerShowModelOptions.find(model => model.id === DEFAULT_MODEL_ID)
-  || buyerShowModelOptions[0]
+  buyerShowModelOptions.value.find(model => model.id === selectedModelId.value)
+  || buyerShowModelOptions.value.find(model => model.id === DEFAULT_MODEL_ID)
+  || buyerShowModelOptions.value[0]
 ))
 const startButtonLabel = computed(() => {
   if (taskState.status === 'running') return '正在执行...'

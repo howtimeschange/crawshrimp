@@ -216,7 +216,7 @@ tasks:
         templates:
           - file: templates/tmall-ai-image-test-workflow-template.csv
             label: 测图任务导入模板
-            description: 本期只需要填写“款号、天猫商品ID、品类、性别”四列；脚本按款号找橱窗1/yz(1)主图，并按品类/性别自动匹配提示词。
+            description: 填写“款号、天猫商品ID、品类、性别”；后方预留自定义1～10，填写后按同名字段匹配创意拍、合拍等 Prompt，多个字段同时满足。全部留空沿用品类/性别匹配。
             version: "2026.07.01.3"
         hint: 必须包含款号；真实上传/上线时必须包含天猫商品ID。SKC编码本期不用填，脚本会在需要时从款号-五位款色码图片名推断平铺参考图。
       - id: prompt_source
@@ -239,7 +239,7 @@ tasks:
         templates:
           - file: templates/tmall-ai-prompt-library-template.csv
             label: AI 测图提示词导入模板
-            description: 与 AI 测图提示词库一致：字段名、尺寸、格式、描述内容、女性优先度、男性/中性优先度；支持多 sheet 与第 4 行表头。
+            description: 与 AI 测图提示词库一致：字段名、尺寸、格式、描述内容、女性优先度、男性/中性优先度；后方预留自定义1～10，与款号表同名字段对应；支持多 sheet 与第 4 行表头。
             version: "2026.07.01.2"
         hint: 支持用户提供的“AI 测图提示词库.xlsx”；后端会按多 sheet 和真实表头格式读取。
       - id: cloud_prompt_library_id
@@ -277,13 +277,25 @@ tasks:
         ui_span: third
         options:
           - value: gpt-image-2k
-            label: GPT Image 2K
+            label: 1XM · GPT Image 2K
           - value: gpt-image-4k
-            label: GPT Image 4K
+            label: 1XM · GPT Image 4K
           - value: gemini-3.1-flash-image-preview
-            label: Gemini 3.1 Flash Image Preview
+            label: 1XM · Gemini 3.1 Flash Image Preview
           - value: gemini-3-pro-image-preview
-            label: Gemini 3 Pro Image Preview
+            label: 1XM · Gemini 3 Pro Image Preview
+          - value: woka/gpt-image-2
+            label: 沃卡 · GPT Image 2
+          - value: woka/gemini-3.1-flash-image-preview
+            label: 沃卡 · Nano Banana 2
+          - value: woka/gemini-3-pro-image-preview
+            label: 沃卡 · Nano Banana Pro
+          - value: semir/gpt-image-2
+            label: 森马网关 · GPT Image 2
+          - value: semir/gemini-3.1-flash-image-preview
+            label: 森马网关 · Nano Banana 2
+          - value: semir/gemini-3-pro-image-preview
+            label: 森马网关 · Nano Banana Pro
       - id: ratio
         type: select
         label: 比例
