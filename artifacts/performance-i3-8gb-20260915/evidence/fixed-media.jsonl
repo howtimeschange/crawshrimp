@@ -1,0 +1,11 @@
+{"platform":"darwin","arch":"arm64","python":"/Users/xingyicheng/Documents/crawshrimp/venv/bin/python"}
+{"scenario":"pdf","pages":1,"ok":true,"elapsedMs":115.412083,"ticks":20,"maxGapMs":5.963124999999991,"rssBytes":57016320,"outputChars":29926}
+{"scenario":"pdf","pages":20,"ok":true,"elapsedMs":557.7914999999999,"ticks":99,"maxGapMs":5.729041999999993,"rssBytes":60719104,"outputChars":597864}
+{"scenario":"pdf","pages":40,"ok":false,"error":"Traceback (most recent call last):\n  File \"<string>\", line 24, in <module>\nValueError: PDF_PREVIEW_LIMIT: PDF 预览总像素过大，请拆分后预览","elapsedMs":781.826667,"ticks":139,"maxGapMs":5.756750000000011,"rssBytes":60735488}
+{"scenario":"pdf","pages":101,"ok":false,"error":"Traceback (most recent call last):\n  File \"<string>\", line 15, in <module>\nValueError: PDF_PREVIEW_LIMIT: PDF 超过 100 页，请拆分后预览","elapsedMs":67.713166,"ticks":12,"maxGapMs":5.710667000000058,"rssBytes":60751872}
+{"scenario":"pdf","pages":20,"ok":true,"elapsedMs":568.398625,"ticks":102,"maxGapMs":5.707332999999835,"rssBytes":62816256,"outputChars":597864}
+{"scenario":"pdf","pages":20,"ok":true,"elapsedMs":591.2795419999998,"ticks":105,"maxGapMs":5.806790999999976,"rssBytes":63684608,"outputChars":597864}
+{"scenario":"pdf","pages":20,"ok":true,"elapsedMs":584.8776660000003,"ticks":104,"maxGapMs":5.798917000000074,"rssBytes":64815104,"outputChars":597864}
+{"scenario":"36mp-thumbnails","count":4,"elapsedMs":111.56037500000002}
+{"scenario":"broken","rejected":true}
+{"scenario":"pdf-retained-directories","count":0}

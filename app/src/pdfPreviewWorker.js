@@ -28,7 +28,7 @@ function pdfPreviewPageFromImage(imagePath, page, width = 0, height = 0) {
   const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png'
   return {
     page,
-    preview_path: imagePath,
+    preview_path: '',
     width,
     height,
     data_url: `data:${mime};base64,${raw.toString('base64')}`,
@@ -126,42 +126,55 @@ function renderPdfPreviewWithQuickLook(pdfPath, pythonBin, dataDir) {
   const previewRoot = path.join(dataDir, 'pdf-previews')
   if (fs.statSync(pdfPath).size > 256 * 1024 * 1024) return { ok: false, error: 'PDF 超过 256MB，请拆分后预览' }
   fs.mkdirSync(previewRoot, { recursive: true })
+  // Recover abandoned outputs from older versions or interrupted sessions.
+  for (const name of fs.readdirSync(previewRoot)) {
+    if (!name.startsWith('preview-')) continue
+    const candidate = path.join(previewRoot, name)
+    const stat = fs.lstatSync(candidate)
+    if (stat.isDirectory() && Date.now() - stat.mtimeMs > 24 * 60 * 60 * 1000) {
+      fs.rmSync(candidate, { recursive: true, force: true })
+    }
+  }
   const outputDir = fs.mkdtempSync(path.join(previewRoot, 'preview-'))
 
-  const pymupdfResult = renderPdfPreviewWithPyMuPDF(pdfPath, path.join(outputDir, 'pages'), pythonBin)
-  if (pymupdfResult.ok) return pymupdfResult
-  if (pymupdfResult.error?.includes('PDF_PREVIEW_LIMIT')) {
-    fs.rmSync(outputDir, { recursive: true, force: true })
-    return pymupdfResult
-  }
-  if (process.platform !== 'darwin') {
-    return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}` }
-  }
-
   try {
-    const quickLookBin = fs.existsSync('/usr/bin/qlmanage') ? '/usr/bin/qlmanage' : 'qlmanage'
-    execFileSync(quickLookBin, ['-t', '-s', '1800', '-o', outputDir, pdfPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 45000,
-    })
-    const previewPath = findQuickLookPdfPreview(pdfPath, outputDir)
-    if (!previewPath) {
-      const produced = fs.readdirSync(outputDir).join(', ')
-      return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}；Quick Look 没有输出图片。输出目录：${produced || '空'}` }
+    const pymupdfResult = renderPdfPreviewWithPyMuPDF(pdfPath, path.join(outputDir, 'pages'), pythonBin)
+    if (pymupdfResult.ok) return pymupdfResult
+    if (pymupdfResult.error?.includes('PDF_PREVIEW_LIMIT')) {
+      fs.rmSync(outputDir, { recursive: true, force: true })
+      return pymupdfResult
     }
-    const page = pdfPreviewPageFromImage(previewPath, 1)
-    return {
-      ok: true,
-      engine: 'quicklook',
-      page_count: 1,
-      pages: [page],
-      preview_path: previewPath,
-      data_url: page.data_url,
+    if (process.platform !== 'darwin') {
+      return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}` }
     }
-  } catch (error) {
-    const stderr = String(error?.stderr || '').trim()
-    const detail = stderr || error.message || String(error)
-    return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}；Quick Look: ${detail}` }
+
+    try {
+      const quickLookBin = fs.existsSync('/usr/bin/qlmanage') ? '/usr/bin/qlmanage' : 'qlmanage'
+      execFileSync(quickLookBin, ['-t', '-s', '1800', '-o', outputDir, pdfPath], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 45000,
+      })
+      const previewPath = findQuickLookPdfPreview(pdfPath, outputDir)
+      if (!previewPath) {
+        const produced = fs.readdirSync(outputDir).join(', ')
+        return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}；Quick Look 没有输出图片。输出目录：${produced || '空'}` }
+      }
+      const page = pdfPreviewPageFromImage(previewPath, 1)
+      return {
+        ok: true,
+        engine: 'quicklook',
+        page_count: 1,
+        pages: [page],
+        preview_path: '',
+        data_url: page.data_url,
+      }
+    } catch (error) {
+      const stderr = String(error?.stderr || '').trim()
+      const detail = stderr || error.message || String(error)
+      return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}；Quick Look: ${detail}` }
+    }
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true })
   }
 }
 
@@ -177,6 +190,7 @@ if (!isMainThread) {
 function createPdfPreviewWorker() {
   let worker = null
   let nextId = 0
+  let closing = false
   const pending = new Map()
   function fail(error, source) {
     if (source !== worker) return
@@ -186,6 +200,7 @@ function createPdfPreviewWorker() {
   }
   return {
     run(args) {
+      if (closing) return Promise.reject(new Error('PDF 预览服务已关闭'))
       if (!worker) {
         const source = worker = new Worker(__filename)
         source.on('message', ({ id, result, error }) => {
@@ -212,8 +227,15 @@ function createPdfPreviewWorker() {
       })
     },
     async close() {
+      closing = true
       if (!worker) return
       const source = worker
+      if (pending.size) await new Promise(resolve => {
+        const check = () => { if (!pending.size || worker !== source) { source.removeListener('message', check); source.removeListener('exit', check); resolve() } }
+        source.on('message', check)
+        source.on('exit', check)
+        check()
+      })
       fail(new Error('PDF 预览服务已关闭'), source)
       await source.terminate()
     },

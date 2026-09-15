@@ -180,7 +180,8 @@ test('legacy workspace authorization store remains readable while deletion does 
     assert.equal(fs.existsSync(imagePath), false)
     const stored = JSON.parse(fs.readFileSync(storePath, 'utf8'))
     assert.equal(stored.version, 1)
-    assert.deepEqual(stored.roots, [fs.realpathSync.native(workspace)])
+    const identity = fs.realpathSync.native(workspace)
+    assert.deepEqual(stored.roots, [process.platform === 'win32' ? identity.toLowerCase() : identity])
   })
 })
 

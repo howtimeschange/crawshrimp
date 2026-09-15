@@ -1,0 +1,878 @@
+TAP version 13
+# Subtest: desktop generates one AI video capability secret and injects it into every backend spawn
+ok 1 - desktop generates one AI video capability secret and injects it into every backend spawn
+  ---
+  duration_ms: 0.438375
+  type: 'test'
+  ...
+# Subtest: preload exposes dedicated token-only AI video file IPC and no renderer root authorization
+ok 2 - preload exposes dedicated token-only AI video file IPC and no renderer root authorization
+  ---
+  duration_ms: 0.310875
+  type: 'test'
+  ...
+# Subtest: input directory selection is persisted in main storage and restored through a fresh token-only IPC
+ok 3 - input directory selection is persisted in main storage and restored through a fresh token-only IPC
+  ---
+  duration_ms: 0.069125
+  type: 'test'
+  ...
+# Subtest: local media protocol resolves a signed file capability and never trusts a path from its URL
+ok 4 - local media protocol resolves a signed file capability and never trusts a path from its URL
+  ---
+  duration_ms: 0.125417
+  type: 'test'
+  ...
+# Subtest: AI video files are opened only after resolving a media capability in main
+ok 5 - AI video files are opened only after resolving a media capability in main
+  ---
+  duration_ms: 0.128625
+  type: 'test'
+  ...
+# Subtest: legacy raw-path media stays bounded, while generic image previews honor image-only limits without a folder allowlist
+ok 6 - legacy raw-path media stays bounded, while generic image previews honor image-only limits without a folder allowlist
+  ---
+  duration_ms: 0.261667
+  type: 'test'
+  ...
+# Subtest: Bala workspace media IPC accepts local files without workspace-root authorization
+ok 7 - Bala workspace media IPC accepts local files without workspace-root authorization
+  ---
+  duration_ms: 0.209708
+  type: 'test'
+  ...
+# Subtest: AI video config IPC removes backend paths and returns the fixed output capability
+ok 8 - AI video config IPC removes backend paths and returns the fixed output capability
+  ---
+  duration_ms: 0.071291
+  type: 'test'
+  ...
+# Subtest: workspace deletion unlinks a regular nested image without a directory grant
+ok 9 - workspace deletion unlinks a regular nested image without a directory grant
+  ---
+  duration_ms: 1.783417
+  type: 'test'
+  ...
+# Subtest: workspace deletion allows regular images outside an approved workspace
+ok 10 - workspace deletion allows regular images outside an approved workspace
+  ---
+  duration_ms: 1.490417
+  type: 'test'
+  ...
+# Subtest: workspace deletion permits AI image cache files without a workspace grant
+ok 11 - workspace deletion permits AI image cache files without a workspace grant
+  ---
+  duration_ms: 1.459375
+  type: 'test'
+  ...
+# Subtest: workspace deletion rejects the root, directories, non-images, and symlinks
+ok 12 - workspace deletion rejects the root, directories, non-images, and symlinks
+  ---
+  duration_ms: 1.585625
+  type: 'test'
+  ...
+# Subtest: workspace image listing only returns real regular images with their current file versions
+ok 13 - workspace image listing only returns real regular images with their current file versions
+  ---
+  duration_ms: 3.023959
+  type: 'test'
+  ...
+# Subtest: workspace image listing treats the AI result folder as selected model material
+ok 14 - workspace image listing treats the AI result folder as selected model material
+  ---
+  duration_ms: 1.627834
+  type: 'test'
+  ...
+# Subtest: legacy workspace authorization store remains readable while deletion does not depend on it
+ok 15 - legacy workspace authorization store remains readable while deletion does not depend on it
+  ---
+  duration_ms: 1.209958
+  type: 'test'
+  ...
+# Subtest: workspace deletion is idempotent when the image is already missing anywhere on disk
+ok 16 - workspace deletion is idempotent when the image is already missing anywhere on disk
+  ---
+  duration_ms: 0.600709
+  type: 'test'
+  ...
+# Subtest: workspace video metadata permits regular videos anywhere and never serializes video bytes
+ok 17 - workspace video metadata permits regular videos anywhere and never serializes video bytes
+  ---
+  duration_ms: 1.873083
+  type: 'test'
+  ...
+# Subtest: workspace video listing only returns regular videos with safe metadata sorted newest first
+ok 18 - workspace video listing only returns regular videos with safe metadata sorted newest first
+  ---
+  duration_ms: 3.116334
+  type: 'test'
+  ...
+# Subtest: workspace image metadata permits regular images anywhere and rejects symlinks
+ok 19 - workspace image metadata permits regular images anywhere and rejects symlinks
+  ---
+  duration_ms: 1.770084
+  type: 'test'
+  ...
+# Subtest: workspace manifest reads and writes under any selected workspace directory
+ok 20 - workspace manifest reads and writes under any selected workspace directory
+  ---
+  duration_ms: 0.943541
+  type: 'test'
+  ...
+# Subtest: large workspace hashes only changed files and prunes deleted file versions
+ok 21 - large workspace hashes only changed files and prunes deleted file versions
+  ---
+  duration_ms: 491.989083
+  type: 'test'
+  ...
+# Subtest: workspace video cleanup deletes unregistered MP4 files and is retryable when already missing
+ok 22 - workspace video cleanup deletes unregistered MP4 files and is retryable when already missing
+  ---
+  duration_ms: 0.949208
+  type: 'test'
+  ...
+# Subtest: workspace video cleanup validates every target before unlink and rejects escape paths
+ok 23 - workspace video cleanup validates every target before unlink and rejects escape paths
+  ---
+  duration_ms: 1.383375
+  type: 'test'
+  ...
+# Subtest: directory scans preserve order, budget filtered entries, allow heartbeats and cancellation
+ok 24 - directory scans preserve order, budget filtered entries, allow heartbeats and cancellation
+  ---
+  duration_ms: 402.235167
+  type: 'test'
+  ...
+# Subtest: image decoding is bounded and failures release their queue slot
+ok 25 - image decoding is bounded and failures release their queue slot
+  ---
+  duration_ms: 42.267208
+  type: 'test'
+  ...
+# Subtest: duplicate versions share decoding; queued scopes cancel without blocking new work
+ok 26 - duplicate versions share decoding; queued scopes cancel without blocking new work
+  ---
+  duration_ms: 61.198875
+  type: 'test'
+  ...
+# Subtest: thumbnail queue rejects overflow and remains usable after draining
+ok 27 - thumbnail queue rejects overflow and remains usable after draining
+  ---
+  duration_ms: 53.636167
+  type: 'test'
+  ...
+# (node:58271) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/xingyicheng/Documents/crawshrimp/app/src/renderer/utils/balaAiVideoWorkflow.js is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /Users/xingyicheng/Documents/crawshrimp/app/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: AI video workflow builds hidden Semir material prepare params from business fields
+ok 28 - AI video workflow builds hidden Semir material prepare params from business fields
+  ---
+  duration_ms: 1.092292
+  type: 'test'
+  ...
+# Subtest: find-materials step describes the business-manager-safe 10MB compression threshold
+ok 29 - find-materials step describes the business-manager-safe 10MB compression threshold
+  ---
+  duration_ms: 0.939041
+  type: 'test'
+  ...
+# Subtest: AI video workflow normalizes task output files and material batch groups
+ok 30 - AI video workflow normalizes task output files and material batch groups
+  ---
+  duration_ms: 0.477375
+  type: 'test'
+  ...
+# Subtest: material recall merges later batches by style without dropping the current selections
+ok 31 - material recall merges later batches by style without dropping the current selections
+  ---
+  duration_ms: 0.167792
+  type: 'test'
+  ...
+# Subtest: material recall keeps one card per filename inside the same style and source type
+ok 32 - material recall keeps one card per filename inside the same style and source type
+  ---
+  duration_ms: 0.319958
+  type: 'test'
+  ...
+# Subtest: material recall keeps same filename from different selected cloud folders
+ok 33 - material recall keeps same filename from different selected cloud folders
+  ---
+  duration_ms: 0.193625
+  type: 'test'
+  ...
+# Subtest: material batch recovery includes restored AI result versions and relinks new batch ids
+ok 34 - material batch recovery includes restored AI result versions and relinks new batch ids
+  ---
+  duration_ms: 0.594958
+  type: 'test'
+  ...
+# Subtest: restored material groups dedupe legacy paths without reselecting AI-named files
+ok 35 - restored material groups dedupe legacy paths without reselecting AI-named files
+  ---
+  duration_ms: 0.086916
+  type: 'test'
+  ...
+# Subtest: workspace polling ignores hidden duplicate batch files and stays stable after the first render
+ok 36 - workspace polling ignores hidden duplicate batch files and stays stable after the first render
+  ---
+  duration_ms: 0.396625
+  type: 'test'
+  ...
+# Subtest: workspace file sync invalidates thumbnails only for paths that actually changed
+ok 37 - workspace file sync invalidates thumbnails only for paths that actually changed
+  ---
+  duration_ms: 1.16025
+  type: 'test'
+  ...
+# Subtest: workspace file sync scans local videos and restores result records
+ok 38 - workspace file sync scans local videos and restores result records
+  ---
+  duration_ms: 0.918042
+  type: 'test'
+  ...
+# Subtest: material workspace exposes two-level clear actions and releases them on explicit rerun
+ok 39 - material workspace exposes two-level clear actions and releases them on explicit rerun
+  ---
+  duration_ms: 1.947792
+  type: 'test'
+  ...
+# Subtest: material clear hidden paths filter both workspace scans and downloaded result rows
+ok 40 - material clear hidden paths filter both workspace scans and downloaded result rows
+  ---
+  duration_ms: 0.142125
+  type: 'test'
+  ...
+# Subtest: material display coverage reports requested styles with no visible recall assets
+ok 41 - material display coverage reports requested styles with no visible recall assets
+  ---
+  duration_ms: 0.150666
+  type: 'test'
+  ...
+# Subtest: AI image submit clears only the selected input state after task acceptance
+ok 42 - AI image submit clears only the selected input state after task acceptance
+  ---
+  duration_ms: 0.633833
+  type: 'test'
+  ...
+# Subtest: workspace snapshot restore normalizes cached material groups before rendering
+ok 43 - workspace snapshot restore normalizes cached material groups before rendering
+  ---
+  duration_ms: 0.552459
+  type: 'test'
+  ...
+# Subtest: AI-named material stays unselected while duplicate filenames collapse across source folders
+ok 44 - AI-named material stays unselected while duplicate filenames collapse across source folders
+  ---
+  duration_ms: 0.099792
+  type: 'test'
+  ...
+# Subtest: material recall collapses same-content original images with different filenames
+ok 45 - material recall collapses same-content original images with different filenames
+  ---
+  duration_ms: 0.058041
+  type: 'test'
+  ...
+# Subtest: find-materials supports grid and list display modes while keeping selected materials first
+ok 46 - find-materials supports grid and list display modes while keeping selected materials first
+  ---
+  duration_ms: 0.823458
+  type: 'test'
+  ...
+# Subtest: AI image generation is marked backend-only so it never creates an about:blank CDP tab
+ok 47 - AI image generation is marked backend-only so it never creates an about:blank CDP tab
+  ---
+  duration_ms: 1.731833
+  type: 'test'
+  ...
+# Subtest: material recall is independent from the one-time cloud-download style-code input
+ok 48 - material recall is independent from the one-time cloud-download style-code input
+  ---
+  duration_ms: 1.132125
+  type: 'test'
+  ...
+# Subtest: missing material workspace shows an inline folder chooser and AI editing expands every material group
+ok 49 - missing material workspace shows an inline folder chooser and AI editing expands every material group
+  ---
+  duration_ms: 1.445584
+  type: 'test'
+  ...
+# Subtest: video task thumbnails prefer the existing local image and only fall back to a remote thumbnail after local preview fails
+ok 50 - video task thumbnails prefer the existing local image and only fall back to a remote thumbnail after local preview fails
+  ---
+  duration_ms: 0.614083
+  type: 'test'
+  ...
+# Subtest: a successful local thumbnail response is retained instead of returning before it reaches the preview cache
+ok 51 - a successful local thumbnail response is retained instead of returning before it reaches the preview cache
+  ---
+  duration_ms: 0.631708
+  type: 'test'
+  ...
+# Subtest: AI video workflow restores downloaded Excel rows into material groups without duplicating batch assets
+ok 52 - AI video workflow restores downloaded Excel rows into material groups without duplicating batch assets
+  ---
+  duration_ms: 0.192292
+  type: 'test'
+  ...
+# Subtest: AI edit source filtering preserves the reactive source object used by click selection
+ok 53 - AI edit source filtering preserves the reactive source object used by click selection
+  ---
+  duration_ms: 0.087791
+  type: 'test'
+  ...
+# Subtest: AI edit source filtering includes selected detail photos from the material step
+ok 54 - AI edit source filtering includes selected detail photos from the material step
+  ---
+  duration_ms: 0.055708
+  type: 'test'
+  ...
+# Subtest: AI edit selected-only filter still shows running generation placeholders
+ok 55 - AI edit selected-only filter still shows running generation placeholders
+  ---
+  duration_ms: 0.036791
+  type: 'test'
+  ...
+# Subtest: AI model library applies age and gender filters together
+ok 56 - AI model library applies age and gender filters together
+  ---
+  duration_ms: 0.0535
+  type: 'test'
+  ...
+# Subtest: AI model labels hide internal numeric group identifiers
+ok 57 - AI model labels hide internal numeric group identifiers
+  ---
+  duration_ms: 0.06925
+  type: 'test'
+  ...
+# Subtest: AI video workflow derives independent search and download progress
+ok 58 - AI video workflow derives independent search and download progress
+  ---
+  duration_ms: 0.066625
+  type: 'test'
+  ...
+# Subtest: AI video workflow only binds material polling to a newly started run
+ok 59 - AI video workflow only binds material polling to a newly started run
+  ---
+  duration_ms: 0.091875
+  type: 'test'
+  ...
+# Subtest: AI and QN video launches wait for a newly started run instead of reusing history
+ok 60 - AI and QN video launches wait for a newly started run instead of reusing history
+  ---
+  duration_ms: 0.862833
+  type: 'test'
+  ...
+# Subtest: AI video workflow rebases runtime Excel paths into the selected workspace package
+ok 61 - AI video workflow rebases runtime Excel paths into the selected workspace package
+  ---
+  duration_ms: 0.18875
+  type: 'test'
+  ...
+# Subtest: AI video workflow status normalization maps runtime states to UI stages
+ok 62 - AI video workflow status normalization maps runtime states to UI stages
+  ---
+  duration_ms: 0.025584
+  type: 'test'
+  ...
+# Subtest: buildBalaAiStageRequest targets AI generation with selected material images
+ok 63 - buildBalaAiStageRequest targets AI generation with selected material images
+  ---
+  duration_ms: 0.038334
+  type: 'test'
+  ...
+# Subtest: Bala model library picker exposes visual age and gender filters
+ok 64 - Bala model library picker exposes visual age and gender filters
+  ---
+  duration_ms: 0.079083
+  type: 'test'
+  ...
+# Subtest: TaskRunner opens Bala material selection drawer after Semir material preparation
+ok 65 - TaskRunner opens Bala material selection drawer after Semir material preparation
+  ---
+  duration_ms: 0.299166
+  type: 'test'
+  ...
+# Subtest: Bala material drawer scopes prompts and required fields per AI operation
+ok 66 - Bala material drawer scopes prompts and required fields per AI operation
+  ---
+  duration_ms: 0.09825
+  type: 'test'
+  ...
+# Subtest: App handles Bala workflow open-task handoff with initial params
+ok 67 - App handles Bala workflow open-task handoff with initial params
+  ---
+  duration_ms: 0.125667
+  type: 'test'
+  ...
+# Subtest: Bala review helpers parse board URL and build qn video handoff params
+ok 68 - Bala review helpers parse board URL and build qn video handoff params
+  ---
+  duration_ms: 0.11275
+  type: 'test'
+  ...
+# Subtest: AI video workflow maps real review batch assets into style cards
+ok 69 - AI video workflow maps real review batch assets into style cards
+  ---
+  duration_ms: 0.131166
+  type: 'test'
+  ...
+# Subtest: AI video workflow wires outfit references and settings handoff in the fixed entry
+ok 70 - AI video workflow wires outfit references and settings handoff in the fixed entry
+  ---
+  duration_ms: 0.866542
+  type: 'test'
+  ...
+# Subtest: AI video material step uses a native directory picker, dual progress, launch verification, and restore
+ok 71 - AI video material step uses a native directory picker, dual progress, launch verification, and restore
+  ---
+  duration_ms: 1.712875
+  type: 'test'
+  ...
+# Subtest: AI video image workbench groups expose an obvious accessible accordion action
+ok 72 - AI video image workbench groups expose an obvious accessible accordion action
+  ---
+  duration_ms: 1.444125
+  type: 'test'
+  ...
+# Subtest: AI video material preview shows one style and one source tab at a time, defaulting to model photos
+ok 73 - AI video material preview shows one style and one source tab at a time, defaulting to model photos
+  ---
+  duration_ms: 0.68875
+  type: 'test'
+  ...
+# Subtest: AI video material tabs stay in fixed rows above the independently scrolling image area
+ok 74 - AI video material tabs stay in fixed rows above the independently scrolling image area
+  ---
+  duration_ms: 1.401167
+  type: 'test'
+  ...
+# Subtest: AI video workflow removes the operator review step but restores persisted review batches for compatibility
+ok 75 - AI video workflow removes the operator review step but restores persisted review batches for compatibility
+  ---
+  duration_ms: 1.287291
+  type: 'test'
+  ...
+# Subtest: queued AI image workflow keeps polling until the queued run is finalized
+ok 76 - queued AI image workflow keeps polling until the queued run is finalized
+  ---
+  duration_ms: 0.780792
+  type: 'test'
+  ...
+# Subtest: restored Bala review batches refresh generating assets before merging into the workspace
+ok 77 - restored Bala review batches refresh generating assets before merging into the workspace
+  ---
+  duration_ms: 0.581167
+  type: 'test'
+  ...
+# Subtest: AI video step navigation builds video jobs directly from the workspace selection
+ok 78 - AI video step navigation builds video jobs directly from the workspace selection
+  ---
+  duration_ms: 0.834125
+  type: 'test'
+  ...
+# Subtest: Bala material prepare defaults to a new browser page
+ok 79 - Bala material prepare defaults to a new browser page
+  ---
+  duration_ms: 0.099584
+  type: 'test'
+  ...
+# Subtest: AI video workflow normalizes local template catalog and qn result rows
+ok 80 - AI video workflow normalizes local template catalog and qn result rows
+  ---
+  duration_ms: 0.269917
+  type: 'test'
+  ...
+# Subtest: completed business-manager result replaces the same task loading placeholder
+ok 81 - completed business-manager result replaces the same task loading placeholder
+  ---
+  duration_ms: 0.148833
+  type: 'test'
+  ...
+# Subtest: failed business-manager result replaces the same task loading placeholder
+ok 82 - failed business-manager result replaces the same task loading placeholder
+  ---
+  duration_ms: 0.140917
+  type: 'test'
+  ...
+# Subtest: business-manager history matching does not restore stale same-style results for a tracked run
+ok 83 - business-manager history matching does not restore stale same-style results for a tracked run
+  ---
+  duration_ms: 0.057166
+  type: 'test'
+  ...
+# Subtest: Bala image review drawer exposes approval, retry, refresh, and video handoff actions
+ok 84 - Bala image review drawer exposes approval, retry, refresh, and video handoff actions
+  ---
+  duration_ms: 0.133709
+  type: 'test'
+  ...
+# Subtest: review retry keeps display status out of the generation prompt
+ok 85 - review retry keeps display status out of the generation prompt
+  ---
+  duration_ms: 0.923958
+  type: 'test'
+  ...
+# Subtest: workflow review retry never sends local-only assets to the remote review regenerate API
+ok 86 - workflow review retry never sends local-only assets to the remote review regenerate API
+  ---
+  duration_ms: 0.653667
+  type: 'test'
+  ...
+# Subtest: review approvals become video-selectable only after the durable save succeeds
+ok 87 - review approvals become video-selectable only after the durable save succeeds
+  ---
+  duration_ms: 0.60925
+  type: 'test'
+  ...
+# Subtest: video tasks and provider results persist across reloads with real refresh and download actions
+ok 88 - video tasks and provider results persist across reloads with real refresh and download actions
+  ---
+  duration_ms: 1.466333
+  type: 'test'
+  ...
+# Subtest: video generation keeps task controls independent, submits asynchronously, and labels the action as generate video
+ok 89 - video generation keeps task controls independent, submits asynchronously, and labels the action as generate video
+  ---
+  duration_ms: 1.005125
+  type: 'test'
+  ...
+# Subtest: submitted video tasks automatically poll until their provider result becomes terminal
+ok 90 - submitted video tasks automatically poll until their provider result becomes terminal
+  ---
+  duration_ms: 1.02925
+  type: 'test'
+  ...
+# Subtest: terminal provider video results auto-archive into the workspace
+ok 91 - terminal provider video results auto-archive into the workspace
+  ---
+  duration_ms: 0.826834
+  type: 'test'
+  ...
+# Subtest: video results support safe history cleanup in a 9:16 feed layout
+ok 92 - video results support safe history cleanup in a 9:16 feed layout
+  ---
+  duration_ms: 2.036125
+  type: 'test'
+  ...
+# Subtest: downloaded video results prefer local playback and refresh stale path previews
+ok 93 - downloaded video results prefer local playback and refresh stale path previews
+  ---
+  duration_ms: 0.898875
+  type: 'test'
+  ...
+# Subtest: video result cards show a bounded loading state for submitted async tasks
+ok 94 - video result cards show a bounded loading state for submitted async tasks
+  ---
+  duration_ms: 1.070375
+  type: 'test'
+  ...
+# Subtest: completed video tasks switch to view action and autoplay their result
+ok 95 - completed video tasks switch to view action and autoplay their result
+  ---
+  duration_ms: 0.991667
+  type: 'test'
+  ...
+# Subtest: failed video tasks expose a one-click rerun path
+ok 96 - failed video tasks expose a one-click rerun path
+  ---
+  duration_ms: 2.159291
+  type: 'test'
+  ...
+# Subtest: TaskRunner opens Bala image review drawer after AI generation
+ok 97 - TaskRunner opens Bala image review drawer after AI generation
+  ---
+  duration_ms: 0.326291
+  type: 'test'
+  ...
+# Subtest: Bala review bridge is exposed in preload and dev fallback
+ok 98 - Bala review bridge is exposed in preload and dev fallback
+  ---
+  duration_ms: 0.204292
+  type: 'test'
+  ...
+# Subtest: AI video workflow exposes HappyHorse as an explicit video task provider
+ok 99 - AI video workflow exposes HappyHorse as an explicit video task provider
+  ---
+  duration_ms: 0.973083
+  type: 'test'
+  ...
+# Subtest: Seedance privacy protection falls back to a text-only original-person task
+ok 100 - Seedance privacy protection falls back to a text-only original-person task
+  ---
+  duration_ms: 0.615709
+  type: 'test'
+  ...
+# Subtest: AI video workflow only downloads software-manager previews when a template is selected
+ok 101 - AI video workflow only downloads software-manager previews when a template is selected
+  ---
+  duration_ms: 0.8915
+  type: 'test'
+  ...
+# Subtest: business-manager video task exposes four generation tiers and persists the selected tier
+ok 102 - business-manager video task exposes four generation tiers and persists the selected tier
+  ---
+  duration_ms: 1.324375
+  type: 'test'
+  ...
+# Subtest: video task dialog can write prompt from selected images with a vision LLM model
+ok 103 - video task dialog can write prompt from selected images with a vision LLM model
+  ---
+  duration_ms: 2.797334
+  type: 'test'
+  ...
+# Subtest: legacy provider wording is migrated when persisted video tasks and results are restored
+ok 104 - legacy provider wording is migrated when persisted video tasks and results are restored
+  ---
+  duration_ms: 0.66475
+  type: 'test'
+  ...
+# Subtest: Bala business surfaces consistently call the QN provider business-manager
+ok 105 - Bala business surfaces consistently call the QN provider business-manager
+  ---
+  duration_ms: 3.96325
+  type: 'test'
+  ...
+# Subtest: software-manager terminal failures stay failed instead of becoming preflight success
+ok 106 - software-manager terminal failures stay failed instead of becoming preflight success
+  ---
+  duration_ms: 0.684667
+  type: 'test'
+  ...
+# Subtest: software-manager failed output rows fail the parent video task
+ok 107 - software-manager failed output rows fail the parent video task
+  ---
+  duration_ms: 0.943417
+  type: 'test'
+  ...
+# Subtest: AI video task summary uses live counts and failed results expose their reason
+ok 108 - AI video task summary uses live counts and failed results expose their reason
+  ---
+  duration_ms: 0.827792
+  type: 'test'
+  ...
+# Subtest: failed video results without an output hide file actions and prefer rerun before returning to generation
+ok 109 - failed video results without an output hide file actions and prefer rerun before returning to generation
+  ---
+  duration_ms: 0.853625
+  type: 'test'
+  ...
+# Subtest: video task directory and image pickers use accessible explicit controls
+ok 110 - video task directory and image pickers use accessible explicit controls
+  ---
+  duration_ms: 0.781084
+  type: 'test'
+  ...
+# Subtest: HappyHorse bridge is exposed in preload and browser fallback
+ok 111 - HappyHorse bridge is exposed in preload and browser fallback
+  ---
+  duration_ms: 0.150833
+  type: 'test'
+  ...
+# Subtest: AI capability settings provide local secret fields for video providers
+ok 112 - AI capability settings provide local secret fields for video providers
+  ---
+  duration_ms: 0.159333
+  type: 'test'
+  ...
+# Subtest: API video task provider configuration hint sits directly below model selection
+ok 113 - API video task provider configuration hint sits directly below model selection
+  ---
+  duration_ms: 1.075791
+  type: 'test'
+  ...
+# Subtest: material thumbnails prioritize the currently rendered 20 cards without personal-path defaults
+ok 114 - material thumbnails prioritize the currently rendered 20 cards without personal-path defaults
+  ---
+  duration_ms: 0.771417
+  type: 'test'
+  ...
+# Subtest: AI edit workspace treats selection as operation scope and exposes shared edit tools
+ok 115 - AI edit workspace treats selection as operation scope and exposes shared edit tools
+  ---
+  duration_ms: 1.774541
+  type: 'test'
+  ...
+# Subtest: material step hides AI-edit bulk selection controls
+ok 116 - material step hides AI-edit bulk selection controls
+  ---
+  duration_ms: 1.565417
+  type: 'test'
+  ...
+# Subtest: AI edit bulk controls align left and per-style selection uses a checkbox
+ok 117 - AI edit bulk controls align left and per-style selection uses a checkbox
+  ---
+  duration_ms: 0.943291
+  type: 'test'
+  ...
+# Subtest: deleting an AI result requires confirmation and removes the local image without workspace authorization
+ok 118 - deleting an AI result requires confirmation and removes the local image without workspace authorization
+  ---
+  duration_ms: 1.364666
+  type: 'test'
+  ...
+# Subtest: stuck generating AI result cards can be cleared without deleting local files
+ok 119 - stuck generating AI result cards can be cleared without deleting local files
+  ---
+  duration_ms: 0.945333
+  type: 'test'
+  ...
+# Subtest: precise image edits archive the generated result inside the selected workspace before adding history
+ok 120 - precise image edits archive the generated result inside the selected workspace before adding history
+  ---
+  duration_ms: 0.90675
+  type: 'test'
+  ...
+# Subtest: batch AI generation archives generated images inside each style workspace folder
+ok 121 - batch AI generation archives generated images inside each style workspace folder
+  ---
+  duration_ms: 0.819333
+  type: 'test'
+  ...
+# Subtest: precise image edit modal keeps the same operation boundaries as batch AI edits
+ok 122 - precise image edit modal keeps the same operation boundaries as batch AI edits
+  ---
+  duration_ms: 1.478917
+  type: 'test'
+  ...
+# Subtest: review-compatible workspace includes selected originals, details, and every non-deleted AI result
+ok 123 - review-compatible workspace includes selected originals, details, and every non-deleted AI result
+  ---
+  duration_ms: 1.313583
+  type: 'test'
+  ...
+# Subtest: review workspace collapses repeated original filenames in the same style
+ok 124 - review workspace collapses repeated original filenames in the same style
+  ---
+  duration_ms: 0.226333
+  type: 'test'
+  ...
+# Subtest: material workspace preserves its own scroll position through local file sync
+ok 125 - material workspace preserves its own scroll position through local file sync
+  ---
+  duration_ms: 0.768
+  type: 'test'
+  ...
+# Subtest: review workspace merges remote origin decisions by path and keeps remote-only retries
+ok 126 - review workspace merges remote origin decisions by path and keeps remote-only retries
+  ---
+  duration_ms: 0.209541
+  type: 'test'
+  ...
+# Subtest: workspace versions keep results from different review batches that reuse the same asset id
+ok 127 - workspace versions keep results from different review batches that reuse the same asset id
+  ---
+  duration_ms: 0.076917
+  type: 'test'
+  ...
+# Subtest: workspace versions replace pathless running placeholders with finished AI results
+ok 128 - workspace versions replace pathless running placeholders with finished AI results
+  ---
+  duration_ms: 0.033667
+  type: 'test'
+  ...
+# Subtest: workspace versions replace AI cache paths with archived workspace paths for the same job
+ok 129 - workspace versions replace AI cache paths with archived workspace paths for the same job
+  ---
+  duration_ms: 0.069709
+  type: 'test'
+  ...
+# Subtest: review workspace keeps same-id AI assets from different persisted batches
+ok 130 - review workspace keeps same-id AI assets from different persisted batches
+  ---
+  duration_ms: 0.039375
+  type: 'test'
+  ...
+# Subtest: AI image workspace metadata survives reload without persisting thumbnail payloads
+ok 131 - AI image workspace metadata survives reload without persisting thumbnail payloads
+  ---
+  duration_ms: 0.241916
+  type: 'test'
+  ...
+# Subtest: AI face swap supports per-source model assignments in one batch
+ok 132 - AI face swap supports per-source model assignments in one batch
+  ---
+  duration_ms: 0.64975
+  type: 'test'
+  ...
+# Subtest: workflow restores all persisted review batches and routes decisions through each asset board
+ok 133 - workflow restores all persisted review batches and routes decisions through each asset board
+  ---
+  duration_ms: 1.055541
+  type: 'test'
+  ...
+# Subtest: video asset pool lets pending model detail and AI images be selected for video tasks
+ok 134 - video asset pool lets pending model detail and AI images be selected for video tasks
+  ---
+  duration_ms: 0.788583
+  type: 'test'
+  ...
+# Subtest: video stage exposes styles that contain any selectable asset
+ok 135 - video stage exposes styles that contain any selectable asset
+  ---
+  duration_ms: 0.8095
+  type: 'test'
+  ...
+# Subtest: Seedance and HappyHorse plan mode uses the backend provider preflight
+ok 136 - Seedance and HappyHorse plan mode uses the backend provider preflight
+  ---
+  duration_ms: 1.281
+  type: 'test'
+  ...
+# Subtest: a submitted video task cannot be reset by preflight or create a duplicate live provider run
+ok 137 - a submitted video task cannot be reset by preflight or create a duplicate live provider run
+  ---
+  duration_ms: 1.003584
+  type: 'test'
+  ...
+# Subtest: AI video workflow keeps business-manager video queue tickets separate from run ids
+ok 138 - AI video workflow keeps business-manager video queue tickets separate from run ids
+  ---
+  duration_ms: 1.223417
+  type: 'test'
+  ...
+# Subtest: business-manager refresh restores video results from run history before showing sync pending
+ok 139 - business-manager refresh restores video results from run history before showing sync pending
+  ---
+  duration_ms: 0.624333
+  type: 'test'
+  ...
+# Subtest: new video task uses a tiled style library, selectable assets, and no split mode
+ok 140 - new video task uses a tiled style library, selectable assets, and no split mode
+  ---
+  duration_ms: 1.303541
+  type: 'test'
+  ...
+# Subtest: AI outfit references cross the preload bridge as cloneable plain arrays
+ok 141 - AI outfit references cross the preload bridge as cloneable plain arrays
+  ---
+  duration_ms: 1.007625
+  type: 'test'
+  ...
+# Subtest: AI image generation stays active until review assets leave generating state
+ok 142 - AI image generation stays active until review assets leave generating state
+  ---
+  duration_ms: 0.865125
+  type: 'test'
+  ...
+# Subtest: overlapping polls and a scan completing after deletion cannot restore cleared images
+ok 143 - overlapping polls and a scan completing after deletion cannot restore cleared images
+  ---
+  duration_ms: 1.109125
+  type: 'test'
+  ...
+# Subtest: directory switches discard the old scan and scan failures release the poll lock
+ok 144 - directory switches discard the old scan and scan failures release the poll lock
+  ---
+  duration_ms: 0.818875
+  type: 'test'
+  ...
+1..144
+# tests 144
+# suites 0
+# pass 144
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 557.122334

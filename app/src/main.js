@@ -364,58 +364,7 @@ function normalizeExtensionList(value) {
     .filter(Boolean))
 }
 
-function listDirectoryFilesSnapshot(rootPath, opts = {}) {
-  const rawRoot = String(rootPath || '').trim()
-  if (!rawRoot) throw new Error('目录路径不能为空')
-  const root = fs.realpathSync.native(path.resolve(rawRoot))
-  const stat = fs.statSync(root)
-  if (!stat.isDirectory()) throw new Error(`不是有效目录：${rawRoot}`)
-
-  const allowedExts = normalizeExtensionList(opts.extensions)
-  const maxFiles = Math.max(1, Math.min(Number(opts.max_files || opts.maxFiles || 5000) || 5000, 20000))
-  const results = []
-
-  function walk(dir) {
-    if (results.length >= maxFiles) return
-    let entries = []
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    entries.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }))
-
-    for (const entry of entries) {
-      if (results.length >= maxFiles) return
-      if (!entry?.name || entry.name.startsWith('.')) continue
-      const fullPath = path.join(dir, entry.name)
-      if (entry.isDirectory()) {
-        walk(fullPath)
-        continue
-      }
-      if (!entry.isFile()) continue
-      const ext = path.extname(entry.name).slice(1).toLowerCase()
-      if (allowedExts.size && !allowedExts.has(ext)) continue
-      try {
-        const fileStat = fs.statSync(fullPath)
-        results.push({
-          path: fullPath,
-          relativePath: path.relative(root, fullPath).replace(/\\/g, '/'),
-          mtimeMs: fileStat.mtimeMs,
-          size: fileStat.size,
-        })
-      } catch {}
-    }
-  }
-
-  walk(root)
-  return {
-    ok: true,
-    root,
-    paths: results,
-    truncated: results.length >= maxFiles,
-  }
-}
+const { scanDirectory: listDirectoryFilesSnapshot } = require('./directoryScanWorker')
 
 function normalizeUrlForMatch(raw) {
   try {
@@ -1455,7 +1404,7 @@ function getSavedAiVideoDirectory(scope = 'input') {
   })
 }
 
-function listAiVideoDirectory(directoryToken, opts = {}) {
+async function listAiVideoDirectory(directoryToken, opts = {}) {
   const directory = resolveAiVideoCapabilityPath(directoryToken, {
     secret: AI_VIDEO_CAPABILITY_SECRET,
     expectedKind: 'directory',
@@ -1465,13 +1414,16 @@ function listAiVideoDirectory(directoryToken, opts = {}) {
   const extensions = ['jpg', 'jpeg', 'png', 'webp'].filter(ext => !requested.size || requested.has(ext))
   if (!extensions.length) return { ok: true, items: [], truncated: false }
   const maxFiles = Math.max(1, Math.min(Number(opts?.maxFiles || 500) || 500, 500))
-  const snapshot = listDirectoryFilesSnapshot(directory.path, { extensions, maxFiles })
+  const snapshot = await listDirectoryFilesSnapshot(directory.path, { extensions, maxFiles, canonicalFiles: true })
   return {
     ok: true,
-    items: snapshot.paths.map(item => aiVideoPublicFileItem(item.path, {
-      scope: 'input',
-      relativePath: item.relativePath,
-    })),
+    items: snapshot.paths.map(item => {
+      // Canonical file validation and metadata reads already ran in the worker.
+      const token = signAiVideoCapability({ secret: AI_VIDEO_CAPABILITY_SECRET, kind: 'file', scope: 'input', filePath: item.path })
+      return { fileToken: token, previewToken: token, name: path.basename(item.path),
+        relativePath: item.relativePath, kind: 'image', mimeType: localMediaMime(item.path),
+        size: item.size, mtimeMs: item.mtimeMs }
+    }),
     truncated: snapshot.truncated,
   }
 }
@@ -3184,12 +3136,12 @@ secureHandle('read-bala-workspace-image-preview', async (_, workspaceRoot, fileP
   return readLocalImageDataUrl(media.path)
 })
 
-secureHandle('read-bala-workspace-image-thumbnail', async (_, workspaceRoot, filePath, opts = {}) => {
+secureHandle('read-bala-workspace-image-thumbnail', async (event, workspaceRoot, filePath, opts = {}) => {
   try {
     const media = getAuthorizedBalaWorkspaceImage({
       filePath,
     })
-    return await readLocalImageThumbnail(media.path, opts || {})
+    return await readLocalImageThumbnail(media.path, { ...opts, scope: `${event.sender.id}:${opts.scope || ''}` })
   } catch (error) {
     return { ok: false, error: error?.message || String(error) }
   }
@@ -3254,17 +3206,37 @@ secureHandle('read-local-image-preview', async (_, filePath) => {
   return readLocalImageDataUrl(filePath)
 })
 
-secureHandle('read-local-image-thumbnail', async (_, filePath, opts = {}) => {
+secureHandle('read-local-image-thumbnail', async (event, filePath, opts = {}) => {
   try {
-    return await readLocalImageThumbnail(filePath, opts || {})
+    return await readLocalImageThumbnail(filePath, { ...opts, scope: `${event.sender.id}:${opts.scope || ''}` })
   } catch (error) {
     return { ok: false, error: error?.message || String(error) }
   }
 })
 
-secureHandle('list-directory-files', async (_, rootPath, opts = {}) => {
+secureHandle('cancel-local-image-thumbnails', (event, scope) => {
+  readThumbnailAsync.cancelScope(`${event.sender.id}:${String(scope || '')}`)
+  return { ok: true }
+})
+
+const directoryScans = new Map()
+secureHandle('cancel-directory-scan', event => {
+  directoryScans.get(event.sender.id)?.abort()
+  return { ok: true }
+})
+secureHandle('list-directory-files', async (event, rootPath, opts = {}) => {
   const directory = getAuthorizedLocalMediaDirectory(rootPath)
-  return listDirectoryFilesSnapshot(directory, opts)
+  const owner = event.sender.id
+  directoryScans.get(owner)?.abort()
+  const controller = new AbortController()
+  directoryScans.set(owner, controller)
+  const cancel = () => controller.abort()
+  event.sender.once('destroyed', cancel)
+  try { return await listDirectoryFilesSnapshot(directory, opts, { signal: controller.signal }) }
+  finally {
+    event.sender.removeListener('destroyed', cancel)
+    if (directoryScans.get(owner) === controller) directoryScans.delete(owner)
+  }
 })
 
 secureHandle('render-pdf-preview', async (_, filePath) => {

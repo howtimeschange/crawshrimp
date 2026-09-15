@@ -85,7 +85,8 @@ test('legacy raw-path media stays bounded, while generic image previews honor im
   assert.doesNotMatch(legacyPreview, /getAuthorizedLocalMediaFile/)
 
   const legacyThumbnail = section(main, "secureHandle('read-local-image-thumbnail'", "secureHandle('list-directory-files'")
-  assert.match(legacyThumbnail, /readLocalImageThumbnail\(filePath, opts \|\| \{\}\)/)
+  assert.match(legacyThumbnail, /readLocalImageThumbnail\(filePath, \{ \.\.\.opts, scope:/)
+  assert.match(legacyThumbnail, /event\.sender\.id/)
   assert.doesNotMatch(legacyThumbnail, /getAuthorizedLocalMediaFile/)
 
   const legacyList = section(main, "secureHandle('list-directory-files'", "secureHandle('render-pdf-preview'")

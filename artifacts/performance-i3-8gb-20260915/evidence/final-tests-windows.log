@@ -1,0 +1,30 @@
+✔ workspace deletion unlinks a regular nested image without a directory grant (6.204667ms)
+✔ workspace deletion allows regular images outside an approved workspace (3.915959ms)
+✔ workspace deletion permits AI image cache files without a workspace grant (3.402583ms)
+✔ workspace deletion rejects the root, directories, non-images, and symlinks (4.828958ms)
+✔ workspace image listing only returns real regular images with their current file versions (9.116291ms)
+✔ workspace image listing treats the AI result folder as selected model material (8.127666ms)
+✔ legacy workspace authorization store remains readable while deletion does not depend on it (12.188292ms)
+✔ workspace deletion is idempotent when the image is already missing anywhere on disk (2.700208ms)
+✔ workspace video metadata permits regular videos anywhere and never serializes video bytes (13.762458ms)
+✔ workspace video listing only returns regular videos with safe metadata sorted newest first (16.139917ms)
+✔ workspace image metadata permits regular images anywhere and rejects symlinks (4.287916ms)
+✔ workspace manifest reads and writes under any selected workspace directory (10.9685ms)
+✔ large workspace hashes only changed files and prunes deleted file versions (1644.6135ms)
+✔ workspace video cleanup deletes unregistered MP4 files and is retryable when already missing (2.809958ms)
+✔ workspace video cleanup validates every target before unlink and rejects escape paths (5.36975ms)
+✔ directory scans preserve order, budget filtered entries, allow heartbeats and cancellation (1174.41875ms)
+✔ image decoding is bounded and failures release their queue slot (211.820958ms)
+✔ duplicate versions share decoding; queued scopes cancel without blocking new work (259.387542ms)
+✔ thumbnail queue rejects overflow and remains usable after draining (62.618333ms)
+✔ real image decoder rejects corrupt and truncated files and preserves portrait dimensions (1479.201084ms)
+{"pdfPages":20,"elapsedMs":2270,"eventLoopTicks":133}
+✔ PDF worker keeps the event loop responsive, isolates outputs, and rejects excess pages (5400.189166ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7949.419375

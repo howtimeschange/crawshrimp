@@ -2143,7 +2143,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { IconCheck, IconChevronDown, IconFaceId, IconPhoto, IconRun, IconShirt, IconZoomIn } from '@tabler/icons-vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
@@ -2895,6 +2895,7 @@ function clearMissingWorkspacePath(targetWorkspace, error) {
 }
 
 async function flushWorkspaceManifest(workspace = workspaceDir.value) {
+  flushWorkspaceState()
   const targetWorkspace = String(workspace || '').trim()
   if (!targetWorkspace) return false
   if (workspaceManifestWriteTimer) {
@@ -2945,7 +2946,17 @@ async function restoreWorkspaceManifest(workspace = workspaceDir.value) {
   }
 }
 
+let workspaceStatePersistTimer = null
 function persistWorkspaceState() {
+  if (!workspaceStateHydrated || !workspaceDir.value) return
+  if (workspaceStatePersistTimer) clearTimeout(workspaceStatePersistTimer)
+  workspaceStatePersistTimer = setTimeout(flushWorkspaceState, 600)
+}
+
+function flushWorkspaceState() {
+  if (!workspaceStatePersistTimer) return
+  if (workspaceStatePersistTimer) clearTimeout(workspaceStatePersistTimer)
+  workspaceStatePersistTimer = null
   if (!workspaceStateHydrated || !workspaceDir.value) return
   try {
     const registry = workspaceStateRegistry()
@@ -3781,15 +3792,22 @@ function localImageCacheKey(path = '', thumbnail = false) {
 }
 
 const localImagePreviewRequests = new Map()
+let thumbnailGeneration = 0
+const thumbnailOwner = `workflow-${Date.now()}-${Math.random()}`
+function cancelWorkspaceThumbnails() {
+  void window.cs?.cancelLocalImageThumbnails?.(`${thumbnailOwner}:${thumbnailGeneration}`)?.catch(() => {})
+  thumbnailGeneration++
+}
 
 async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
   const key = String(path || '').trim()
   if (!key) return
   const cacheKey = localImageCacheKey(key, thumbnail)
   if (!cacheKey || localImagePreviews[cacheKey] || brokenPreviews[cacheKey] || localImagePreviewLoading.has(cacheKey)) return
-  const request = { workspace: workspaceDir.value }
+  const request = { workspace: workspaceDir.value, generation: thumbnailGeneration }
+  const thumbnailOptions = { maxEdge: 280, quality: 0.72, scope: `${thumbnailOwner}:${request.generation}`, priority: 'visible' }
   localImagePreviewRequests.set(cacheKey, request)
-  const isCurrent = () => localImagePreviewRequests.get(cacheKey) === request && workspaceDir.value === request.workspace
+  const isCurrent = () => localImagePreviewRequests.get(cacheKey) === request && workspaceDir.value === request.workspace && thumbnailGeneration === request.generation
   localImagePreviewLoading.add(cacheKey)
   try {
     let dataUrl = ''
@@ -3799,7 +3817,7 @@ async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
     if (typeof workspaceReader === 'function') {
       try {
         const response = thumbnail
-          ? await workspaceReader(workspaceDir.value, key, { maxEdge: 280, quality: 0.72 })
+          ? await workspaceReader(workspaceDir.value, key, thumbnailOptions)
           : await workspaceReader(workspaceDir.value, key)
         if (response?.ok !== false) {
           dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
@@ -3808,13 +3826,15 @@ async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
         // Assets outside the current workspace can still use the existing local-media bridge.
       }
     }
+    if (!isCurrent()) return
     // Grid / dense lists: compressed thumbnails only (full base64 of 10MB originals freezes the UI).
     if (!dataUrl && thumbnail && typeof window.cs?.readLocalImageThumbnail === 'function') {
-      const response = await window.cs.readLocalImageThumbnail(key, { maxEdge: 280, quality: 0.72 })
+      const response = await window.cs.readLocalImageThumbnail(key, thumbnailOptions)
       if (response?.ok === false) throw new Error(response?.error || '本地缩略图不可用')
       dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
     }
-    if (!dataUrl && typeof window.cs?.readLocalImagePreview === 'function') {
+    if (!isCurrent()) return
+    if (!dataUrl && !thumbnail && typeof window.cs?.readLocalImagePreview === 'function') {
       const response = await window.cs.readLocalImagePreview(key)
       if (response?.ok === false) throw new Error(response?.error || '本地图片预览不可用')
       dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
@@ -4237,6 +4257,7 @@ function persistWorkspaceDir(path = '') {
 
 function resetMaterialWorkspace() {
   workspaceFileSyncGeneration += 1
+  cancelWorkspaceThumbnails()
   localImagePreviewRequests.clear()
   localImagePreviewLoading.clear()
   resetMaterialPoll()
@@ -4269,6 +4290,7 @@ function resetMaterialWorkspace() {
 }
 
 function releaseWorkspacePreviews() {
+  cancelWorkspaceThumbnails()
   localImagePreviewRequests.clear()
   localImagePreviewLoading.clear()
   for (const key of Object.keys(localVideoPreviews)) delete localVideoPreviews[key]
@@ -9518,6 +9540,7 @@ watch([
 }, { deep: true })
 
 onMounted(() => {
+  window.addEventListener('beforeunload', flushWorkspaceState)
   workspaceStateHydrated = true
   const restoredWorkspace = restoreWorkspaceSnapshot(workspaceDir.value)
   void (async () => {
@@ -9538,9 +9561,23 @@ onMounted(() => {
   void refreshAiVideoRuntimeState({ includeCatalogs: true })
 })
 
+onDeactivated(() => {
+  flushWorkspaceState()
+  void flushWorkspaceManifest()
+  cancelWorkspaceThumbnails()
+  localImagePreviewRequests.clear()
+  localImagePreviewLoading.clear()
+})
+
 onActivated(() => {
   void refreshAiVideoRuntimeState()
 })
+
+watch([activeMaterialStyleCode, activeMaterialSource, materialDisplayMode], () => {
+  cancelWorkspaceThumbnails()
+  localImagePreviewRequests.clear()
+  localImagePreviewLoading.clear()
+}, { flush: 'pre' })
 
 // 筛选/款号切换后重绑缩略图观察
 watch([displayedVideoTaskAssets, () => videoTaskDialogOpen.value], async ([, open]) => {
@@ -9554,6 +9591,9 @@ watch([displayedVideoTaskAssets, () => videoTaskDialogOpen.value], async ([, ope
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', flushWorkspaceState)
+  flushWorkspaceState()
+  cancelWorkspaceThumbnails()
   localImagePreviewRequests.clear()
   localImagePreviewLoading.clear()
   workspaceFileSyncGeneration += 1

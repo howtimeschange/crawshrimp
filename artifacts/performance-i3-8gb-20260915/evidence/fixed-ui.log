@@ -1,0 +1,4 @@
+{"rate":1,"p95":36.300000071525574,"median":23.100000023841858,"max":38.799999952316284,"writes":1,"errors":[],"savedSelected":1,"selected":1}
+{"rate":1,"scenario":"save-failure","error":"工作区恢复信息未保存恢复信息保存失败，请检查工作区目录或本机存储权限后重试。查看详情injected manifest failure","visible":true}
+{"rate":4,"p95":104.40000009536743,"median":91.19999992847443,"max":110.30000007152557,"writes":1,"errors":[],"savedSelected":1,"selected":1}
+{"rate":4,"scenario":"save-failure","error":"工作区恢复信息未保存恢复信息保存失败，请检查工作区目录或本机存储权限后重试。查看详情injected manifest failure","visible":true}

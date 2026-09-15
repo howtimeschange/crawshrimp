@@ -1,0 +1,88 @@
+
+> crawshrimp@2.5.6 vite:build
+> vite build
+
+vite v8.1.4 building client environment for production...
+[2K
+transforming...✓ 7073 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/renderer/index.html                                                       0.61 kB │ gzip:   0.42 kB
+dist/renderer/assets/ku-B2Sk4hPT.json                                          4.44 kB │ gzip:   1.33 kB
+dist/renderer/assets/volcengine-mark-h8y9nx8l.png                              4.77 kB
+dist/renderer/assets/my-2Tr1b_KD.json                                          7.35 kB │ gzip:   1.57 kB
+dist/renderer/assets/zh-cn-D5ilKeWa.json                                      21.17 kB │ gzip:   6.25 kB
+dist/renderer/assets/zh-tw-8gJND7a5.json                                      21.26 kB │ gzip:   6.28 kB
+dist/renderer/assets/main-Cej8yirC.json                                       21.51 kB │ gzip:   5.42 kB
+dist/renderer/assets/id-Bye4I9WU.json                                         22.13 kB │ gzip:   5.84 kB
+dist/renderer/assets/da-Cfadwr44.json                                         22.16 kB │ gzip:   6.07 kB
+dist/renderer/assets/no-DMNBHleU.json                                         22.27 kB │ gzip:   6.10 kB
+dist/renderer/assets/ms-BIRz_l5l.json                                         22.36 kB │ gzip:   5.94 kB
+dist/renderer/assets/sv-BKvaWKFB.json                                         22.57 kB │ gzip:   6.13 kB
+dist/renderer/assets/nl-D7OJDhwa.json                                         22.79 kB │ gzip:   6.11 kB
+dist/renderer/assets/so-7B9IOOWW.json                                         22.81 kB │ gzip:   6.34 kB
+dist/renderer/assets/hr-DKUQFW9O.json                                         22.92 kB │ gzip:   6.28 kB
+dist/renderer/assets/sl-Ca5Hd5p6.json                                         22.97 kB │ gzip:   6.20 kB
+dist/renderer/assets/fi-2K_amEG6.json                                         23.10 kB │ gzip:   6.38 kB
+dist/renderer/assets/tr-MYM1Auca.json                                         23.10 kB │ gzip:   6.26 kB
+dist/renderer/assets/pt-pt-4ecOvCHH.json                                      23.17 kB │ gzip:   6.15 kB
+dist/renderer/assets/gl-BJPIJ74L.json                                         23.21 kB │ gzip:   6.14 kB
+dist/renderer/assets/ca-CszFgLck.json                                         23.31 kB │ gzip:   6.31 kB
+dist/renderer/assets/cs-DrLpEukY.json                                         23.31 kB │ gzip:   6.41 kB
+dist/renderer/assets/pt-br-BNgG1Iw6.json                                      23.39 kB │ gzip:   6.18 kB
+dist/renderer/assets/tl-0V5lM8Yl.json                                         23.41 kB │ gzip:   6.05 kB
+dist/renderer/assets/de-ByCbZon9.json                                         23.44 kB │ gzip:   6.27 kB
+dist/renderer/assets/es-BW3NjTiq.json                                         23.56 kB │ gzip:   6.17 kB
+dist/renderer/assets/it-BsJs40Ms.json                                         23.59 kB │ gzip:   6.10 kB
+dist/renderer/assets/ro-DP1YylDq.json                                         23.60 kB │ gzip:   6.36 kB
+dist/renderer/assets/pl-CCpx18Je.json                                         23.68 kB │ gzip:   6.57 kB
+dist/renderer/assets/ko-kr-CFfc1ltY.json                                      23.76 kB │ gzip:   6.53 kB
+dist/renderer/assets/fr-c1Go9tgC.json                                         23.95 kB │ gzip:   6.31 kB
+dist/renderer/assets/hu-av6J4XF2.json                                         24.25 kB │ gzip:   6.75 kB
+dist/renderer/assets/vi-CImD-N8H.json                                         25.05 kB │ gzip:   6.51 kB
+dist/renderer/assets/ja-DP49dCMK.json                                         25.17 kB │ gzip:   6.53 kB
+dist/renderer/assets/he-D-aMMUsR.json                                         25.67 kB │ gzip:   6.58 kB
+dist/renderer/assets/ar-BjhqvcQO.json                                         27.09 kB │ gzip:   6.71 kB
+dist/renderer/assets/ur-BCwBBw6w.json                                         28.57 kB │ gzip:   6.95 kB
+dist/renderer/assets/fa-CdNbmEe9.json                                         28.68 kB │ gzip:   6.91 kB
+dist/renderer/assets/uk-HcWt9XLM.json                                         31.39 kB │ gzip:   7.52 kB
+dist/renderer/assets/ru-E3aml3hR.json                                         31.48 kB │ gzip:   7.35 kB
+dist/renderer/assets/el-DZ4rPegE.json                                         31.64 kB │ gzip:   7.85 kB
+dist/renderer/assets/gu-in-DBPcasq_.json                                      33.39 kB │ gzip:   7.04 kB
+dist/renderer/assets/th-DI7B786l.json                                         34.11 kB │ gzip:   6.97 kB
+dist/renderer/assets/mr-DHBK4lnY.json                                         34.25 kB │ gzip:   7.07 kB
+dist/renderer/assets/km-kh-OJutt7Al.json                                      34.35 kB │ gzip:   7.20 kB
+dist/renderer/assets/pa-Cy97FwEH.json                                         34.40 kB │ gzip:   7.18 kB
+dist/renderer/assets/hi-in-orPhOtRI.json                                      35.57 kB │ gzip:   7.17 kB
+dist/renderer/assets/bn-CnT_gG-s.json                                         36.01 kB │ gzip:   7.21 kB
+dist/renderer/assets/kn-CSTt63ne.json                                         37.68 kB │ gzip:   7.16 kB
+dist/renderer/assets/ne-BTQI-2r1.json                                         38.24 kB │ gzip:   7.14 kB
+dist/renderer/assets/te-Bu7k8v63.json                                         38.57 kB │ gzip:   7.53 kB
+dist/renderer/assets/ta-MulN6rAH.json                                         40.01 kB │ gzip:   7.21 kB
+dist/renderer/assets/ml-BucMs4M7.json                                         40.35 kB │ gzip:   7.49 kB
+dist/renderer/assets/IBMPlexMono-Bold-DXjtWYQI.woff2                          46.68 kB
+dist/renderer/assets/IBMPlexMono-Medium-B772pXP5.woff2                        46.72 kB
+dist/renderer/assets/IBMPlexMono-BoldItalic-BgXsX49L.woff2                    50.62 kB
+dist/renderer/assets/IBMPlexMono-MediumItalic-DcUpDvfM.woff2                  51.34 kB
+dist/renderer/assets/0_merged-DJArLG94.svg                                    55.09 kB │ gzip:  15.32 kB
+dist/renderer/assets/IBMPlexSans-Bold-CDYgCOW4.woff2                          63.01 kB
+dist/renderer/assets/IBMPlexSans-BoldItalic-BgMlRJc-.woff2                    66.63 kB
+dist/renderer/assets/IBMPlexSans-Medium-BQLKo0ot.woff2                        66.74 kB
+dist/renderer/assets/IBMPlexSerif-Bold-DfPAuzEv.woff2                         68.94 kB
+dist/renderer/assets/IBMPlexSans-MediumItalic-SdO5NnXo.woff2                  71.20 kB
+dist/renderer/assets/IBMPlexSerif-Medium-BpRXNayp.woff2                       72.60 kB
+dist/renderer/assets/IBMPlexSerif-BoldItalic-IdHRMZmK.woff2                   73.99 kB
+dist/renderer/assets/IBMPlexSerif-MediumItalic-Bj_1Y4Ju.woff2                 77.90 kB
+dist/renderer/assets/Shantell_Sans-Informal_Bold-CHc5U8I8.woff2              151.26 kB
+dist/renderer/assets/Shantell_Sans-Informal_Bold_Italic-ci_cB_6_.woff2       152.33 kB
+dist/renderer/assets/Shantell_Sans-Informal_Regular-DT813UET.woff2           153.50 kB
+dist/renderer/assets/Shantell_Sans-Informal_Regular_Italic-FZdkI0Vo.woff2    155.42 kB
+dist/renderer/assets/index-DRvciYHl.css                                      466.29 kB │ gzip:  71.37 kB
+dist/renderer/assets/index-nWeUJtyD.js                                     2,905.55 kB │ gzip: 879.95 kB
+
+✓ built in 713ms
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
