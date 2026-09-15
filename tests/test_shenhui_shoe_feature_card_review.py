@@ -60,6 +60,7 @@ class ShoeFeatureCardReviewTests(unittest.TestCase):
         self.assertEqual(result["_consensus_issues"], [])
         self.assertEqual(set(calls), {"a", "b"})
         sheets.assert_called_once()
+        self.assertEqual(sheets.call_args.kwargs["reference_image"], shoe.SHOE_YX_REFERENCE_IMAGE)
 
     def test_missing_candidate_or_existing_selection_does_not_call_models(self):
         for options in ({"nominated": False}, {"selected": "I01"}):

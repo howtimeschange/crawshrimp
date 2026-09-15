@@ -38,6 +38,21 @@ def valid_scripts():
 
 
 class LlmGatewayTests(unittest.TestCase):
+    def test_deepseek_v41_uses_domestic_gateway(self):
+        route = llm_gateway.route_for_model("deepseek-v4.1-flash", self.config())
+        self.assertEqual(route.model_id, "deepseek-v4.1-flash")
+        self.assertEqual(route.base_url, "https://domestic.example/v1")
+        self.assertEqual(route.api_key, "unit-key")
+        self.assertEqual(route.protocol, "openai")
+
+    def test_astra_uses_existing_overseas_vision_gateway(self):
+        route = llm_gateway.route_for_model("gpt-6-astra", self.config())
+        control = llm_gateway.route_for_model("gpt-5.6-sol", self.config())
+        self.assertEqual(route.model_id, "gpt-6-astra")
+        self.assertEqual(route.base_url, control.base_url)
+        self.assertEqual(route.protocol, "openai")
+        self.assertIn("gpt-6-astra", llm_gateway.BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS)
+
     def config(self):
         return {
             "ai": {
@@ -90,15 +105,26 @@ class LlmGatewayTests(unittest.TestCase):
         pro = llm_gateway.route_for_model("deepseek-official-v4-pro", config)
         vision = llm_gateway.route_for_model("deepseek-official-v4-flash-vision-exp", config)
 
-        self.assertEqual(flash.model_id, "deepseek-v4-flash")
+        self.assertEqual(flash.model_id, "deepseek-flash")
         self.assertEqual(flash.base_url, "https://api.deepseek.example")
         self.assertEqual(flash.api_key, "sk-ds-official-unit")
         self.assertEqual(flash.protocol, "openai")
         self.assertEqual(pro.model_id, "deepseek-v4-pro")
-        self.assertEqual(vision.model_id, "deepseek-v4-flash-vision-exp")
+        self.assertEqual(vision.model_id, "deepseek-flash")
         self.assertEqual(vision.base_url, "https://api.deepseek.example")
         self.assertEqual(vision.api_key, "sk-ds-official-unit")
         self.assertEqual(vision.protocol, "openai")
+
+    def test_deepseek_flash_aliases_share_one_multimodal_route_identity(self):
+        config = self.config()
+        config["ai"]["llm"]["deepseek_api_key"] = "sk-ds-official-unit"
+        routes = [llm_gateway.route_for_model(model, config) for model in (
+            "deepseek-official-flash", "deepseek-official-v4-flash",
+            "deepseek-official-v4-flash-vision-exp",
+        )]
+        self.assertEqual({route.model_id for route in routes}, {"deepseek-flash"})
+        self.assertEqual({route.api_key for route in routes}, {"sk-ds-official-unit"})
+        self.assertIn("deepseek-official-flash", llm_gateway.BALA_VIDEO_PROMPT_MODELS)
 
     def test_deepseek_official_requires_dedicated_key(self):
         config = self.config()
@@ -114,7 +140,7 @@ class LlmGatewayTests(unittest.TestCase):
         with patch.dict(os.environ, {"CRAWSHRIMP_DEEPSEEK_API_KEY": "runtime-ds-key"}):
             route = llm_gateway.route_for_model("deepseek-official-v4-flash", config)
         self.assertEqual(route.api_key, "runtime-ds-key")
-        self.assertEqual(route.model_id, "deepseek-v4-flash")
+        self.assertEqual(route.model_id, "deepseek-flash")
 
     def test_glm_official_routes_use_dedicated_key_and_real_model_names(self):
         config = self.config()
@@ -203,7 +229,7 @@ class LlmGatewayTests(unittest.TestCase):
         )
 
         self.assertEqual(payload, {"color": "red"})
-        self.assertEqual(route.model_id, "deepseek-v4-flash-vision-exp")
+        self.assertEqual(route.model_id, "deepseek-flash")
         self.assertEqual(route.base_url, llm_gateway.DEEPSEEK_OFFICIAL_BASE_URL)
         self.assertEqual(calls[0][3], ["data:image/png;base64,iVBORw0KGgo="])
 

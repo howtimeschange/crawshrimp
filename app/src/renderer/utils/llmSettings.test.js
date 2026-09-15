@@ -22,16 +22,18 @@ test('LLM settings expose all configured gateway defaults and supported model id
   assert.equal(LLM_DEFAULTS['ai.llm.default_model'], 'gemini-3.5-flash')
   assert.equal(LLM_DEFAULTS['ai.llm.deepseek_base_url'], 'https://api.deepseek.com')
   assert.equal(LLM_DEFAULTS['ai.llm.glm_base_url'], GLM_OFFICIAL_BASE_URL_DEFAULT)
-  assert.equal(LLM_MODELS.length, 21)
+  assert.equal(LLM_MODELS.length, 24)
   assert.deepEqual(
     LLM_MODELS.map(item => item.value),
     [
+      'deepseek-official-flash',
       'deepseek-official-v4-flash',
       'deepseek-official-v4-pro',
       'deepseek-official-v4-flash-vision-exp',
       'glm-official-5.3-flash',
       'glm-official-5.3',
       'glm-official-5.2',
+      'gpt-6-astra',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
@@ -42,6 +44,7 @@ test('LLM settings expose all configured gateway defaults and supported model id
       'gemini-3.5-flash',
       'qwen3.8-max-preview',
       'qwen3.7-plus',
+      'deepseek-v4.1-flash',
       'deepseek-v4-flash',
       'deepseek-v4-pro',
       'glm-5.2',
@@ -50,6 +53,7 @@ test('LLM settings expose all configured gateway defaults and supported model id
     ],
   )
   assert.deepEqual(DEEPSEEK_OFFICIAL_MODELS_UI.map(item => item.value), [
+    'deepseek-official-flash',
     'deepseek-official-v4-flash',
     'deepseek-official-v4-pro',
     'deepseek-official-v4-flash-vision-exp',

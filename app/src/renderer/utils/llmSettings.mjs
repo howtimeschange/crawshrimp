@@ -18,12 +18,14 @@ export const LLM_DEFAULTS = Object.freeze({
 })
 
 export const LLM_MODELS = Object.freeze([
-  { value: 'deepseek-official-v4-flash', label: 'DeepSeek 官方 · V4 Flash' },
+  { value: 'deepseek-official-flash', label: 'DeepSeek 官方 · V4.1 Flash（多模态）' },
+  { value: 'deepseek-official-v4-flash', label: 'DeepSeek 官方 · V4.1 Flash（旧 Flash 别名）' },
   { value: 'deepseek-official-v4-pro', label: 'DeepSeek 官方 · V4 Pro' },
-  { value: 'deepseek-official-v4-flash-vision-exp', label: 'DeepSeek 官方 · V4 Flash Vision Exp' },
+  { value: 'deepseek-official-v4-flash-vision-exp', label: 'DeepSeek 官方 · V4.1 Flash（旧 Vision 别名）' },
   { value: 'glm-official-5.3-flash', label: 'GLM 官方 · GLM-5.3-Flash（主推）' },
   { value: 'glm-official-5.3', label: 'GLM 官方 · GLM-5.3' },
   { value: 'glm-official-5.2', label: 'GLM 官方 · GLM-5.2' },
+  { value: 'gpt-6-astra', label: '海外 · GPT-6 Astra' },
   { value: 'gpt-5.6-sol', label: '海外 · GPT-5.6 Sol' },
   { value: 'gpt-5.6-terra', label: '海外 · GPT-5.6 Terra' },
   { value: 'gpt-5.6-luna', label: '海外 · GPT-5.6 Luna' },
@@ -34,6 +36,7 @@ export const LLM_MODELS = Object.freeze([
   { value: 'gemini-3.5-flash', label: '海外 · Gemini 3.5 Flash（默认）' },
   { value: 'qwen3.8-max-preview', label: '国内 · Qwen 3.8 Max Preview' },
   { value: 'qwen3.7-plus', label: '国内 · Qwen 3.7 Plus' },
+  { value: 'deepseek-v4.1-flash', label: '国内 · DeepSeek V4.1 Flash（网关）' },
   { value: 'deepseek-v4-flash', label: '国内 · DeepSeek V4 Flash（网关）' },
   { value: 'deepseek-v4-pro', label: '国内 · DeepSeek V4 Pro（网关）' },
   { value: 'glm-5.2', label: '国内 · GLM 5.2' },
@@ -42,9 +45,10 @@ export const LLM_MODELS = Object.freeze([
 ])
 
 export const DEEPSEEK_OFFICIAL_MODELS_UI = Object.freeze([
-  { value: 'deepseek-official-v4-flash', label: 'DeepSeek 官方 · V4 Flash' },
+  { value: 'deepseek-official-flash', label: 'DeepSeek 官方 · V4.1 Flash（多模态）' },
+  { value: 'deepseek-official-v4-flash', label: 'DeepSeek 官方 · V4.1 Flash（旧 Flash 别名）' },
   { value: 'deepseek-official-v4-pro', label: 'DeepSeek 官方 · V4 Pro' },
-  { value: 'deepseek-official-v4-flash-vision-exp', label: 'DeepSeek 官方 · V4 Flash Vision Exp' },
+  { value: 'deepseek-official-v4-flash-vision-exp', label: 'DeepSeek 官方 · V4.1 Flash（旧 Vision 别名）' },
 ])
 
 export const GLM_OFFICIAL_MODELS_UI = Object.freeze([

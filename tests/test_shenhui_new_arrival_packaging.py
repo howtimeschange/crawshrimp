@@ -138,7 +138,9 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             "assets/鞋品品类映射模板.xlsx",
         )
         self.assertEqual(params["model_chain"]["type"], "model_chain")
-        self.assertEqual(params["model_chain"]["label"], "模型策略")
+        self.assertEqual(params["model_chain"]["label"], "旧版对照模型顺序")
+        self.assertEqual(params["model_chain"]["visible_when"], {"field": "shoe_pose_strategy", "not_equals": "sequential_templates"})
+        self.assertLess(list(params).index("shoe_pose_strategy"), list(params).index("model_chain"))
         self.assertEqual(params["model_chain"]["ui_span"], "full")
         default_model = params["model_chain"]["default_model"]
         fallback_models = {
@@ -223,6 +225,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         self.assertEqual(param.fallback_models[0]["label"], "备选模型 1")
 
         serialized = _serialize_task_param("shenhui-new-arrival", param)
+        self.assertEqual(serialized["visible_when"], {"field": "shoe_pose_strategy", "not_equals": "sequential_templates"})
         self.assertEqual(serialized["default_model"]["default"], "gpt-5.6-sol")
         self.assertEqual(
             serialized["fallback_models"][0]["default"],
@@ -1477,7 +1480,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             )
             self.assertEqual(
                 prepare.call_args.kwargs["label_fallback_model_ids"],
-                ["gpt-5.6-terra", "gpt-5.6-luna"],
+                None,
             )
             self.assertEqual(
                 prepare.call_args.kwargs["shoe_categories"],
@@ -1540,7 +1543,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
 
             self.assertEqual(result, expected_rows)
             self.assertIsNone(prepare.call_args.kwargs["shoe_categories"])
-            self.assertTrue(any("模型兜底识别品类" in item for item in logs))
+            self.assertTrue(any("先核验吊牌产品名称" in item for item in logs))
 
     def test_finalize_outputs_creates_style_zips_when_auto_zip_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -908,6 +908,48 @@ def validate_semantic_rows(
     }
     for row in report_rows:
         slot = text(row.get("规则槽位"))
+        sequential = _json_object(row.get("逐坑位复核"))
+        if sequential is not None:
+            if slot not in semantic_slots:
+                continue
+            if (sequential.get("accepted") is not True
+                    or sequential.get("source") != text(row.get("原文件名"))
+                    or sequential.get("slot") != slot):
+                issues.append(f"{slot} sequential review does not approve actual source")
+            elif sequential.get("kind") == "label_identity":
+                families = {shoe._label_model_family(v.get("model_id", ""))
+                            for v in sequential.get("votes", [])}
+                if slot != "wpz6" or not shoe._label_votes_agree(sequential.get("votes", [])):
+                    issues.append(f"{slot} missing independent label identity review")
+            else:
+                from core.shenhui_shoe_sequential import contract
+                expected = shoe._semantic_vote_slot(slot, category)
+                expected = {"yq1": "tmz2", "wpz5": "tmz5"}.get(expected, expected)
+                checks = sequential.get("checks") or {}
+                if sequential.get("comparison") == "direct_template_pair":
+                    if (sequential.get("review_slot") != expected
+                            or not sequential.get("model") or not sequential.get("visual_evidence")
+                            or not re.fullmatch(r"[0-9a-f]{64}", text(sequential.get("comparison_sha256")))
+                            or not isinstance(sequential.get("visible_differences"), list)
+                            or (expected == "yq3" and sequential.get("same_side") is not True)
+                            or (slot != "wpz5" and sequential.get("review_source") != text(row.get("原文件名")))):
+                        issues.append(f"{slot} incomplete direct template comparison evidence")
+                    if expected == "yq3" and sequential.get("review_version") == "pose_then_side_v1":
+                        side = sequential.get("side_identity") or {}
+                        hashes = side.get("input_sha256") or []
+                        if (side.get("same_side") is not True or not side.get("model")
+                                or (side.get("response") or {}).get("same_side") is not True
+                                or not (side.get("response") or {}).get("reason")
+                                or len(hashes) != 2
+                                or any(not re.fullmatch(r"[0-9a-f]{64}", text(h)) for h in hashes)):
+                            issues.append(f"{slot} missing independent shoe side evidence")
+                    continue
+                if (sequential.get("review_slot") != expected
+                        or not sequential.get("model") or not sequential.get("visual_evidence")
+                        or any(checks.get(k) is not True for k in contract(expected, category))
+                        or (slot != "wpz5" and sequential.get("review_source") != text(row.get("原文件名")))):
+                    issues.append(f"{slot} incomplete sequential visual evidence")
+            continue
         evidence = _json_object(row.get("语义属性"))
         consensus = _json_object(row.get("模型共识"))
         if evidence is None and consensus is None:
@@ -1077,9 +1119,10 @@ def validate_style(
                 )
         elif slot == "wpt30":
             if output_path.stat().st_size >= shoe.SHOE_WPT_MAX_BYTES:
-                issues.append(
-                    f"wpt30 exceeds 600KB: {output_path} bytes={output_path.stat().st_size}"
-                )
+                if "需人工处理" not in text(row.get("规则告警")):
+                    issues.append(f"wpt30 oversize output lacks manual-processing warning: {output_path}")
+                else:
+                    warnings.append(f"wpt30 retained for manual processing: {output_path} bytes={output_path.stat().st_size}")
             if not image_supports_transparency(output_path):
                 issues.append(f"wpt30 has no transparency channel: {output_path} mode={mode}")
             elif not image_has_transparent_pixels(output_path):
@@ -1152,7 +1195,16 @@ def validate_style(
         pose3_max_aspect = 0.95 if category_text == "婴童" else 0.82
         pose3_max_coverage = 0.145 if category_text == "婴童" else 0.16
         pose3 = tmz_features[2][1]
-        if not (
+        direct_pose3 = any(
+            text(row.get("规则槽位")) == "tmz3"
+            and Path(text(row.get("本地文件"))).resolve() == (style_root / "tmz (3).jpg").resolve()
+            and (evidence := _json_object(row.get("逐坑位复核")))
+            and evidence.get("comparison") == "direct_template_pair"
+            and evidence.get("accepted") is True
+            and evidence.get("source") == text(row.get("原文件名"))
+            for row in report_rows
+        )
+        if not direct_pose3 and not (
             0.45 <= pose3.aspect_ratio <= pose3_max_aspect
             and pose3.bounding_coverage <= pose3_max_coverage
         ):
@@ -1162,7 +1214,27 @@ def validate_style(
             )
         pose5 = tmz_features[4][1]
         if pose5.background_luma < shoe.SHOE_WHITE_BACKGROUND_LUMA:
-            issues.append(f"tmz (5).jpg is not white background luma={pose5.background_luma:.1f}")
+            gray_fallback_verified = False
+            for row in report_rows:
+                if (text(row.get("规则槽位")) != "tmz5"
+                        or Path(text(row.get("本地文件"))).resolve() != (style_root / "tmz (5).jpg").resolve()):
+                    continue
+                try:
+                    evidence = json.loads(text(row.get("逐坑位复核")) or "{}")
+                except (ValueError, TypeError):
+                    continue
+                if (evidence.get("accepted") is True
+                        and evidence.get("source") == text(row.get("原文件名"))
+                        and (evidence.get("checks", {}).get("clean_gray_background") is True
+                             or (evidence.get("comparison") == "direct_template_pair"
+                                 and evidence.get("background_policy") == "gray_fallback"
+                                 and re.fullmatch(r"[0-9a-f]{64}", text(evidence.get("comparison_sha256")))))):
+                    gray_fallback_verified = True
+            message = f"tmz (5).jpg gray original fallback luma={pose5.background_luma:.1f}"
+            if gray_fallback_verified:
+                warnings.append(message)
+            else:
+                issues.append(message + " lacks independent fallback review")
         for first_index, first_feature in tmz_features:
             for second_index, second_feature in tmz_features:
                 if first_index >= second_index:

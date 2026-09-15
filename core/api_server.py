@@ -3601,6 +3601,11 @@ def _prepare_shenhui_shoe_package_rows(
             or run_params.get("fallback_models")
             or ""
         )
+    execution_fields = ['shoe_execution_model', *[f'shoe_execution_fallback_{i}' for i in range(1, 4)]]
+    execution_model_ids = None
+    if any(key in run_params for key in execution_fields):
+        execution_model_ids = [str(run_params.get('shoe_execution_model') or 'gpt-6-astra').strip()]
+        execution_model_ids.extend(str(run_params[key]).strip() for key in execution_fields[1:] if run_params.get(key))
     category_file = run_params.get("shoe_category_file")
     shoe_categories = None
     if isinstance(category_file, dict) and (
@@ -3616,7 +3621,7 @@ def _prepare_shenhui_shoe_package_rows(
             )
         )
         if isinstance(category_rows, list) and not has_category_value:
-            log("鞋品品类 Excel 未填写品类，后续使用模型兜底识别品类")
+            log("鞋品品类 Excel 未填写品类，先核验吊牌产品名称再确定姿势模板")
         else:
             shoe_categories = shenhui_shoe_packaging.parse_shoe_category_rows(
                 category_rows
@@ -3633,9 +3638,9 @@ def _prepare_shenhui_shoe_package_rows(
             or shenhui_shoe_packaging.SHOE_POSE_DEFAULT_STRATEGY
         ),
         fallback_model_ids=fallback_model_ids,
+        execution_model_ids=execution_model_ids,
         label_model_id=str(run_params.get("label_model_id") or "").strip(),
-        label_fallback_model_ids=run_params.get("label_fallback_model_ids")
-        or fallback_model_ids,
+        label_fallback_model_ids=run_params.get("label_fallback_model_ids"),
         shoe_categories=shoe_categories,
         analyze_color_label=(
             False

@@ -84,6 +84,13 @@ def _required_pose_candidate_ids(*extra_ids):
 
 
 class ShenhuiShoePackagingRuleTests(unittest.TestCase):
+    def test_retired_deepseek_aliases_do_not_create_extra_consensus_routes(self):
+        models = shenhui_shoe_packaging._shoe_pose_model_ids(
+            "deepseek-official-flash", None,
+            ["deepseek-official-v4-flash", "deepseek-official-v4-flash-vision-exp", "gpt-5.6-sol"],
+        )
+        self.assertEqual(models, ["deepseek-official-flash", "gpt-5.6-sol"])
+
     def test_full_sheet_disagreement_uses_paged_review_after_independent_quorum(self):
         calls = []
         ids = {f"I{i:02d}": f"photo{i}.jpg" for i in range(1, 25)}
@@ -741,7 +748,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
     def test_pose_strategy_aliases_are_normalized(self):
         self.assertEqual(
             shenhui_shoe_packaging.SHOE_POSE_DEFAULT_STRATEGY,
-            shenhui_shoe_packaging.SHOE_POSE_STRATEGY_SINGLE_SHEET,
+            "sequential_templates",
         )
         self.assertEqual(
             shenhui_shoe_packaging.normalize_shoe_pose_strategy("global"),
@@ -1167,6 +1174,48 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
             self.assertEqual(filtered, {"I02": "paired-gray.jpg"})
             self.assertIn("visual pair", exclusions["I03"])
+
+    def test_exact_gray_boot_pair_survives_absolute_gate_and_prior_nomination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            specs = {
+                "white.png": (255, (175, 70, 225, 310), (70, 45, 40)),
+                "gray.png": (242, (175, 70, 225, 310), (70, 45, 40)),
+                "wrong-color.png": (242, (175, 70, 225, 310), (160, 80, 60)),
+                "other-pose.png": (242, (140, 80, 260, 300), (70, 45, 40)),
+            }
+            entries = {}
+            for name, (bg, box, foreground) in specs.items():
+                path = root / name
+                image = Image.new("RGB", (400, 400), (bg, bg, bg))
+                ImageDraw.Draw(image).rounded_rectangle(box, radius=12, fill=foreground)
+                image.save(path)
+                entries[name] = {"path": path, "filename": name}
+            ids = {"I01": "white.png", "I02": "gray.png",
+                   "I03": "wrong-color.png", "I04": "other-pose.png"}
+            focused = {"tmz5": "I01", "wpz": ["", "", "", "", "I04", ""]}
+            common = dict(focused_slots=focused, candidate_facts_by_model=[],
+                          required_votes=2, entries_by_name=entries, shoe_category="休闲")
+            ordinary, excluded = shenhui_shoe_packaging._targeted_slot_candidate_ids(
+                "wpz5", ids, **common)
+            self.assertNotIn("I02", ordinary)
+            self.assertIn("geometry hard gate", excluded["I02"])
+            for prefer_prior in (True, False):
+                with self.subTest(prefer_prior=prefer_prior):
+                    selected, _ = shenhui_shoe_packaging._targeted_slot_candidate_ids(
+                        "wpz5", ids, **common,
+                        prefer_prior_slot_nominations=prefer_prior,
+                        prefer_exact_tmz5_visual_pair=True)
+                    self.assertEqual(selected, {"I02": "gray.png"})
+            # A contour-identical shoe in another color is not a background copy.
+            self.assertEqual(shenhui_shoe_packaging._strict_gray_tmz5_pair_ids(
+                ids, focused, entries), {"I02"})
+            # Cross-slot occupation is still a hard exclusion, even for a pair.
+            focused["tmz3"] = "I02"
+            selected, excluded = shenhui_shoe_packaging._targeted_slot_candidate_ids(
+                "wpz5", ids, **common, prefer_exact_tmz5_visual_pair=True)
+            self.assertNotIn("I02", selected)
+            self.assertIn("occupied", excluded["I02"])
 
     def test_yq1_targeted_pool_preserves_equivalent_tmz2_wpz2_family(self):
         candidate_ids = {
@@ -4228,7 +4277,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 label_image="label.jpg",
                 label_source_image="shoe-box.jpg",
                 label_model_id="gpt-5.6-sol",
-                fallback_model_ids=["gemini-3.5-flash"],
+                fallback_model_ids=["gpt-5.6-terra", "gpt-5.6-luna", "gemini-3.5-flash"],
                 config={"ai": {"llm": {"api_key": "gateway-key"}}},
             )
 
@@ -6642,7 +6691,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual(
+            self.assertCountEqual(
                 calls,
                 [
                     ["204326141005"],
@@ -6739,6 +6788,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             shenhui_shoe_packaging.prepare_shoe_packages_skip_failed_styles(
                 data_rows=rows,
                 output_root=Path("/tmp/shoe-output"),
+                style_workers=1,
                 progress=progress_events.append,
             )
 
@@ -7526,6 +7576,12 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             ])
 
     def test_global_pages_mandatory_tmz3_recheck_overrides_wrong_focused_consensus(self):
+        self._assert_mandatory_tmz3_recheck(infer_category=False)
+
+    def test_blank_category_loads_inferred_template_for_mandatory_rechecks(self):
+        self._assert_mandatory_tmz3_recheck(infer_category=True)
+
+    def _assert_mandatory_tmz3_recheck(self, *, infer_category):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             candidate_ids = {
@@ -7538,6 +7594,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 Image.new("RGB", (120, 100), (index * 19 % 255, 105, 185)).save(path)
                 candidate_entries.append({"filename": filename, "path": path})
             calls = []
+            progress_events = []
 
             def fake_multimodal_json(**kwargs):
                 prompt = kwargs["user_prompt"]
@@ -7545,6 +7602,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 model_id = kwargs["model_id"]
                 calls.append((model_id, image_name, prompt))
                 if "本轮只裁决 tmz3" in prompt:
+                    self.assertIn("tmz3-template.jpg", kwargs["image_inputs"])
                     facts = [
                         _candidate_fact(
                             "I03",
@@ -7602,9 +7660,14 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                     contact_sheets=["global-1.jpg", "global-2.jpg"],
                     pose_strategy=shenhui_shoe_packaging.SHOE_POSE_STRATEGY_GLOBAL_PAGES,
                     reference_image="main-template.jpg",
-                    main_pose_reference_images=[
+                    main_pose_reference_images=([] if infer_category else [
                         f"tmz{index}-template.jpg" for index in range(1, 6)
-                    ],
+                    ]),
+                    main_pose_references_by_category={
+                        "婴童": [f"tmz{index}-template.jpg" for index in range(1, 6)],
+                        "运动": [f"sport-tmz{index}.jpg" for index in range(1, 6)],
+                    },
+                    progress=lambda stage, **fields: progress_events.append(stage),
                     main_pose_reference_sheet="main-pose-sheet.jpg",
                     poster_reference_image="poster-template.jpg",
                     yq_reference_image="yq-template.jpg",
@@ -7615,7 +7678,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                     candidate_ids=candidate_ids,
                     candidate_entries=candidate_entries,
                     candidate_names=list(candidate_ids.values()),
-                    shoe_category="婴童",
+                    shoe_category="" if infer_category else "婴童",
                     model_id="model-a",
                     fallback_model_ids=["model-b", "model-c"],
                     config={"ai": {"llm": {"api_key": "gateway-key"}}},
@@ -7634,6 +7697,9 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             tmz3_evidence = payload["_targeted_slot_consensus"]["tmz3"]
             self.assertEqual(tmz3_evidence["status"], "locked")
             self.assertEqual(tmz3_evidence["required_votes"], 2)
+
+            self.assertTrue(any("单槽位 tmz3 第1轮" in stage and "批次1/1" in stage
+                                for stage in progress_events))
 
     def test_global_pages_missing_mandatory_slot_references_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -8634,6 +8700,40 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             self.assertNotIn("system_prompt", serialized)
             self.assertNotIn("user_prompt", serialized)
 
+    def test_gateway_empty_token_pool_skips_immediate_retries_without_lowering_votes(self):
+        calls = []
+
+        def generate(**kwargs):
+            model = kwargs["model_id"]
+            calls.append(model)
+            if model == "gpt-5.6-sol":
+                raise shenhui_shoe_packaging.llm_gateway.LlmGatewayError(
+                    '文本模型接口返回 HTTP 503：{"error":{"message":"no access tokens"}}'
+                )
+            return ({"color_name": "白紫色调00317", "shoe_category": "婴童",
+                     "candidates": _required_pose_candidate_facts()},
+                    type("Route", (), {"model_id": model})())
+
+        with patch.object(shenhui_shoe_packaging.llm_gateway,
+                          "generate_multimodal_json", side_effect=generate):
+            for _ in range(2):
+                payload = shenhui_shoe_packaging._default_analyze_color(
+                    consensus_required_votes=2, style_code="204426146036", color_code="00317",
+                    contact_sheet="contact.jpg", contact_sheets=["contact.jpg"],
+                    reference_image="main.jpg", poster_reference_image="poster.jpg",
+                    pose1_reference_image="pose1.jpg", yq_reference_image="yq.jpg",
+                    candidate_ids=_required_pose_candidate_ids(), candidate_names=[],
+                    shoe_category="婴童", model_id="gpt-5.6-sol",
+                    fallback_model_ids=["gpt-5.6-terra", "gpt-5.6-luna"],
+                    config={"ai": {"llm": {"api_key": "gateway-key"}}},
+                )
+                self.assertNotIn("gpt-5.6-sol", payload["_model_id"])
+                self.assertIn("gpt-5.6-terra", payload["_model_id"])
+                self.assertIn("gpt-5.6-luna", payload["_model_id"])
+        # A fresh colour/run probes recovery, but there are no three immediate retries.
+        self.assertEqual(calls.count("gpt-5.6-sol"), 2)
+        self.assertEqual(len(calls), 6)
+
     def test_pose_timeout_uses_fresh_fallback_before_retrying_slow_model(self):
         calls = []
         logs = []
@@ -8926,6 +9026,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                 targeted_slots,
                 ["yq2", "yq3", "tmz3", "wpz5"] * 2,
             )
+            self.assertEqual(targeted_slots[-2:], ["wpz5", "wpz5"])
             self.assertEqual(
                 {model_id for model_id, _image_name, _prompt in targeted_calls},
                 {"model-a", "model-b"},
@@ -9534,7 +9635,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertIn("kimi-k2.7-code", payload["_model_attempt_warnings"])
         self.assertTrue(any("优先切换独立 fallback" in item for item in logs))
         self.assertFalse(any("单批耐心复测" in item for item in logs))
-        self.assertTrue(any("姿势识别 deepseek-official-v4-flash-vision-exp" in item[0] for item in progress_events))
+        self.assertTrue(any("deepseek-official-v4-flash-vision-exp" in item[0] and "single_sheet" in item[0] for item in progress_events))
 
     def test_default_pose_chain_uses_gpt_then_domestic_fallback_order(self):
         self.assertEqual(

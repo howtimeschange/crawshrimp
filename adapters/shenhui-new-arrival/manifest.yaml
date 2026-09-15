@@ -426,7 +426,7 @@ tasks:
 
   - id: prepare_shoe_upload_package
     name: 【鞋品】整理深绘上新图包
-    description: 按鞋品品类与颜色选取天猫、唯品会、颜色图、海报、实物展示、细节和功能图，保留网盘全部原图并生成保持原尺寸的 jdt、wpt30、tmt 及 tmq 渠道素材
+    description: 先核对鞋盒标签确定品类与颜色，再按模板整理各渠道图包并保留全部原图。jdt、tmt 和标签图输出 800×800，不足透明补边；wpt 保留原尺寸与透明底，压缩后仍超限的图片保留并在结果表注明
     script: prepare-shoe-upload-package.js
     requires:
       permissions: [browser.read, browser.download, filesystem.read, filesystem.write, ai.invoke]
@@ -457,13 +457,85 @@ tasks:
         type: file_excel
         label: 款号品类表
         required: true
-        hint: 必填；上传含“款号、品类”两列的 Excel/CSV。脚本按表内款号批量整理，表内品类优先于模型识别
+        hint: 必填；上传含“款号、品类”两列的 Excel/CSV。款号必填，品类可留空；填写时优先使用表内品类，留空时根据核验后的标签名称识别
         template_file: assets/鞋品品类映射模板.xlsx
         template_label: 下载鞋品品类模板
+      - id: shoe_pose_strategy
+        type: select
+        label: 鞋品找图流程
+        default: sequential_templates
+        ui_span: full
+        options:
+          - value: sequential_templates
+            label: 双模板逐坑位匹配 + 实图质检（推荐）
+          - value: single_sheet
+            label: 全部候选拼一张大图（旧版对照）
+          - value: global_pages
+            label: 全局分页识别 + 规则锁槽
+          - value: batch_overview
+            label: 少图多批次 + 全景上下文
+          - value: batch
+            label: 少图多批次
+        hint: 先核对鞋盒标签，确定名称、颜色和品类，再使用上下双模板逐坑位选图、实图质检，仅对未通过坑位重选。默认 Astra 低推理强度，保留思考；流式显示处理进展，连续90秒无有效片段才超时。完整标签与局部裁片并行核验，已确认文字直接复用。最多同时处理两款
+      - id: shoe_execution_model_chain
+        type: model_chain
+        label: 执行模型与故障备用顺序
+        ui_span: full
+        visible_when:
+          field: shoe_pose_strategy
+          equals: sequential_templates
+        default_model:
+          id: shoe_execution_model
+          label: 默认执行模型
+          default: gpt-6-astra
+          options:
+            - value: gpt-6-astra
+              label: 森马 · GPT-6 Astra（低推理强度，推荐）
+            - value: deepseek-official-flash
+              label: DeepSeek 官方 Flash（独立直连）
+            - value: gpt-5.6-terra
+              label: 森马 · GPT-5.6 Terra
+            - value: deepseek-v4.1-flash
+              label: 森马 · DeepSeek V4.1 Flash
+            - value: gpt-5.6-sol
+              label: 森马 · GPT-5.6 Sol（手动对照）
+            - value: gpt-5.6-luna
+              label: 森马 · GPT-5.6 Luna（手动对照）
+        fallback_models:
+          - id: shoe_execution_fallback_1
+            label: 故障备用 1
+            default: deepseek-official-flash
+            options: &shoe_execution_fallback_options
+              - value: ""
+                label: 不使用
+              - value: gpt-6-astra
+                label: 森马 · GPT-6 Astra（低推理强度）
+              - value: deepseek-official-flash
+                label: DeepSeek 官方 Flash（独立直连）
+              - value: gpt-5.6-terra
+                label: 森马 · GPT-5.6 Terra
+              - value: deepseek-v4.1-flash
+                label: 森马 · DeepSeek V4.1 Flash
+              - value: gpt-5.6-sol
+                label: 森马 · GPT-5.6 Sol（手动对照）
+              - value: gpt-5.6-luna
+                label: 森马 · GPT-5.6 Luna（手动对照）
+          - id: shoe_execution_fallback_2
+            label: 故障备用 2
+            default: gpt-5.6-terra
+            options: *shoe_execution_fallback_options
+          - id: shoe_execution_fallback_3
+            label: 故障备用 3
+            default: deepseek-v4.1-flash
+            options: *shoe_execution_fallback_options
+        hint: 502/503/504先按1秒、3秒间隔重试，最多追加2次，仍失败再按顺序切换；连续90秒无有效输出则直接切换。官方直连作为首个备用，避免一直在同一网关重试。失败模型冷却120秒。图片不匹配仍需重选和质检，不以切换模型代替质量检查
       - id: model_chain
         type: model_chain
-        label: 模型策略
+        label: 旧版对照模型顺序
         ui_span: full
+        visible_when:
+          field: shoe_pose_strategy
+          not_equals: sequential_templates
         default_model:
           id: model_id
           label: 默认模型
@@ -471,6 +543,8 @@ tasks:
           options:
             - value: multi-model
               label: 仅按备选模型顺序自动尝试
+            - value: gpt-6-astra
+              label: GPT-6 Astra
             - value: gpt-5.6-sol
               label: GPT-5.6 Sol（推荐默认）
             - value: gpt-5.6-terra
@@ -479,10 +553,12 @@ tasks:
               label: GPT-5.6 Luna
             - value: gpt-5.5
               label: GPT-5.5（手动对照）
+            - value: deepseek-official-flash
+              label: DeepSeek 官方 · V4.1 Flash（多模态）
             - value: deepseek-official-v4-flash-vision-exp
-              label: DeepSeek 官方 · V4 Flash Vision Exp
+              label: DeepSeek 官方 · V4.1 Flash（旧 Vision 别名）
             - value: deepseek-official-v4-flash
-              label: DeepSeek 官方 · V4 Flash
+              label: DeepSeek 官方 · V4.1 Flash（旧 Flash 别名）
             - value: deepseek-official-v4-pro
               label: DeepSeek 官方 · V4 Pro
             - value: glm-official-5.3-flash
@@ -491,6 +567,8 @@ tasks:
               label: Qwen 3.8 Max Preview
             - value: qwen3.7-plus
               label: Qwen 3.7 Plus
+            - value: deepseek-v4.1-flash
+              label: DeepSeek V4.1 Flash（网关）
             - value: deepseek-v4-flash
               label: DeepSeek V4 Flash（网关）
             - value: deepseek-v4-pro
@@ -516,6 +594,8 @@ tasks:
             options: &shoe_fallback_model_options
               - value: ""
                 label: 不使用
+              - value: gpt-6-astra
+                label: GPT-6 Astra
               - value: gpt-5.6-terra
                 label: GPT-5.6 Terra
               - value: gpt-5.6-luna
@@ -524,10 +604,12 @@ tasks:
                 label: GPT-5.6 Sol（默认）
               - value: gpt-5.5
                 label: GPT-5.5
+              - value: deepseek-official-flash
+                label: DeepSeek 官方 · V4.1 Flash（多模态）
               - value: deepseek-official-v4-flash-vision-exp
-                label: DeepSeek 官方 · V4 Flash Vision Exp
+                label: DeepSeek 官方 · V4.1 Flash（旧 Vision 别名）
               - value: deepseek-official-v4-flash
-                label: DeepSeek 官方 · V4 Flash
+                label: DeepSeek 官方 · V4.1 Flash（旧 Flash 别名）
               - value: deepseek-official-v4-pro
                 label: DeepSeek 官方 · V4 Pro
               - value: glm-official-5.3-flash
@@ -536,6 +618,8 @@ tasks:
                 label: Qwen 3.8 Max Preview
               - value: qwen3.7-plus
                 label: Qwen 3.7 Plus
+              - value: deepseek-v4.1-flash
+                label: DeepSeek V4.1 Flash（网关）
               - value: deepseek-v4-flash
                 label: DeepSeek V4 Flash（网关）
               - value: deepseek-v4-pro
@@ -571,21 +655,6 @@ tasks:
             default: kimi-k2.7-code
             options: *shoe_fallback_model_options
         hint: 先使用默认模型；失败或超时后按备选模型 1 到 5 顺序尝试，可留空
-      - id: shoe_pose_strategy
-        type: select
-        label: 候选图识别策略
-        default: single_sheet
-        ui_span: full
-        options:
-          - value: single_sheet
-            label: 全部候选拼一张大图（推荐）
-          - value: global_pages
-            label: 全局分页识别 + 规则锁槽
-          - value: batch_overview
-            label: 少图多批次 + 全景上下文
-          - value: batch
-            label: 少图多批次
-        hint: 用于鞋品姿势识别。实测优先级：单张大图、全局分页规则锁槽、少图多批次全景上下文、少图多批次应急
       - id: package_name
         type: text
         label: 导出包名称

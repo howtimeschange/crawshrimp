@@ -25,14 +25,18 @@ OVERSEAS_ANTHROPIC_BASE_URL = "https://ai-aigw.semir.com/overseas-anthropic-vip"
 DOMESTIC_OPENAI_BASE_URL = "https://ai-aigw.semir.com/bailian-codingplan/v1"
 DEEPSEEK_OFFICIAL_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_OFFICIAL_MODELS = (
+    "deepseek-official-flash",
     "deepseek-official-v4-flash",
     "deepseek-official-v4-pro",
     "deepseek-official-v4-flash-vision-exp",
 )
 _DEEPSEEK_OFFICIAL_REAL_MODELS = {
-    "deepseek-official-v4-flash": "deepseek-v4-flash",
+    "deepseek-official-flash": "deepseek-flash",
+    # Retired Flash aliases are served by V4.1. Canonicalize the route so
+    # shoe consensus cannot count aliases as independent model votes.
+    "deepseek-official-v4-flash": "deepseek-flash",
     "deepseek-official-v4-pro": "deepseek-v4-pro",
-    "deepseek-official-v4-flash-vision-exp": "deepseek-v4-flash-vision-exp",
+    "deepseek-official-v4-flash-vision-exp": "deepseek-flash",
 }
 
 
@@ -57,6 +61,7 @@ def glm_official_real_model(model_id: str) -> str:
     return _GLM_OFFICIAL_REAL_MODELS.get(model_id, model_id)
 
 OVERSEAS_OPENAI_MODELS = (
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -71,6 +76,7 @@ OVERSEAS_ANTHROPIC_MODELS = (
 DOMESTIC_OPENAI_MODELS = (
     "qwen3.8-max-preview",
     "qwen3.7-plus",
+    "deepseek-v4.1-flash",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
     "glm-5.2",
@@ -92,9 +98,11 @@ RECOMMEND_TITLE_MIN_CHARS = 16
 RECOMMEND_TITLE_MAX_CHARS = 20
 BALA_VIDEO_PROMPT_DEFAULT_MODEL = "gemini-3.5-flash"
 BALA_VIDEO_PROMPT_DEEPSEEK_VISION_MODELS = (
+    "deepseek-official-flash",
     "deepseek-official-v4-flash-vision-exp",
 )
 BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS = (
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -541,6 +549,9 @@ def _generic_openai_json_request(
     image_references: list[str],
     *,
     timeout_seconds: float | None = None,
+    stream: bool = False,
+    progress: Callable | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict:
     content: list[dict[str, Any]] = [{"type": "text", "text": _compact(user_prompt)}]
     content.extend({
@@ -548,15 +559,23 @@ def _generic_openai_json_request(
         "image_url": {"url": model_reference, "detail": "high"},
     } for reference in image_references if (model_reference := _image_reference_for_openai_model(route, reference)))
     request_timeout = max(float(timeout_seconds or 240), 0.001)
+    payload = {"model": route.model_id, "messages": [
+        {"role": "system", "content": _compact(system_prompt)},
+        {"role": "user", "content": content},
+    ]}
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
+    if stream:
+        from core.llm_stream import post_json_stream
+        return post_json_stream(
+            _endpoint(route.base_url, "chat/completions"),
+            payload,
+            {"Authorization": f"Bearer {route.api_key}"},
+            idle_timeout=request_timeout, progress=progress,
+        )
     return _post_json(
         _endpoint(route.base_url, "chat/completions"),
-        {
-            "model": route.model_id,
-            "messages": [
-                {"role": "system", "content": _compact(system_prompt)},
-                {"role": "user", "content": content},
-            ],
-        },
+        payload,
         {"Authorization": f"Bearer {route.api_key}"},
         timeout=min(request_timeout, 30),
         total_timeout=request_timeout,
