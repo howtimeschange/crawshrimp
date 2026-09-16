@@ -1,0 +1,3 @@
+# Model assets are checksum-verified byte for byte, including JSON reference data.
+# Preserve exact bytes on Windows checkouts with core.autocrlf=true.
+core/shoe_specialist/assets/* -text
