@@ -1,10 +1,10 @@
 <template>
-  <div ref="root" class="cs-combobox" @keydown.esc.stop="close" @focusout="leave">
+  <div ref="root" class="cs-combobox" @keydown.esc="escape" @focusout="leave">
     <button ref="trigger" type="button" class="cs-combobox-trigger" role="combobox" :aria-label="label" :aria-expanded="open" :aria-controls="listId" aria-haspopup="listbox" :disabled="disabled" @click="toggle" @keydown.down.prevent="show" @keydown.up.prevent="show">
       <span>{{ selected?.label || (modelValue ? '所选项已不可用，请重新选择' : placeholder) }}</span><span aria-hidden="true">⌄</span>
     </button>
-    <Teleport :to="portalTarget"><div v-if="open" ref="panel" class="cs-combobox-panel" :style="panelStyle" @keydown.esc.stop.prevent="close" @focusout="leave">
-      <input ref="searchInput" v-model="query" :aria-label="`搜索${label}`" role="combobox" aria-autocomplete="list" aria-expanded="true" :aria-controls="listId" :aria-activedescendant="filtered[index] ? `${listId}-${index}` : undefined" placeholder="输入关键词搜索…" @keydown.down.prevent="move(1)" @keydown.up.prevent="move(-1)" @keydown.enter.prevent="choose(filtered[index])" @keydown.home.prevent="index = 0" @keydown.end.prevent="index = filtered.length - 1" />
+    <Teleport :to="portalTarget"><div v-if="open" ref="panel" class="cs-combobox-panel" :style="panelStyle" @keydown.esc="escape" @focusout="leave">
+      <input ref="searchInput" v-model="query" :aria-label="`搜索${label}`" role="combobox" aria-autocomplete="list" aria-expanded="true" :aria-controls="listId" :aria-activedescendant="filtered[index] ? `${listId}-${index}` : undefined" placeholder="输入关键词搜索…" @keydown="searchKeydown" />
       <ul :id="listId" role="listbox" :aria-label="label">
         <template v-for="(option, i) in filtered" :key="String(option.value)">
           <li v-if="option.group && option.group !== filtered[i-1]?.group" role="presentation" class="cs-combobox-group">{{ option.group }}</li>
@@ -29,6 +29,21 @@ watch(() => props.options, () => { index.value = Math.min(index.value, Math.max(
 watch(index, async () => { await nextTick(); panel.value?.querySelector(`#${CSS.escape(listId + '-' + index.value)}`)?.scrollIntoView({ block: 'nearest' }) })
 async function show() { if (props.disabled) return; portalTarget.value = root.value?.closest('dialog, [aria-modal="true"]') || document.body; query.value = ''; open.value = true; position(); index.value = Math.max(0, filtered.value.findIndex(item => item.value === props.modelValue)); await nextTick(); searchInput.value?.focus() }
 function close() { open.value = false; trigger.value?.focus() }
+function escape(event) {
+  if (!open.value || event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  event.stopPropagation()
+  close()
+}
+function searchKeydown(event) {
+  if (event.isComposing || event.keyCode === 229) return
+  if (!['ArrowDown', 'ArrowUp', 'Enter', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  if (event.key === 'ArrowDown') move(1)
+  else if (event.key === 'ArrowUp') move(-1)
+  else if (event.key === 'Enter') choose(filtered.value[index.value])
+  else index.value = event.key === 'Home' ? 0 : Math.max(0, filtered.value.length - 1)
+}
 function toggle() { if (open.value) close(); else void show() }
 function move(delta) { index.value = (index.value + delta + filtered.value.length) % (filtered.value.length || 1) }
 function choose(item) { if (!item) return; emit('update:modelValue', item.value); emit('change', item.value); close() }

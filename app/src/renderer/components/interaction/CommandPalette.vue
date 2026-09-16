@@ -1,7 +1,7 @@
 <template>
   <button type="button" class="cs-command-trigger" aria-label="搜索功能与任务" @click="show">搜索功能与任务 <kbd>{{ shortcut }}</kbd></button>
   <Teleport to="body"><dialog ref="dialog" class="cs-command-dialog" aria-label="搜索功能与任务" @click="backdrop" @close="closed" @keydown.esc.stop>
-    <header><input ref="input" v-model="query" role="combobox" aria-label="搜索功能、脚本、任务" aria-autocomplete="list" aria-expanded="true" aria-controls="cs-command-results" :aria-activedescendant="filtered[index] ? `cs-command-${index}` : undefined" placeholder="搜索功能、脚本、任务…" @keydown.down.prevent="move(1)" @keydown.up.prevent="move(-1)" @keydown.enter.prevent="choose(filtered[index])" /><button type="button" aria-label="关闭快捷面板" @click="dialog.close()">Esc</button></header>
+    <header><input ref="input" v-model="query" role="combobox" aria-label="搜索功能、脚本、任务" aria-autocomplete="list" aria-expanded="true" aria-controls="cs-command-results" :aria-activedescendant="filtered[index] ? `cs-command-${index}` : undefined" placeholder="搜索功能、脚本、任务…" @keydown="searchKeydown" /><button type="button" aria-label="关闭快捷面板" @click="dialog.close()">Esc</button></header>
     <ul id="cs-command-results" role="listbox" aria-label="搜索结果"><template v-for="(item, i) in filtered" :key="item.id"><li v-if="item.group !== filtered[i-1]?.group" role="presentation" class="cs-command-group">{{ item.group }}</li><li :id="`cs-command-${i}`" role="option" :aria-selected="index === i" :class="{ active: i === index }" @mousedown.prevent @click="choose(item)" @mousemove="index = i"><span>{{ item.label }}</span><small>{{ item.detail }}</small></li></template><li v-if="!filtered.length" class="cs-command-empty" role="presentation">没有匹配的功能或任务</li></ul>
     <footer>↑ ↓ 选择 · Enter 打开 · Esc 关闭<span>{{ filtered.length }} 项</span></footer>
   </dialog></Teleport>
@@ -32,6 +32,13 @@ async function show() {
 }
 function closed() { returnFocus?.isConnected && returnFocus.focus?.() }
 function backdrop(event) { if (event.target !== dialog.value) return; const r = dialog.value.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.value.close() }
+function searchKeydown(event) {
+  if (event.isComposing || event.keyCode === 229) return
+  if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return
+  event.preventDefault()
+  if (event.key === 'Enter') void choose(filtered.value[index.value])
+  else move(event.key === 'ArrowDown' ? 1 : -1)
+}
 function move(delta) { index.value = (index.value + delta + filtered.value.length) % (filtered.value.length || 1) }
 async function choose(item) { if (!item) return; recent.value = [item.id, ...recent.value.filter(id => id !== item.id)].slice(0, 6); try { localStorage.setItem('cs-command-recents', JSON.stringify(recent.value)) } catch {} dialog.value.close(); await nextTick(); emit('select', item) }
 function shortcutKey(event) { if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k' || event.isComposing) return; event.preventDefault(); if (dialog.value.open) dialog.value.close(); else void show() }
