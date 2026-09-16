@@ -63,7 +63,7 @@ test('Finder drop and clipboard File use atomic import and keep inputs on valida
   const errors = []; const imports = []
   const context = vm.createContext({ form, mergeImageInputs, assertImageFiles, materialKey, mainPaths, inputDropCapacity, isInputSortTransfer, Uint8Array,
     dragOverTarget: { value: '' }, inputImportTarget: { value: '' }, announceStatus() {},
-    inputImportIssues: { value: [] }, pathLabel: value => value.split('/').pop(),
+    inputImportIssues: { value: [] }, importQueue: { value: [] }, importSequence: 0, pathLabel: value => value.split('/').pop(),
     activeJobUid: { value: 'task-a' }, inputImportBusy: { value: false }, batchGenerationDialog: {},
     window: { cs: {
       getLocalImageFilePath: file => file.nativePath || '',
@@ -82,6 +82,9 @@ test('Finder drop and clipboard File use atomic import and keep inputs on valida
   assert.equal(form.mainImagePath, 'original.png')
   assert.equal(imports.length, 2)
   assert.match(errors[0], /20 MB/)
+  assert.equal(context.importQueue.value.at(-1).state, 'error')
+  assert.match(context.importQueue.value.at(-1).error, /20 MB/)
+  assert.equal(context.inputImportBusy.value, false)
   let prevented = false
   context.handleInputPaste({ clipboardData: { files: [] }, preventDefault: () => { prevented = true } }, 'reference')
   assert.equal(prevented, false, 'ordinary prompt text paste must remain untouched')

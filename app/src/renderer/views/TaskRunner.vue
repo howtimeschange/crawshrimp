@@ -738,58 +738,9 @@
               >{{ metaItem }}</span>
             </div>
           </div>
-          <div class="progress-strip-stack progress-stage-stack">
-            <div
-              v-for="track in (progressSummary.tracks || [])"
-              :key="track.id || track.title"
-              :class="[
-                'progress-stage-card',
-                `progress-stage-card-${track.tone || 'primary'}`,
-                `progress-stage-card-${track.state || 'pending'}`,
-              ]"
-            >
-              <div class="progress-stage-card-head">
-                <div class="progress-stage-card-kicker">
-                  <span class="progress-stage-card-title">{{ track.title }}</span>
-                  <span v-if="track.status" class="progress-stage-card-status">{{ track.status }}</span>
-                </div>
-                <div class="progress-stage-card-mainline">
-                  <span class="progress-stage-card-main">{{ track.main }}</span>
-                  <span class="progress-stage-card-percent">{{ track.percentLabel }}</span>
-                </div>
-              </div>
-
-              <div v-if="track.caption || track.detail" class="progress-stage-card-meta">
-                <span v-if="track.caption">{{ track.caption }}</span>
-                <span v-if="track.detail">{{ track.detail }}</span>
-              </div>
-
-              <div
-                :class="[
-                  'progress-strip-bar',
-                  'progress-stage-bar',
-                  track.tone === 'secondary' ? 'progress-strip-bar-secondary' : '',
-                  { indeterminate: track.indeterminate }
-                ]"
-                role="progressbar"
-                :aria-label="track.ariaLabel || progressSummary.ariaLabel"
-                :aria-valuenow="track.indeterminate ? null : track.percentValue"
-                aria-valuemin="0"
-                aria-valuemax="100"
-                :aria-valuetext="track.ariaText || progressSummary.ariaText"
-                :aria-busy="track.indeterminate ? 'true' : 'false'"
-              >
-                <div
-                  :class="[
-                    'progress-strip-bar-fill',
-                    track.tone === 'secondary' ? 'progress-strip-bar-fill-secondary' : '',
-                    { indeterminate: track.indeterminate }
-                  ]"
-                  :style="track.indeterminate ? undefined : { width: `${track.percentValue}%` }"
-                ></div>
-              </div>
-            </div>
-          </div>
+          <ActivitySteps :items="progressSummary.tracks || []">
+            <template #default="{ item }"><progress v-if="!item.indeterminate && Number.isFinite(item.percentValue)" :value="item.percentValue" max="100" :aria-label="item.ariaLabel || item.title" style="width: 100%; accent-color: var(--orange)" /></template>
+          </ActivitySteps>
           <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
         </div>
 
@@ -1070,6 +1021,7 @@
 </template>
 
 <script setup>
+import ActivitySteps from '../components/interaction/ActivitySteps.vue'
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import BalaAiImageReviewDrawer from './BalaAiImageReviewDrawer.vue'
 import BalaAiMaterialSelectionDrawer from './BalaAiMaterialSelectionDrawer.vue'

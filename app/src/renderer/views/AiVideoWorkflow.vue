@@ -40,6 +40,7 @@
       </button>
     </nav>
 
+    <ActivitySteps v-if="workflowActivity.some(item => item.state !== 'pending')" class="aiv-workflow-activity" :items="workflowActivity" />
     <main
       class="aiv-stage"
       :class="{ 'aiv-stage-material-active': activeStep === 'materials', 'aiv-stage-ai-edit-active': activeStep === 'ai-edit' }"
@@ -287,9 +288,8 @@
                   role="tabpanel"
                 >
                   <div class="aiv-source-title">模拍图 · 默认优先</div>
-                  <div :class="['aiv-thumb-grid', { 'is-list': materialDisplayMode === 'list' }]">
+                  <VirtualGrid :key="`${activeMaterialGroup.styleCode}-model-${materialDisplayMode}`" :items="materialAssetsForDisplay(activeMaterialGroup.modelPhotos)" :get-key="asset => asset.id || asset.path" :min-width="150" :row-height="materialDisplayMode === 'list' ? 100 : 238" :height="560" :single-column="materialDisplayMode === 'list'" label="模拍图"><template #default="{ item: asset }">
                     <article
-                      v-for="asset in visibleMaterialAssets(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos)"
                       :key="asset.id || asset.path"
                       :class="['aiv-thumb', { selected: asset.selected, 'is-list': materialDisplayMode === 'list' }]"
                       role="button"
@@ -323,15 +323,8 @@
                         <span aria-hidden="true">⌕</span>
                       </button>
                     </article>
-                  </div>
-                  <button
-                    v-if="remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos)"
-                    type="button"
-                    class="aiv-load-more"
-                    @click="showMoreMaterialAssets(activeMaterialGroup.styleCode, 'model')"
-                  >
-                    加载更多模拍图（剩余 {{ remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos) }} 张）
-                  </button>
+                  </template></VirtualGrid>
+
                 </section>
 
                 <section
@@ -340,9 +333,8 @@
                   role="tabpanel"
                 >
                   <div class="aiv-source-title">细节图</div>
-                  <div :class="['aiv-thumb-grid', { 'is-list': materialDisplayMode === 'list' }]">
+                  <VirtualGrid :key="`${activeMaterialGroup.styleCode}-detail-${materialDisplayMode}`" :items="materialAssetsForDisplay(activeMaterialGroup.detailPhotos)" :get-key="asset => asset.id || asset.path" :min-width="150" :row-height="materialDisplayMode === 'list' ? 100 : 238" :height="560" :single-column="materialDisplayMode === 'list'" label="细节图"><template #default="{ item: asset }">
                     <article
-                      v-for="asset in visibleMaterialAssets(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos)"
                       :key="asset.id || asset.path"
                       :class="['aiv-thumb', { selected: asset.selected, muted: asset.muted, 'is-list': materialDisplayMode === 'list' }]"
                       role="button"
@@ -376,15 +368,8 @@
                         <span aria-hidden="true">⌕</span>
                       </button>
                     </article>
-                  </div>
-                  <button
-                    v-if="remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos)"
-                    type="button"
-                    class="aiv-load-more"
-                    @click="showMoreMaterialAssets(activeMaterialGroup.styleCode, 'detail')"
-                  >
-                    加载更多细节图（剩余 {{ remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos) }} 张）
-                  </button>
+                  </template></VirtualGrid>
+
                 </section>
 
                 <section v-if="activeMaterialGroup.skippedRows?.length" class="aiv-source-issues">
@@ -1634,7 +1619,7 @@
             <span v-if="templateLibraryState.loading" class="aiv-filter-note">加载模板库...</span>
             <span v-if="templateLibraryState.error" class="aiv-filter-note error">{{ templateLibraryState.error }}</span>
           </aside>
-          <div class="aiv-template-grid">
+          <div class="aiv-template-results"><SearchCombobox v-model="selectedTemplateId" label="视频模板" placeholder="搜索并选择模板" :options="filteredTemplateSamples.map(template => ({ value: template.id, label: template.title, group: template.category || '视频模板', keywords: template.description }))" /><div class="aiv-template-grid">
             <article
               v-for="template in filteredTemplateSamples"
               :key="template.id"
@@ -1669,7 +1654,7 @@
             <div v-if="!templateLibraryState.loading && !filteredTemplateSamples.length" class="aiv-empty-inline">
               未读取到本地生意管家模板库。
             </div>
-          </div>
+          </div></div>
         </div>
         <footer class="aiv-modal-foot">
           <span>{{ activeTemplateStyle ? `正在为 ${activeTemplateStyle} 选择模板` : '模板库仅在需要时打开' }}</span>
@@ -2143,6 +2128,9 @@
 </template>
 
 <script setup>
+import VirtualGrid from '../components/interaction/VirtualGrid.vue'
+import SearchCombobox from '../components/interaction/SearchCombobox.vue'
+import ActivitySteps from '../components/interaction/ActivitySteps.vue'
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { IconCheck, IconChevronDown, IconFaceId, IconPhoto, IconRun, IconShirt, IconZoomIn } from '@tabler/icons-vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
@@ -2575,6 +2563,11 @@ const materialTaskStage = computed(() => {
   }
   return { id: 'idle', label: '等待找图', detail: '输入款号后开始从云盘获取素材。' }
 })
+const workflowActivity = computed(() => [
+  { id: 'material', title: '找图与素材整理', state: materialTask.error ? 'error' : materialTask.status === 'idle' ? 'pending' : materialTask.status, detail: materialTask.message, main: materialTask.totalStyles ? `${materialTask.completedStyles}/${materialTask.totalStyles} 款 · 已下载 ${materialTask.downloaded} 张` : '' },
+  { id: 'image', title: 'AI 改图与审核', state: aiTaskState.error ? 'error' : aiTaskState.status === 'idle' ? 'pending' : aiTaskState.status, detail: aiTaskState.error || aiTaskState.message },
+  { id: 'video', title: '视频生成与结果', state: videoStageState.error ? 'error' : videoStageState.status === 'idle' ? 'pending' : videoStageState.status, detail: videoStageState.error || videoStageState.message },
+])
 const selectedEditSourceCount = computed(() => (
   styleWorkspaces.reduce((sum, style) => sum + editSourcesForStyle(style).reduce((inner, source) => (
     inner + (source.editSelected ? 1 : 0) + visibleSourceVersions(source).filter(version => version.editSelected).length
@@ -9630,6 +9623,12 @@ function localFileUrl(path) {
 </script>
 
 <style scoped>
+.aiv-workflow-activity { margin: 0 0 12px; max-height: 220px; overflow: auto; flex-shrink: 0; }
+.aiv-template-results { min-width: 0; overflow: auto; flex: 1; padding: 2px; }
+.aiv-template-results > :deep(.cs-combobox) { margin-bottom: 12px; }
+.cs-virtual-grid :deep(.aiv-thumb) { height: 100%; }
+.cs-virtual-grid :deep(.aiv-thumb-media) { max-height: 190px; }
+
 .aiv-workbench {
   height: 100%;
   min-height: 0;

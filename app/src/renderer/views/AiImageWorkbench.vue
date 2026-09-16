@@ -113,6 +113,7 @@
           <AiImageMaterialList :items="materialEntries(form, 'reference')" role="reference" :offset="mainPaths(form).length" :disabled="inputImportBusy"
             @reorder="(from, to) => reorderImageInput(form, 'reference', from, to)" @move="(index, offset) => moveInput(form, 'reference', index, offset)" @remove="removeReferencePath" @preview-error="markPreviewBroken" />
         </section>
+        <ImportQueue :items="visibleImportQueue(false)" :busy="inputImportBusy" @retry="retryImport" @remove="removeImportRecord" />
         <div v-if="inputImportIssues.length" class="aiw-import-issues" role="status"><strong>部分素材未导入</strong><p v-for="(issue, index) in inputImportIssues" :key="index">{{ issue.name }} · {{ issue.reason }}</p><button type="button" @click="inputImportIssues = []">收起</button></div>
         <details v-if="inputAssetsForState(form).length" class="aiw-input-map"><summary>素材清单 · {{ inputAssetsForState(form).length }}/10 张</summary><p v-for="(asset, index) in inputAssetsForState(form)" :key="asset.id">图 {{ index + 1 }} · {{ asset.role === 'main' ? '主图' : '参考图' }} · {{ asset.name || pathLabel(asset.path) }}</p><small>单张上限为 20 × 1024 × 1024 字节，不自动压缩。</small></details>
         <div v-if="connectionNotice" class="aiw-import-issues" role="alert">{{ connectionNotice }}<button type="button" @click="acceptCurrentConnection">检查并使用当前配置</button></div>
@@ -125,10 +126,7 @@
           <div class="aiw-task-fields" aria-label="生成参数">
             <label class="aiw-field aiw-field-wide">
               <span>模型</span>
-              <select v-model="form.modelId" @change="syncModelDefaults">
-                <option v-if="!AI_IMAGE_MODELS.some(model => model.id === form.modelId)" :value="form.modelId" disabled>所选模型已移除，请重新选择</option>
-                <option v-for="model in AI_IMAGE_MODELS" :key="model.id" :value="model.id">{{ model.label }}</option>
-              </select>
+              <SearchCombobox v-model="form.modelId" label="模型" :options="AI_IMAGE_MODELS.map(model => ({ value: model.id, label: model.label, group: ({ woka: '沃卡', semir: '森马网关' })[model.provider] || model.provider || '1XM' }))" @change="syncModelDefaults" />
             </label>
             <label class="aiw-field">
               <span>比例</span>
@@ -191,9 +189,9 @@
           <button v-if="generationConfigMessage" class="aiw-primary-action aiw-config-action" type="button" aria-describedby="aiw-generation-config-message" @click="openSettings">
             <span class="aiw-icon-button-content"><AiwIcon name="settings" />去配置</span>
           </button>
-          <button v-else class="aiw-primary-action" type="button" :disabled="generating || inputImportBusy || Boolean(advancedJsonError)" @click="generate">
+          <StatefulButton v-else class="aiw-primary-action" :state="generating ? 'pending' : 'idle'" pending-label="生成中…" :disabled="generating || inputImportBusy || Boolean(advancedJsonError)" @click="generate">
             <span class="aiw-icon-button-content"><AiwIcon name="wand" />{{ generateLabel }}</span>
-          </button>
+          </StatefulButton>
           <small v-if="errorMessage" role="alert">{{ errorMessage }}</small>
         </section>
       </aside>
@@ -210,9 +208,9 @@
                 <AiwIcon :name="allVisibleSelected ? 'minus-square' : 'check-square'" />{{ allVisibleSelected ? '取消全选' : '全选图片' }}
               </span>
             </button>
-            <button type="button" :disabled="!selectedResultItems.length" @click="saveAs(selectedResultItems)">
+            <StatefulButton :state="exportState" pending-label="下载中…" success-label="已下载" :disabled="!selectedResultItems.length" @click="saveAs(selectedResultItems)">
               <span class="aiw-icon-button-content"><AiwIcon name="download" />下载选中</span>
-            </button>
+            </StatefulButton>
             <button
               class="aiw-task-sidebar-toggle"
               type="button"
@@ -251,9 +249,8 @@
                   </button>
                 </div>
               </header>
-              <div class="aiw-result-list">
+              <VirtualGrid class="aiw-result-list-virtual" :items="queue.items" :get-key="item => item.key || item.path || item.url" :min-width="220" :row-height="400" :height="650" label="生成图片"><template #default="{ item }">
                 <article
-                  v-for="item in queue.items"
                   :key="item.key || item.path || item.url"
                   class="aiw-result-card"
                   :class="{ selected: selectedResults.has(resultKey(item)), loading: item.loading, failed: item.failed }"
@@ -352,7 +349,7 @@
                     </div>
                   </footer>
                 </article>
-              </div>
+              </template></VirtualGrid>
             </section>
             <div v-if="!visibleResultCards.length" class="aiw-empty-state">
               <strong>等待生成结果</strong>
@@ -519,6 +516,7 @@
           <AiImageDropFeedback :capacity="inputDropCapacity(batchGenerationDialog, 'reference')" :active="dragOverTarget === 'batch-reference'" :busy="inputImportTarget === 'batch-reference'" />
           <AiImageMaterialList :items="materialEntries(batchGenerationDialog, 'reference')" role="reference" :offset="mainPaths(batchGenerationDialog).length" :disabled="batchGenerationDialog.submitting || inputImportBusy"
             @reorder="(from, to) => reorderImageInput(batchGenerationDialog, 'reference', from, to)" @move="(index, offset) => moveInput(batchGenerationDialog, 'reference', index, offset)" @remove="removeBatchReferencePath" @preview-error="markPreviewBroken" />
+          <ImportQueue :items="visibleImportQueue(true)" :busy="inputImportBusy" @retry="retryImport" @remove="removeImportRecord" />
             </section>
 
             <section class="aiw-batch-source-box aiw-batch-settings-box">
@@ -526,13 +524,7 @@
               <div class="aiw-batch-settings-grid">
                 <label class="aiw-field aiw-field-wide">
                   <span>模型</span>
-                  <select
-                    v-model="batchGenerationDialog.modelId"
-                    :disabled="batchGenerationDialog.submitting"
-                    @change="syncBatchModelDefaults"
-                  >
-                    <option v-for="model in AI_IMAGE_MODELS" :key="model.id" :value="model.id">{{ model.label }}</option>
-                  </select>
+                  <SearchCombobox v-model="batchGenerationDialog.modelId" label="批量生成模型" :disabled="batchGenerationDialog.submitting" :options="AI_IMAGE_MODELS.map(model => ({ value: model.id, label: model.label, group: ({ woka: '沃卡', semir: '森马网关' })[model.provider] || model.provider || '1XM' }))" @change="syncBatchModelDefaults" />
                 </label>
                 <label class="aiw-field">
                   <span>比例</span>
@@ -876,6 +868,11 @@
 </template>
 
 <script setup>
+import SearchCombobox from '../components/interaction/SearchCombobox.vue'
+import StatefulButton from '../components/interaction/StatefulButton.vue'
+import ImportQueue from '../components/interaction/ImportQueue.vue'
+import VirtualGrid from '../components/interaction/VirtualGrid.vue'
+import { notifyOperation, runNotifiedOperation } from '../utils/interactionToasts'
 import AiImageMaterialList from '../components/AiImageMaterialList.vue'
 import AiImageDropFeedback from '../components/AiImageDropFeedback.vue'
 import { reorderImageInput, inputDropCapacity, isInputSortTransfer } from '../utils/aiImageDrag.mjs'
@@ -1643,6 +1640,17 @@ async function choosePath(opts = {}) {
 }
 
 const inputImportBusy = ref(false)
+const importQueue = ref([])
+let importSequence = 0
+const exportState = ref('idle')
+function visibleImportQueue(batch) { return importQueue.value.filter(item => item.batch === batch && item.owner === activeJobUid.value) }
+function removeImportRecord(item) { importQueue.value = importQueue.value.filter(row => row.id !== item.id) }
+async function retryImport(item) {
+  if (item.owner !== activeJobUid.value || inputImportBusy.value) return
+  removeImportRecord(item)
+  await importInputSelection(item.target, item.clipboard ? [] : [item.source], { batch: item.batch, clipboard: item.clipboard })
+}
+watch(activeJobUid, () => { importQueue.value = [] })
 const inputImportIssues = ref([])
 const connectionNotice = ref('')
 const recentConnection = ref(null)
@@ -1679,11 +1687,16 @@ async function importInputSelection(target, sources, { batch = false, clipboard 
   let accepted = 0
   let duplicates = 0
   try {
-    if (!window.cs?.importAiImageInput) throw new Error('图片导入服务未就绪，请重启抓虾客户端')
     const selection = clipboard ? [null] : sources
-    for (const source of selection) {
+    const rows = selection.map(source => ({ id: ++importSequence, owner: ownerJobUid, source, target, batch, clipboard, name: typeof source === 'string' ? pathLabel(source) : source?.name || '剪贴板图片', state: 'queued', error: '' }))
+    importQueue.value = [...importQueue.value.filter(row => row.state === 'error'), ...rows]
+    for (const queueRow of rows) {
+      const source = queueRow.source
+      const updateRow = patch => { const row = importQueue.value.find(row => row.id === queueRow.id); if (row) Object.assign(row, patch) }
+      updateRow({ state: 'pending' })
       let sourcePath = ''
       try {
+        if (!window.cs?.importAiImageInput) throw new Error('图片导入服务未就绪，请重启抓虾客户端')
         let item
         if (clipboard) item = await window.cs.pasteAiImageInput()
         else {
@@ -1695,6 +1708,7 @@ async function importInputSelection(target, sources, { batch = false, clipboard 
           item = await window.cs.importAiImageInput(input)
         }
         if (activeJobUid.value !== ownerJobUid || (batch && !batchGenerationDialog.open)) return
+        updateRow({ source: item.path, clipboard: false })
         const alreadyPresent = (target === 'main' ? mainPaths(state) : state.referenceImagePaths).includes(item.path)
         Object.assign(state, mergeImageInputs(state, target, [item.path]))
         const existing = inputMeta(state, target, item.path)
@@ -1702,9 +1716,11 @@ async function importInputSelection(target, sources, { batch = false, clipboard 
         if (alreadyPresent) duplicates++
         else accepted++
         await refreshImagePreview(item.path, { force: true })
-        if (sourcePath) await window.cs.rememberImageInputDirectory?.(target, sourcePath)
+        updateRow({ state: 'success', path: item.path, source: null })
+        if (sourcePath) { try { await window.cs.rememberImageInputDirectory?.(target, sourcePath) } catch { /* Imported image remains usable if remembering the folder fails. */ } }
       } catch (error) {
         if (activeJobUid.value !== ownerJobUid) return
+        updateRow({ state: 'error', error: String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') })
         inputImportIssues.value.push({ name: typeof source === 'string' ? pathLabel(source) : source?.name || '剪贴板图片', reason: String(error?.message || error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') })
       }
     }
@@ -3140,7 +3156,7 @@ async function copyFailedPrompt(item) {
     if (typeof globalThis.navigator?.clipboard?.writeText !== 'function') {
       throw new Error('当前环境不支持复制到剪贴板')
     }
-    await globalThis.navigator.clipboard.writeText(prompt)
+    await runNotifiedOperation({ title: '正在复制 Prompt', success: 'Prompt 已复制', run: () => globalThis.navigator.clipboard.writeText(prompt) })
     announceStatus('Prompt 已复制')
   } catch (error) {
     errorMessage.value = error?.message || String(error)
@@ -3200,16 +3216,18 @@ async function materializeResultForInput(item) {
 }
 
 async function saveAs(items) {
-  if (!currentJob.value?.job_uid || !items.length) return
+  if (!currentJob.value?.job_uid || !items.length || exportState.value === 'pending') return
+  const jobUid = currentJob.value.job_uid
+  const files = items.map(resultKey).filter(Boolean)
+  exportState.value = 'pending'
   try {
     const directory = await chooseDirectory('选择另存文件夹')
-    if (!directory) return
-    await window.cs.saveAsAiImageJob(currentJob.value.job_uid, {
-      directory,
-      files: items.map(resultKey).filter(Boolean),
-    })
-    logs.value.push(`另存 ${items.length} 张图片到 ${directory}`)
+    if (!directory) { exportState.value = 'idle'; return }
+    await runNotifiedOperation({ title: `正在下载 ${files.length} 张图片`, success: `已下载 ${files.length} 张图片`, actionLabel: '打开文件夹', action: () => window.cs.openFile(directory), run: () => window.cs.saveAsAiImageJob(jobUid, { directory, files }) })
+    exportState.value = 'success'
+    logs.value.push(`另存 ${files.length} 张图片到 ${directory}`)
   } catch (error) {
+    exportState.value = 'error'
     errorMessage.value = error.message || String(error)
   }
 }
@@ -3861,6 +3879,13 @@ function localFileUrl(path) {
 </script>
 
 <style scoped>
+.aiw-result-list-virtual :deep(.aiw-result-card) { display: flex; flex-direction: column; }
+.aiw-result-list-virtual :deep(.windowed .aiw-result-card) { height: 400px; }
+.aiw-result-list-virtual :deep(.aiw-result-card footer) { flex-shrink: 0; }
+.aiw-result-list-virtual :deep(.aiw-preview-button) { min-height: 0; overflow: hidden; }
+.aiw-result-list-virtual :deep(.aiw-preview-button img) { height: 100%; min-height: 0; }
+.aiw-result-queue { content-visibility: auto; contain-intrinsic-size: auto 440px; }
+
 .aiw-input-map, .aiw-import-issues { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; line-height: 1.6; }
 .aiw-import-issues { color: #f2b87d; }
 .aiw-input-map p, .aiw-import-issues p { margin: 4px 0; overflow-wrap: anywhere; }

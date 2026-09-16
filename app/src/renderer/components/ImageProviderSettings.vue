@@ -69,7 +69,7 @@
               <button v-if="draft.custom && !editor.isNew" type="button" class="danger" :disabled="editor.saving" @click="removeProvider">移除供应商</button>
               <span class="spacer" />
               <button type="button" :disabled="editor.saving" @click="closeEditor">取消</button>
-              <button class="primary" type="submit" :disabled="editor.saving">{{ editor.saving ? '保存中…' : '保存供应商' }}</button>
+              <StatefulButton class="primary" type="submit" :state="editor.saving ? 'pending' : editor.error ? 'error' : 'idle'" pending-label="保存中…" error-label="重新保存">保存供应商</StatefulButton>
             </footer>
           </form>
         </section>
@@ -79,6 +79,8 @@
 </template>
 
 <script setup>
+import { runNotifiedOperation } from '../utils/interactionToasts'
+import StatefulButton from '../components/interaction/StatefulButton.vue'
 import { computed, nextTick, reactive, ref, onMounted } from 'vue'
 import { AI_IMAGE_MODELS, CUSTOM_IMAGE_PROVIDERS_FIELD, customImageProviders } from '../utils/aiImageModels.js'
 const props = defineProps({ config: { type: Object, required: true }, save: { type: Function, required: true } })
@@ -137,7 +139,7 @@ function trapFocus(event) {
 function validUrl(value) { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash } catch { return false } }
 async function commit(patch, message) {
   editor.saving = true; editor.error = ''
-  try { await props.save(patch); savedMessage.value = message; editor.saving = false; closeEditor() }
+  try { await runNotifiedOperation({ title: '正在保存供应商', success: message, run: () => props.save(patch) }); savedMessage.value = message; editor.saving = false; closeEditor() }
   catch (error) { editor.error = error?.message || '保存失败' }
   finally { editor.saving = false }
 }

@@ -53,14 +53,14 @@
                     <strong>{{ asset.filename || asset.id }}</strong>
                     <small>{{ asset.prompt || asset.background_prompt || asset.pose_prompt || '' }}</small>
                   </div>
-                  <div class="bala-card-actions">
-                    <button type="button" :class="{ selected: asset.status === 'approved' }" @click="saveDecision(asset.id, 'approved')">批准</button>
-                    <button type="button" :class="{ selected: asset.status === 'rejected' }" @click="saveDecision(asset.id, 'rejected')">拒绝</button>
-                    <button type="button" :class="{ selected: asset.status === 'pending' }" @click="saveDecision(asset.id, 'pending')">待定</button>
+                  <ApprovalCard title="图片审核" :summary="decisionErrors[asset.id] || `当前状态：${statusLabel(asset.status)}`" :confirmed="['approved', 'rejected'].includes(asset.status)" :confirmed-label="statusLabel(asset.status)"><template #actions>
+                    <button type="button" :disabled="decisionSaving || regeneratingAssetId === asset.id" :class="{ selected: asset.status === 'approved' }" @click="saveDecision(asset.id, 'approved')">批准</button>
+                    <button type="button" :disabled="decisionSaving || regeneratingAssetId === asset.id" :class="{ selected: asset.status === 'rejected' }" @click="saveDecision(asset.id, 'rejected')">拒绝</button>
+                    <button type="button" :disabled="decisionSaving || regeneratingAssetId === asset.id" :class="{ selected: asset.status === 'pending' }" @click="saveDecision(asset.id, 'pending')">待定</button>
                     <button type="button" :disabled="regeneratingAssetId === asset.id" @click="regenerateAsset(asset)">
                       {{ regeneratingAssetId === asset.id ? '重跑中...' : '重跑' }}
                     </button>
-                  </div>
+                  </template></ApprovalCard>
                 </article>
               </div>
             </section>
@@ -113,6 +113,9 @@
 </template>
 
 <script setup>
+import { notifyOperation } from '../utils/interactionToasts'
+import ApprovalCard from '../components/interaction/ApprovalCard.vue'
+import StatefulButton from '../components/interaction/StatefulButton.vue'
 import { computed, ref, watch } from 'vue'
 import {
   QN_VIDEO_MODEL_OPTIONS,
@@ -144,6 +147,8 @@ const loading = ref(false)
 const refreshing = ref(false)
 const exporting = ref(false)
 const error = ref('')
+const decisionSaving = ref(false)
+const decisionErrors = ref({})
 const activeStatus = ref('')
 const templateId = ref('')
 const templateMatch = ref('')
@@ -231,16 +236,20 @@ async function refreshBatch() {
 
 async function saveDecision(assetId, status) {
   const ref = boardRef.value
-  if (!ref) return
-  error.value = ''
+  if (!ref || decisionSaving.value) return
+  decisionSaving.value = true
+  decisionErrors.value[assetId] = ''
   try {
-    batch.value = await window.cs.saveBalaReviewDecisions(ref.batchId, ref.token, {
+    const response = await window.cs.saveBalaReviewDecisions(ref.batchId, ref.token, {
       [assetId]: { status },
     })
+    if (response?.error || response?.detail) throw new Error(response.error || response.detail)
+    batch.value = response
+    notifyOperation({ id: `review-${assetId}`, title: `审核已保存：${statusLabel(status)}` })
     emit('batch-updated', batch.value)
   } catch (err) {
-    error.value = err?.message || String(err)
-  }
+    decisionErrors.value[assetId] = err?.message || String(err)
+  } finally { decisionSaving.value = false }
 }
 
 async function regenerateAsset(asset) {

@@ -1,0 +1,23 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const load = () => import('../app/src/renderer/utils/virtualGrid.mjs')
+test('5000 images keep a bounded visible window and include the final image at the bottom', async () => {
+  const { gridWindow } = await load()
+  const args = { count: 5000, width: 900, minWidth: 180, rowHeight: 250, height: 560 }
+  const first = gridWindow(args)
+  assert.equal(first.columns, 4)
+  assert.equal(first.start, 0)
+  assert.ok(first.end <= 24)
+  const bottom = gridWindow({ ...args, scrollTop: first.total - args.height })
+  assert.equal(bottom.end, 5000)
+  assert.ok(bottom.end - bottom.start < 32)
+  assert.ok(bottom.top < first.total)
+})
+test('empty, narrow, single-column and partially filled last rows are safe', async () => {
+  const { gridWindow } = await load()
+  assert.deepEqual(gridWindow({ count: 0, width: 0 }), { columns: 1, start: 0, end: 0, top: 0, total: 0 })
+  assert.equal(gridWindow({ count: 20, width: 1200, singleColumn: true }).columns, 1)
+  const last = gridWindow({ count: 19, width: 900, scrollTop: 1000 })
+  assert.equal(last.end, 19)
+  assert.equal(last.total, 5 * 262 - 12)
+})

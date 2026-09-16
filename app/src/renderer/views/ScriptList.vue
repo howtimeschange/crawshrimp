@@ -2,25 +2,10 @@
   <div class="view">
     <header class="view-header">
       <h2>我的脚本</h2>
-      <label class="script-search" aria-label="搜索脚本或适配器">
+      <button class="script-search" type="button" aria-label="搜索功能、脚本与任务" aria-haspopup="dialog" @click="$emit('open-search')">
         <IconSearch class="search-icon" :size="16" :stroke-width="2" aria-hidden="true" />
-        <input
-          v-model="searchQuery"
-          type="search"
-          placeholder="搜索脚本名称或适配器名称"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button
-          v-if="searchQuery"
-          class="search-clear"
-          type="button"
-          aria-label="清空搜索"
-          @click="searchQuery = ''"
-        >
-          <IconX :size="14" :stroke-width="2.2" aria-hidden="true" />
-        </button>
-      </label>
+        <span>搜索功能、脚本与任务</span><kbd>{{ searchShortcut }}</kbd>
+      </button>
       <div class="header-actions">
         <button class="btn-ghost" @click="openInstallModal">+ 导入脚本</button>
       </div>
@@ -202,11 +187,10 @@ import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
 import { IconBookmark, IconSearch, IconX } from '@tabler/icons-vue'
 import { getScriptCardTaskPreviewMeta } from '../utils/scriptCardPreview'
 import { partitionScriptGroups, shouldApplyScriptFavoritesSnapshot } from '../utils/scriptFavorites'
-import { matchesScriptGroupSearch } from '../utils/scriptSearch'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { formatScriptListLoadError, isCoreStartupConnectionError } from '../utils/coreStartupErrors'
 
-const emit = defineEmits(['open-script', 'reload'])
+const emit = defineEmits(['open-script', 'reload', 'open-search'])
 const scriptGroups = inject('scriptGroups')
 const loadScriptGroups = inject('loadScriptGroups')
 const repairCoreService = inject('repairCoreService')
@@ -225,7 +209,7 @@ const isDragging = ref(false)
 const dragDepth = ref(0)
 const msg = ref('')
 const msgErr = ref(false)
-const searchQuery = ref('')
+const searchShortcut = /Mac/.test(navigator.platform) ? '⌘ K' : 'Ctrl K'
 const installState = ref('idle')
 const successAdapterName = ref('')
 const successAdapterVersion = ref('')
@@ -236,7 +220,7 @@ let favoriteMutationVersion = 0
 
 const groups = scriptGroups
 
-const filteredGroups = computed(() => groups.value.filter(group => matchesScriptGroupSearch(group, searchQuery.value)))
+const filteredGroups = computed(() => groups.value)
 
 function buildDisplayEntry(group) {
   const runningTask = group.tasks.find(task => isTaskLiveActive(task.live?.status)) || null
@@ -610,7 +594,10 @@ onUnmounted(() => {
   box-shadow: inset 0 1px 0 var(--soft-fill);
   transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
 }
-.script-search:focus-within {
+.script-search { text-align: left; font: inherit; cursor: pointer; }
+.script-search span { flex: 1; color: var(--text3); }
+.script-search kbd { font: inherit; font-size: 11px; color: var(--text3); }
+.script-search:focus-visible {
   border-color: rgba(var(--orange-rgb), .48);
   background: var(--bg3);
   box-shadow: 0 0 0 3px rgba(var(--orange-rgb), .10), inset 0 1px 0 rgba(255, 255, 255, .05);
