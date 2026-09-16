@@ -37,6 +37,12 @@ class SemirCloudDriveManifestTests(unittest.TestCase):
                 "gpt-image-4k",
                 "gemini-3.1-flash-image-preview",
                 "gemini-3-pro-image-preview",
+                "woka/gpt-image-2",
+                "woka/gemini-3.1-flash-image-preview",
+                "woka/gemini-3-pro-image-preview",
+                "semir/gpt-image-2",
+                "semir/gemini-3.1-flash-image-preview",
+                "semir/gemini-3-pro-image-preview",
             ],
         )
         self.assertEqual(params["max_generate_jobs"]["default"], 0)

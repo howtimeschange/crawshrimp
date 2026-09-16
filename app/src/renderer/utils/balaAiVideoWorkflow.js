@@ -19,7 +19,9 @@ export const QN_VIDEO_MODEL_OPTIONS = Object.freeze([
 ])
 export const BALA_VIDEO_PROMPT_TEMPLATE = '帮我根据图 1-5 的模拍图写一个外景的视频生成提示词，要抖音和小红书爆款种草视频 20 秒左右，严格按照图片 1-5 模特和穿搭的衣服颜色生成，要换 5 个场景，还需要近距离展示衣服下摆设计和面料，人物可以稍微活泼一点，但是不要畸变'
 export const BALA_VIDEO_PROMPT_MODEL_OPTIONS = Object.freeze([
-  { value: 'deepseek-official-v4-flash-vision-exp', label: 'DeepSeek 官方 · V4 Flash Vision', keyScope: 'deepseek' },
+  { value: 'deepseek-official-flash', label: 'DeepSeek 官方 · V4.1 Flash（多模态）', keyScope: 'deepseek' },
+  { value: 'deepseek-official-v4-flash-vision-exp', label: 'DeepSeek 官方 · V4.1 Flash（旧 Vision 别名）', keyScope: 'deepseek' },
+  { value: 'gpt-6-astra', label: '森马网关 · GPT-6 Astra', keyScope: 'gateway' },
   { value: 'gpt-5.6-sol', label: '森马网关 · GPT-5.6 Sol', keyScope: 'gateway' },
   { value: 'gpt-5.6-terra', label: '森马网关 · GPT-5.6 Terra', keyScope: 'gateway' },
   { value: 'gpt-5.6-luna', label: '森马网关 · GPT-5.6 Luna', keyScope: 'gateway' },

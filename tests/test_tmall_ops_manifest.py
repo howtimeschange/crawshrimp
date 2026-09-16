@@ -202,9 +202,15 @@ class TmallOpsManifestTests(unittest.TestCase):
                 "gpt-image-4k",
                 "gemini-3.1-flash-image-preview",
                 "gemini-3-pro-image-preview",
+                "woka/gpt-image-2",
+                "woka/gemini-3.1-flash-image-preview",
+                "woka/gemini-3-pro-image-preview",
+                "semir/gpt-image-2",
+                "semir/gemini-3.1-flash-image-preview",
+                "semir/gemini-3-pro-image-preview",
             ],
         )
-        self.assertEqual(model_options["gpt-image-4k"], "GPT Image 4K")
+        self.assertEqual(model_options["gpt-image-4k"], "1XM · GPT Image 4K")
         self.assertEqual(params["ratio"]["label"], "比例")
         self.assertEqual(params["ratio"]["default"], "3:4")
         self.assertIn("9:16", [item["value"] for item in params["ratio"]["options"]])

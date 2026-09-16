@@ -1584,7 +1584,9 @@ test('video task dialog can write prompt from selected images with a vision LLM 
   const devBridgeSource = fs.readFileSync('app/src/renderer/utils/devCsBridge.js', 'utf8')
 
   assert.deepEqual(balaWorkflow.BALA_VIDEO_PROMPT_MODEL_OPTIONS.map(option => option.value), [
+    'deepseek-official-flash',
     'deepseek-official-v4-flash-vision-exp',
+    'gpt-6-astra',
     'gpt-5.6-sol',
     'gpt-5.6-terra',
     'gpt-5.6-luna',
