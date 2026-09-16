@@ -194,9 +194,50 @@ def _llm_settings(config: dict | None = None) -> dict:
     return llm if isinstance(llm, dict) else {}
 
 
+def _gateway_provider_id(model_id: str) -> str:
+    if model_id in OVERSEAS_ANTHROPIC_MODELS:
+        return "overseas_anthropic"
+    if model_id in DOMESTIC_OPENAI_MODELS:
+        return "domestic"
+    return "overseas_openai"
+
+
+def _gateway_provider_key(provider_id: str, llm: dict) -> str:
+    return (_compact(os.environ.get(f"CRAWSHRIMP_{provider_id.upper()}_API_KEY"))
+            or _compact(llm.get(f"{provider_id}_api_key"))
+            or _compact(os.environ.get("CRAWSHRIMP_LLM_API_KEY"))
+            or _compact(llm.get("api_key")))
+
+
+def _custom_model_route(model_id: str, llm: dict) -> tuple[dict, str] | None:
+    # Provider-qualified IDs keep two providers' identically named models distinct.
+    for provider in llm.get("custom_providers") or []:
+        if not isinstance(provider, dict):
+            continue
+        prefix = str(provider.get("id") or "") + "/"
+        if not model_id.startswith(prefix):
+            continue
+        raw_id = model_id[len(prefix):]
+        if any((model if isinstance(model, str) else model.get("id")) == raw_id for model in provider.get("models") or [] if isinstance(model, (str, dict))):
+            return provider, raw_id
+    return None
+
+
+def all_supported_model_ids(config: dict | None = None) -> tuple[str, ...]:
+    custom = []
+    for provider in _llm_settings(config).get("custom_providers") or []:
+        if not isinstance(provider, dict):
+            continue
+        for model in provider.get("models") or []:
+            raw_id = model if isinstance(model, str) else model.get("id") if isinstance(model, dict) else ""
+            if raw_id:
+                custom.append(f"{provider.get('id')}/{raw_id}")
+    return (*SUPPORTED_MODELS, *custom)
+
+
 def gateway_api_key_configured(config: dict | None = None) -> bool:
     llm = _llm_settings(config)
-    return bool(_compact(os.environ.get("CRAWSHRIMP_LLM_API_KEY")) or _compact(llm.get("api_key")))
+    return any(_gateway_provider_key(provider, llm) for provider in ("overseas_openai", "overseas_anthropic", "domestic"))
 
 
 def deepseek_api_key_configured(config: dict | None = None) -> bool:
@@ -217,6 +258,10 @@ def glm_api_key_configured(config: dict | None = None) -> bool:
 
 def model_has_configured_key(model_id: str, config: dict | None = None) -> bool:
     selected = _compact(model_id)
+    llm = _llm_settings(config)
+    custom = _custom_model_route(selected, llm)
+    if custom:
+        return bool(_compact(custom[0].get("api_key")) and _compact(custom[0].get("base_url")))
     if selected in DEEPSEEK_OFFICIAL_MODELS:
         return deepseek_api_key_configured(config)
     if selected in GLM_OFFICIAL_CHAT_MODELS:
@@ -226,7 +271,7 @@ def model_has_configured_key(model_id: str, config: dict | None = None) -> bool:
         or selected in OVERSEAS_ANTHROPIC_MODELS
         or selected in DOMESTIC_OPENAI_MODELS
     ):
-        return gateway_api_key_configured(config)
+        return bool(_gateway_provider_key(_gateway_provider_id(selected), llm))
     return False
 
 
@@ -234,11 +279,11 @@ def select_default_model(config: dict | None = None) -> str:
     cfg = config if isinstance(config, dict) else load_config()
     llm = _llm_settings(cfg)
     configured = _compact(llm.get("default_model")) or DEFAULT_MODEL
-    if configured not in SUPPORTED_MODELS:
+    if configured not in all_supported_model_ids(cfg):
         configured = DEFAULT_MODEL
     if model_has_configured_key(configured, cfg):
         return configured
-    for candidate in (DEFAULT_MODEL, GATEWAY_FALLBACK_MODEL):
+    for candidate in (DEFAULT_MODEL, GATEWAY_FALLBACK_MODEL, *all_supported_model_ids(cfg)):
         if candidate != configured and model_has_configured_key(candidate, cfg):
             return candidate
     return configured
@@ -248,6 +293,12 @@ def route_for_model(model_id: str, config: dict | None = None) -> LlmRoute:
     cfg = config if isinstance(config, dict) else load_config()
     llm = _llm_settings(cfg)
     selected = _compact(model_id) or select_default_model(cfg)
+    custom = _custom_model_route(selected, llm)
+    if custom:
+        provider, raw_id = custom
+        if not _compact(provider.get("api_key")) or not _compact(provider.get("base_url")):
+            raise LlmConfigurationError("请先配置自定义供应商的 API Key 和 Base URL")
+        return LlmRoute(model_id=raw_id, protocol="anthropic" if provider.get("protocol") == "anthropic" else "openai", base_url=_compact(provider.get("base_url")), api_key=_compact(provider.get("api_key")))
     if selected not in SUPPORTED_MODELS:
         raise LlmConfigurationError(f"不支持的文本模型：{selected}")
 
@@ -287,7 +338,7 @@ def route_for_model(model_id: str, config: dict | None = None) -> LlmRoute:
             api_key=api_key,
         )
 
-    api_key = _compact(os.environ.get("CRAWSHRIMP_LLM_API_KEY")) or _compact(llm.get("api_key"))
+    api_key = _gateway_provider_key(_gateway_provider_id(selected), llm)
     if not api_key:
         raise LlmConfigurationError("请先在设置 → AI 能力 → 文本大模型中配置 API Key")
 

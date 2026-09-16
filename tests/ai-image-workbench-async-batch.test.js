@@ -82,14 +82,11 @@ test('new remote result URLs are cached without waiting for image load', () => {
   assert.match(workbench, /resultCachePending\.has\(url\)/)
 })
 
-test('loading cards show contextual artwork and rotating Crawshrimp copy', () => {
-  assert.match(workbench, /resolveLoadingPreviewContext/)
-  assert.match(workbench, /class="aiw-loading-source"/)
-  assert.match(workbench, /class="aiw-loading-default-art"/)
-  assert.match(workbench, /loadingMessage\(item\)/)
-  assert.match(workbench, /loadingMessageTimer = setInterval/)
-  assert.match(workbench, /clearInterval\(loadingMessageTimer\)/)
-  assert.match(workbench, /refreshImagePreview\(item\.loadingPreviewPath\)/)
+test('generation surface uses real queue status and preserves unknown submission protection', () => {
+  assert.match(workbench, /<ImageGeneration/)
+  assert.match(workbench, /generationStatus: status === 'queued' \? 'queued' : 'generating'/)
+  assert.match(workbench, /item\.error_code !== 'UNKNOWN_SUBMIT_RESULT'/)
+  assert.doesNotMatch(workbench, /loadingMessageTimer = setInterval/)
 })
 
 test('batch dialog owns independent model settings and per-Prompt counts', () => {

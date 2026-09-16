@@ -73,14 +73,9 @@
         >
           <div class="aiw-panel-head">
             <span>主图 {{ mainPaths(form).length }}/6</span>
-            <button type="button" @click="chooseMainImage">
-              <span class="aiw-icon-button-content">
-                <AiwIcon name="image" />{{ mainPaths(form).length ? '添加文件' : '选择文件' }}
-              </span>
-            </button>
           </div>
-          <button v-if="!mainPaths(form).length" class="aiw-upload-tile" type="button" @click="chooseMainImage">
-            <strong>点击上传主图</strong>
+          <button class="aiw-upload-tile" :disabled="inputImportBusy || !inputDropCapacity(form, 'main').remaining" type="button" @click="chooseMainImage">
+            <strong>{{ mainPaths(form).length ? '继续添加主图' : '点击上传主图' }}</strong>
             <span>选择、拖拽或粘贴多张图片 · 单张不超过 20 MB</span>
           </button>
           <AiImageDropFeedback :capacity="inputDropCapacity(form, 'main')" :active="dragOverTarget === 'main'" :busy="inputImportTarget === 'main'" />
@@ -101,12 +96,9 @@
         >
           <div class="aiw-panel-head">
             <span>参考图</span>
-            <button type="button" @click="chooseReferenceImages">
-              <span class="aiw-icon-button-content"><AiwIcon name="plus" />添加文件</span>
-            </button>
           </div>
-          <button v-if="!form.referenceImagePaths.length" class="aiw-upload-tile compact" type="button" @click="chooseReferenceImages">
-            <strong>点击添加参考图</strong>
+          <button class="aiw-upload-tile compact" :disabled="inputImportBusy || !inputDropCapacity(form, 'reference').remaining" type="button" @click="chooseReferenceImages">
+            <strong>{{ form.referenceImagePaths.length ? '继续添加参考图' : '点击添加参考图' }}</strong>
             <span>支持拖拽、粘贴 · 单张 20 MB，主图与参考图合计最多 10 张</span>
           </button>
           <AiImageDropFeedback :capacity="inputDropCapacity(form, 'reference')" :active="dragOverTarget === 'reference'" :busy="inputImportTarget === 'reference'" />
@@ -268,6 +260,12 @@
                   >
                     {{ selectedResults.has(resultKey(item)) ? '已选' : '选择' }}
                   </button>
+                  <ImageGeneration
+                    class="aiw-generation-surface"
+                    :status="item.failed ? 'error' : item.loading ? (item.generationStatus || 'generating') : 'complete'"
+                    :src="item.loading || item.failed ? '' : resultPreviewSrc(item)"
+                    :status-text="item.error_code === 'UNKNOWN_SUBMIT_RESULT' ? '提交结果待核实' : ''"
+                  >
                   <button
                     v-if="!item.loading && !item.failed"
                     class="aiw-preview-button"
@@ -288,36 +286,13 @@
                     />
                     <span v-else class="aiw-result-preview">{{ item.label }}</span>
                   </button>
-                  <div v-else-if="item.loading" class="aiw-loading-preview">
-                    <img
-                      v-if="loadingPreviewSrc(item)"
-                      class="aiw-loading-source"
-                      :src="loadingPreviewSrc(item)"
-                      alt=""
-                      aria-hidden="true"
-                      @error="markPreviewBroken(item.loadingPreviewPath)"
-                    />
-                    <div v-else class="aiw-loading-default-art" aria-hidden="true">
-                      <span class="aiw-loading-moon"></span>
-                      <span class="aiw-loading-sea sea-back"></span>
-                      <span class="aiw-loading-sea sea-front"></span>
-                      <span class="aiw-loading-shrimp">🦐</span>
-                      <small>CRAWSHRIMP STUDIO</small>
-                    </div>
-                    <span class="aiw-loading-sheen" aria-hidden="true"></span>
-                    <div class="aiw-loading-copy">
-                      <span class="aiw-loading-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                      <strong>{{ loadingMessage(item) }}</strong>
-                      <small>{{ item.label }}</small>
-                    </div>
-                  </div>
-                  <div v-else class="aiw-failed-preview">
+                  <template #error><div class="aiw-failed-preview">
                     <strong>{{ item.error_code === 'UNKNOWN_SUBMIT_RESULT' ? '提交结果待核实' : '生成失败' }}</strong>
                     <span>{{ generationFailureMessage(item.error, item.error_code) }}</span>
                     <small v-if="retrySummaryText(item)">{{ retrySummaryText(item) }}</small>
                     <div class="aiw-failed-actions">
-                      <button v-if="item.error_code !== 'UNKNOWN_SUBMIT_RESULT'" type="button" :disabled="retryingRunUids.has(item.runUid)" @click.stop="retryFailedRun(item)">
-                        <span class="aiw-icon-button-content"><AiwIcon name="rotate-ccw" />{{ retryingRunUids.has(item.runUid) ? '重试提交中...' : '重试本队列' }}</span>
+                      <button v-if="item.error_code !== 'UNKNOWN_SUBMIT_RESULT'" type="button" class="aiw-retry-button" :disabled="retryingRunUids.has(item.runUid)" @click.stop="retryFailedRun(item)">
+                        <span class="aiw-icon-button-content"><AiwIcon name="rotate-ccw" />{{ retryingRunUids.has(item.runUid) ? '重试提交中...' : '一键重试' }}</span>
                       </button>
                       <button type="button" @click.stop="copyFailedPrompt(item)">
                         <span class="aiw-icon-button-content"><AiwIcon name="copy" />复制 Prompt</span>
@@ -326,7 +301,8 @@
                         <span class="aiw-icon-button-content"><AiwIcon name="settings" />打开参数</span>
                       </button>
                     </div>
-                  </div>
+                  </div></template>
+                  </ImageGeneration>
                   <footer v-if="!item.loading && !item.failed">
                     <div class="aiw-result-card-meta">
                       <strong>{{ item.label }}</strong>
@@ -347,6 +323,10 @@
                         <span class="aiw-icon-button-content"><AiwIcon name="download" />下载</span>
                       </button>
                     </div>
+                  </footer>
+                  <footer v-if="item.loading || item.failed" class="aiw-generation-summary">
+                    <strong>{{ item.label }}</strong>
+                    <span>{{ item.failed ? '可查看错误信息并处理' : '结果返回后会自动展示' }}</span>
                   </footer>
                 </article>
               </template></VirtualGrid>
@@ -871,6 +851,7 @@
 import SearchCombobox from '../components/interaction/SearchCombobox.vue'
 import StatefulButton from '../components/interaction/StatefulButton.vue'
 import ImportQueue from '../components/interaction/ImportQueue.vue'
+import ImageGeneration from '../components/interaction/ImageGeneration.vue'
 import VirtualGrid from '../components/interaction/VirtualGrid.vue'
 import { notifyOperation, runNotifiedOperation } from '../utils/interactionToasts'
 import AiImageMaterialList from '../components/AiImageMaterialList.vue'
@@ -906,10 +887,7 @@ import {
   resolveResultLineage,
 } from '../aiImageResultLineage.mjs'
 import {
-  AI_IMAGE_LOADING_MESSAGES,
   generationBelongsToJob,
-  loadingMessageFor,
-  resolveLoadingPreviewContext,
 } from '../utils/aiImageLoadingState.mjs'
 import {
   batchSettingsFromForm,
@@ -1047,7 +1025,6 @@ const actionNotice = ref('')
 const retryingRunUids = reactive(new Set())
 const pinningJobUids = reactive(new Set())
 const logs = ref([])
-const loadingMessageTick = ref(0)
 const imagePreviews = reactive({})
 const previewFailures = reactive(new Set())
 const resultCachePaths = reactive({})
@@ -1111,7 +1088,6 @@ let resultCacheQueue = Promise.resolve()
 let jobPollingTimer = null
 let jobPollingUid = ''
 let jobPollingInFlight = false
-let loadingMessageTimer = null
 let actionNoticeTimer = null
 const dialogReturnFocus = {
   batch: null,
@@ -1144,16 +1120,9 @@ const loadingResultCards = computed(() => {
   if (!generationBelongsToCurrentJob.value) return []
   const snapshot = generatingSnapshot.value || {}
   const count = normalizeImageCount(snapshot.count)
-  const context = resolveLoadingPreviewContext(currentJob.value || {}, {}, {
-    mainImagePath: snapshot.mainImagePath,
-    referenceImagePaths: snapshot.referenceImagePaths,
-  })
   return Array.from({ length: count }, (_, index) => ({
     key: `loading-${index + 1}`,
     label: `生成中 ${index + 1}`,
-    loadingPreviewPath: context.previewPath,
-    loadingMode: context.mode,
-    loadingMessageOffset: index,
     loading: true,
   }))
 })
@@ -1269,11 +1238,7 @@ onMounted(async () => {
   await Promise.all([loadSettings(), loadJobs()])
   await restoreInitialTask()
   if (hasActiveRuns(currentJob.value)) startJobPolling(currentJob.value?.job_uid)
-  loadingMessageTimer = setInterval(() => {
-    if (visibleResultCards.value.some((item) => item.loading)) {
-      loadingMessageTick.value = (loadingMessageTick.value + 1) % AI_IMAGE_LOADING_MESSAGES.length
-    }
-  }, 2400)
+
 })
 
 onActivated(() => {
@@ -1286,7 +1251,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('drop', resetInputDrag)
   window.removeEventListener('resize', syncNarrowWorkbench)
   if (autosaveTimer) clearTimeout(autosaveTimer)
-  if (loadingMessageTimer) clearInterval(loadingMessageTimer)
   if (actionNoticeTimer) clearTimeout(actionNoticeTimer)
   stopJobPolling()
   saveDraftForCurrentTask()
@@ -1324,12 +1288,6 @@ watch(() => [...form.referenceImagePaths], (paths) => {
 watch(resultCards, (cards) => {
   refreshResultPreviewCandidates(cards)
   cards.forEach((card) => queueResultCache(card))
-})
-
-watch(visibleResultCards, (cards) => {
-  cards.forEach((item) => {
-    if (item.loading && item.loadingPreviewPath) void refreshImagePreview(item.loadingPreviewPath)
-  })
 })
 
 watch(taskRecords, (records) => {
@@ -2424,7 +2382,6 @@ function collectResultCards(job) {
 function workbenchRunPlaceholders(job, run, index) {
   const status = String(run?.status || '').toLowerCase()
   if (['queued', 'running'].includes(status)) {
-    const loadingContext = resolveLoadingPreviewContext(job, run)
     return loadingSlotIndexes(run).map((slotIndex) => ({
       key: `${run.run_uid || run.task_id || index}-loading-${slotIndex + 1}`,
       label: `${status === 'queued' ? '排队中' : '生成中'} ${slotIndex + 1}`,
@@ -2432,11 +2389,9 @@ function workbenchRunPlaceholders(job, run, index) {
       jobUid: job?.job_uid || '',
       runUid: run.run_uid || '',
       requested_count: Number(run.requested_count || 1),
-      loadingPreviewPath: loadingContext.previewPath,
-      loadingMode: loadingContext.mode,
-      loadingMessageOffset: index + slotIndex,
       editSource: run?.edit_source || null,
       loading: true,
+      generationStatus: status === 'queued' ? 'queued' : 'generating',
     }))
   }
   if (status === 'failed') {
@@ -2652,15 +2607,6 @@ function formatDateTime(value) {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function loadingMessage(item) {
-  return loadingMessageFor(loadingMessageTick.value, item?.loadingMessageOffset || 0)
-}
-
-function loadingPreviewSrc(item) {
-  const path = String(item?.loadingPreviewPath || '').trim()
-  return path ? imagePreviewSrc(path) : ''
 }
 
 function resultKey(item) {
@@ -3879,7 +3825,7 @@ function localFileUrl(path) {
 </script>
 
 <style scoped>
-.aiw-result-list-virtual :deep(.aiw-result-card) { display: flex; flex-direction: column; }
+.aiw-result-list-virtual :deep(.aiw-result-card) { display: flex; flex-direction: column; height: 400px; }
 .aiw-result-list-virtual :deep(.windowed .aiw-result-card) { height: 400px; }
 .aiw-result-list-virtual :deep(.aiw-result-card footer) { flex-shrink: 0; }
 .aiw-result-list-virtual :deep(.aiw-preview-button) { min-height: 0; overflow: hidden; }
@@ -4609,8 +4555,7 @@ function localFileUrl(path) {
 }
 
 .aiw-result-card img,
-.aiw-result-preview,
-.aiw-loading-preview {
+.aiw-result-preview {
   width: 100%;
   aspect-ratio: 1;
   object-fit: contain;
@@ -4620,8 +4565,7 @@ function localFileUrl(path) {
 .aiw-preview-button,
 .aiw-preview-button > img,
 .aiw-preview-button > span,
-.aiw-result-preview,
-.aiw-loading-preview {
+.aiw-result-preview {
   flex: 1;
   min-height: 210px;
   background: #f4f2ee;
@@ -4649,223 +4593,12 @@ function localFileUrl(path) {
   place-items: center;
 }
 
-.aiw-result-preview,
-.aiw-loading-preview {
+.aiw-result-preview {
   display: grid;
   place-items: center;
   color: #6d6a62;
   font-size: 24px;
   font-weight: 800;
-}
-
-.aiw-loading-preview {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  background: #10131d;
-  color: #fff;
-  font-size: 14px;
-}
-
-.aiw-loading-source {
-  position: absolute;
-  inset: -7%;
-  z-index: -2;
-  width: 114%;
-  height: 114%;
-  min-height: 0;
-  aspect-ratio: auto;
-  object-fit: cover;
-  filter: blur(18px) saturate(0.72) brightness(0.66);
-  transform: scale(1.08);
-  animation: aiw-loading-source-breathe 4.8s ease-in-out infinite;
-}
-
-.aiw-loading-preview::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background:
-    radial-gradient(circle at 24% 22%, rgba(255, 113, 51, 0.26), transparent 34%),
-    linear-gradient(180deg, rgba(10, 13, 23, 0.18), rgba(10, 12, 20, 0.70));
-}
-
-.aiw-loading-preview::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 26%, transparent 64%, rgba(4, 6, 13, 0.54)),
-    radial-gradient(circle at 50% 48%, transparent 0 52%, rgba(255, 255, 255, 0.035) 53%, transparent 70%);
-  pointer-events: none;
-}
-
-.aiw-loading-default-art {
-  position: absolute;
-  inset: 0;
-  z-index: -2;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 72% 26%, rgba(255, 138, 79, 0.26), transparent 28%),
-    linear-gradient(155deg, #171a2a 0%, #111827 48%, #07131d 100%);
-}
-
-.aiw-loading-default-art::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  opacity: 0.34;
-  background-image: radial-gradient(rgba(255, 255, 255, 0.72) 0.8px, transparent 0.8px);
-  background-size: 22px 22px;
-  mask-image: linear-gradient(180deg, #000, transparent 72%);
-}
-
-.aiw-loading-moon {
-  position: absolute;
-  top: 17%;
-  right: 16%;
-  width: 24%;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: linear-gradient(145deg, #ff9a64, #ff6633);
-  box-shadow: 0 0 42px rgba(255, 104, 51, 0.34);
-  animation: aiw-loading-moon-drift 5.4s ease-in-out infinite;
-}
-
-.aiw-loading-sea {
-  position: absolute;
-  left: -18%;
-  width: 136%;
-  height: 38%;
-  border-radius: 48% 56% 0 0;
-  transform: rotate(-4deg);
-}
-
-.aiw-loading-sea.sea-back {
-  bottom: 8%;
-  background: rgba(57, 76, 119, 0.72);
-  animation: aiw-loading-sea-drift 5.8s ease-in-out infinite alternate;
-}
-
-.aiw-loading-sea.sea-front {
-  bottom: -8%;
-  background: rgba(10, 29, 47, 0.96);
-  animation: aiw-loading-sea-drift 4.6s ease-in-out -1.2s infinite alternate-reverse;
-}
-
-.aiw-loading-shrimp {
-  position: absolute;
-  top: 40%;
-  left: 50%;
-  z-index: 1;
-  font-size: clamp(38px, 5vw, 64px);
-  filter: drop-shadow(0 12px 20px rgba(0, 0, 0, 0.34));
-  transform: translate(-50%, -50%) rotate(-8deg);
-  animation: aiw-loading-shrimp-float 3.6s ease-in-out infinite;
-}
-
-.aiw-loading-default-art > small {
-  position: absolute;
-  top: 16px;
-  left: 16px;
-  z-index: 1;
-  color: rgba(255, 255, 255, 0.46);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-}
-
-.aiw-loading-sheen {
-  position: absolute;
-  inset: -28% -70%;
-  z-index: 2;
-  background: linear-gradient(100deg, transparent 34%, rgba(255, 255, 255, 0.16) 49%, transparent 64%);
-  filter: blur(12px);
-  transform: translateX(-32%);
-  animation: aiw-loading-sheen 2.8s ease-in-out infinite;
-}
-
-.aiw-loading-copy {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  left: 14px;
-  z-index: 3;
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 9px;
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  background: rgba(10, 12, 20, 0.62);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
-  backdrop-filter: blur(14px);
-}
-
-.aiw-loading-copy strong {
-  overflow: hidden;
-  color: #fff;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.36);
-  white-space: nowrap;
-}
-
-.aiw-loading-copy small {
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.aiw-loading-dots {
-  display: inline-flex;
-  gap: 3px;
-}
-
-.aiw-loading-dots i {
-  width: 4px;
-  height: 4px;
-  display: block;
-  border-radius: 50%;
-  background: var(--orange);
-  animation: aiw-loading-dot 1.2s ease-in-out infinite;
-}
-
-.aiw-loading-dots i:nth-child(2) { animation-delay: 160ms; }
-.aiw-loading-dots i:nth-child(3) { animation-delay: 320ms; }
-
-@keyframes aiw-loading-source-breathe {
-  0%, 100% { transform: scale(1.08); }
-  50% { transform: scale(1.14); }
-}
-
-@keyframes aiw-loading-sheen {
-  0% { transform: translateX(-34%); opacity: 0; }
-  30%, 65% { opacity: 0.9; }
-  100% { transform: translateX(34%); opacity: 0; }
-}
-
-@keyframes aiw-loading-sea-drift {
-  from { transform: translateX(-2%) rotate(-4deg); }
-  to { transform: translateX(3%) rotate(2deg); }
-}
-
-@keyframes aiw-loading-moon-drift {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(8px); }
-}
-
-@keyframes aiw-loading-shrimp-float {
-  0%, 100% { transform: translate(-50%, -50%) rotate(-8deg); }
-  50% { transform: translate(-50%, calc(-50% - 8px)) rotate(3deg); }
-}
-
-@keyframes aiw-loading-dot {
-  0%, 70%, 100% { opacity: 0.34; transform: translateY(0); }
-  35% { opacity: 1; transform: translateY(-3px); }
 }
 
 .aiw-failed-preview {
@@ -4879,7 +4612,7 @@ function localFileUrl(path) {
   text-align: center;
 }
 
-.aiw-failed-preview span {
+.aiw-failed-preview > span {
   color: var(--text2);
   font-size: 12px;
   line-height: 1.5;
@@ -4899,22 +4632,14 @@ function localFileUrl(path) {
   margin-top: 4px;
 }
 
+.aiw-failed-actions .aiw-retry-button { background: var(--orange); color: var(--on-orange); border-color: var(--orange); }
+
 .aiw-failed-actions button {
   min-height: 34px;
   border-color: color-mix(in srgb, var(--red) 34%, var(--border));
   background: color-mix(in srgb, var(--red) 8%, var(--bg2));
   color: var(--red);
   font-size: 11px;
-}
-
-@keyframes aiw-wave-flow {
-  0% { transform: translateX(-34%); }
-  100% { transform: translateX(34%); }
-}
-
-@keyframes aiw-loading-breathe {
-  0%, 100% { opacity: 0.82; transform: scale(1.04); }
-  50% { opacity: 1; transform: scale(1.08); }
 }
 
 .aiw-select-toggle {
@@ -6001,4 +5726,11 @@ button.active,
 .aiw-primary-action.aiw-config-action:hover { background: #b91c1c; border-color: #b91c1c; color: #fff; }
 .aiw-primary-action.aiw-config-action:focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
 .aiw-primary-action:disabled { background: var(--bg3); border-color: var(--border); color: var(--text2); opacity: .65; cursor: not-allowed; }
+
+.aiw-result-card { height: 400px; }
+.aiw-generation-surface { flex: 1; }
+.aiw-result-card footer { height: 112px; overflow: auto; flex-shrink: 0; }
+.aiw-generation-summary { justify-content: center; font-size: 12px; }
+.aiw-generation-summary span { color: var(--text2); }
+.aiw-failed-preview { min-height: 0; background: transparent; }
 </style>

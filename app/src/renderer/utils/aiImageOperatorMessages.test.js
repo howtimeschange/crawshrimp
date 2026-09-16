@@ -41,3 +41,7 @@ test('unknown synchronous receipts never suggest resubmission', () => {
   assert.match(generationFailureMessage('提交回执未知，HTTP 502'), /先核实供应商记录/)
   assert.equal(retrySummaryText({ submission_retry_history: [{ attempt: 1 }, { attempt: 2 }] }), '已自动重试 2 次')
 })
+
+test('retry missing configuration gives an actionable message without IPC details', () => {
+  assert.equal(generationFailureMessage(new Error("Error invoking remote method 'retry-ai-image-run': 设置菜单未配置 1XM 图片模型 API Key: ai.1xm.gpt_image_2k_key")), '当前模型尚未配置 API Key，请先打开配置，保存后再点击一键重试。')
+})

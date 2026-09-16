@@ -13865,7 +13865,66 @@ _AI_VIDEO_PRIVATE_SETTING_FIELDS = frozenset({
     "bailian_upload_api_key",
     "bailian_uploads_url",
 })
-_LLM_PRIVATE_SETTING_FIELDS = frozenset({"api_key", "deepseek_api_key", "glm_api_key"})
+_LLM_PRIVATE_SETTING_FIELDS = frozenset({
+    "api_key",
+    "overseas_openai_api_key",
+    "overseas_anthropic_api_key",
+    "domestic_api_key",
+    "deepseek_api_key",
+    "glm_api_key",
+})
+_LLM_MASKED_CREDENTIAL = "••••••••••••••••••••••••••••••••"
+
+
+def _llm_key_configured(source_llm: dict, field: str, *, legacy_gateway: bool = False) -> bool:
+    if bool(str(source_llm.get(field) or "").strip()):
+        return True
+    if legacy_gateway:
+        return bool(str(source_llm.get("api_key") or "").strip())
+    return False
+
+
+def _public_custom_llm_providers(source_llm: dict) -> list[dict]:
+    providers = source_llm.get("custom_providers")
+    if not isinstance(providers, list):
+        return []
+    public = []
+    for item in providers:
+        if not isinstance(item, dict):
+            continue
+        provider = {key: value for key, value in item.items() if key not in {"api_key", "apiKey"}}
+        provider["configured"] = bool(str(item.get("api_key") or item.get("apiKey") or "").strip())
+        public.append(provider)
+    return public
+
+
+def _merge_custom_llm_provider_secrets(incoming: list | None, source_llm: dict) -> list:
+    if not isinstance(incoming, list):
+        return []
+    existing = {
+        str(item.get("id") or "").strip(): item
+        for item in source_llm.get("custom_providers", [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    merged = []
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        provider = dict(item)
+        provider_id = str(provider.get("id") or "").strip()
+        provider.pop("configured", None)
+        api_key = str(provider.get("api_key") or provider.get("apiKey") or "").strip()
+        provider.pop("apiKey", None)
+        if not api_key or _LLM_MASKED_CREDENTIAL in api_key:
+            existing_key = str(existing.get(provider_id, {}).get("api_key") or existing.get(provider_id, {}).get("apiKey") or "").strip()
+            if existing_key:
+                provider["api_key"] = existing_key
+            else:
+                provider.pop("api_key", None)
+        else:
+            provider["api_key"] = api_key
+        merged.append(provider)
+    return merged
 
 
 def _public_settings() -> dict:
@@ -13886,9 +13945,22 @@ def _public_settings() -> dict:
         for key, value in source_llm.items()
         if key not in _LLM_PRIVATE_SETTING_FIELDS
     }
-    public_llm["configured"] = bool(str(source_llm.get("api_key") or "").strip())
-    public_llm["deepseek_configured"] = bool(str(source_llm.get("deepseek_api_key") or "").strip())
-    public_llm["glm_configured"] = bool(str(source_llm.get("glm_api_key") or "").strip())
+    public_custom_llm_providers = _public_custom_llm_providers(source_llm)
+    public_llm["custom_providers"] = public_custom_llm_providers
+    public_llm["configured"] = bool(
+        str(source_llm.get("api_key") or "").strip()
+        or str(source_llm.get("overseas_openai_api_key") or "").strip()
+        or str(source_llm.get("overseas_anthropic_api_key") or "").strip()
+        or str(source_llm.get("domestic_api_key") or "").strip()
+        or str(source_llm.get("deepseek_api_key") or "").strip()
+        or str(source_llm.get("glm_api_key") or "").strip()
+        or any(bool(provider.get("configured")) for provider in public_custom_llm_providers)
+    )
+    public_llm["overseas_openai_configured"] = _llm_key_configured(source_llm, "overseas_openai_api_key", legacy_gateway=True)
+    public_llm["overseas_anthropic_configured"] = _llm_key_configured(source_llm, "overseas_anthropic_api_key", legacy_gateway=True)
+    public_llm["domestic_configured"] = _llm_key_configured(source_llm, "domestic_api_key", legacy_gateway=True)
+    public_llm["deepseek_configured"] = _llm_key_configured(source_llm, "deepseek_api_key")
+    public_llm["glm_configured"] = _llm_key_configured(source_llm, "glm_api_key")
     ai["llm"] = public_llm
     public["ai"] = ai
     return public
@@ -13897,17 +13969,26 @@ def _public_settings() -> dict:
 def _safe_settings_write_patch(cfg: dict) -> dict:
     """Treat blank write-only AI-video fields as unchanged, never as secret erasure."""
     patch = json.loads(json.dumps(cfg if isinstance(cfg, dict) else {}, ensure_ascii=False))
+    source_llm = (((load_config().get("ai") or {}).get("llm") or {}))
     for field in _AI_VIDEO_PRIVATE_SETTING_FIELDS:
         dotted = f"ai.video.{field}"
-        if dotted in patch and not str(patch.get(dotted) or "").strip():
+        if dotted in patch and (not str(patch.get(dotted) or "").strip() or _LLM_MASKED_CREDENTIAL in str(patch.get(dotted))):
             patch.pop(dotted, None)
     for field in _LLM_PRIVATE_SETTING_FIELDS:
         dotted = f"ai.llm.{field}"
-        if dotted in patch and not str(patch.get(dotted) or "").strip():
+        if dotted in patch and (not str(patch.get(dotted) or "").strip() or _LLM_MASKED_CREDENTIAL in str(patch.get(dotted))):
             patch.pop(dotted, None)
     patch.pop("ai.llm.configured", None)
+    patch.pop("ai.llm.overseas_openai_configured", None)
+    patch.pop("ai.llm.overseas_anthropic_configured", None)
+    patch.pop("ai.llm.domestic_configured", None)
     patch.pop("ai.llm.deepseek_configured", None)
     patch.pop("ai.llm.glm_configured", None)
+    if isinstance(patch.get("ai.llm.custom_providers"), list):
+        patch["ai.llm.custom_providers"] = _merge_custom_llm_provider_secrets(
+            patch.get("ai.llm.custom_providers"),
+            source_llm,
+        )
     ai = patch.get("ai") if isinstance(patch.get("ai"), dict) else None
     video = ai.get("video") if isinstance(ai, dict) and isinstance(ai.get("video"), dict) else None
     if isinstance(video, dict):
@@ -13921,9 +14002,14 @@ def _safe_settings_write_patch(cfg: dict) -> dict:
     llm = ai.get("llm") if isinstance(ai, dict) and isinstance(ai.get("llm"), dict) else None
     if isinstance(llm, dict):
         for field in _LLM_PRIVATE_SETTING_FIELDS:
-            if field in llm and not str(llm.get(field) or "").strip():
+            if field in llm and (not str(llm.get(field) or "").strip() or _LLM_MASKED_CREDENTIAL in str(llm.get(field))):
                 llm.pop(field, None)
+        if isinstance(llm.get("custom_providers"), list):
+            llm["custom_providers"] = _merge_custom_llm_provider_secrets(llm.get("custom_providers"), source_llm)
         llm.pop("configured", None)
+        llm.pop("overseas_openai_configured", None)
+        llm.pop("overseas_anthropic_configured", None)
+        llm.pop("domestic_configured", None)
         llm.pop("deepseek_configured", None)
         llm.pop("glm_configured", None)
     return patch

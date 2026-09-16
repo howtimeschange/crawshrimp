@@ -180,18 +180,14 @@ test('settings default model select shares the complete themed field treatment',
   assert.match(source, /\.input:focus,\s*\.select:focus\s*\{[\s\S]*?border-color:\s*var\(--orange\);/)
 })
 
-test('settings separates Semir gateway, official DeepSeek, and official GLM LLM providers', () => {
+test('settings presents providers in themed rows with separate configuration', () => {
   const source = readRendererFile('views/SettingsPage.vue')
-
-  assert.match(source, /class="llm-provider-grid"/)
-  assert.match(source, /class="llm-provider-card"[\s\S]*森马网关/)
-  assert.match(source, /class="llm-provider-card ds"[\s\S]*DeepSeek 官方/)
-  assert.match(source, /class="llm-provider-card glm"[\s\S]*GLM 官方/)
-  assert.match(source, /DEEPSEEK_OFFICIAL_MODELS_UI/)
-  assert.match(source, /GLM_OFFICIAL_MODELS_UI/)
-  assert.match(source, /class="llm-model-chips"/)
-  assert.match(cssRule(source, '.llm-provider-card'), /border-radius:\s*8px;/)
-  assert.match(cssRule(source, '.llm-provider-grid'), /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*1fr\);/)
+  const providers = readRendererFile('components/LlmProviderSettings.vue')
+  assert.match(source, /<LlmProviderSettings/)
+  assert.match(providers, /class="llm-provider-list"/)
+  assert.match(providers, /class="llm-provider-row"/)
+  assert.match(providers, /编辑/)
+  assert.match(cssRule(providers, '.llm-provider-row'), /background:\s*var\(--bg3\)/)
 })
 
 test('task output dock uses a lighter light-theme surface and restrained controls', () => {

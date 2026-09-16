@@ -893,7 +893,7 @@ test('workflow preserves selected-material filtering, readable tokens, focus, an
   assert.match(workflowSource, /:disabled="!selectedMaterialCount"/)
   assert.match(workflowSource, /@media \(prefers-reduced-motion: reduce\)/)
   assert.match(workflowSource, /\.aiv-workbench button:focus-visible/)
-  assert.match(appSource, /--on-orange: #17131A/)
+  assert.match(appSource, /--on-orange: #ffffff/)
   assert.match(appSource, /--text3: #8e8ca4/)
 })
 

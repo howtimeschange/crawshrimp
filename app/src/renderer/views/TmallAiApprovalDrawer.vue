@@ -1105,7 +1105,6 @@ function markAllPending(status) {
 }
 
 function decisionsPayload() {
-  prepareEditableBatch(batch.value)
   const decisions = {}
   for (const item of batch.value?.items || []) {
     for (const asset of item.assets || []) {
@@ -1122,15 +1121,18 @@ function decisionsPayload() {
 }
 
 const savedDecisionSnapshot = ref('')
-const approvalSaved = computed(() => Boolean(savedDecisionSnapshot.value) && savedDecisionSnapshot.value === JSON.stringify(decisionsPayload()))
+const savedDecisionBatchId = ref('')
+const approvalSaved = computed(() => Boolean(savedDecisionSnapshot.value) && savedDecisionBatchId.value === approvalRef.value?.batchId && savedDecisionSnapshot.value === JSON.stringify(decisionsPayload()))
 
 async function saveDecisions(options = {}) {
   const ref = approvalRef.value
   saving.value = true
   try {
+    prepareEditableBatch(batch.value)
     const snapshot = decisionsPayload()
     const result = await window.cs.saveTmallApprovalDecisions(ref.batchId, ref.token, snapshot)
     if (result?.detail || result?.error) throw new Error(result.detail || result.error)
+    savedDecisionBatchId.value = ref.batchId
     savedDecisionSnapshot.value = JSON.stringify(snapshot)
     if (!options.silent) showToast('审批状态已保存')
     return true

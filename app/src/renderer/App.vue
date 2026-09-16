@@ -607,7 +607,7 @@ provide('repairCoreService', repairCoreService)
   --orange-bg: rgba(var(--orange-rgb), 0.12);
   --orange-hover: #ff7a3e;
   --orange-strong: #c94d16;
-  --on-orange: #17131A;
+  --on-orange: #ffffff;
   --bg: #141418;
   --bg2: #1c1c22;
   --bg3: #242430;

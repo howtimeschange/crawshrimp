@@ -53,14 +53,14 @@
                     <strong>{{ asset.filename || asset.id }}</strong>
                     <small>{{ asset.prompt || asset.background_prompt || asset.pose_prompt || '' }}</small>
                   </div>
-                  <ApprovalCard title="图片审核" :summary="decisionErrors[asset.id] || `当前状态：${statusLabel(asset.status)}`" :confirmed="['approved', 'rejected'].includes(asset.status)" :confirmed-label="statusLabel(asset.status)"><template #actions>
+                  <ApprovalCard title="图片审核" :summary="decisionErrors[asset.id] || `当前状态：${statusLabel(asset.status)}`" :confirmed="['approved', 'rejected'].includes(asset.status)" :confirmed-label="statusLabel(asset.status)"><template #actions><div class="bala-card-actions">
                     <button type="button" :disabled="decisionSaving || regeneratingAssetId === asset.id" :class="{ selected: asset.status === 'approved' }" @click="saveDecision(asset.id, 'approved')">批准</button>
                     <button type="button" :disabled="decisionSaving || regeneratingAssetId === asset.id" :class="{ selected: asset.status === 'rejected' }" @click="saveDecision(asset.id, 'rejected')">拒绝</button>
                     <button type="button" :disabled="decisionSaving || regeneratingAssetId === asset.id" :class="{ selected: asset.status === 'pending' }" @click="saveDecision(asset.id, 'pending')">待定</button>
                     <button type="button" :disabled="regeneratingAssetId === asset.id" @click="regenerateAsset(asset)">
                       {{ regeneratingAssetId === asset.id ? '重跑中...' : '重跑' }}
                     </button>
-                  </template></ApprovalCard>
+                  </div></template></ApprovalCard>
                 </article>
               </div>
             </section>
@@ -115,7 +115,6 @@
 <script setup>
 import { notifyOperation } from '../utils/interactionToasts'
 import ApprovalCard from '../components/interaction/ApprovalCard.vue'
-import StatefulButton from '../components/interaction/StatefulButton.vue'
 import { computed, ref, watch } from 'vue'
 import {
   QN_VIDEO_MODEL_OPTIONS,
