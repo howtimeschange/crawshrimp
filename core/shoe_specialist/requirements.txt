@@ -1,0 +1,7 @@
+# Runtime dependencies; training/export tools are intentionally not shipped.
+onnxruntime==1.20.1
+rapidocr-onnxruntime==1.4.4
+opencv-python==4.11.0.86
+numpy>=1.26.4,<3
+Pillow>=10.0.0
+zxing-cpp==2.3.0

@@ -53,6 +53,20 @@ def test_empty_heartbeats_do_not_extend_activity_deadline():
             post_json_stream(url, {'model':'test'}, {}, idle_timeout=.15)
 
 
+@pytest.mark.parametrize('field',['reasoning_content','content'])
+def test_whitespace_chunks_do_not_renew_idle_deadline(field):
+    with server([(.03,delta(**{field:' \n\t'}))]*12) as url:
+        with pytest.raises(LlmGatewayError,match='没有有效'):
+            post_json_stream(url,{'model':'test'},{},idle_timeout=.15)
+
+
+def test_whitespace_inside_answer_is_preserved():
+    chunks=['{"name":"a',' ','b"}']
+    with server([(0,delta(content=part)) for part in chunks]+[(0,'data: [DONE]\n\n')]) as url:
+        result=post_json_stream(url,{'model':'test'},{},idle_timeout=1)
+    assert json.loads(result['choices'][0]['message']['content'])=={'name':'a b'}
+
+
 def test_disconnect_after_partial_answer_is_not_success():
     with server([(0, delta(content='{"match":'))]) as url:
         with pytest.raises(LlmGatewayError, match='未返回完整答案'):
@@ -78,6 +92,39 @@ def test_stop_event_completes_without_waiting_for_done():
     with server([(0, data), (.4, ': heartbeat\n\n')]) as url:
         result=post_json_stream(url, {'model':'test'}, {}, idle_timeout=.2)
     assert result['choices'][0]['message']['content'] == '{}'
+
+
+def test_usage_after_stop_is_preserved_without_reasoning_body():
+    stop = 'data: '+json.dumps({'choices':[{'delta':{'content':'{}'},'finish_reason':'stop'}]})+'\n\n'
+    usage = {'prompt_tokens':100, 'prompt_cache_hit_tokens':60,
+             'prompt_cache_miss_tokens':40, 'completion_tokens':20,
+             'completion_tokens_details':{'reasoning_tokens':15, 'private':'secret'}}
+    tail = 'data: '+json.dumps({'choices':[], 'usage':usage})+'\n\n'
+    with server([(0, delta(reasoning_content='private thought')), (0, stop), (.03, tail)]) as url:
+        result = post_json_stream(url, {'model':'test'}, {}, idle_timeout=1, include_usage=True)
+    assert result['usage']['prompt_cache_hit_tokens'] == 60
+    assert result['usage']['completion_tokens_details'] == {'reasoning_tokens':15}
+    assert 'private thought' not in json.dumps(result)
+    assert result['choices'][0]['message']['content'] == '{}'
+
+
+def test_complete_answer_without_usage_is_explicitly_unknown():
+    stop = 'data: '+json.dumps({'choices':[{'delta':{'content':'{}'},'finish_reason':'stop'}]})+'\n\n'
+    with server([(0, stop), (.3, ': heartbeat\n\n')]) as url:
+        result = post_json_stream(url, {'model':'test'}, {}, idle_timeout=.1, include_usage=True)
+    assert result['usage'] is None
+    assert result['choices'][0]['message']['content'] == '{}'
+
+
+def test_nonofficial_gateway_stream_preserves_terminal_usage():
+    from core import llm_gateway as gateway
+    stop='data: '+json.dumps({'choices':[{'delta':{'content':'{}'},'finish_reason':'stop'}]})+'\n\n'
+    usage={'prompt_tokens':10,'completion_tokens':5,'total_tokens':15}
+    tail='data: '+json.dumps({'choices':[],'usage':usage})+'\n\n'
+    with server([(0,stop),(.03,tail)]) as url:
+        route=gateway.LlmRoute(model_id='gpt-6-astra',protocol='openai',base_url=url,api_key='test-key')
+        result=gateway._generic_openai_json_request(route,'JSON','{}',[],stream=True,timeout_seconds=1)
+    assert result['usage']==usage
 
 
 def test_gateway_think_tags_split_across_chunks_do_not_contaminate_json():

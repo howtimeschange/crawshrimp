@@ -748,7 +748,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
     def test_pose_strategy_aliases_are_normalized(self):
         self.assertEqual(
             shenhui_shoe_packaging.SHOE_POSE_DEFAULT_STRATEGY,
-            "sequential_templates",
+            "mask_board_review",
         )
         self.assertEqual(
             shenhui_shoe_packaging.normalize_shoe_pose_strategy("global"),
@@ -5774,18 +5774,15 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                     "label_bbox": [100, 100, 900, 800],
                 }
 
-            with self.assertRaisesRegex(
-                shenhui_shoe_packaging.ShoeSelectionError,
-                "鞋盒标签 OCR",
-            ):
-                shenhui_shoe_packaging.prepare_shoe_packages(
-                    data_rows=rows,
-                    output_root=output_root,
-                    model_id="qwen3.8-max-preview",
-                    analyze_color=fake_analyzer,
-                    analyze_color_label=fake_label_analyzer,
-                    log=lambda _message: None,
-                )
+            report, packages = shenhui_shoe_packaging.prepare_shoe_packages(
+                data_rows=rows, output_root=output_root, model_id="qwen3.8-max-preview",
+                analyze_color=fake_analyzer, analyze_color_label=fake_label_analyzer,
+                log=lambda _message: None,
+            )
+            self.assertFalse(list(output_root.rglob('tmq.jpg')))
+            self.assertTrue(any('鞋盒标签 OCR' in str(row) for row in report))
+            self.assertEqual(len(list((output_root / '204426146031' / '_待核验原图' / '50301').glob('*.jpg'))), len(rows))
+            self.assertIn('204426146031', packages)
 
     def test_prepare_packages_derives_tms_from_tmz5_without_exact_source(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -6699,8 +6696,8 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
                     ["204426146036"],
                 ],
             )
-            self.assertFalse(failed_root.exists())
-            self.assertFalse((output_root / "_shoe_analysis").exists())
+            self.assertTrue(failed_root.exists())
+            self.assertTrue(analysis_marker.exists())
             skipped = [
                 row
                 for row in report_rows
@@ -6708,11 +6705,13 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             ][0]
             self.assertEqual(skipped["处理动作"], "失败款跳过")
             self.assertEqual(skipped["下载结果"], "已跳过")
+            self.assertIn("部分完成", skipped["验收状态"])
             self.assertIn("缺少 Ai角度图1", skipped["备注"])
             self.assertEqual(
                 package_roots,
                 {
                     "204326141005": output_root / "204326141005",
+                    "204426146031": failed_root,
                     "204426146036": output_root / "204426146036",
                 },
             )

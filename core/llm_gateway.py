@@ -572,6 +572,7 @@ def _generic_openai_json_request(
             payload,
             {"Authorization": f"Bearer {route.api_key}"},
             idle_timeout=request_timeout, progress=progress,
+            include_usage=True,
         )
     return _post_json(
         _endpoint(route.base_url, "chat/completions"),

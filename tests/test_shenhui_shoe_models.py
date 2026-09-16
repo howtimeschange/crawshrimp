@@ -107,3 +107,41 @@ def test_only_astra_gets_low_reasoning_effort(monkeypatch):
         models.stream_request(route(model),'system','prompt',[],timeout_seconds=90)
     assert [r['reasoning_effort'] for r in observed]==['low',None,None]
     assert all(r['stream'] is True for r in observed)
+
+
+@pytest.mark.parametrize('model,stage,effort',[
+    ('deepseek-official-flash','export_review','low'),
+    ('deepseek-official-flash','label',None),
+    ('deepseek-official-flash','repair',None),
+    ('gpt-6-astra','label','low'),
+    ('gpt-6-astra','export_review','low'),
+    ('gpt-5.6-terra','export_review',None),
+])
+def test_stage_effort_reaches_transport_and_metadata_is_reset(monkeypatch,model,stage,effort):
+    seen=[]
+    monkeypatch.setattr(gateway,'route_for_model',route)
+    def transport(*args,**kwargs):
+        seen.append((dict(models.REQUEST_METADATA.get()),kwargs['reasoning_effort']))
+        return {}
+    monkeypatch.setattr(gateway,'_generic_openai_json_request',transport)
+    def generate(**kwargs):
+        current=route(kwargs['model_id'])
+        return models.stream_request(current,'system','prompt',[]),current
+    monkeypatch.setattr(gateway,'generate_multimodal_json',generate)
+    before=dict(models.REQUEST_METADATA.get())
+    models.generate_json(models=[model],request_metadata={'stage':stage})
+    assert seen[0][0]['requested_reasoning_effort']==effort
+    assert seen[0][1]==effort
+    assert models.REQUEST_METADATA.get()==before
+
+
+def test_effort_is_present_in_real_stream_payload(monkeypatch):
+    from core import llm_stream
+    seen=[]
+    monkeypatch.setattr(llm_stream,'post_json_stream',lambda url,payload,*args,**kw:seen.append(payload) or {})
+    actual=SimpleNamespace(model_id='deepseek-flash',base_url='https://api.deepseek.com',api_key='test')
+    token=models.REQUEST_METADATA.set({'requested_reasoning_effort':'low','stage':'export_review'})
+    try:models.stream_request(actual,'system','prompt',[])
+    finally:models.REQUEST_METADATA.reset(token)
+    assert seen[0]['reasoning_effort']=='low'
+    assert seen[0]['model']=='deepseek-flash'

@@ -48,7 +48,7 @@ class _ThinkingTextFilter:
         return '', count
 
 
-def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None):
+def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None, include_usage=False):
     # Imported lazily to avoid a gateway/transport import cycle.
     from core.llm_gateway import LlmGatewayError
 
@@ -59,7 +59,10 @@ def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None):
     with tempfile.TemporaryDirectory(prefix='crawshrimp-llm-stream-') as temp:
         root = Path(temp)
         body, auth, errors, response_headers = (root / name for name in ('body.json', 'headers', 'errors', 'response-headers'))
-        body.write_text(json.dumps({**payload, 'stream': True}, ensure_ascii=False), encoding='utf-8')
+        request_payload = {**payload, 'stream': True}
+        if include_usage:
+            request_payload['stream_options'] = {'include_usage': True}
+        body.write_text(json.dumps(request_payload, ensure_ascii=False), encoding='utf-8')
         auth.write_text('\n'.join(f'{k}: {v}' for k, v in {'Content-Type': 'application/json', **headers}.items())+'\n', encoding='utf-8')
         for path in (body, auth):
             os.chmod(path, 0o600)
@@ -70,6 +73,8 @@ def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None):
         reasoning_chars = content_chars = events = 0
         first_activity = None
         finished = False
+        usage = None
+        usage_deadline = None
         returned_model = payload.get('model')
         text_filter = _ThinkingTextFilter()
         with errors.open('wb') as stderr:
@@ -91,8 +96,12 @@ def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None):
             http_checked = False
             try:
                 while True:
+                    if usage_deadline is not None and time.monotonic() >= usage_deadline:
+                        break
                     remaining = idle_timeout - (time.monotonic()-last_activity)
                     if remaining <= 0:
+                        if finished:
+                            break
                         raise LlmGatewayError(f'流式模型超时：连续{idle_timeout:g}秒没有有效思考或答案片段')
                     try:
                         line = messages.get(timeout=min(remaining, 1))
@@ -121,6 +130,15 @@ def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None):
                         raise LlmGatewayError('流式模型返回错误事件')
                     events += 1
                     returned_model = event.get('model') or returned_model
+                    if isinstance(event.get('usage'), dict):
+                        # Only retain numeric accounting metadata, never provider text.
+                        usage = {k: v for k, v in event['usage'].items()
+                                 if isinstance(v, (int, float)) and not isinstance(v, bool)}
+                        for key in ('prompt_tokens_details', 'completion_tokens_details'):
+                            details = event['usage'].get(key)
+                            if isinstance(details, dict):
+                                usage[key] = {k: v for k, v in details.items()
+                                              if isinstance(v, (int, float)) and not isinstance(v, bool)}
                     for choice in event.get('choices', []):
                         if choice.get('index', 0) != 0:
                             continue
@@ -128,16 +146,16 @@ def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None):
                         thought, answer = delta.get('reasoning_content') or '', delta.get('content') or ''
                         if not isinstance(thought, str) or not isinstance(answer, str):
                             raise LlmGatewayError('流式模型片段类型无效')
-                        has_activity = bool(thought or answer)
+                        has_activity = bool(thought.strip() or answer.strip())
                         answer, tagged_thought_chars = text_filter.feed(answer)
+                        reasoning_chars += len(thought) + tagged_thought_chars
+                        content_chars += len(answer)
+                        content.append(answer)
                         if has_activity:
                             last_activity = time.monotonic()
                             first_fragment = first_activity is None
                             if first_activity is None:
                                 first_activity = last_activity-started
-                            reasoning_chars += len(thought) + tagged_thought_chars
-                            content_chars += len(answer)
-                            content.append(answer)
                             if progress and (first_fragment or last_activity-last_notice >= 15):
                                 progress({'elapsed_seconds':round(last_activity-started, 1), 'reasoning_chars':reasoning_chars, 'content_chars':content_chars})
                                 last_notice = last_activity
@@ -146,7 +164,12 @@ def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None):
                                 raise LlmGatewayError('流式模型未完整结束：'+str(choice['finish_reason']))
                             finished = True
                     if finished:
-                        break
+                        if not include_usage or usage is not None:
+                            break
+                        # Official streams send usage after finish_reason. Do not
+                        # discard that terminal event or wait forever for it.
+                        if usage_deadline is None:
+                            usage_deadline = time.monotonic() + min(10, idle_timeout)
                 if text_filter.mode == 'thinking':
                     raise LlmGatewayError('流式模型思考标记未完整结束')
                 if not finished or not content_chars:
@@ -159,6 +182,7 @@ def post_json_stream(url, payload, headers, *, idle_timeout=90, progress=None):
                         raise LlmGatewayError(f'流式模型连接失败（curl退出码{exit_code}）')
                     raise LlmGatewayError('流式模型未返回完整答案（连接结束或接口拒绝）')
                 return {'model':returned_model, 'choices':[{'message':{'content':''.join(content)}}],
+                        'usage': usage,
                         'stream_metrics':{'seconds':time.monotonic()-started, 'first_activity_seconds':first_activity,
                                           'reasoning_chars':reasoning_chars, 'content_chars':content_chars, 'events':events}}
             finally:

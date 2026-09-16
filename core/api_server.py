@@ -3604,7 +3604,7 @@ def _prepare_shenhui_shoe_package_rows(
     execution_fields = ['shoe_execution_model', *[f'shoe_execution_fallback_{i}' for i in range(1, 4)]]
     execution_model_ids = None
     if any(key in run_params for key in execution_fields):
-        execution_model_ids = [str(run_params.get('shoe_execution_model') or 'gpt-6-astra').strip()]
+        execution_model_ids = [str(run_params.get('shoe_execution_model') or 'deepseek-official-flash').strip()]
         execution_model_ids.extend(str(run_params[key]).strip() for key in execution_fields[1:] if run_params.get(key))
     category_file = run_params.get("shoe_category_file")
     shoe_categories = None
@@ -3639,6 +3639,9 @@ def _prepare_shenhui_shoe_package_rows(
         ),
         fallback_model_ids=fallback_model_ids,
         execution_model_ids=execution_model_ids,
+        board_review_model_id=run_params.get("shoe_board_review_model"),
+        style_workers=run_params.get("shoe_style_workers", 8),
+        request_workers=run_params.get("shoe_request_workers", 8),
         label_model_id=str(run_params.get("label_model_id") or "").strip(),
         label_fallback_model_ids=run_params.get("label_fallback_model_ids"),
         shoe_categories=shoe_categories,

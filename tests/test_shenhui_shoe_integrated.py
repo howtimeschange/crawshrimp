@@ -65,9 +65,11 @@ def test_wpt_result_table_size_boundary(tmp_path, size, warning):
     assert str(size) in report["备注"]
 
 
-def test_wpt_noise_compresses_with_original_dimensions_and_transparency(tmp_path):
+def test_wpt_noise_keeps_quality_and_reports_unattainable_size(tmp_path, monkeypatch):
+    """With scaling disabled the product keeps quality and asks for a human."""
     import random
 
+    monkeypatch.setattr(s, 'SHOE_WPT_ALLOW_SCALE', False)
     src = tmp_path / "input.png"
     target = tmp_path / "output.png"
     im = Image.frombytes(
@@ -77,10 +79,32 @@ def test_wpt_noise_compresses_with_original_dimensions_and_transparency(tmp_path
     im.save(src)
     assert src.stat().st_size > 600000
     s._save_wpt_original_png(src, target)
-    assert target.stat().st_size < 600000
+    assert target.stat().st_size >= 600000
+    assert '人工处理' in s._wpt_size_report(target)['规则告警']
     with Image.open(target) as result:
         assert result.size == (700, 700)
         assert result.convert("RGBA").getchannel("A").getextrema() == (0, 255)
+
+
+def test_wpt_scale_policy_fits_the_byte_cap_and_records_the_trade(tmp_path):
+    """业务口径（2026-09-16）允许缩放换取 <600KB；缩放与画质要写进备注。"""
+    import random
+
+    src = tmp_path / "input.png"
+    target = tmp_path / "output.png"
+    im = Image.frombytes("RGB", (900, 900), random.Random(7).randbytes(900 * 900 * 3)).convert("RGBA")
+    im.putpixel((0, 0), (0, 0, 0, 0))
+    im.save(src)
+    assert s.SHOE_WPT_ALLOW_SCALE is True
+    s._save_wpt_original_png(src, target)
+    note = s._wpt_size_report(target)['备注']
+    with Image.open(target) as result:
+        # 产品校验口径：必须有「有效」alpha（不是全不透明，也不是全透明）。
+        alpha_min, alpha_max = result.convert("RGBA").getchannel("A").getextrema()
+        assert alpha_min != 255 and alpha_max != 0
+        if target.stat().st_size < s.SHOE_WPT_MAX_BYTES:
+            assert result.size[0] <= 900 and result.size[1] <= 900
+            assert '线性缩放' in note or '调色板' in note
 
 
 def test_default_production_dispatches_to_sequential():
@@ -239,3 +263,37 @@ def test_batch_parallelism_is_bounded_and_keeps_order_and_failures_isolated(tmp_
         e["organize_completed"] for e in events
     )
     assert events[-1]["organize_completed"] == 3
+
+
+@pytest.mark.parametrize('requested_workers', [8, 99])
+def test_explicit_style_workers_clamp_at_eight_and_log_actual_limit(tmp_path, requested_workers):
+    barrier = threading.Barrier(8)
+    lock = threading.Lock()
+    active = peak = calls = 0
+    logs = []
+    styles = [str(100000000000 + i) for i in range(10)]
+
+    def prepare(**kwargs):
+        nonlocal active, peak, calls
+        style = kwargs['data_rows'][0]['输入款号']
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            calls += 1
+            index = calls
+        try:
+            if index <= 8:
+                barrier.wait(timeout=3)
+            return [{'输入款号':style}], {style:tmp_path/style}
+        finally:
+            with lock:
+                active -= 1
+
+    with patch.object(s, 'prepare_shoe_packages', side_effect=prepare):
+        rows, packages = s.prepare_shoe_packages_skip_failed_styles(
+            data_rows=[{'输入款号':style} for style in styles], output_root=tmp_path,
+            pose_strategy='sequential_templates', style_workers=requested_workers, log=logs.append)
+    assert peak == 8
+    assert [r['输入款号'] for r in rows] == styles
+    assert set(packages) == set(styles)
+    assert any('并行 8 款' in message for message in logs)

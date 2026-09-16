@@ -1,0 +1,12 @@
+{
+  "version": "bala-shoe-dinov2-onnx-v2",
+  "backbone": "facebook/dinov2-small",
+  "training_scope": "13 styles; development regression, not independent new-style acceptance",
+  "files": {
+    "models.json": "afd1a7caef64385515fcd49808d37735b32d2c9f205a2fc3243094acd01b6353",
+    "dino-224.onnx": "dd37e71f45583186c43eb2a75fc24105c2e920d3c5dd78a91fad0c20b9182bed",
+    "snow-tmz4.png": "a33a318e900e9ae099bc38c27f66e37ab229ad8b4d2e03d0699146feb6896677",
+    "yx.json": "5ebfe2500aa4e3abc271b18e3a7de9ab868deeb9d1648c0474da984b639f469c",
+    "dino-448.onnx": "3d074e82733ff11e4ec4210ff2559ae40a128035ecf017ebe6d7688c2ded2c2e"
+  }
+}

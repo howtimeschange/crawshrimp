@@ -1,0 +1,88 @@
+{
+  "date": "2026-09-16",
+  "scope": "13 training styles, previously downloaded cloud source replay; not unseen-style acceptance or fresh cloud download",
+  "input": {
+    "downloaded_images": 649,
+    "inference_images": 502,
+    "styles": 13,
+    "colors": 22
+  },
+  "platforms": {
+    "mac": {
+      "platform": "macOS-26.5.2-arm64-arm-64bit",
+      "seconds": 350.17726370797027,
+      "styles": 13,
+      "business_outputs": 449,
+      "per_style": {
+        "204426146118": 41,
+        "204426146037": 27,
+        "204426141117": 27,
+        "204426141029": 39,
+        "204426141017": 25,
+        "204426141027": 36,
+        "204426141013": 26,
+        "204426140135": 39,
+        "204426140052": 36,
+        "208426141006": 40,
+        "208426141018": 37,
+        "208426141232": 23,
+        "208426146230": 53
+      },
+      "tmq_red_box_ocr": 13,
+      "yx_found": 15,
+      "issues": [],
+      "llm_calls": 0
+    },
+    "windows": {
+      "platform": "Windows-11-10.0.26200-SP0",
+      "seconds": 1059.1008404169988,
+      "styles": 13,
+      "business_outputs": 449,
+      "per_style": {
+        "204426146118": 41,
+        "204426146037": 27,
+        "204426141117": 27,
+        "204426141029": 39,
+        "204426141017": 25,
+        "204426141027": 36,
+        "204426141013": 26,
+        "204426140135": 39,
+        "204426140052": 36,
+        "208426141006": 40,
+        "208426141018": 37,
+        "208426141232": 23,
+        "208426146230": 53
+      },
+      "tmq_red_box_ocr": 13,
+      "yx_found": 15,
+      "issues": [],
+      "llm_calls": 0
+    }
+  },
+  "windows_environment": "Windows 11 ARM virtual machine, x64 bundled Python under translation; not physical Intel i3 acceptance",
+  "selection_decisions": 220,
+  "selection_differences": [],
+  "output_comparison": {
+    "identical_file_bytes": 427,
+    "wpt_png_file_differences": 22,
+    "wpt_identical_decoded_images": 15,
+    "wpt_minor_pixel_differences": 7,
+    "max_changed_pixels": 318,
+    "max_rgba_rmse": 0.07628782326846663,
+    "max_wpt_bytes": 599434
+  },
+  "yx_pending": 7,
+  "model_manifest": {
+    "version": "bala-shoe-dinov2-onnx-v2",
+    "backbone": "facebook/dinov2-small",
+    "training_scope": "13 styles; development regression, not independent new-style acceptance",
+    "files": {
+      "models.json": "afd1a7caef64385515fcd49808d37735b32d2c9f205a2fc3243094acd01b6353",
+      "dino-224.onnx": "dd37e71f45583186c43eb2a75fc24105c2e920d3c5dd78a91fad0c20b9182bed",
+      "snow-tmz4.png": "a33a318e900e9ae099bc38c27f66e37ab229ad8b4d2e03d0699146feb6896677",
+      "yx.json": "5ebfe2500aa4e3abc271b18e3a7de9ab868deeb9d1648c0474da984b639f469c",
+      "dino-448.onnx": "3d074e82733ff11e4ec4210ff2559ae40a128035ecf017ebe6d7688c2ded2c2e"
+    }
+  },
+  "delivery": "local directory packages built; no push, publication, or DeepDraw upload"
+}

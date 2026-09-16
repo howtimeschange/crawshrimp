@@ -6,6 +6,126 @@ from artifacts import shenhui_shoe_rerun_validator as validator
 import json
 import pytest
 
+def _observations(vertical=False):
+    return {"background_kind":"plain_gray", "independent_cards":False,
+            "toe":[.5,.2] if vertical else [.2,.5],
+            "heel":[.5,.8] if vertical else [.8,.5], "view":"side"}
+
+
+@pytest.mark.parametrize('view,upper,expected', [('bottom',False,True),('bottom',True,False),('rear_oblique',True,False)])
+def test_outsole_slot_distinguishes_flat_bottom_from_shoe_side_visible(view, upper, expected):
+    facts = {**_observations(), 'view':view, 'outsole_tread_visible':True, 'upper_side_visible':upper}
+    assert (not direct.visual_fact_failures('yq2',facts,(1000,650),'运动')) is expected
+
+
+@pytest.mark.parametrize('bad_index', [[], {}, True, '0'])
+def test_malformed_export_index_is_unknown_not_crash(tmp_path,monkeypatch,bad_index):
+    path=tmp_path/'shoe.jpg';Image.new('RGB',(100,100),'white').save(path)
+    ctx={'root':str(tmp_path),'style':'S','color':'C','ids':{'I1':'shoe'},
+         'previews':{'shoe':str(path)},'main_refs':[str(path)]*5,
+         'routes':['deepseek-official-flash'],'log':lambda _:None,'export_images':[str(path)]}
+    monkeypatch.setattr(direct.fast,'_request',lambda *a:({'match':True,'reason':'whole shoe',
+        'candidate_facts':_observations(),'export_checks':[{'index':bad_index,'accepted':True,'reason':'ok'}]},
+        SimpleNamespace(model_id='deepseek-flash')))
+    assert direct.audit(ctx,{'selected':{'tmz5':'shoe'}},['tmz5'])['outcomes']['tmz5']=='review_unknown'
+
+
+def test_missing_side_anchor_does_not_reject_existing_yq3_source(tmp_path):
+    ctx={'root':str(tmp_path),'ids':{'I1':'shoe'},'routes':['deepseek-official-flash']}
+    result=direct.audit(ctx,{'selected':{'yq3':'shoe'}},['yq3'])
+    assert result['outcomes']['yq3']=='review_unknown'
+
+
+@pytest.mark.parametrize('referee_accepts', [True, False])
+def test_conflicting_shoe_counts_are_adjudicated_not_automatically_accepted(tmp_path, monkeypatch, referee_accepts):
+    path = tmp_path / 'shoe.jpg'
+    Image.new('RGB', (100, 100), 'white').save(path)
+    facts = _observations()
+    ctx = {'root': str(tmp_path), 'style': 'S', 'category': '休闲', 'ids': {'I1': 'shoe'},
+           'previews': {'shoe': str(path)}, 'main_refs': [str(path)] * 5,
+           'routes': ['official', 'astra'], 'log': lambda _: None,
+           'candidate_observations': {'I1': {'shoe_count': 2, 'kind': 'pair_grounded', 'facts': facts}}}
+    calls = []
+    def request(context, model, *args):
+        calls.append(model)
+        first = len(calls) == 1
+        return {'match': False if first else referee_accepts, 'reason': '独立的鞋数及摆放观察',
+                'candidate_facts': facts, 'template_shoe_count': 2,
+                'candidate_shoe_count': 3 if first else 2,
+                'arrangement_matches': False if first else referee_accepts,
+                'camera_view_matches': True}, SimpleNamespace(model_id=model)
+    monkeypatch.setattr(direct.fast, '_request', request)
+    result = direct.audit(ctx, {'selected': {'tmz1': 'shoe'}}, ['tmz1'])
+    assert calls == ['official', 'astra']
+    assert not result['approved']
+    assert result['outcomes']['tmz1'] == ('review_unknown' if referee_accepts else 'source_invalid')
+    row = result['response']['reviews'][0]
+    assert row['model'] == 'astra' and row['disputed_observations'][0]['facts'][0]['fact'] == 'shoe_count'
+
+
+def test_disagreeing_referee_does_not_remove_a_previously_approved_source(tmp_path,monkeypatch):
+    path=tmp_path/'shoe.jpg';Image.new('RGB',(100,100),'white').save(path)
+    facts={**_observations(),'near_end':'heel','heel_back_visible':True,'view':'rear_oblique'}
+    ctx={'root':str(tmp_path),'ids':{'I1':'shoe'},'category':'休闲','previews':{'shoe':str(path)},
+         'main_refs':[str(path)]*5,'routes':['official','astra'],
+         'candidate_observations':{'I1':{'facts':{**facts,'heel_back_visible':False}}}}
+    def request(c,model,*args):
+        positive=model=='official'
+        return {'match':positive,'reason':'heel evidence','candidate_facts':{**facts,'heel_back_visible':positive}},SimpleNamespace(model_id=model)
+    monkeypatch.setattr(direct.fast,'_request',request)
+    result=direct.audit(ctx,{'selected':{'tmz4':'shoe'}},['tmz4'])
+    assert result['outcomes']['tmz4']=='review_unknown'
+    assert not result['approved']
+
+
+def test_fact_conflict_without_independent_route_stays_unknown(tmp_path, monkeypatch):
+    path = tmp_path / 'shoe.jpg'
+    Image.new('RGB', (100, 100), 'white').save(path)
+    previous = {**_observations(), 'near_end': 'neither', 'heel_back_visible': False}
+    ctx = {'root': str(tmp_path), 'ids': {'I1': 'shoe'}, 'category': '休闲',
+           'previews': {'shoe': str(path)}, 'main_refs': [str(path)] * 5, 'routes': ['official'],
+           'candidate_observations': {'I1': {'facts': previous}}}
+    monkeypatch.setattr(direct.fast, '_request', lambda *a: (
+        {'match': True, 'reason': '误报后跟近', 'candidate_facts': {
+            **previous, 'near_end': 'heel', 'heel_back_visible': True, 'view': 'rear_oblique'}},
+        SimpleNamespace(model_id='official')))
+    result = direct.audit(ctx, {'selected': {'tmz4': 'shoe'}}, ['tmz4'])
+    assert result['outcomes']['tmz4'] == 'review_unknown'
+    assert not result['approved']
+
+
+def test_hallucinated_template_count_cannot_approve_a_single_shoe_slot(tmp_path,monkeypatch):
+    path=tmp_path/'shoe.jpg';Image.new('RGB',(100,100),'white').save(path)
+    ctx={'root':str(tmp_path),'ids':{'I1':'shoe'},'category':'运动','previews':{'shoe':str(path)},
+         'main_refs':[str(path)]*5,'routes':['official']}
+    monkeypatch.setattr(direct.fast,'_request',lambda *a:({'match':True,'reason':'two shoes match',
+        'template_shoe_count':2,'candidate_shoe_count':2,'arrangement_matches':True,
+        'camera_view_matches':True,'candidate_facts':_observations(True)},SimpleNamespace(model_id='official')))
+    result=direct.audit(ctx,{'selected':{'tmz3':'shoe'}},['tmz3'])
+    assert result['outcomes']['tmz3']=='review_unknown'
+    assert any('模板鞋数' in e for e in result['errors'])
+
+
+def test_fallback_to_same_actual_model_cannot_adjudicate_fact_conflict(tmp_path, monkeypatch):
+    path = tmp_path / 'shoe.jpg'
+    Image.new('RGB', (100, 100), 'white').save(path)
+    facts = _observations()
+    ctx = {'root': str(tmp_path), 'style': 'S', 'category': '休闲', 'ids': {'I1': 'shoe'},
+           'previews': {'shoe': str(path)}, 'main_refs': [str(path)] * 5,
+           'routes': ['official', 'backup'],
+           'candidate_observations': {'I1': {'shoe_count': 2, 'kind': 'pair_grounded', 'facts': facts}}}
+    calls = []
+    def request(context, model, *args):
+        calls.append(model)
+        return {'match': True, 'reason': 'same model response', 'candidate_facts': facts,
+                'template_shoe_count': 2, 'candidate_shoe_count': 3 if len(calls) == 1 else 2,
+                'arrangement_matches': True, 'camera_view_matches': True}, SimpleNamespace(model_id='actual-model')
+    monkeypatch.setattr(direct.fast, '_request', request)
+    result = direct.audit(ctx, {'selected': {'tmz1': 'shoe'}}, ['tmz1'])
+    assert calls == ['official', 'backup']
+    assert result['outcomes']['tmz1'] == 'review_unknown'
+    assert not result['approved']
+
 
 def test_direct_selection_has_no_handwritten_pose_checklist():
     text = direct.selection_prompt({"style": "S", "color": "C"}, "tmz3", ["I1"])
@@ -16,7 +136,7 @@ def test_direct_selection_has_no_handwritten_pose_checklist():
     assert "左右镜像" in text
 
 
-def test_yq_template_repeats_first_example_as_two_independent_rows(tmp_path):
+def test_yq_template_uses_one_example_without_duplicate_shoes(tmp_path):
     source = tmp_path / "examples.jpg"
     image = Image.new("RGB", (100, 200), "red")
     image.paste("blue", (0, 100, 100, 200))
@@ -25,8 +145,7 @@ def test_yq_template_repeats_first_example_as_two_independent_rows(tmp_path):
         {"root": str(tmp_path), "yq_refs": {"yq3": str(source)}}, "yq3"
     )
     with Image.open(path) as im:
-        assert im.height == 200
-        assert im.getpixel((50, 150))[0] > 200
+        assert im.height == 100
         assert im.getpixel((50, 50))[0] > 200
 
 
@@ -54,6 +173,7 @@ def test_direct_review_retains_real_comparison_without_inventing_checks(
             "match": True,
             "visible_differences": [],
             "reason": "同类构图",
+            "candidate_facts": _observations(vertical=True),
             "template_shoe_count": 1, "candidate_shoe_count": 1,
             "arrangement_matches": True, "camera_view_matches": True,
         }, SimpleNamespace(model_id="deepseek-flash")
@@ -219,7 +339,7 @@ def test_visual_order_keeps_all_candidates_and_handles_missing_image(tmp_path):
     assert direct._repair_visual_order(ctx,'tmz4',['B','A'])==(['B','A'],[])
 
 
-def test_main_and_card_templates_repeat_without_mutating_original(tmp_path):
+def test_main_and_card_templates_keep_single_frame_without_mutating_original(tmp_path):
     for slot in ('tmz1', 'yx'):
         root=tmp_path/slot
         root.mkdir()
@@ -228,10 +348,9 @@ def test_main_and_card_templates_repeat_without_mutating_original(tmp_path):
         original=source.read_bytes()
         ctx={'root':str(root),'main_refs':[str(source)]*5,'yx_ref':str(source)}
         path=direct.reference(ctx,slot)
-        assert 'stacked-v1' in path
+        assert 'single-v1' in path
         with Image.open(path) as im:
-            assert im.size==(80,200)
-            assert im.getpixel((40,30))==im.getpixel((40,130))
+            assert im.size==(80,100)
         assert source.read_bytes()==original
         assert direct.TEMPLATE_LAYOUT_GUIDE in direct.selection_prompt({'style':'S','color':'C'},slot,['I1'])
 
@@ -249,7 +368,7 @@ def test_integrated_side_review_separates_pose_and_keeps_evidence(tmp_path, monk
         calls.append((c, images))
         if len(calls)==1:
             assert len(images)==2
-            return {'match':True,'reason':'pose matches'}, SimpleNamespace(model_id=model)
+            return {'match':True,'reason':'pose matches','candidate_facts':_observations()}, SimpleNamespace(model_id=model)
         assert c['request_timeout'] == 90
         assert 'system_prompt' in c
         with Image.open(images[0]) as board:
@@ -278,7 +397,7 @@ def test_completed_long_stream_still_gets_independent_side_review(tmp_path, monk
     source=tmp_path/'shoe.png';Image.new('RGB',(80,160),'white').save(source)
     ctx=dict(root=str(tmp_path),ids={'I1':'shoe'},previews={'shoe':str(source)},
              yq_refs={'yq3':str(source)},routes=['deepseek-official-flash'],request_timeout=1)
-    monkeypatch.setattr(direct.fast,'_request',lambda *a:({'match':True,'reason':'pose'},SimpleNamespace(model_id='flash')))
+    monkeypatch.setattr(direct.fast,'_request',lambda *a:({'match':True,'reason':'pose','candidate_facts':_observations()},SimpleNamespace(model_id='flash')))
     def side(c, *args):
         assert c['request_timeout'] == 90
         return {'same_side':True,'response':{'reason':'same visible side'}}
@@ -313,3 +432,57 @@ def test_visual_order_preserves_candidates_and_original_pixels(tmp_path):
     assert sorted(order)==['0','1','2']
     assert len(scores)==3
     assert all(open(ctx['previews'][k],'rb').read()==v for k,v in originals.items())
+
+
+def test_inventory_sees_full_pool_and_replaces_rejected_original(monkeypatch, tmp_path):
+    from core import shenhui_shoe_packaging as shoe
+    names = {'I1':'front.jpg', 'I2':'rear.jpg', 'I3':'side.jpg'}
+    sheets = []
+    monkeypatch.setattr(shoe, '_create_contact_sheet',
+                        lambda entries, target, **kw: sheets.append(kw['candidate_labels']))
+    proposals = iter(['I1', 'I2'])
+    monkeypatch.setattr(direct.fast, '_request', lambda *a: (
+        {'accepted':True, 'candidate_id':next(proposals)}, SimpleNamespace(model_id='official')))
+    checked = []
+    def audit(ctx, result, slots):
+        name = result['selected']['tmz4']; checked.append(name)
+        key = next(k for k,v in names.items() if v == name)
+        ok = name == 'rear.jpg'
+        return {'approved':['tmz4'] if ok else [], 'rejected':{} if ok else {'tmz4':'front'},
+                'response':{'reviews':[{'slot':'tmz4', 'candidate_id':key,
+                    'accepted':ok, 'evidence':'original inspected', 'model':'official'}]}}
+    monkeypatch.setattr(direct, 'audit', audit)
+    result, route, attempts = direct.select_inventory(
+        {'root':str(tmp_path), 'style':'S', 'color':'C', 'ids':names,
+         'previews':{v:v for v in names.values()}}, 'official','tmz4',list(names),False,[])
+    assert sheets == [['I1','I2','I3'], ['I2','I3']]
+    assert checked == ['front.jpg','rear.jpg']
+    assert result['candidate_id'] == 'I2'
+    evidence = json.loads((tmp_path/'inventory-tmz4-1'/'proposal.json').read_text())
+    assert evidence['pair_review']['rejected'] == {'tmz4':'front'}
+
+
+@pytest.mark.parametrize('change_template,expected_calls', [(False,0),(True,1)])
+def test_final_review_reuses_only_identical_independently_checked_inputs(monkeypatch,tmp_path,change_template,expected_calls):
+    import hashlib
+    source=tmp_path/'source.jpg';template=tmp_path/'template.jpg'
+    Image.new('RGB',(20,20),'red').save(source);Image.new('RGB',(20,20),'blue').save(template)
+    monkeypatch.setattr(direct,'reference',lambda *a:str(template))
+    monkeypatch.setattr(direct,'pair_panel',lambda *a:source)
+    hashes=[hashlib.sha256(p.read_bytes()).hexdigest() for p in (template,source)]
+    checked={'slot':'tmz2','candidate_id':'I1','accepted':True,'model':'official',
+             'evidence':'independent original comparison','input_sha256':hashes,'review_version':'pose_facts_v2',
+             'review_policy':{'version':'pose_facts_v2','category':'','gray_standard':False}}
+    result={'selected':{'tmz2':'shoe.jpg'},'records':[{'slot':'tmz2','small_batch_attempts':[
+        {'pair_review':{'approved':['tmz2'],'response':{'reviews':[checked]}}}]}]}
+    if change_template:Image.new('RGB',(20,20),'green').save(template)
+    calls=[]
+    def request(*args):
+        calls.append(args)
+        return {'match':False,'reason':'changed template does not match'},SimpleNamespace(model_id='official')
+    monkeypatch.setattr(direct.fast,'_request',request)
+    ctx={'root':str(tmp_path),'ids':{'I1':'shoe.jpg'},'previews':{'shoe.jpg':str(source)},
+         'routes':['official'],'reuse_inventory_reviews':True}
+    verdict=direct.audit(ctx,result,['tmz2'])
+    assert len(calls)==expected_calls
+    assert bool(verdict['approved']) is (not change_template)

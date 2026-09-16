@@ -150,7 +150,7 @@ def _request(ctx, model, prompt, images, phase):
     )
     try:
         def stream_progress(state):
-            message = (f"{phase} · {model} · 已等待{state['elapsed_seconds']:g}秒 · "
+            message = (f"{phase} · {state.get('model_id', model)} · 已等待{state['elapsed_seconds']:g}秒 · "
                        f"思考片段{state['reasoning_chars']}字 / 答案{state['content_chars']}字")
             ctx['log'](message)
             s._notify_shoe_model_progress(ctx.get('progress'), message,
@@ -158,6 +158,9 @@ def _request(ctx, model, prompt, images, phase):
         return shoe_models.generate_json(
             models=[model, *ctx.get('transport_fallback_routes', [])],
             state=ctx.get('model_state'), log=ctx['log'],
+            request_metadata={'style':ctx['style'], 'color':ctx['color'],
+                              'stage':ctx.get('pipeline_stage', 'selection'), 'operation':phase,
+                              'request_purpose':ctx.get('request_purpose', 'primary_selection')},
             system_prompt=ctx.get("system_prompt", s.SHOE_SELECTION_SYSTEM_PROMPT),
             user_prompt=prompt,
             image_inputs=images,
@@ -345,20 +348,42 @@ def analyze(**kwargs):
     )
 
 
+def _source_visual_fact(ctx, path, kind):
+    """Reuse compact source features within one color, invalidating changed files."""
+    import hashlib
+
+    path = Path(path)
+    stat = path.stat()
+    identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    cache = ctx.setdefault('_source_visual_cache', {'paths': {}, 'facts': {}})
+    previous = cache['paths'].get(str(path))
+    if previous is None or previous[0] != identity:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        cache['paths'][str(path)] = (identity, digest)
+    else:
+        digest = previous[1]
+    key = (digest, kind)
+    if key not in cache['facts']:
+        source = _shoe()
+        factory = source._binary_pose_feature if kind == 'pose' else source._same_background_visual_signature
+        cache['facts'][key] = factory(path)
+    return cache['facts'][key]
+
+
 def _gray_mates(ctx, anchor_name):
     """Propose background mates; the anchor and mate still need final review."""
     s = _shoe()
     entry = ctx["entries"].get(anchor_name)
     if not entry:
         return []
-    feature = s._binary_pose_feature(entry["path"])
+    feature = _source_visual_fact(ctx, entry['path'], 'pose')
     if not feature.valid or feature.background_luma < s.SHOE_WHITE_BACKGROUND_LUMA:
         return []
     signature = None
     found = []
     for key, name in ctx["ids"].items():
         path = ctx["entries"][name]["path"]
-        other = s._binary_pose_feature(path)
+        other = _source_visual_fact(ctx, path, 'pose')
         if not (
             other.valid
             and 235 <= other.background_luma < s.SHOE_WHITE_BACKGROUND_LUMA
@@ -369,10 +394,10 @@ def _gray_mates(ctx, anchor_name):
         ):
             continue
         if signature is None:
-            signature = s._same_background_visual_signature(entry["path"])
+            signature = _source_visual_fact(ctx, entry['path'], 'signature')
         if (
             s._same_background_foreground_pixel_match(
-                signature, s._same_background_visual_signature(path)
+                signature, _source_visual_fact(ctx, path, 'signature')
             )
             >= s.SHOE_SAME_BACKGROUND_VISUAL_MIN_PIXEL_MATCH
         ):

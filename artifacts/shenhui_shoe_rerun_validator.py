@@ -934,7 +934,12 @@ def validate_semantic_rows(
                             or (expected == "yq3" and sequential.get("same_side") is not True)
                             or (slot != "wpz5" and sequential.get("review_source") != text(row.get("原文件名")))):
                         issues.append(f"{slot} incomplete direct template comparison evidence")
-                    if expected == "yq3" and sequential.get("review_version") == "pose_then_side_v1":
+                    if sequential.get("review_version") == "pose_facts_v2":
+                        if (not isinstance(sequential.get("candidate_facts"), dict)
+                                or sequential.get("fact_failures") != []
+                                or not isinstance(sequential.get("background_perimeter"), dict)):
+                            issues.append(f"{slot} missing or failed independent candidate observations")
+                    if expected == "yq3" and sequential.get("review_version") in {"pose_then_side_v1", "pose_facts_v2"}:
                         side = sequential.get("side_identity") or {}
                         hashes = side.get("input_sha256") or []
                         if (side.get("same_side") is not True or not side.get("model")

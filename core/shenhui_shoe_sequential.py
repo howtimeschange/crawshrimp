@@ -16,7 +16,7 @@ from core import (
     llm_gateway as gateway,
 )
 
-STRATEGY = "sequential_templates"
+STRATEGY = "mask_board_review"
 ORDER = ("tmz1", "tmz2", "tmz3", "tmz4", "tmz5", "wpz5", "yq1", "yq2", "yq3", "yx")
 CHECKS = {
     "tmz1": {
@@ -84,9 +84,10 @@ def contract(slot, category, gray_standard=False):
         }
     if slot == "tmz4" and category == "雪地":
         return {
-            "single_complete_shoe": "一只完整鞋",
+            "shoe_opening_detail": "单只鞋的鞋口/绒毛内里近景，允许模板式局部细节，不要求整只鞋完整入镜",
             "opening_lining_visible": "鞋口内里清晰可见",
-            "upper_side_visible": "同时可见鞋帮侧面",
+            "lining_detail_prominent": "内里必须像模板一样突出，占据主要展示区域；完整鞋俯斜图只露少量内里不能替代内里特写",
+            "upper_side_visible": "同时可见鞋口周围鞋帮，证明是实物鞋内里而非独立绒布或鞋垫",
         }
     if slot == "tmz4" and category == "运动":
         return {
@@ -374,7 +375,7 @@ def run(ctx, *, fallback=True):
                     refs = [ref] if ref else []
                     if same_shoe_side:
                         refs.append(ctx["previews"][ids[selected["tmz3"]]])
-                    response, route, batches = direct.select_repair({**ctx, "side_anchor": ids[selected["tmz3"]] if same_shoe_side else ""}, model, slot, pool, same_shoe_side, refs)
+                    response, route, batches = direct.select_inventory({**ctx, "side_anchor": ids[selected["tmz3"]] if same_shoe_side else ""}, model, slot, pool, same_shoe_side, refs)
                     record["small_batch_attempts"] = batches
                 else:
                     response, route = fast._request(
@@ -646,9 +647,10 @@ def repair_scope(rejected):
 
 def run_verified(ctx, result=None):
     result = run(ctx) if result is None else result
-    first = audit(ctx, result)
+    first = ({'approved':[], 'rejected':dict(ctx['known_rejections']), 'deferred_review':True}
+             if ctx.get('repair_only') else audit(ctx, result, ctx.get('audit_slots')))
     result["audits"] = [first]
-    if first["rejected"]:
+    if first["rejected"] and not ctx.get('audit_only'):
         if ctx.get("direct_template_match"):
             rejected = set(first["rejected"])
             # Derived copies follow a changed source; approved independent slots
@@ -701,7 +703,10 @@ def run_verified(ctx, result=None):
         targets = [
             slot for slot in ORDER if slot in changed or slot in first["rejected"]
         ]
-        second = audit({**repair_ctx, "routes": ctx["routes"]}, repaired, targets)
+        second = ({'approved':[], 'rejected':{
+            slot:'补齐后仍缺少候选' for slot in targets if not repaired['selected'].get(slot)
+        }, 'deferred_review':True} if ctx.get('repair_only') else
+            audit({**repair_ctx, "routes": ctx["routes"]}, repaired, targets))
         second["reused_approved"] = [
             slot for slot in first["approved"] if slot not in targets
         ]
@@ -711,7 +716,7 @@ def run_verified(ctx, result=None):
         result["reopened_slots"] = [slot for slot in ORDER if slot in rejected]
         result["card_absence_verified"] = repaired["card_absence_verified"]
         result["audits"].append(second)
-    result["verified"] = not result["audits"][-1]["rejected"] and set(
+    result["verified"] = not ctx.get("repair_only") and not result["audits"][-1]["rejected"] and set(
         result["selected"]
     ) == set(ORDER)
     return result
@@ -734,20 +739,45 @@ def analyze(**kwargs):
         main_refs=kwargs["main_pose_reference_images"],
         yq_refs=kwargs["yq_reference_images"],
         routes=execution[:1],
+        direct_review_routes=execution,
         transport_fallback_routes=execution[1:],
         model_state=kwargs.get('model_state') or shoe_models.ShoeModelState(),
         direct_template_match=True,
+        catalog_assignment=True,
+        mask_shortlist=True,
+        mask_direct=kwargs.get("pose_strategy") == "mask_board_review",
+        board_review=True,
+        verified_label_filename=kwargs.get('verified_label_filename', ''),
+        allow_partial=True,
         config=kwargs.get("config"),
         log=kwargs.get("log") or (lambda message: None),
         progress=kwargs.get("progress"),
     )
+    # The designated pose-board reviewer must not silently degrade, so a missing
+    # route would turn every pose slot into review_unknown after a full paid run.
+    # Fail fast with the concrete cause instead.
+    from core import llm_gateway as gateway
+    board_model = getattr(ctx.get("model_state"), "board_review_model_id", "")
+    if ctx["board_review"] and board_model:
+        try:
+            gateway.route_for_model(board_model, kwargs.get("config"))
+        except gateway.LlmConfigurationError as exc:
+            raise shoe.ShoeSelectionError(
+                "姿势看板指定模型不可用：" + str(board_model) + "（" + str(exc) + "）；"
+                "请先在设置→AI能力中配置该模型，或改用 --board-review-model 指定已配置的模型"
+            ) from exc
     ctx["previews"] = {
         name: fast._readable_preview(
             ctx["entries"][name]["path"], root / (key + ".jpg")
         )
         for key, name in ids.items()
     }
-    result = run(ctx)
+    from core.shenhui_shoe_catalog import propose
+    if ctx["mask_direct"]:
+        from core.shenhui_shoe_mask_rank import propose_without_model
+        result = propose_without_model(ctx)
+    else:
+        result = propose(ctx)
     ctx["proposal"] = result
     slots = {"wpz": [""] * 6, "yq": [""] * 3}
     for slot, name in result["selected"].items():
@@ -759,7 +789,7 @@ def analyze(**kwargs):
         color_name=ctx["color"],
         shoe_category=ctx["category"],
         slots=slots,
-        _model_id="deepseek-flash",
+        _model_id='local-mask' if ctx['mask_direct'] else (','.join(dict.fromkeys(r['model'] for r in result['records'] if r.get('model'))) or execution[0]),
         _sequential_context=ctx,
     )
 
@@ -794,17 +824,69 @@ def preserve_background_pairs(slots):
     return ruled, corrections
 
 
-def verify_packaged_selection(slots):
+def verify_packaged_selection(slots, *, recovery=False, final_audit=False, repair_only=False):
     """Check exact filenames after local rules/label reuse, before file export."""
-    ctx = slots["_sequential_context"]
+    ctx = dict(slots["_sequential_context"])
     ctx["preserve_background_pairs"] = True
+    ctx['reuse_inventory_reviews'] = not (recovery or final_audit)
+    ctx['audit_only'] = final_audit
+    ctx['repair_only'] = repair_only
+    if ctx.get('catalog_assignment') and not final_audit:
+        # Proposals stay provisional until the one exported-file reviewer decides.
+        from core.shenhui_shoe_catalog import repair
+        if ctx.get('mask_direct'):
+            from core.shenhui_shoe_mask_rank import repair_from_board as repair
+        result = repair(ctx, slots) if recovery else {**ctx['proposal'], 'selected':{
+            slot:shoe._consensus_slot_value(slots, slot) for slot in ORDER}}
+        result['audits'] = []
+        result['verified'] = False
+        output = dict(slots)
+        for slot,name in result['selected'].items():
+            shoe._replace_consensus_slot_value(output,slot,name)
+        output['tms'] = output.get('tmz5','')
+        output['_sequential_context'] = ctx
+        output['_sequential_result'] = result
+        output['_pending_slots'] = {slot:result.get('proposal_missing',{}).get(slot,'补齐后仍缺少候选')
+                                    for slot in ORDER if not result['selected'].get(slot)
+                                    and not (slot=='yx' and result.get('card_absence_verified'))}
+        output['_sequential_audits'] = slots.get('_sequential_audits',[])
+        (Path(ctx['root'])/'final-selection.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
+        return shoe._apply_o_category_rule(ctx['category'],output)
+    if repair_only:
+        ctx['known_rejections'] = dict(slots.get('_pending_slots', {}))
+    if final_audit:
+        ctx.pop('audit_slots', None)
+        ctx['root'] = str(Path(ctx['root']) / 'batch-global-audit')
+        Path(ctx['root']).mkdir(parents=True, exist_ok=True)
+        ctx['prior_selection_evidence'] = {
+            'selected': slots.get('_sequential_result', {}).get('selected', {}),
+            'records': slots.get('_sequential_result', {}).get('records', []),
+        }
+        # Deliberately project only image evidence, never provider configuration.
+        (Path(ctx['root']) / 'review-context.json').write_text(json.dumps({
+            'style':ctx['style'], 'color':ctx['color'], 'category':ctx['category'],
+            'templates':{'main':ctx.get('main_refs', []), 'detail':ctx.get('yq_refs', {})},
+            'candidate_pool':ctx.get('ids', {}), 'candidate_images':ctx.get('previews', {}),
+            'previous_selection':ctx['prior_selection_evidence'],
+            'policy':'Previous acceptance is not ground truth; audit every slot independently.',
+        }, ensure_ascii=False, indent=2), encoding='utf-8')
     selected = {slot: shoe._consensus_slot_value(slots, slot) for slot in ORDER}
+    if recovery:
+        selected = dict(slots['_sequential_result']['selected'])
+        ctx['audit_slots'] = list(slots.get('_pending_slots', {}))
+        ctx['root'] = str(Path(ctx['root']) / 'batch-recovery')
+        Path(ctx['root']).mkdir(parents=True, exist_ok=True)
+        ctx['inventory_chunk_size'] = 4
+        ctx['inventory_tile_width'] = 900
     result = {**ctx["proposal"], "selected": selected}
+    if final_audit:
+        # Absence is also a prior model decision; reopen the pool when needed.
+        result['card_absence_verified'] = False
     result = run_verified(ctx, result)
     (Path(ctx["root"]) / "final-selection.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2)
     )
-    if not result["verified"]:
+    if not result["verified"] and not ctx.get('allow_partial'):
         raise shoe.ShoeSelectionError(
             f"{ctx['style']}-{ctx['color']} 逐坑位最终复核未通过："
             + json.dumps(result["audits"][-1]["rejected"], ensure_ascii=False)
@@ -814,7 +896,22 @@ def verify_packaged_selection(slots):
         shoe._replace_consensus_slot_value(output, slot, name)
     output["tms"] = output["tmz5"]
     output = shoe._apply_o_category_rule(ctx["category"], output)
-    output["_sequential_audits"] = result["audits"]
+    output['_sequential_context'] = ctx
+    output['_sequential_result'] = result
+    output['_pending_slots'] = dict(result['audits'][-1]['rejected'])
+    if 'tmz3' in output['_pending_slots']:
+        output['_pending_slots'].setdefault('yq3', '本款外侧参照未通过，待参照补齐后核验同侧')
+    # Unaccepted proposals remain in evidence, never in the usable image package.
+    for slot in output['_pending_slots']:
+        shoe._replace_consensus_slot_value(output, slot, '')
+        if slot.startswith('tmz'):
+            shoe._replace_consensus_slot_value(output, 'wpz' + slot[-1], '')
+        if slot == 'tmz2':
+            shoe._replace_consensus_slot_value(output, 'yq1', '')
+        if slot == 'tmz5':
+            output['tms'] = ''
+    output = shoe._apply_o_category_rule(ctx['category'], output)
+    output["_sequential_audits"] = (slots.get('_sequential_audits', []) if recovery or final_audit else []) + result["audits"]
     return output
 
 
@@ -823,7 +920,7 @@ def report_evidence(selection, slot, source_name):
     ctx = selection["_sequential_context"]
     category = selection.get("shoe_category") or ctx["category"]
     evidence = {
-        "strategy": STRATEGY,
+        "strategy": STRATEGY if ctx.get('mask_direct') else 'sequential_templates',
         "slot": slot,
         "source": source_name,
         "accepted": False,
@@ -865,6 +962,13 @@ def report_evidence(selection, slot, source_name):
             ):
                 continue
             checks = row.get("checks") or {}
+            if row.get('comparison') == 'style_comparison_board':
+                evidence.update(kind=relation, comparison='style_comparison_board',
+                    row_id=row.get('row_id'), comparison_image=row.get('comparison_image'),
+                    model=row.get('model'), visual_evidence=row.get('evidence'),
+                    candidate_facts=(row.get('response') or {}).get('candidate_facts'),
+                    accepted=row.get('accepted') is True and bool(row.get('comparison_image')))
+                return evidence
             if row.get("comparison") == "direct_template_pair":
                 evidence.update(
                     kind=relation,
@@ -881,6 +985,9 @@ def report_evidence(selection, slot, source_name):
                     same_side=row.get("same_side"),
                     side_identity=row.get("side_identity"),
                     review_version=row.get("review_version"),
+                    candidate_facts=(row.get("response") or {}).get("candidate_facts"),
+                    fact_failures=row.get("fact_failures"),
+                    background_perimeter=row.get("background_perimeter"),
                     accepted=row.get("accepted") is True
                     and bool(row.get("comparison_sha256"))
                     and (review_slot != "yq3" or row.get("same_side") is True),

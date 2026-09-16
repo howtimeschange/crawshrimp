@@ -128,7 +128,13 @@ has_core_requirements() {
     [ -d "${site_packages}/tzdata" ] &&
     [ -d "${site_packages}/PIL" ] &&
     [ -d "${site_packages}/fitz" ] &&
-    [ -d "${site_packages}/cryptography" ]
+    [ -d "${site_packages}/cryptography" ] &&
+    [ -d "${site_packages}/onnxruntime" ] &&
+    [ -d "${site_packages}/rapidocr_onnxruntime" ] &&
+    [ -d "${site_packages}/cv2" ] &&
+    [ -d "${site_packages}/numpy" ] &&
+    [ -d "${site_packages}/rapidocr_onnxruntime/models" ] &&
+    compgen -G "${site_packages}/zxingcpp*" >/dev/null
 }
 
 target_pip_platform() {

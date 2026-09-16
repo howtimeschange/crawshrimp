@@ -457,17 +457,21 @@ tasks:
         type: file_excel
         label: 款号品类表
         required: true
-        hint: 必填；上传含“款号、品类”两列的 Excel/CSV。款号必填，品类可留空；填写时优先使用表内品类，留空时根据核验后的标签名称识别
+        hint: 必填；上传含“款号、品类”两列的 Excel/CSV。款号必填，品类可留空；填写时优先使用表内品类；巴拉专属模型须明确填写品类，其他模式留空时根据核验后的标签名称识别
         template_file: assets/鞋品品类映射模板.xlsx
         template_label: 下载鞋品品类模板
       - id: shoe_pose_strategy
         type: select
         label: 鞋品找图流程
-        default: sequential_templates
+        default: bala_specialist
         ui_span: full
         options:
+          - value: bala_specialist
+            label: "【推荐】巴拉鞋品专属模型识别"
+          - value: mask_board_review
+            label: 蒙版直接初选 + 按款看板审核（新流程）
           - value: sequential_templates
-            label: 双模板逐坑位匹配 + 实图质检（推荐）
+            label: 蒙版 + 模型精选 + 按款看板审核（对照）
           - value: single_sheet
             label: 全部候选拼一张大图（旧版对照）
           - value: global_pages
@@ -476,21 +480,43 @@ tasks:
             label: 少图多批次 + 全景上下文
           - value: batch
             label: 少图多批次
-        hint: 先核对鞋盒标签，确定名称、颜色和品类，再使用上下双模板逐坑位选图、实图质检，仅对未通过坑位重选。默认 Astra 低推理强度，保留思考；流式显示处理进展，连续90秒无有效片段才超时。完整标签与局部裁片并行核验，已确认文字直接复用。最多同时处理两款
+        hint: 巴拉专属模式使用本地DINOv2和OCR，按现有规则完整导出，不调用大模型；模型与OCR随应用内置，须填写品类。其他审核流程：标签识别与框选 → 蒙版直接初选 → 按款号生成模板/原图/成品对照看板 → 模型逐行审核 → 只对问题图位AI补选或修改 → 复审。初次姿势选图不调用模型；蒙版高分不能直接通过。审核未知保留原图，功能卡缺失须检查完整素材。已通过且未变化的图位复用审核。对照流程保留首次模型精选。标签与补选默认官方 DeepSeek，姿势看板默认 Astra
+      - id: shoe_style_workers
+        type: number
+        label: 同时处理款数
+        default: 8
+        min: 1
+        max: 8
+        step: 1
+        hint: 默认 8；提高并发会增加内存占用。建议根据整批耗时和机器内存测试后调整
+        visible_when:
+          field: shoe_pose_strategy
+          in: [mask_board_review, sequential_templates]
+      - id: shoe_request_workers
+        type: number
+        label: 同时请求模型数
+        default: 8
+        min: 1
+        max: 32
+        step: 1
+        hint: 所有款的选图、标签及审核共用此上限；提高款数不会无限叠加模型请求。默认8，按实测吞吐调整
+        visible_when:
+          field: shoe_pose_strategy
+          in: [mask_board_review, sequential_templates]
       - id: shoe_execution_model_chain
         type: model_chain
-        label: 执行模型与故障备用顺序
+        label: 标签、补选、原图核验与通用加工审核模型顺序
         ui_span: full
         visible_when:
           field: shoe_pose_strategy
-          equals: sequential_templates
+          in: [mask_board_review, sequential_templates]
         default_model:
           id: shoe_execution_model
           label: 默认执行模型
-          default: gpt-6-astra
+          default: deepseek-official-flash
           options:
             - value: gpt-6-astra
-              label: 森马 · GPT-6 Astra（低推理强度，推荐）
+              label: 森马 · GPT-6 Astra（低推理强度）
             - value: deepseek-official-flash
               label: DeepSeek 官方 Flash（独立直连）
             - value: gpt-5.6-terra
@@ -503,8 +529,8 @@ tasks:
               label: 森马 · GPT-5.6 Luna（手动对照）
         fallback_models:
           - id: shoe_execution_fallback_1
-            label: 故障备用 1
-            default: deepseek-official-flash
+            label: 后续模型 1
+            default: gpt-6-astra
             options: &shoe_execution_fallback_options
               - value: ""
                 label: 不使用
@@ -521,21 +547,37 @@ tasks:
               - value: gpt-5.6-luna
                 label: 森马 · GPT-5.6 Luna（手动对照）
           - id: shoe_execution_fallback_2
-            label: 故障备用 2
-            default: gpt-5.6-terra
+            label: 手动扩展模型 1
+            default: ""
             options: *shoe_execution_fallback_options
           - id: shoe_execution_fallback_3
-            label: 故障备用 3
-            default: deepseek-v4.1-flash
+            label: 手动扩展模型 2
+            default: ""
             options: *shoe_execution_fallback_options
-        hint: 502/503/504先按1秒、3秒间隔重试，最多追加2次，仍失败再按顺序切换；连续90秒无有效输出则直接切换。官方直连作为首个备用，避免一直在同一网关重试。失败模型冷却120秒。图片不匹配仍需重选和质检，不以切换模型代替质量检查
+        hint: 标签、补选与通用加工审核默认官方 DeepSeek → 森马 Astra。官方通用看板审核使用低推理强度，已选原图独立核验使用高推理强度，标签与补选使用官方默认强度；Astra保持低强度。姿势看板使用下方单独指定的审核模型。接口故障、标签未识别成功、审核输出无效或可见事实冲突时，使用 Astra 备用或独立复核。Astra 仍无法确定则保留待复核；有效的不匹配结论直接重选图片。Terra、森马 DeepSeek 等仅在手动扩展后使用。502/503/504最多间隔1秒、3秒追加重试2次；连续90秒无有效输出则切换。单次无活动超时或JSON内容错误不冻结整批；连续两次无活动超时才冷却120秒。同一图片及证据未变化的审核未知结果只追加一轮复核
+      - id: shoe_board_review_model
+        type: select
+        label: 姿势看板审核模型
+        default: gpt-6-astra
+        ui_span: full
+        visible_when:
+          field: shoe_pose_strategy
+          in: [mask_board_review, sequential_templates]
+        options:
+          - value: gpt-6-astra
+            label: 森马 · Astra（低推理强度）
+          - value: deepseek-official-flash
+            label: DeepSeek 官方 Flash（低推理强度，对照）
+          - value: ""
+            label: 跟随上方模型顺序（对照）
+        hint: 姿势和功能卡图位按款集中看板审核；指定模型无法确定时保留待复核，不自动由其他模型放行。看板通过或结论矛盾的姿势图再单独核验原图事实，不带模板、图位与前序结论；同源图只查一次，核验沿用上方模型顺序。明确事实不符才补选，看不清保留待复核。标准图、标签派生和辅助加工看板沿用上方模型顺序。初选仍由本地蒙版完成，只有问题图位才调用AI补选。
       - id: model_chain
         type: model_chain
         label: 旧版对照模型顺序
         ui_span: full
         visible_when:
           field: shoe_pose_strategy
-          not_equals: sequential_templates
+          not_in: [mask_board_review, sequential_templates, bala_specialist]
         default_model:
           id: model_id
           label: 默认模型

@@ -142,3 +142,24 @@ test('requirePythonScriptsBundle rejects resources without shared video integrat
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('shoe model staging rejects missing or changed model weights', () => {
+  const { requireShoeModelBundle } = require('./after-pack')
+  const crypto = require('crypto')
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'shoe-models-'))
+  const root = path.join(tmp, 'python-scripts/core/shoe_specialist/assets')
+  try {
+    fs.mkdirSync(root, { recursive: true })
+    const names = ['dino-224.onnx', 'dino-448.onnx', 'models.json', 'yx.json', 'snow-tmz4.png']
+    const files = Object.fromEntries(names.map(name => {
+      fs.writeFileSync(path.join(root, name), name)
+      return [name, crypto.createHash('sha256').update(name).digest('hex')]
+    }))
+    fs.writeFileSync(path.join(root, 'bundle.json'), JSON.stringify({ files }))
+    requireShoeModelBundle(tmp)
+    fs.writeFileSync(path.join(root, 'dino-224.onnx'), 'corrupt')
+    assert.throws(() => requireShoeModelBundle(tmp), /integrity failure/)
+    fs.unlinkSync(path.join(root, 'dino-224.onnx'))
+    assert.throws(() => requireShoeModelBundle(tmp), /ENOENT/)
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
+})

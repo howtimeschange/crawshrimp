@@ -130,6 +130,7 @@ class CandidateFacts:
     feature_card: bool = False
     confidence: float = 0.0
     matched_slots: tuple[str, ...] = field(default_factory=tuple)
+    pair_arrangement: str = ""
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,13 @@ def parse_candidate_facts(
                 feature_card=_truthy(row.get("feature_card") or row.get("has_feature_card")),
                 confidence=_confidence(row.get("confidence")),
                 matched_slots=tuple(matched_slots),
+                pair_arrangement=_lower(
+                    row.get("pair_arrangement")
+                    or row.get("pair_layout")
+                    or row.get("pair_pose")
+                    or row.get("arrangement")
+                    or row.get("layout")
+                ),
             )
         )
     return facts
@@ -259,6 +267,20 @@ def candidate_is_valid_for_slot(
             return False, "feature card obscures a clean shoe slot"
         if box_asset or (asset_type and not shoe_asset):
             return False, "requires a shoe image"
+
+    # Landing/arrangement is a hard gate for the pair slots. A raised or
+    # floating rear shoe was repeatedly accepted as tmz1, so an explicit
+    # non-floating pair arrangement is required and floating is fail-closed.
+    arrangement = _semantic_token(fact.pair_arrangement)
+    if slot == "tmz1" and arrangement:
+        if "floating" in arrangement or "悬空" in arrangement:
+            return False, "floating pair cannot be a grounded tmz1 pair"
+        if arrangement in {"one_sole_facing_camera", "front_and_sole", "one_sole"}:
+            return False, "front-and-sole pair belongs to tmz2/yq1, not tmz1"
+        if arrangement not in {"grounded", "grounded_pair", "pair_grounded", "not_pair", "one"}:
+            return False, "pair arrangement is not an explicit grounded pair"
+    if slot in {"tmz2", "yq1"} and arrangement and "floating" in arrangement:
+        return False, "floating pair cannot be tmz2/yq1"
 
     if slot == "tmz4" and category != "雪地":
         rear_sides = {

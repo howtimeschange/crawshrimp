@@ -31,6 +31,10 @@ const REQUIRED_BACKEND_IMPORTS = [
   'PIL',
   'fitz',
   'cryptography',
+  'onnxruntime',
+  'rapidocr_onnxruntime',
+  'cv2',
+  'numpy',
 ]
 
 const REQUIRED_VIDEO_INTEGRATION_FILES = [
@@ -76,6 +80,9 @@ function requirePythonBundle(srcPython, srcKey = '') {
   }
 
   const missing = REQUIRED_BACKEND_IMPORTS.filter(name => !fs.existsSync(path.join(sitePackages, name)))
+  if (!fs.readdirSync(sitePackages).some(name => /^zxingcpp.*\.(so|pyd)$/.test(name))) missing.push('zxingcpp')
+  const ocrModels = path.join(sitePackages, 'rapidocr_onnxruntime', 'models')
+  if (!fs.existsSync(ocrModels) || fs.readdirSync(ocrModels).filter(name => name.endsWith('.onnx')).length < 3) missing.push('offline OCR weights')
   if (missing.length) {
     throw new Error(
       `[after-pack] missing bundled Python dependencies in ${sitePackages}: ${missing.join(', ')}. ` +
@@ -132,6 +139,17 @@ function requirePythonScriptsBundle(resourcesPath) {
   }
 }
 
+function requireShoeModelBundle(resourcesPath) {
+  const crypto = require('crypto')
+  const root = path.join(resourcesPath, 'python-scripts', 'core', 'shoe_specialist', 'assets')
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'bundle.json'), 'utf8'))
+  for (const name of ['dino-224.onnx', 'dino-448.onnx', 'models.json', 'yx.json', 'snow-tmz4.png']) {
+    if (!manifest.files?.[name]) throw new Error(`[after-pack] missing shoe model hash: ${name}`)
+    const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, name))).digest('hex')
+    if (digest !== manifest.files[name]) throw new Error(`[after-pack] shoe model integrity failure: ${name}`)
+  }
+}
+
 async function afterPack(context) {
   const { electronPlatformName, arch, appOutDir } = context
   // arch: 0=ia32, 1=x64, 2=armv7l, 3=arm64
@@ -163,6 +181,7 @@ async function afterPack(context) {
   }
 
   requirePythonScriptsBundle(resourcesPath)
+  requireShoeModelBundle(resourcesPath)
 
   const destPython = path.join(resourcesPath, 'python')
   console.log(`[after-pack] Copying Python ${srcKey} → ${destPython}`)
@@ -201,3 +220,5 @@ exports.requirePythonBundle = requirePythonBundle
 exports.requirePythonScriptsBundle = requirePythonScriptsBundle
 exports.REQUIRED_BACKEND_IMPORTS = REQUIRED_BACKEND_IMPORTS
 exports.REQUIRED_VIDEO_INTEGRATION_FILES = REQUIRED_VIDEO_INTEGRATION_FILES
+
+exports.requireShoeModelBundle = requireShoeModelBundle
