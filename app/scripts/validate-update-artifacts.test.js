@@ -44,6 +44,8 @@ function writeFormalReleaseManifest(root, version = '2.0.0') {
   const winAssets = [
     writeAsset(root, `release-assets/windows/crawshrimp-v${version}-win-x64.exe`, Buffer.from('win-exe')),
     writeAsset(root, `release-assets/windows/crawshrimp-v${version}-win-x64.exe.blockmap`, Buffer.from('win-blockmap')),
+    writeAsset(root, `release-assets/windows/crawshrimp-v${version}-win-arm64.exe`, Buffer.from('win-arm-exe')),
+    writeAsset(root, `release-assets/windows/crawshrimp-v${version}-win-arm64.exe.blockmap`, Buffer.from('win-arm-blockmap')),
   ]
   writeMetadata(root, 'release-assets/macos/latest-mac.yml', macAssets.filter(asset => asset.name.endsWith('.zip')))
   writeMetadata(root, 'release-assets/windows/latest.yml', winAssets.filter(asset => asset.name.endsWith('.exe')))
@@ -215,11 +217,11 @@ test('formal release validation requires the exact complete versioned asset mani
   assert.match(missing.errors.join('\n'), /missing required release asset/)
   assert.match(missing.errors.join('\n'), /crawshrimp-v2\.0\.0-mac-x64\.zip\.blockmap/)
 
-  writeAsset(root, 'release-assets/windows/crawshrimp-v2.0.0-win-arm64.exe', Buffer.from('extra-win'))
+  writeAsset(root, 'release-assets/windows/crawshrimp-v2.0.0-win-ia32.exe', Buffer.from('extra-win'))
   const extra = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
   assert.equal(extra.ok, false)
   assert.match(extra.errors.join('\n'), /unexpected release asset/)
-  assert.match(extra.errors.join('\n'), /crawshrimp-v2\.0\.0-win-arm64\.exe/)
+  assert.match(extra.errors.join('\n'), /crawshrimp-v2\.0\.0-win-ia32\.exe/)
 })
 
 test('formal release validation rejects macOS metadata missing required updater ZIP references', () => {

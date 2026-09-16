@@ -1,6 +1,6 @@
 {
   "name": "crawshrimp",
-  "version": "2.5.6",
+  "version": "2.5.7",
   "description": "Ecommerce automation, AI image and video, and cloud approval desktop app",
   "author": "howtimeschange",
   "license": "Apache-2.0",
@@ -11,10 +11,11 @@
     "build": "vite build && node scripts/run-electron-builder.js --publish=never",
     "build:mac": "vite build && node scripts/run-electron-builder.js --mac --publish=never",
     "build:mac:ci": "vite build && node scripts/run-electron-builder.js --mac --publish=never",
-    "build:win": "vite build && node scripts/run-electron-builder.js --win --publish=never",
+    "build:win": "vite build && node scripts/run-electron-builder.js --win --x64 --publish=never",
     "vite:build": "vite build",
     "test": "node --test src/*.test.js src/renderer/utils/*.test.js scripts/*.test.js",
-    "test:update-artifacts": "node --test scripts/validate-update-artifacts.test.js"
+    "test:update-artifacts": "node --test scripts/validate-update-artifacts.test.js",
+    "build:win:arm64": "vite build && node scripts/run-electron-builder.js --win --arm64 --publish=never"
   },
   "dependencies": {
     "@tabler/icons-vue": "^3.45.0",

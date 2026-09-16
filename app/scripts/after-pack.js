@@ -159,6 +159,8 @@ async function afterPack(context) {
   if (electronPlatformName === 'darwin') {
     srcKey = archName === 'arm64' ? 'mac-arm64' : 'mac-x64'
   } else if (electronPlatformName === 'win32') {
+    // Windows 11 ARM64 runs the bundled x64 Python/OCR backend through emulation.
+    // Electron itself is native ARM64; pinned OCR wheels lack Windows ARM64 builds.
     srcKey = 'win-x64'
   } else {
     console.log(`[after-pack] skip unsupported platform: ${electronPlatformName}`)

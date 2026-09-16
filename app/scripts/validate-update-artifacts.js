@@ -22,6 +22,8 @@ function expectedFormalReleaseAssets(version) {
     'macos/latest-mac.yml',
     `windows/crawshrimp-v${version}-win-x64.exe`,
     `windows/crawshrimp-v${version}-win-x64.exe.blockmap`,
+    `windows/crawshrimp-v${version}-win-arm64.exe`,
+    `windows/crawshrimp-v${version}-win-arm64.exe.blockmap`,
     'windows/latest.yml',
   ]
 }
@@ -39,6 +41,7 @@ function expectedFormalMetadataReferences(version) {
       'windows/latest.yml',
       new Set([
         `crawshrimp-v${version}-win-x64.exe`,
+        `crawshrimp-v${version}-win-arm64.exe`,
       ]),
     ],
   ])

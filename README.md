@@ -8,6 +8,18 @@
 
 抓虾把电商执行、AI 素材生产和团队协作放进同一套产品里：在已登录的 Chrome 中运行平台自动化，在桌面端完成 AI 生图、AI 生视频、按款号素材加工与提示词管理，并通过可选的云端审批台让审核人员和任务机协同完成测图、视频制作、上传与数据回收。
 
+## v2.5.7 多供应商生图、鞋品专属模型与 Windows ARM（2026-09-16）
+
+- 生图工作台、买家秀与天猫测图接入沃卡、森马等供应商，完善参考图、模型选项和结果展示。
+- 天猫换脸提交状态持久化，阻止回执未知时重复请求；兼容通用提示词模板，无匹配时明确失败。
+- 内置巴拉鞋品专属识别模型，完善标签优先、双模板选图、完整图包审核导出与流式模型容错。
+- 限制媒体处理并发、合并工作区持久化，改善大批素材场景下的桌面响应。
+- 视频提示词支持 DeepSeek V4.1 Flash 与 GPT-6 Astra；新增 Windows ARM64 安装包。
+
+Windows ARM 包采用原生 ARM64 Electron 桌面端，Python/OCR/鞋品推理仍通过 Windows 11 ARM 的 x64 转译运行。
+
+完整变更见 [v2.5.7 Release Notes](release-notes/v2.5.7.md)。
+
 ## v2.5.6 深绘鞋品图包识别与失败反馈修复（2026-09-12）
 
 修复「【鞋品】整理深绘上新图包」原图已下载、却缺少 tmz / wpz 的问题，并补齐有合格原素材时漏出的 yx 功能卡图。
@@ -29,19 +41,6 @@
 - 同步适配包参数、操作说明与脚本；保留 PLM 尺码表 PDF 下载任务。
 
 完整变更见 [v2.5.5 Release Notes](release-notes/v2.5.5.md)。
-
-## v2.5.4 任务恢复、批量发布与媒体流程稳定性补丁（2026-09-10）
-
-`v2.5.4` 是 `v2.5.3` 之后的补丁发布，集中修复任务异常恢复、批量发布回执、生图持久化与视频历史清理，并改善大批素材和 PDF 预览时的桌面响应。
-
-- 任务执行统一限制非幂等阶段重放；发布回执未知时保留待核实状态，停止或异常后继续导出已完成行。只读 PLM 查询保留短暂 CDP 断连重试。
-- 生图提交持久化原始幂等键，区分提交结果未知与明确失败；后端重启后恢复已提交任务的查询，阻止旧响应覆盖终态。
-- 云端任务在逐款执行边界检查取消和租约状态，避免取消或失去租约后继续发起后续款号的写入。
-- 视频任务 ID 使用完整 UUID，避免短随机后缀碰撞；视频重试按执行批次隔离，修复历史结果与工作区清理，防止旧轮询、旧扫描或旧预览响应写回新状态。
-- 工作区扫描、哈希、清理和 PDF 预览使用 Worker；缩略图异步解码并限制并发，后端短暂健康检查失败时保留可恢复进程。
-- 对齐产品架构、开发指南和 Adapter SDK/schema 与当前运行时，补充深绘任务回归验证。
-
-完整变更见 [v2.5.4 Release Notes](release-notes/v2.5.4.md)。
 
 ## 产品架构
 
@@ -127,8 +126,9 @@ flowchart LR
 - `crawshrimp-v版本号-mac-arm64.dmg`
 - `crawshrimp-v版本号-mac-x64.dmg`
 - `crawshrimp-v版本号-win-x64.exe`
+- `crawshrimp-v版本号-win-arm64.exe`（Windows 11 ARM；后端使用 x64 转译）
 
-正式 `vX.Y.Z` Release 与 `desktop-latest` 都包含应用内更新 bridge 资产：macOS arm64/x64 ZIP 与 blockmap、`latest-mac.yml`，以及 Windows EXE blockmap 与 `latest.yml`。
+正式 `vX.Y.Z` Release 与 `desktop-latest` 都包含应用内更新 bridge 资产：macOS arm64/x64 ZIP 与 blockmap、`latest-mac.yml`，以及 Windows x64/ARM64 EXE blockmap 与包含双架构的 `latest.yml`。
 
 应用内稳定更新优先从 [Cloudflare R2 下载源](https://updates.crawshrimp.com/) 读取这些已校验资产；检查失败时会自动回退 GitHub。每次正式 tag 会先将资产同步到 R2，确认可读后才发布 GitHub Release；安装包仍保留原有 macOS 签名/公证和 `latest*.yml` 的 SHA512 校验。
 
@@ -413,7 +413,7 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 
 - 推送 `main`：运行完整测试并构建 macOS / Windows 桌面产物，用于验证主分支。
 - 推送 `v*` tag：再次测试与构建，执行 macOS 签名/公证（密钥齐全时），发布正式版本并刷新 `desktop-latest`。
-- 正式 Release 包含 macOS arm64、macOS x64、Windows x64 和 Windows blockmap。
+- 正式 Release 包含 macOS arm64、macOS x64、Windows x64/ARM64 和 Windows blockmap。
 - 正式 tag 会将全部 updater 资产先同步到 Cloudflare R2：版本化安装包与 blockmap 使用长期 immutable 缓存，`latest.yml`/`latest-mac.yml` 使用每次重新校验的缓存策略；R2 同步失败会阻止 GitHub Release 发布。
 - `desktop-latest` 保持 `latest=false`，并上传手动安装包及完整 ZIP/YAML/blockmap bridge 资产；正式 `vX.Y.Z` Release 仍是 GitHub 的正式版本记录。
 

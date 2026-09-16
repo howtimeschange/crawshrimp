@@ -94,6 +94,17 @@ jobs:
               app/dist/*.exe.blockmap
               app/dist/latest*.yml
 
+          - name: Windows ARM64
+            os: windows-2022
+            # Electron is native ARM64; Python/OCR runs through Windows 11 x64 emulation.
+            python_target: win-x64
+            artifact_suffix: win-arm64
+            build_script: build:win:arm64
+            artifact_glob: |
+              app/dist/*.exe
+              app/dist/*.exe.blockmap
+              app/dist/latest*.yml
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -249,6 +260,28 @@ jobs:
 
           exit "${build_status}"
 
+      - name: Verify Windows executable architectures and bundled backend
+        if: matrix.artifact_suffix != 'mac'
+        working-directory: app
+        shell: pwsh
+        env:
+          EXPECTED_ELECTRON_ARCH: ${{ matrix.artifact_suffix }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = if ($env:EXPECTED_ELECTRON_ARCH -eq 'win-arm64') { 'dist/win-arm64-unpacked' } else { 'dist/win-unpacked' }
+          function Get-PeMachine($file) {
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file))
+            $offset = [BitConverter]::ToInt32($bytes, 0x3c)
+            return [BitConverter]::ToUInt16($bytes, $offset + 4)
+          }
+          $electron = Get-ChildItem $outDir -Filter '*.exe' | Where-Object { $_.Name -ne 'chrome_crashpad_handler.exe' } | Select-Object -First 1
+          $expected = if ($env:EXPECTED_ELECTRON_ARCH -eq 'win-arm64') { 0xAA64 } else { 0x8664 }
+          if ((Get-PeMachine $electron.FullName) -ne $expected) { throw 'Electron PE architecture mismatch' }
+          $python = "$outDir/resources/python/python.exe"
+          if ((Get-PeMachine $python) -ne 0x8664) { throw 'Bundled Python must be x64' }
+          & $python -I -c "import fastapi, uvicorn, PIL, fitz, onnxruntime, rapidocr_onnxruntime, cv2, numpy, zxingcpp; print('Bundled backend imports passed')"
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled backend import smoke failed' }
+
       - name: Notarize and staple macOS DMGs
         if: matrix.artifact_suffix == 'mac' && startsWith(github.ref, 'refs/tags/v')
         working-directory: app
@@ -356,6 +389,15 @@ jobs:
           name: crawshrimp-win-x64
           path: release-assets/windows
 
+      - name: Download Windows ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: crawshrimp-win-arm64
+          path: release-assets/windows-arm64
+
+      - name: Merge Windows architecture update metadata
+        run: node app/scripts/merge-windows-update-artifacts.js release-assets
+
       - name: Validate release tag and package version
         shell: bash
         run: |
@@ -413,6 +455,8 @@ jobs:
             "latest-mac.yml" \
             "crawshrimp-v${APP_VERSION}-win-x64.exe" \
             "crawshrimp-v${APP_VERSION}-win-x64.exe.blockmap" \
+            "crawshrimp-v${APP_VERSION}-win-arm64.exe" \
+            "crawshrimp-v${APP_VERSION}-win-arm64.exe.blockmap" \
             "latest.yml" \
             | sort > expected-bridge-assets.txt
           printf '%s\n' "${bridge_assets[@]##*/}" | sort > actual-bridge-assets.txt
@@ -514,6 +558,15 @@ jobs:
         with:
           name: crawshrimp-win-x64
           path: release-assets/windows
+
+      - name: Download Windows ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: crawshrimp-win-arm64
+          path: release-assets/windows-arm64
+
+      - name: Merge Windows architecture update metadata
+        run: node app/scripts/merge-windows-update-artifacts.js release-assets
 
       - name: Validate release tag and package version
         shell: bash
@@ -683,6 +736,15 @@ jobs:
         with:
           name: crawshrimp-win-x64
           path: release-assets/windows
+
+      - name: Download Windows ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: crawshrimp-win-arm64
+          path: release-assets/windows-arm64
+
+      - name: Merge Windows architecture update metadata
+        run: node app/scripts/merge-windows-update-artifacts.js release-assets
 
       - name: Validate release tag and package version
         shell: bash
