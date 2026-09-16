@@ -38,9 +38,8 @@ win:
   icon: assets/icon.ico
   artifactName: crawshrimp-v${version}-win-${arch}.${ext}
   target:
+    # Architecture comes from build:win / build:win:arm64 CLI arguments.
     - target: nsis
-      arch:
-        - x64
   requestedExecutionLevel: asInvoker
 
 nsis:

@@ -269,6 +269,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $outDir = if ($env:EXPECTED_ELECTRON_ARCH -eq 'win-arm64') { 'dist/win-arm64-unpacked' } else { 'dist/win-unpacked' }
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $expectedInstaller = "crawshrimp-v$version-$env:EXPECTED_ELECTRON_ARCH.exe"
+          $installers = @(Get-ChildItem dist -Filter '*.exe')
+          if ($installers.Count -ne 1 -or $installers[0].Name -ne $expectedInstaller) {
+            throw "Expected only $expectedInstaller; got $($installers.Name -join ', ')"
+          }
           function Get-PeMachine($file) {
             $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file))
             $offset = [BitConverter]::ToInt32($bytes, 0x3c)
