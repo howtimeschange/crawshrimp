@@ -738,9 +738,13 @@
               >{{ metaItem }}</span>
             </div>
           </div>
-          <ActivitySteps :items="progressSummary.tracks || []">
-            <template #default="{ item }"><progress v-if="!item.indeterminate && Number.isFinite(item.percentValue)" :value="item.percentValue" max="100" :aria-label="item.ariaLabel || item.title" style="width: 100%; accent-color: var(--orange)" /></template>
-          </ActivitySteps>
+          <div class="runner-stage-statuses">
+            <div v-for="track in (progressSummary.tracks || [])" :key="track.id || track.title" class="runner-stage-status">
+              <strong>{{ track.title }}</strong>
+              <span>{{ [track.status, track.main, track.percentLabel].filter(Boolean).join(' · ') }}</span>
+              <small v-if="track.caption || track.detail">{{ [track.caption, track.detail].filter(Boolean).join(' · ') }}</small>
+            </div>
+          </div>
           <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
         </div>
 
@@ -1021,7 +1025,6 @@
 </template>
 
 <script setup>
-import ActivitySteps from '../components/interaction/ActivitySteps.vue'
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import BalaAiImageReviewDrawer from './BalaAiImageReviewDrawer.vue'
 import BalaAiMaterialSelectionDrawer from './BalaAiMaterialSelectionDrawer.vue'
@@ -4340,6 +4343,12 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.runner-stage-statuses { display: grid; gap: 8px; margin-top: 10px; }
+.runner-stage-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; }
+.runner-stage-status strong { color: var(--text); }
+.runner-stage-status span, .runner-stage-status small { color: var(--text2); }
+.runner-stage-status small { flex-basis: 100%; overflow-wrap: anywhere; }
+
 .runner { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 .runner-header {

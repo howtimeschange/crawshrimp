@@ -40,7 +40,6 @@
       </button>
     </nav>
 
-    <ActivitySteps v-if="workflowActivity.some(item => item.state !== 'pending')" class="aiv-workflow-activity" :items="workflowActivity" />
     <main
       class="aiv-stage"
       :class="{ 'aiv-stage-material-active': activeStep === 'materials', 'aiv-stage-ai-edit-active': activeStep === 'ai-edit' }"
@@ -2130,7 +2129,6 @@
 <script setup>
 import VirtualGrid from '../components/interaction/VirtualGrid.vue'
 import SearchCombobox from '../components/interaction/SearchCombobox.vue'
-import ActivitySteps from '../components/interaction/ActivitySteps.vue'
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { IconCheck, IconChevronDown, IconFaceId, IconPhoto, IconRun, IconShirt, IconZoomIn } from '@tabler/icons-vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
@@ -2563,11 +2561,6 @@ const materialTaskStage = computed(() => {
   }
   return { id: 'idle', label: '等待找图', detail: '输入款号后开始从云盘获取素材。' }
 })
-const workflowActivity = computed(() => [
-  { id: 'material', title: '找图与素材整理', state: materialTask.error ? 'error' : materialTask.status === 'idle' ? 'pending' : materialTask.status, detail: materialTask.message, main: materialTask.totalStyles ? `${materialTask.completedStyles}/${materialTask.totalStyles} 款 · 已下载 ${materialTask.downloaded} 张` : '' },
-  { id: 'image', title: 'AI 改图与审核', state: aiTaskState.error ? 'error' : aiTaskState.status === 'idle' ? 'pending' : aiTaskState.status, detail: aiTaskState.error || aiTaskState.message },
-  { id: 'video', title: '视频生成与结果', state: videoStageState.error ? 'error' : videoStageState.status === 'idle' ? 'pending' : videoStageState.status, detail: videoStageState.error || videoStageState.message },
-])
 const selectedEditSourceCount = computed(() => (
   styleWorkspaces.reduce((sum, style) => sum + editSourcesForStyle(style).reduce((inner, source) => (
     inner + (source.editSelected ? 1 : 0) + visibleSourceVersions(source).filter(version => version.editSelected).length
@@ -9623,7 +9616,6 @@ function localFileUrl(path) {
 </script>
 
 <style scoped>
-.aiv-workflow-activity { margin: 0 0 12px; max-height: 220px; overflow: auto; flex-shrink: 0; }
 .aiv-template-results { min-width: 0; overflow: auto; flex: 1; padding: 2px; }
 .aiv-template-results > :deep(.cs-combobox) { margin-bottom: 12px; }
 .cs-virtual-grid :deep(.aiv-thumb) { height: 100%; }
