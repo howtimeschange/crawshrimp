@@ -305,7 +305,7 @@ function pathInsideWorkspace(path = '', workspaceDir = '') {
 export function rebaseBalaMaterialRowsToWorkspace({ rows = [], outputFiles = [], workspaceDir = '' } = {}) {
   const packageDir = parseRunOutputFiles(outputFiles)
     .map(normalizedLocalPath)
-    .find(path => pathInsideWorkspace(path, workspaceDir) && !/\.(?:xlsx?|csv|json)$/i.test(path))
+    .find(path => (path === normalizedLocalPath(workspaceDir) || pathInsideWorkspace(path, workspaceDir)) && !/\.(?:xlsx?|csv|json)$/i.test(path))
   if (!packageDir) return []
 
   return (rows || []).map((row) => {

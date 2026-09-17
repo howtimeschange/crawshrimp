@@ -5144,6 +5144,8 @@ async function finalizeMaterialTask(runId = '') {
     downloadProgress: downloadedRows.length ? 100 : 0,
     searchTotal: styleTotal,
     searchCompleted: styleTotal,
+    totalStyles: styleTotal,
+    completedStyles: styleTotal,
     downloadTotal: downloadedRows.length + summary.failedCount,
     downloadCompleted: downloadedRows.length + summary.failedCount,
     outputFiles,
@@ -9471,6 +9473,17 @@ watch(hasOpenModal, async (open) => {
   if (target && typeof target.focus === 'function') target.focus()
 })
 
+// Opening a template picker above the task dialog does not change hasOpenModal.
+// Move focus into that picker and return it to its still-mounted trigger on close.
+watch(templateLibraryOpen, async (open) => {
+  await nextTick()
+  if (open) {
+    document.querySelector('[aria-labelledby="aiv-template-title"] button')?.focus()
+  } else if (videoTaskDialogOpen.value && lastFocusedElement.value?.isConnected) {
+    lastFocusedElement.value.focus()
+  }
+})
+
 watch([videoTasks, videoResults], () => {
   persistVideoWorkflowState()
 }, { deep: true })
@@ -9620,6 +9633,7 @@ function localFileUrl(path) {
 .aiv-template-results > :deep(.cs-combobox) { margin-bottom: 12px; }
 .cs-virtual-grid :deep(.aiv-thumb) { height: 100%; }
 .cs-virtual-grid :deep(.aiv-thumb-media) { max-height: 190px; }
+.cs-virtual-grid :deep(.aiv-thumb-media img) { object-fit: contain; }
 
 .aiv-workbench {
   height: 100%;

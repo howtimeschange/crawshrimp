@@ -3,6 +3,19 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import * as balaWorkflow from './balaAiVideoWorkflow.js'
 
+test('material downloads exported directly into the workspace remain in that workspace', () => {
+  const row = { 输入款号: '208326102205', 素材来源: '模拍图', 文件名: '1-AI.jpg', 本地文件: '/runtime/208326102205/01_模拍原图/1-AI.jpg' }
+  const workspaceDir = '/tmp/video-workspace'
+  const rows = balaWorkflow.rebaseBalaMaterialRowsToWorkspace({
+    rows: [row], workspaceDir,
+    outputFiles: [workspaceDir, `${workspaceDir}/结果.xlsx`],
+  })
+  assert.equal(rows[0].本地文件, `${workspaceDir}/208326102205/01_模拍原图/1-AI.jpg`)
+  assert.deepEqual(balaWorkflow.rebaseBalaMaterialRowsToWorkspace({
+    rows: [row], workspaceDir, outputFiles: [`${workspaceDir}-other`],
+  }), [])
+})
+
 import {
   balaMaterialPanelControl,
   normalizeBalaVideoLocalPath,

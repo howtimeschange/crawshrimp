@@ -330,8 +330,9 @@ function statusClass(value) {
   height: 100%;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
-  background: #f8fafc;
-  border-left: 1px solid #cbd5e1;
+  background: var(--bg);
+  color: var(--text);
+  border-left: 1px solid var(--border);
   box-shadow: -24px 0 48px rgba(15, 23, 42, 0.16);
 }
 
@@ -342,8 +343,8 @@ function statusClass(value) {
   align-items: center;
   gap: 12px;
   padding: 14px 18px;
-  background: #ffffff;
-  border-bottom: 1px solid #e2e8f0;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
 }
 
 .bala-review-head,
@@ -368,7 +369,7 @@ function statusClass(value) {
 .bala-style-section header span,
 .bala-video-card label span,
 .bala-review-foot span {
-  color: #64748b;
+  color: var(--text2);
   font-size: 12px;
 }
 
@@ -378,10 +379,10 @@ function statusClass(value) {
 .bala-secondary,
 .bala-primary {
   height: 32px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #ffffff;
-  color: #334155;
+  background: var(--bg2);
+  color: var(--text);
   cursor: pointer;
 }
 
@@ -443,9 +444,9 @@ function statusClass(value) {
   display: grid;
   gap: 9px;
   padding: 10px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #ffffff;
+  background: var(--bg2);
 }
 
 .bala-review-card.status-approved {
@@ -466,14 +467,14 @@ function statusClass(value) {
   aspect-ratio: 4 / 5;
   border-radius: 6px;
   overflow: hidden;
-  background: #e2e8f0;
-  color: #64748b;
+  background: var(--border);
+  color: var(--text2);
 }
 
 .bala-image-frame img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .bala-card-meta {
@@ -492,17 +493,17 @@ function statusClass(value) {
 .bala-video-panel {
   overflow: auto;
   padding: 16px;
-  border-left: 1px solid #e2e8f0;
-  background: #ffffff;
+  border-left: 1px solid var(--border);
+  background: var(--bg2);
 }
 
 .bala-video-card {
   display: grid;
   gap: 12px;
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--bg);
 }
 
 .bala-video-card label {
@@ -514,26 +515,26 @@ function statusClass(value) {
 .bala-video-card select,
 .bala-video-card textarea {
   width: 100%;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px;
-  background: #ffffff;
-  color: #0f172a;
+  background: var(--bg2);
+  color: var(--text);
 }
 
 .bala-review-state {
   margin: 18px;
   padding: 14px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #ffffff;
-  color: #475569;
+  background: var(--bg2);
+  color: var(--text2);
 }
 
 .bala-review-state.error {
   border-color: var(--red);
-  background: #fef2f2;
-  color: #991b1b;
+  background: color-mix(in srgb, var(--red) 10%, var(--bg2));
+  color: var(--red);
 }
 
 .bala-primary {
