@@ -22,7 +22,7 @@
         <div class="approval-search">
           <input v-model="filterText" placeholder="筛选款号 / 商品ID / Prompt" />
         </div>
-        <div class="approval-bulk">
+        <ApprovalCard class="approval-bulk" :confirmed="approvalSaved" confirmed-label="当前审核已保存" :title="isGenerationConfirmation ? '确认本批生图' : '确认审核与提交'" :summary="isGenerationConfirmation ? `${generationPromptCount} 条 Prompt · 预计 ${generationRequestedImageCount} 张图片` : `已确认 ${summary.approved} 张 · 已舍弃 ${summary.rejected} 张 · 待定 ${summary.pending} 张`"><template #actions>
           <template v-if="isGenerationConfirmation">
             <div class="batch-execution-mode">
               <span>整批执行模式</span>
@@ -35,9 +35,9 @@
                 生图后直接创建测试任务
               </label>
             </div>
-            <button type="button" class="primary-btn submit" :disabled="generationSubmitting || generationPromptCount <= 0" @click="submitGenerationConfirmation">
-              {{ generationSubmitting ? '生图中' : '确认提交生图任务' }}
-            </button>
+            <StatefulButton :state="generationSubmitting ? 'pending' : 'idle'" pending-label="提交生图中" class="primary-btn submit" :disabled="generationSubmitting || generationPromptCount <= 0" @click="submitGenerationConfirmation">
+              确认提交生图任务
+            </StatefulButton>
           </template>
           <template v-else>
             <button type="button" class="ghost-btn" @click="markAllPending('approved')">待定全确认</button>
@@ -50,14 +50,14 @@
             >
               {{ regeneratingRejected ? '批量重生中' : `批量重生已舍弃（${summary.rejected}）` }}
             </button>
-            <button type="button" class="primary-btn" :disabled="saving || submitting" @click="saveDecisions">
-              {{ saving ? '保存中' : '保存审批状态' }}
-            </button>
-            <button type="button" class="primary-btn submit" :disabled="saving || submitting || summary.approved <= 0" @click="submitApproved">
-              {{ submitting ? '提交中' : submitIntentLabel }}
-            </button>
+            <StatefulButton :state="saving ? 'pending' : 'idle'" pending-label="保存中" class="primary-btn" :disabled="saving || submitting" @click="saveDecisions">
+              保存审批状态
+            </StatefulButton>
+            <StatefulButton :state="submitting ? 'pending' : 'idle'" pending-label="提交中" class="primary-btn submit" :disabled="saving || submitting || summary.approved <= 0" @click="submitApproved">
+              {{ submitIntentLabel }}
+            </StatefulButton>
           </template>
-        </div>
+        </template></ApprovalCard>
       </div>
 
       <section v-if="(!collapsed || embedded) && showSubmitProgress" class="approval-submit-progress">
@@ -466,6 +466,8 @@
 </template>
 
 <script setup>
+import ApprovalCard from '../components/interaction/ApprovalCard.vue'
+import StatefulButton from '../components/interaction/StatefulButton.vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 import TmallFaceSwapDialog from '../components/TmallFaceSwapDialog.vue'
@@ -1103,7 +1105,6 @@ function markAllPending(status) {
 }
 
 function decisionsPayload() {
-  prepareEditableBatch(batch.value)
   const decisions = {}
   for (const item of batch.value?.items || []) {
     for (const asset of item.assets || []) {
@@ -1119,12 +1120,20 @@ function decisionsPayload() {
   return decisions
 }
 
+const savedDecisionSnapshot = ref('')
+const savedDecisionBatchId = ref('')
+const approvalSaved = computed(() => Boolean(savedDecisionSnapshot.value) && savedDecisionBatchId.value === approvalRef.value?.batchId && savedDecisionSnapshot.value === JSON.stringify(decisionsPayload()))
+
 async function saveDecisions(options = {}) {
   const ref = approvalRef.value
   saving.value = true
   try {
-    const result = await window.cs.saveTmallApprovalDecisions(ref.batchId, ref.token, decisionsPayload())
+    prepareEditableBatch(batch.value)
+    const snapshot = decisionsPayload()
+    const result = await window.cs.saveTmallApprovalDecisions(ref.batchId, ref.token, snapshot)
     if (result?.detail || result?.error) throw new Error(result.detail || result.error)
+    savedDecisionBatchId.value = ref.batchId
+    savedDecisionSnapshot.value = JSON.stringify(snapshot)
     if (!options.silent) showToast('审批状态已保存')
     return true
   } catch (err) {
@@ -2023,8 +2032,8 @@ function showToast(message, isError = false) {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+.approval-bulk { width: 100%; }
 .approval-head-actions,
-.approval-bulk,
 .reference-tools {
   display: flex;
   align-items: center;

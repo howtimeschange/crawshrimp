@@ -1,0 +1,25 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+test('an operation updates one toast in place and a failed response never becomes success', async () => {
+  const { interactionToasts, notifyOperation, dismissToast, runNotifiedOperation } = await import('../app/src/renderer/utils/interactionToasts.js')
+  const id = notifyOperation({ title: '导出中', state: 'pending' })
+  notifyOperation({ id, title: '导出完成', state: 'success' })
+  assert.equal(interactionToasts.length, 1)
+  assert.equal(interactionToasts[0].title, '导出完成')
+  dismissToast(id)
+  await assert.rejects(runNotifiedOperation({ title: '保存中', success: '已保存', run: async () => ({ ok: false, error: '磁盘已满' }) }), /磁盘已满/)
+  assert.equal(interactionToasts.length, 1)
+  assert.equal(interactionToasts[0].state, 'error')
+  assert.match(interactionToasts[0].detail, /磁盘已满/)
+  dismissToast(interactionToasts[0].id)
+  let finish
+  const result = runNotifiedOperation({ title: '下载中', success: '已下载', run: () => new Promise(resolve => { finish = resolve }) })
+  assert.equal(interactionToasts[0].state, 'pending')
+  const runningId = interactionToasts[0].id
+  finish({ ok: true })
+  await result
+  assert.equal(interactionToasts.length, 1)
+  assert.equal(interactionToasts[0].id, runningId)
+  assert.equal(interactionToasts[0].state, 'success')
+  dismissToast(runningId)
+})

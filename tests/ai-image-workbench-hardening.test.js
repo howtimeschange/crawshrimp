@@ -31,7 +31,7 @@ test('failed queue cards expose retry context and preserve operator recovery act
   assert.match(workbench, /retryFailedRun\(item\)/)
   assert.match(workbench, /copyFailedPrompt\(item\)/)
   assert.match(workbench, /restoreFailedRunInputs\(item\)/)
-  assert.match(workbench, /重试本队列/)
+  assert.match(workbench, /一键重试/)
   assert.match(workbench, /复制 Prompt/)
   assert.match(workbench, /打开参数/)
   assert.match(functionBody(workbench, 'retryFailedRun', 'copyFailedPrompt'), /window\.cs\.retryAiImageRun\(jobUid, runUid\)/)

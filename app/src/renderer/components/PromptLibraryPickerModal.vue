@@ -10,12 +10,7 @@
       </header>
 
       <div class="prompt-library-picker-filters">
-        <select v-model="selectedLibraryId" class="prompt-library-select" @change="loadPromptLibraryTemplates(selectedLibraryId)">
-          <option value="">选择 Prompt 库</option>
-          <option v-for="library in libraries" :key="library.picker_key || library.id" :value="String(library.picker_key || library.id)">
-            {{ library.name || `Prompt 库 ${library.id}` }}（{{ library.source_label }}）
-          </option>
-        </select>
+        <SearchCombobox v-model="selectedLibraryId" label="Prompt 库" placeholder="选择 Prompt 库" :options="libraries.map(library => ({ value: String(library.picker_key || library.id), label: library.name || `Prompt 库 ${library.id}`, group: library.source_label }))" @change="loadPromptLibraryTemplates(selectedLibraryId)" />
         <input v-model="search" class="prompt-library-search" placeholder="搜索 Prompt 名称 / 内容" />
         <select v-model="category" class="prompt-library-category">
           <option value="">全部分类</option>
@@ -50,6 +45,7 @@
 </template>
 
 <script setup>
+import SearchCombobox from '../components/interaction/SearchCombobox.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   buildPromptLibraryPickerLibraries,

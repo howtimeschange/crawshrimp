@@ -49,8 +49,15 @@ test('script list is a single-page favorite-first layout with an isolated bookma
   assert.match(source, /<IconBookmark class="favorite-icon"/)
   assert.match(source, /:class="\{ active: isFavorite\(entry\.group\.adapter_id\) \}"/)
   assert.match(source, /<strong>\{\{ entry\.group\.adapter_name \}\}<\/strong>\s*<span v-if="entry\.group\.adapter_version" class="adapter-version">/)
-  assert.match(source, /placeholder="搜索脚本名称或适配器名称"/)
-  assert.match(source, /matchesScriptGroupSearch\(group, searchQuery\.value\)/)
+})
+
+test('script search opens the shared command palette without filtering favorite groups', () => {
+  const source = readFileSync(new URL('../views/ScriptList.vue', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../App.vue', import.meta.url), 'utf8')
+  assert.match(source, /aria-label="搜索功能、脚本与任务" aria-haspopup="dialog" @click="\$emit\('open-search'\)"/)
+  assert.match(source, /const filteredGroups = computed\(\(\) => groups\.value\)/)
+  assert.match(app, /@open-search="commandPalette\?\.show\(\)"/)
+  assert.match(app, /@select="openCommand"/)
 })
 
 test('script favorites use a tactile bookmark control rather than a decorative heart', () => {

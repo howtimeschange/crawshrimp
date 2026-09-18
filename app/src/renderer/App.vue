@@ -23,6 +23,7 @@
         </button>
       </div>
       <div class="status-bar">
+        <CommandPalette ref="commandPalette" :items="commandItems" @select="openCommand" @open="loadCommandInstances" />
         <span class="dot" :class="status.api ? 'on' : 'off'">
           <i></i>核心
         </span>
@@ -146,6 +147,7 @@
       <ScriptList
         v-if="currentView === 'scripts' && !activeScript"
         @open-script="openScript"
+        @open-search="commandPalette?.show()"
         @reload="loadScriptGroups"
       />
       <!-- 脚本任务执行页 -->
@@ -216,6 +218,7 @@
         @theme-change="setThemePreference"
       />
     </main>
+    <ToastStack />
     <UpdateChangelogModal
       :open="changelogOpen"
       :version="updateStatus.latestVersion"
@@ -227,6 +230,8 @@
 </template>
 
 <script setup>
+import CommandPalette from './components/interaction/CommandPalette.vue'
+import ToastStack from './components/interaction/ToastStack.vue'
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import ScriptList  from './views/ScriptList.vue'
 import TaskRunner  from './views/TaskRunner.vue'
@@ -332,6 +337,25 @@ const navItems = [
 ]
 
 const filteredNavItems = computed(() => navItems)
+const commandPalette = ref(null)
+const commandInstances = ref([])
+const commandItems = computed(() => [
+  ...navItems.flatMap(item => item.children || [item]).map(item => ({ id: `view:${item.id}`, label: item.label, group: '工作台', view: item })),
+  ...commandInstances.value.map(item => ({ id: `instance:${item.instance_uid}`, label: item.title || '未命名任务', detail: item.status, group: '最近任务', instance: item.instance_uid })),
+  ...scriptGroups.value.flatMap(group => group.tasks.map(task => ({ id: `task:${group.adapter_id}:${task.task_id}`, label: task.task_name, detail: group.adapter_name, group: '脚本任务', adapter: group.adapter_id, task: task.task_id }))),
+])
+async function loadCommandInstances() {
+  try {
+    const result = await window.cs.listTaskInstances({ limit: 20 })
+    commandInstances.value = (result?.items || []).filter(item => item.instance_uid).slice(0, 20)
+  } catch { commandInstances.value = [] }
+}
+function openCommand(item) {
+  if (item.view) { activeScript.value = null; activeTaskId.value = null; selectNav(item.view) }
+  else if (item.instance) { selectNav({ id: 'task_center' }); openTaskInstance(item.instance) }
+  else if (item.task) openTaskFromRunner({ adapterId: item.adapter, taskId: item.task })
+}
+
 
 function selectNav(item) {
   if (shouldClearActiveScriptForNav(item)) {
@@ -583,7 +607,7 @@ provide('repairCoreService', repairCoreService)
   --orange-bg: rgba(var(--orange-rgb), 0.12);
   --orange-hover: #ff7a3e;
   --orange-strong: #c94d16;
-  --on-orange: #17131A;
+  --on-orange: #ffffff;
   --bg: #141418;
   --bg2: #1c1c22;
   --bg3: #242430;

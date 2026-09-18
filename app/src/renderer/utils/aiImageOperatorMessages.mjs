@@ -17,6 +17,9 @@ export function generationFailureMessage(error, errorCode = '') {
   if (errorCode === 'UNKNOWN_SUBMIT_RESULT' || /回执未知|UNKNOWN_SUBMIT_RESULT/.test(message)) {
     return '连接中断，无法确认供应商是否已受理。已停止自动提交，请先核实供应商记录，避免重复计费。'
   }
+  if (/未配置.*(?:API Key|Key)|missing.*api.?key/i.test(message)) {
+    return '当前模型尚未配置 API Key，请先打开配置，保存后再点击一键重试。'
+  }
   if (/(?:status code|http)\s*(?:502|503|504)\b|bad gateway|service unavailable|gateway timeout|upstream timeout|timed out|timeout/i.test(message)) {
     return '上游生图服务暂时不可用。请查看重试记录后再决定是否重试。'
   }

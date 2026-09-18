@@ -1,0 +1,7 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>抓虾交互验收 · 本地样例</title></head><body><div id="app"></div><script type="module">
+if (!import.meta.env.DEV) throw new Error('Development-only interaction fixture')
+import { createApp } from 'vue'
+import '../App.vue'
+import Fixture from './InteractionFixture.vue'
+createApp(Fixture).mount('#app')
+</script></body></html>

@@ -738,56 +738,11 @@
               >{{ metaItem }}</span>
             </div>
           </div>
-          <div class="progress-strip-stack progress-stage-stack">
-            <div
-              v-for="track in (progressSummary.tracks || [])"
-              :key="track.id || track.title"
-              :class="[
-                'progress-stage-card',
-                `progress-stage-card-${track.tone || 'primary'}`,
-                `progress-stage-card-${track.state || 'pending'}`,
-              ]"
-            >
-              <div class="progress-stage-card-head">
-                <div class="progress-stage-card-kicker">
-                  <span class="progress-stage-card-title">{{ track.title }}</span>
-                  <span v-if="track.status" class="progress-stage-card-status">{{ track.status }}</span>
-                </div>
-                <div class="progress-stage-card-mainline">
-                  <span class="progress-stage-card-main">{{ track.main }}</span>
-                  <span class="progress-stage-card-percent">{{ track.percentLabel }}</span>
-                </div>
-              </div>
-
-              <div v-if="track.caption || track.detail" class="progress-stage-card-meta">
-                <span v-if="track.caption">{{ track.caption }}</span>
-                <span v-if="track.detail">{{ track.detail }}</span>
-              </div>
-
-              <div
-                :class="[
-                  'progress-strip-bar',
-                  'progress-stage-bar',
-                  track.tone === 'secondary' ? 'progress-strip-bar-secondary' : '',
-                  { indeterminate: track.indeterminate }
-                ]"
-                role="progressbar"
-                :aria-label="track.ariaLabel || progressSummary.ariaLabel"
-                :aria-valuenow="track.indeterminate ? null : track.percentValue"
-                aria-valuemin="0"
-                aria-valuemax="100"
-                :aria-valuetext="track.ariaText || progressSummary.ariaText"
-                :aria-busy="track.indeterminate ? 'true' : 'false'"
-              >
-                <div
-                  :class="[
-                    'progress-strip-bar-fill',
-                    track.tone === 'secondary' ? 'progress-strip-bar-fill-secondary' : '',
-                    { indeterminate: track.indeterminate }
-                  ]"
-                  :style="track.indeterminate ? undefined : { width: `${track.percentValue}%` }"
-                ></div>
-              </div>
+          <div class="runner-stage-statuses">
+            <div v-for="track in (progressSummary.tracks || [])" :key="track.id || track.title" class="runner-stage-status">
+              <strong>{{ track.title }}</strong>
+              <span>{{ [track.status, track.main, track.percentLabel].filter(Boolean).join(' · ') }}</span>
+              <small v-if="track.caption || track.detail">{{ [track.caption, track.detail].filter(Boolean).join(' · ') }}</small>
             </div>
           </div>
           <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
@@ -4388,6 +4343,12 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.runner-stage-statuses { display: grid; gap: 8px; margin-top: 10px; }
+.runner-stage-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; }
+.runner-stage-status strong { color: var(--text); }
+.runner-stage-status span, .runner-stage-status small { color: var(--text2); }
+.runner-stage-status small { flex-basis: 100%; overflow-wrap: anywhere; }
+
 .runner { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 .runner-header {

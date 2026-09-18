@@ -287,9 +287,8 @@
                   role="tabpanel"
                 >
                   <div class="aiv-source-title">模拍图 · 默认优先</div>
-                  <div :class="['aiv-thumb-grid', { 'is-list': materialDisplayMode === 'list' }]">
+                  <VirtualGrid :key="`${activeMaterialGroup.styleCode}-model-${materialDisplayMode}`" :items="materialAssetsForDisplay(activeMaterialGroup.modelPhotos)" :get-key="asset => asset.id || asset.path" :min-width="150" :row-height="materialDisplayMode === 'list' ? 100 : 238" :height="560" :single-column="materialDisplayMode === 'list'" label="模拍图"><template #default="{ item: asset }">
                     <article
-                      v-for="asset in visibleMaterialAssets(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos)"
                       :key="asset.id || asset.path"
                       :class="['aiv-thumb', { selected: asset.selected, 'is-list': materialDisplayMode === 'list' }]"
                       role="button"
@@ -323,15 +322,8 @@
                         <span aria-hidden="true">⌕</span>
                       </button>
                     </article>
-                  </div>
-                  <button
-                    v-if="remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos)"
-                    type="button"
-                    class="aiv-load-more"
-                    @click="showMoreMaterialAssets(activeMaterialGroup.styleCode, 'model')"
-                  >
-                    加载更多模拍图（剩余 {{ remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos) }} 张）
-                  </button>
+                  </template></VirtualGrid>
+
                 </section>
 
                 <section
@@ -340,9 +332,8 @@
                   role="tabpanel"
                 >
                   <div class="aiv-source-title">细节图</div>
-                  <div :class="['aiv-thumb-grid', { 'is-list': materialDisplayMode === 'list' }]">
+                  <VirtualGrid :key="`${activeMaterialGroup.styleCode}-detail-${materialDisplayMode}`" :items="materialAssetsForDisplay(activeMaterialGroup.detailPhotos)" :get-key="asset => asset.id || asset.path" :min-width="150" :row-height="materialDisplayMode === 'list' ? 100 : 238" :height="560" :single-column="materialDisplayMode === 'list'" label="细节图"><template #default="{ item: asset }">
                     <article
-                      v-for="asset in visibleMaterialAssets(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos)"
                       :key="asset.id || asset.path"
                       :class="['aiv-thumb', { selected: asset.selected, muted: asset.muted, 'is-list': materialDisplayMode === 'list' }]"
                       role="button"
@@ -376,15 +367,8 @@
                         <span aria-hidden="true">⌕</span>
                       </button>
                     </article>
-                  </div>
-                  <button
-                    v-if="remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos)"
-                    type="button"
-                    class="aiv-load-more"
-                    @click="showMoreMaterialAssets(activeMaterialGroup.styleCode, 'detail')"
-                  >
-                    加载更多细节图（剩余 {{ remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos) }} 张）
-                  </button>
+                  </template></VirtualGrid>
+
                 </section>
 
                 <section v-if="activeMaterialGroup.skippedRows?.length" class="aiv-source-issues">
@@ -1634,7 +1618,7 @@
             <span v-if="templateLibraryState.loading" class="aiv-filter-note">加载模板库...</span>
             <span v-if="templateLibraryState.error" class="aiv-filter-note error">{{ templateLibraryState.error }}</span>
           </aside>
-          <div class="aiv-template-grid">
+          <div class="aiv-template-results"><SearchCombobox v-model="selectedTemplateId" label="视频模板" placeholder="搜索并选择模板" :options="filteredTemplateSamples.map(template => ({ value: template.id, label: template.title, group: template.category || '视频模板', keywords: template.description }))" /><div class="aiv-template-grid">
             <article
               v-for="template in filteredTemplateSamples"
               :key="template.id"
@@ -1669,7 +1653,7 @@
             <div v-if="!templateLibraryState.loading && !filteredTemplateSamples.length" class="aiv-empty-inline">
               未读取到本地生意管家模板库。
             </div>
-          </div>
+          </div></div>
         </div>
         <footer class="aiv-modal-foot">
           <span>{{ activeTemplateStyle ? `正在为 ${activeTemplateStyle} 选择模板` : '模板库仅在需要时打开' }}</span>
@@ -2143,6 +2127,8 @@
 </template>
 
 <script setup>
+import VirtualGrid from '../components/interaction/VirtualGrid.vue'
+import SearchCombobox from '../components/interaction/SearchCombobox.vue'
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { IconCheck, IconChevronDown, IconFaceId, IconPhoto, IconRun, IconShirt, IconZoomIn } from '@tabler/icons-vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
@@ -5158,6 +5144,8 @@ async function finalizeMaterialTask(runId = '') {
     downloadProgress: downloadedRows.length ? 100 : 0,
     searchTotal: styleTotal,
     searchCompleted: styleTotal,
+    totalStyles: styleTotal,
+    completedStyles: styleTotal,
     downloadTotal: downloadedRows.length + summary.failedCount,
     downloadCompleted: downloadedRows.length + summary.failedCount,
     outputFiles,
@@ -9485,6 +9473,17 @@ watch(hasOpenModal, async (open) => {
   if (target && typeof target.focus === 'function') target.focus()
 })
 
+// Opening a template picker above the task dialog does not change hasOpenModal.
+// Move focus into that picker and return it to its still-mounted trigger on close.
+watch(templateLibraryOpen, async (open) => {
+  await nextTick()
+  if (open) {
+    document.querySelector('[aria-labelledby="aiv-template-title"] button')?.focus()
+  } else if (videoTaskDialogOpen.value && lastFocusedElement.value?.isConnected) {
+    lastFocusedElement.value.focus()
+  }
+})
+
 watch([videoTasks, videoResults], () => {
   persistVideoWorkflowState()
 }, { deep: true })
@@ -9630,6 +9629,12 @@ function localFileUrl(path) {
 </script>
 
 <style scoped>
+.aiv-template-results { min-width: 0; overflow: auto; flex: 1; padding: 2px; }
+.aiv-template-results > :deep(.cs-combobox) { margin-bottom: 12px; }
+.cs-virtual-grid :deep(.aiv-thumb) { height: 100%; }
+.cs-virtual-grid :deep(.aiv-thumb-media) { max-height: 190px; }
+.cs-virtual-grid :deep(.aiv-thumb-media img) { object-fit: contain; }
+
 .aiv-workbench {
   height: 100%;
   min-height: 0;
