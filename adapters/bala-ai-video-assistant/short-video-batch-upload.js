@@ -355,14 +355,16 @@
   function openPublishPageForJob(url, next, state, markerKey, label = '') {
     const { index } = currentJob(state)
     if (state?.[markerKey] === index) return null
-    if (compact(location.href) === url && typeof location.reload === 'function') location.reload()
-    else location.href = url
-    return nextPhase(next, 1200, {
+    const result = nextPhase(next, 1200, {
       ...state,
       [markerKey]: index,
       page_ready_attempts: 0,
       current_store: label || url,
     })
+    // Persist the next job state before the runner navigates and handles beforeunload.
+    result.meta.action = 'navigate_publisher'
+    result.meta.url = url
+    return result
   }
 
   const AUTH_EXPIRED_PATTERN = /SESSION_EXPIRED|Session\s*过期|session\s*(?:expired|timeout)|会话(?:已)?(?:过期|失效)|登录(?:状态)?(?:已)?(?:过期|失效|超时)|请重新登录/i

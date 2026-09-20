@@ -514,7 +514,9 @@ test('short video upload reopens the Guang publisher for each live job', async (
     },
   })
 
-  assert.equal(reloads, 1)
+  assert.equal(reloads, 0)
+  assert.equal(result.meta.action, 'navigate_publisher')
+  assert.match(result.meta.url, /^https:\/\/huodong\.taobao\.com\//)
   assert.equal(result.meta.next_phase, 'wait_guang_page')
   assert.equal(result.meta.shared.guang_page_job_index, 0)
 })

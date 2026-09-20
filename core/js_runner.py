@@ -4015,6 +4015,63 @@ class JSRunner:
         except Exception:
             logger.debug("Failed to clear persisted run params", exc_info=True)
 
+    async def _navigate_publisher(self, url: str) -> None:
+        """Navigate between jobs, handling only the requested navigation's beforeunload.
+
+        Keep one CDP session open through the dialog and a new document's load.
+        Never replay a publishing phase or continue against the old document.
+        """
+        async with websockets.connect(self.ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
+            async def command(method, params):
+                response = await self._cdp_send_on_ws(method, params, ws=ws)
+                if response.get("error"):
+                    raise RuntimeError(f"发布器导航失败: {response['error']}")
+                return response.get("result", {})
+
+            await command("Page.enable", {})
+            await command("Page.setLifecycleEventsEnabled", {"enabled": True})
+            tree = await command("Page.getFrameTree", {})
+            frame = tree["frameTree"]["frame"]
+            old_loader = frame.get("loaderId")
+            navigation_id = self._next_id()
+            method = "Page.reload" if frame.get("url") == url else "Page.navigate"
+            params = {"ignoreCache": True} if method == "Page.reload" else {"url": url}
+            logger.info("受控导航发布器: %s %s", method, url)
+            await ws.send(json.dumps({"id": navigation_id, "method": method, "params": params}))
+            pending = {navigation_id}
+            loaded = False
+            deadline = time.monotonic() + 45.0
+            while pending or not loaded:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("发布器导航超时：未确认新页面加载完成，已停止后续上传")
+                try:
+                    message = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                except asyncio.TimeoutError as exc:
+                    raise RuntimeError("发布器导航超时：未确认新页面加载完成，已停止后续上传") from exc
+                if message.get("id") in pending:
+                    pending.remove(message["id"])
+                    error = message.get("error") or (message.get("result") or {}).get("errorText")
+                    if error:
+                        raise RuntimeError(f"发布器导航失败: {error}")
+                event = message.get("method")
+                details = message.get("params") or {}
+                if event == "Page.javascriptDialogOpening":
+                    if details.get("type") != "beforeunload":
+                        raise RuntimeError("发布器导航遇到非离开确认弹窗，已停止，请检查浏览器")
+                    dialog_id = self._next_id()
+                    pending.add(dialog_id)
+                    logger.info("确认任务切换发布器触发的离开提示")
+                    await ws.send(json.dumps({
+                        "id": dialog_id, "method": "Page.handleJavaScriptDialog",
+                        "params": {"accept": True},
+                    }))
+                if (event == "Page.lifecycleEvent" and details.get("name") == "load"
+                        and details.get("frameId") == frame["id"]
+                        and details.get("loaderId") and details["loaderId"] != old_loader):
+                    loaded = True
+            self._page_file_cache_keys.clear()
+
     async def _reload_current_page(self) -> None:
         tab = None
         if self.tab_id:
@@ -4666,6 +4723,17 @@ class JSRunner:
                                 len(items),
                                 next_phase,
                             )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "navigate_publisher":
+                            next_phase = meta.get("next_phase")
+                            url = str(meta.get("url") or "").strip()
+                            if not next_phase or not url.startswith("https://"):
+                                raise RuntimeError("发布器导航缺少有效网址或下一阶段")
+                            await cooperate("before_navigate_publisher", page, phase, shared)
+                            await self._navigate_publisher(url)
                             phase = str(next_phase)
                             await self._refresh_ws_url()
                             continue
