@@ -30,9 +30,10 @@ def score(x, h):
 
 
 def label_data(lines, style, color):
-    check = verify([l["text"] for l in lines], style, color)
+    check = verify([l["text"] for l in lines], style, color, [l["box"] for l in lines])
     if not check["passed"]:
-        raise ValueError(f"{style}/{color} 鞋盒OCR款色不匹配: {check}")
+        reason = "鞋盒OCR款色不匹配" if check["status"] == "mismatch" else "鞋盒OCR款色无法确认，待复核"
+        raise ValueError(f"{style}/{color} {reason}: {check}")
     exact = [l for l in lines if l["text"].strip() == style]
     if len(exact) != 1:
         raise ValueError(f"{style}/{color} 未得到唯一完整款号文字框")
@@ -50,16 +51,7 @@ def label_data(lines, style, color):
         min(1, max(b[2] for b in bs) + pad),
         min(1, max(b[3] for b in bs) + pad),
     ]
-    names = []
-    for line in lines:
-        if color in line["text"]:
-            value = (
-                re.sub(r"[\d\s:：]+", "", line["text"])
-                .replace("颜色", "")
-                .replace("色号", "")
-            )
-            if value and len(value) <= 10:
-                names.append(value)
+    names = [f["name"] for f in check["color_fields"] if f["name"]]
     return {
         "check": check,
         "style_code_bbox": sb,
@@ -67,6 +59,80 @@ def label_data(lines, style, color):
         "color_name": (names[0] if names else "") + color,
         "lines": lines,
     }
+
+
+def resolve_label(group, initial_lines, recognize, electronic=None, initial_barcodes=()):
+    """Bounded retries; identity failure belongs to this color, not the batch."""
+    style, color = group["style"], group["color"]
+    attempts = group["label_attempts"] = []
+    candidates = group.get("label_candidates") or [group["slots"]["wpz6"]]
+    for index, candidate in enumerate(candidates):
+        job = {"id": f"{style}-{color}", "path": candidate["path"]}
+        record = {"lines": initial_lines, "barcodes": initial_barcodes} if index == 0 else recognize([job])[0]
+        lines = record["lines"]
+        for stage in ("full", "label_crop"):
+            check = verify([l["text"] for l in lines], style, color, [l["box"] for l in lines])
+            attempt = {"path": candidate["path"], "stage": stage, "check": check, "lines": lines, "barcodes": record.get("barcodes", [])}
+            attempts.append(attempt)
+            try:
+                group["label"] = label_data(lines, style, color)
+                group["slots"]["wpz6"] = candidate
+                if group.get("label_candidate_scores"):
+                    group["scores_uncalibrated"]["wpz6"] = group["label_candidate_scores"][index]
+                group["label_status"] = "verified"
+                weak = any(f["source"] == "damaged_header" or lines[f["line"]].get("confidence", 1) < .95 for f in check["color_fields"])
+                if electronic and weak:
+                    match = electronic.match(style, color, check, record.get("barcodes", []))
+                    if match and match["status"] == "verified":
+                        group["label"]["electronic_label"] = match
+                        group["label"]["physical_color_name"] = group["label"]["color_name"]
+                        if match["reference"]["color_name"]:
+                            group["label"]["color_name"] = match["reference"]["color_name"] + color
+                    elif match:
+                        group["label_status"] = "unconfirmed"
+                        group["label_error"] = f"{style}/{color} 电子标签事实冲突，待复核"
+                return
+            except ValueError as error:
+                attempt["error"] = str(error)
+            # A positively conflicting identity must not be hidden by retries.
+            if check["status"] == "mismatch":
+                group["label_status"] = "mismatch"
+                group["label_error"] = attempt["error"]
+                return
+            if stage == "full" and lines:
+                boxes = [l["box"] for l in lines]
+                region = [max(0, min(b[0] for b in boxes)-.025),
+                          max(0, min(1-b[1]-b[3] for b in boxes)-.025),
+                          min(1, max(b[0]+b[2] for b in boxes)+.025),
+                          min(1, max(1-b[1] for b in boxes)+.025)]
+                record = recognize([{**job, "region": region}])[0]
+                lines = record["lines"]
+            else:
+                break
+    if electronic:
+        for attempt in attempts:
+            match = electronic.match(style, color, attempt["check"], attempt["barcodes"])
+            if not match or match["status"] != "verified":
+                continue
+            lines = attempt["lines"]
+            exact = [l for l in lines if l["text"].strip() == style]
+            def box(l):
+                x, y, w, h = l["box"]
+                return [x, 1-y-h, x+w, 1-y]
+            boxes = [box(l) for l in lines]
+            if not boxes:
+                continue
+            group["label"] = {
+                "check": {**attempt["check"], "passed": True, "status": "verified", "verification_source": "electronic_label_binding"},
+                "physical_check": attempt["check"], "electronic_label": match,
+                "style_code_bbox": box(exact[0]) if len(exact) == 1 else None,
+                "label_bbox": [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)],
+                "color_name": match["reference"]["color_name"] + color, "lines": lines}
+            group["slots"]["wpz6"] = next(c for c in candidates if c["path"] == attempt["path"])
+            group["label_status"] = "verified"
+            return
+    group["label_status"] = "unconfirmed"
+    group["label_error"] = f"{style}/{color} 鞋盒OCR款色无法确认，局部重识别及候选图核验后仍待复核"
 
 
 def run(inp, bundle, out):
@@ -110,6 +176,9 @@ def run(inp, bundle, out):
         cat = cats.pop()
         slots = {}
         scores = {}
+        label_candidates = []
+        label_candidate_scores = []
+        yx_evidence = {}
         for slot in [
             "tmz1",
             "tmz2",
@@ -135,10 +204,28 @@ def run(inp, bundle, out):
                 raise ValueError(f"{style}/{color} missing standard source for {slot}")
             h = yx if slot == "yx" else models["spatial-" + cat + "-" + slot]
             prob = score(x[pool], h)
+            if slot == "yx":
+                threshold = float(yx.get("threshold", 0.5))
+                if not 0 < threshold < 1:
+                    raise ValueError("Invalid YX model threshold")
+                yx_evidence = {
+                    "model_version": yx.get("version", "yx-shared-v2"),
+                    "model_sha256": metadata["files"]["yx.json"],
+                    "threshold": threshold,
+                    "decision": "selected" if prob.max() >= threshold else "pending_review",
+                    "top_candidates": [{"id": rows[pool[int(i)]]["id"],
+                                        "filename": rows[pool[int(i)]]["filename"],
+                                        "sha256": rows[pool[int(i)]]["sha256"],
+                                        "score": float(prob[int(i)])}
+                                       for i in np.argsort(-prob)[:3]],
+                }
+            if slot == "wpz6":
+                label_candidates = [dict(rows[pool[int(i)]]) for i in np.argsort(-prob)[:3]]
+                label_candidate_scores = [float(prob[int(i)]) for i in np.argsort(-prob)[:3]]
             best = pool[int(prob.argmax())]
             scores[slot] = float(prob.max())
             slots[slot] = (
-                None if slot == "yx" and prob.max() < 0.5 else dict(rows[best])
+                None if slot == "yx" and prob.max() < threshold else dict(rows[best])
             )
         # Same-color gray counterpart ranked against the chosen standard-source embedding.
         anchor = next(i for i in ids if rows[i]["id"] == slots["tmz5"]["id"])
@@ -175,6 +262,9 @@ def run(inp, bundle, out):
                 "category": cat,
                 "slots": slots,
                 "scores_uncalibrated": scores,
+                "yx_evidence": yx_evidence,
+                "label_candidates": label_candidates,
+                "label_candidate_scores": label_candidate_scores,
             }
         )
     jobs = [
@@ -188,10 +278,14 @@ def run(inp, bundle, out):
     (out / "ocr-results.jsonl").write_text(
         "\n".join(json.dumps(r, ensure_ascii=False) for r in recognized), encoding="utf-8")
     ocr = {r["id"]: r for r in recognized}
+    from .electronic_labels import ElectronicLabels
+    electronic = ElectronicLabels(inp.get("label_sources", []), recognize)
     for g in results:
-        g["label"] = label_data(
-            ocr[f"{g['style']}-{g['color']}"]["lines"], g["style"], g["color"]
-        )
+        record = ocr[f"{g['style']}-{g['color']}"]
+        resolve_label(g, record["lines"], recognize, electronic, record.get("barcodes", []))
+        (out / f"{g['style']}-{g['color']}-label-attempts.json").write_text(
+            json.dumps(g["label_attempts"], ensure_ascii=False, indent=2), encoding="utf-8")
+    (out / "electronic-label-evidence.json").write_text(json.dumps(electronic.evidence, ensure_ascii=False, indent=2))
     (out / "selection.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2)
     )

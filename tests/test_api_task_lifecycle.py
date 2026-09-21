@@ -30,7 +30,10 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_shoe_all_failed_preserves_raw_files_in_default_output_folder(self):
         await self._assert_shoe_all_failed_exports_raw_files(use_export_folder=False)
 
-    async def _assert_shoe_all_failed_exports_raw_files(self, *, use_export_folder):
+    async def test_shoe_missing_category_stops_before_browser_or_download(self):
+        await self._assert_shoe_all_failed_exports_raw_files(use_export_folder=True, missing_category=True)
+
+    async def _assert_shoe_all_failed_exports_raw_files(self, *, use_export_folder, missing_category=False):
         from core.models import AdapterManifest
         from PIL import Image
         manifest = AdapterManifest.model_validate({
@@ -74,9 +77,22 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             fail = stack.enter_context(patch("core.api_server.data_sink.fail_run"))
             stack.enter_context(patch.dict(api_server._run_status))
             stack.enter_context(patch.dict(api_server._run_logs))
-            params = {"mode": "new"}
+            params = {"mode": "new", "shoe_category_file": {
+                "rows": [{"款号": "204426141029", "品类": "运动"}]
+            }}
             if use_export_folder:
                 params["export_folder"] = str(root / "export")
+            if missing_category:
+                params["shoe_category_file"]["rows"][0]["品类"] = ""
+                with patch("core.api_server._bridge_get_tabs", new_callable=AsyncMock) as get_tabs:
+                    with self.assertRaisesRegex(ValueError, "补全后再开始找图下载"):
+                        await api_server._execute_task("shenhui-new-arrival", "prepare_shoe_upload_package", params)
+                    get_tabs.assert_not_awaited()
+                runner.run_script_file.assert_not_awaited()
+                finish.assert_not_called()
+                fail.assert_called_once()
+                self.assertTrue(source.is_file())
+                return
             with self.assertRaisesRegex(ValueError, "0 个图包"):
                 await api_server._execute_task("shenhui-new-arrival", "prepare_shoe_upload_package",
                                               params)

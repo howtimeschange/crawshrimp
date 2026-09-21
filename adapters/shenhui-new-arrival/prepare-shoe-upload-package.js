@@ -1101,6 +1101,25 @@
       if (!codes.length) {
         throw new Error('请上传款号品类表，并至少包含一个有效“款号”')
       }
+      if ((params.shoe_pose_strategy || params.pose_strategy || 'bala_specialist') === 'bala_specialist') {
+        const aliases = { 运动: '运动', 运动鞋: '运动', 板鞋: '运动', 休闲: '休闲', 休闲鞋: '休闲', 公主鞋: '休闲', 皮鞋: '休闲', 靴子: '休闲', 女生凉鞋: '休闲', 雪地: '雪地', 雪地靴: '雪地', 秋冬拖鞋: '雪地', 运动靴: '雪地', 婴童: '婴童', 婴童鞋: '婴童', 宝宝鞋: '婴童' }
+        const rows = Array.isArray(params.shoe_category_file) ? params.shoe_category_file : params.shoe_category_file.rows
+        const categories = new Map()
+        for (const row of rows) {
+          const code = normalizeStyleCode(row?.['款号'] ?? row?.style_code ?? row?.item_code ?? row?.['输入款号'] ?? '')
+          const raw = compact(row?.['品类'])
+          if (!code && !raw) continue
+          if (!code) throw new Error('鞋品品类表填写了品类但缺少款号')
+          if (!raw) continue
+          const category = aliases[raw]
+          if (!category) throw new Error(`${code} 专属模型品类无效：${raw}；请填写运动/休闲/婴童/雪地`)
+          if (categories.has(code) && categories.get(code) !== category) throw new Error(`${code} 品类冲突，请修正后再开始找图下载`)
+          categories.set(code, category)
+        }
+        for (const code of codes) {
+          if (!categories.has(code)) throw new Error(`${code} 专属模型需要品类表明确填写运动/休闲/婴童/雪地；请补全后再开始找图下载`)
+        }
+      }
 
       const resolvedMounts = {}
       async function mountForPath(pathConfig) {

@@ -182,3 +182,30 @@ test('shoe task init requires category file codes', async () => {
   assert.equal(result.success, false)
   assert.match(String(result.error || ''), /款号品类表/)
 })
+
+test('specialist rejects missing, invalid and conflicting categories before any cloud request', async () => {
+  for (const rows of [
+    [{ 款号: '204426140134', 品类: '' }],
+    [{ 款号: '204426140134', 品类: '未知' }],
+    [{ 款号: '204426140134', 品类: '运动' }, { 款号: '204426140134', 品类: '休闲' }],
+    [{ 款号: '204426140134', 品类: '运动' }, { 款号: '204426140135', 品类: '' }],
+  ]) {
+    let requests = 0
+    const result = await runScript({
+      params: { shoe_cloud_path: '巴拉营运BU-商品//巴拉货控/鞋品/', shoe_category_file: { rows } },
+      fetch: async () => { requests++; throw new Error('must not access cloud') },
+    })
+    assert.equal(result.success, false)
+    assert.match(result.error, /品类/)
+    assert.equal(requests, 0)
+  }
+})
+
+test('non-specialist may leave category blank', async () => {
+  const result = await runScript({
+    params: { shoe_pose_strategy: 'single_sheet', shoe_cloud_path: '巴拉营运BU-商品//巴拉货控/鞋品/', shoe_category_file: { rows: [{ 款号: '204426140134', 品类: '' }] } },
+    fetch: async () => ({ ok: true, json: async () => ({ list: [{ org_name: '巴拉营运BU-商品', mount_id: 'm1' }] }) }),
+  })
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'ensure_folder')
+})

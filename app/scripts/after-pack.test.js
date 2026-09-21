@@ -155,8 +155,17 @@ test('shoe model staging rejects missing or changed model weights', () => {
       fs.writeFileSync(path.join(root, name), name)
       return [name, crypto.createHash('sha256').update(name).digest('hex')]
     }))
+    for (const name of ['worker.py', 'identity.py', 'ocr.py', 'electronic_labels.py']) {
+      fs.writeFileSync(path.join(root, '..', name), '# bundled module')
+    }
     fs.writeFileSync(path.join(root, 'bundle.json'), JSON.stringify({ files }))
     requireShoeModelBundle(tmp)
+    fs.unlinkSync(path.join(root, '..', 'electronic_labels.py'))
+    assert.throws(() => requireShoeModelBundle(tmp), /missing shoe inference module: electronic_labels.py/)
+    fs.writeFileSync(path.join(root, '..', 'electronic_labels.py'), '# restored')
+    fs.writeFileSync(path.join(root, 'yx.json'), 'stale-yx-head')
+    assert.throws(() => requireShoeModelBundle(tmp), /integrity failure: yx.json/)
+    fs.writeFileSync(path.join(root, 'yx.json'), 'yx.json')
     fs.writeFileSync(path.join(root, 'dino-224.onnx'), 'corrupt')
     assert.throws(() => requireShoeModelBundle(tmp), /integrity failure/)
     fs.unlinkSync(path.join(root, 'dino-224.onnx'))

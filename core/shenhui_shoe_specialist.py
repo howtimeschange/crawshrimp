@@ -1,7 +1,7 @@
 """Bala local-model strategy, connected to the existing shoe package exporter."""
 
 from __future__ import annotations
-import json, os, re, subprocess, time, sys
+import json, os, re, subprocess, time, sys, shutil
 from pathlib import Path
 from core.shoe_specialist.util import sha
 from core.shoe_specialist.identity import packaging_bbox
@@ -30,6 +30,8 @@ def prepare(
         )
     grouped = {}
     rows = []
+    label_sources = []
+    from core.shoe_specialist.electronic_labels import is_label_source
     for r in data_rows:
         if r.get("下载结果") != "已下载":
             continue
@@ -39,6 +41,12 @@ def prepare(
         filename = str(
             r.get("__shoe_original_filename") or r.get("原文件名") or path.name
         )
+        cloud = str(r.get("云盘路径") or "")
+        if path.is_file() and is_label_source(style, color, filename, cloud):
+            label_sources.append({"id": f"E{len(label_sources):05}", "style": style,
+                                  "path": str(path.resolve()), "sha256": sha(path),
+                                  "filename": filename, "cloud_path": cloud})
+            continue
         if (
             not re.fullmatch(r"\d{12}", style)
             or not re.fullmatch(r"\d{5}", color)
@@ -83,7 +91,7 @@ def prepare(
 
     run = Path(tempfile.mkdtemp(prefix="run-", dir=analysis))
     inp = run / "input.json"
-    inp.write_text(json.dumps({"candidates": rows}, ensure_ascii=False))
+    inp.write_text(json.dumps({"candidates": rows, "label_sources": label_sources}, ensure_ascii=False))
     log(f"巴拉鞋品专属模型识别：{len(grouped)}款色/{len(rows)}张原图，本地DINOv2＋OCR")
     env = {
         **os.environ,
@@ -136,9 +144,21 @@ def prepare(
         )
     results = json.loads((run / "selection.json").read_text())
     cache = {}
+    pending = []
     for g in results:
         style, color = g["style"], g["color"]
         entries = grouped[style, color]
+        if g.get("label_status") in {"unconfirmed", "mismatch"}:
+            reason = g["label_error"]
+            log(f"[warn] {reason}；保留原图并继续其他款色")
+            report = p._skipped_slot_report_row(
+                style_code=style, color=color, slot="款色", source_name="",
+                output_path="", warning=reason, action="款色不匹配已跳过" if g["label_status"] == "mismatch" else "待复核已跳过",
+                download_result="已下载")
+            report["识别状态"] = "款色不匹配" if g["label_status"] == "mismatch" else "待复核"
+            cache[style, color] = {"error": reason, "report_rows": [report]}
+            pending.append((style, color, entries, report))
+            continue
         by = {e["filename"]: e for e in entries}
         s = g["slots"]
         label = g["label"]
@@ -189,7 +209,7 @@ def prepare(
             _label_verified=True,
             _label_color_name=label["color_name"],
             label_bbox=packaging_bbox(label["label_bbox"]),
-            style_code_bbox=packaging_bbox(label["style_code_bbox"]),
+            style_code_bbox=packaging_bbox(label["style_code_bbox"]) if label["style_code_bbox"] else None,
         )
         slots = p._apply_o_category_rule(g["category"], slots)
         # Preserve the existing exporter policy: TMZ1..4 use a gray counterpart
@@ -222,6 +242,8 @@ def prepare(
             "version": "bala-shoe-dinov2-onnx-v2",
             "category": g["category"],
             "label_verified": True,
+            "electronic_label": label.get("electronic_label"),
+            "yx": g.get("yx_evidence"),
             "scores_uncalibrated": g["scores_uncalibrated"],
             "background_corrections": corrections,
             "source_sha256": {name: sha(entry["path"]) for name, entry in by.items()},
@@ -244,8 +266,9 @@ def prepare(
         (run / f"{style}-{color}-resolved.json").write_text(
             json.dumps(slots, ensure_ascii=False, indent=2)
         )
-    log("本地款色身份核验通过，按现有脚本生成完整图包")
-    return p.prepare_shoe_packages(
+    verified_count = sum(not value.get("error") for value in cache.values())
+    log(f"本地款色核验：{verified_count} 个通过，{len(pending)} 个待处理；为通过的款色生成图包")
+    reports, roots = p.prepare_shoe_packages(
         data_rows=data_rows,
         output_root=output_root,
         pose_strategy="bala_specialist",
@@ -256,3 +279,14 @@ def prepare(
         log=log,
         progress=progress,
     )
+    for style, color, entries, report in pending:
+        raw_root = Path(output_root) / style / "_待核验原图" / color
+        raw_root.mkdir(parents=True, exist_ok=True)
+        for index, entry in enumerate(entries):
+            target = raw_root / p._safe_path_component(entry["filename"])
+            if target.exists():
+                target = raw_root / f"{index}-{target.name}"
+            shutil.copy2(entry["path"], target)
+        report["本地文件"] = str(raw_root)
+        # Do not count an all-unconfirmed style as a completed package.
+    return reports, roots

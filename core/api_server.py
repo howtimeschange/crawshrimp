@@ -3581,6 +3581,23 @@ def _finalize_bala_ai_video_assistant_outputs(
     return final_refs
 
 
+def _validate_shenhui_shoe_categories(run_params):
+    strategy = run_params.get("shoe_pose_strategy") or run_params.get("pose_strategy") or "bala_specialist"
+    if strategy != "bala_specialist":
+        return
+    category_file = run_params.get("shoe_category_file") or {}
+    rows = category_file.get("rows") if isinstance(category_file, dict) else category_file
+    categories = shenhui_shoe_packaging.parse_shoe_category_rows(rows)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        style = shenhui_shoe_packaging._normalize_style_code(row.get("款号"))
+        if style and style not in categories:
+            raise shenhui_shoe_packaging.ShoeSelectionError(
+                f"{style} 专属模型需要品类表明确填写运动/休闲/婴童/雪地；请补全后再开始找图下载"
+            )
+
+
 def _prepare_shenhui_shoe_package_rows(
     *,
     data_rows: list,
@@ -3656,6 +3673,10 @@ def _prepare_shenhui_shoe_package_rows(
     run_params["__shenhui_shoe_package_refs"] = [
         str(package_roots[key])
         for key in sorted(package_roots)
+    ]
+    run_params["__shenhui_shoe_pending_refs"] = [
+        str(path.parent) for path in output_root.glob("*/_待核验原图")
+        if path.parent not in {Path(value) for value in package_roots.values()}
     ]
     return report_rows
 
@@ -5086,7 +5107,8 @@ def _finalize_shenhui_new_arrival_outputs(
         runtime_dir = Path(runtime_artifact_dir)
         package_refs = [
             Path(str(path)).expanduser()
-            for path in (run_params.get("__shenhui_shoe_package_refs") or [])
+            for path in [*(run_params.get("__shenhui_shoe_package_refs") or []),
+                         *(run_params.get("__shenhui_shoe_pending_refs") or [])]
             if str(path or "").strip()
         ]
         package_refs = [path for path in package_refs if path.is_dir()]
@@ -8083,6 +8105,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     if resolved.get('sheets') is not None:
                         pv['sheets'] = resolved['sheets']
                     log(f"Successfully resolved {len(pv['rows'])} rows.")
+
+        if (adapter_id, task_id) == ("shenhui-new-arrival", "prepare_shoe_upload_package"):
+            _validate_shenhui_shoe_categories(run_params)
 
         is_shopee_marketing_adapter = target_entry_url.startswith('https://seller.shopee.cn/portal/marketing')
 

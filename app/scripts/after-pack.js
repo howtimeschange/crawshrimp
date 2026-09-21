@@ -142,6 +142,11 @@ function requirePythonScriptsBundle(resourcesPath) {
 function requireShoeModelBundle(resourcesPath) {
   const crypto = require('crypto')
   const root = path.join(resourcesPath, 'python-scripts', 'core', 'shoe_specialist', 'assets')
+  for (const name of ['worker.py', 'identity.py', 'ocr.py', 'electronic_labels.py']) {
+    if (!fs.existsSync(path.join(root, '..', name))) {
+      throw new Error(`[after-pack] missing shoe inference module: ${name}`)
+    }
+  }
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'bundle.json'), 'utf8'))
   for (const name of ['dino-224.onnx', 'dino-448.onnx', 'models.json', 'yx.json', 'snow-tmz4.png']) {
     if (!manifest.files?.[name]) throw new Error(`[after-pack] missing shoe model hash: ${name}`)
