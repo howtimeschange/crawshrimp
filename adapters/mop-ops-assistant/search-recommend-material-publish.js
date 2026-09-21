@@ -15,6 +15,7 @@
   const DEFAULT_CROP_RATIO = '3:4'
   const ALLOWED_CROP_RATIOS = ['3:4', '1:1']
   const CROP_RATIO_TOLERANCE = 0.01
+  const MAX_UPLOAD_BYTES = 3 * 1024 * 1024
   const MIN_CROP_SIDE = 720
   const MIN_IMAGE_COUNT = 3
   const MAX_IMAGE_COUNT = 9
@@ -28,6 +29,11 @@
 
   function cleanText(value) {
     return String(value ?? '').replace(/\s+/g, ' ').trim()
+  }
+
+  // Filesystem paths must preserve internal spaces exactly.
+  function pathText(value) {
+    return String(value ?? '').trim()
   }
 
   function compact(value) {
@@ -60,12 +66,12 @@
   }
 
   function splitMultiValues(value) {
-    if (Array.isArray(value)) return value.map(cleanText).filter(Boolean)
+    if (Array.isArray(value)) return value.map(pathText).filter(Boolean)
     const normalized = String(value ?? '')
       .replace(/(\s+)(?=(?:https?:\/\/|\/|[A-Za-z]:[\\/]))/g, '\n')
     return normalized
       .split(/[\n\r;；|]+/g)
-      .map(cleanText)
+      .map(pathText)
       .filter(Boolean)
   }
 
@@ -291,7 +297,7 @@
     if (Math.min(box.width, box.height) < MIN_CROP_SIDE) {
       throw new Error(`图片裁剪后宽高不得低于 ${MIN_CROP_SIDE}px：${file?.name || ''}`)
     }
-    if (!box.needsCrop) {
+    if (!box.needsCrop && file.size <= MAX_UPLOAD_BYTES) {
       return { dataUrl: sourceDataUrl, width: box.width, height: box.height, cropRatio: box.ratio, cropStatus: 'matched' }
     }
     const canvas = document.createElement('canvas')
@@ -300,12 +306,17 @@
     const ctx = canvas.getContext?.('2d')
     if (!ctx) throw new Error('当前页面不支持 Canvas 裁剪')
     ctx.drawImage(image, box.left, box.top, box.width, box.height, 0, 0, box.width, box.height)
-    const blob = await canvasToBlob(canvas, file.type && file.type !== 'image/webp' ? file.type : 'image/jpeg', 0.96)
+    let blob = await canvasToBlob(canvas, file.type && file.type !== 'image/webp' ? file.type : 'image/jpeg', 0.96)
+    for (const quality of [0.9, 0.82, 0.72, 0.6]) {
+      if (blob.size <= MAX_UPLOAD_BYTES) break
+      blob = await canvasToBlob(canvas, 'image/jpeg', quality)
+    }
+    if (blob.size > MAX_UPLOAD_BYTES) throw new Error(`图片压缩后仍超过 3 MB：${file.name}`)
     return { dataUrl: await blobToDataUrl(blob), width: box.width, height: box.height, cropRatio: box.ratio, cropStatus: 'center-cropped', cropBox: box }
   }
 
   function extensionOf(path) {
-    const match = cleanText(path).split(/[?#]/)[0].match(/\.([a-zA-Z0-9]+)$/)
+    const match = pathText(path).split(/[?#]/)[0].match(/\.([a-zA-Z0-9]+)$/)
     return match ? match[1].toLowerCase() : ''
   }
 
@@ -315,7 +326,7 @@
   }
 
   function pathBasename(path) {
-    return cleanText(path).replace(/\\/g, '/').split('/').filter(Boolean).pop() || cleanText(path)
+    return pathText(path).replace(/\\/g, '/').split('/').filter(Boolean).pop() || pathText(path)
   }
 
   function pathStem(path) {
@@ -323,7 +334,7 @@
   }
 
   function dirnameParts(path) {
-    return cleanText(path).replace(/\\/g, '/').split('/').filter(Boolean)
+    return pathText(path).replace(/\\/g, '/').split('/').filter(Boolean)
   }
 
   function findProductIdFromPath(path) {
@@ -351,7 +362,7 @@
 
   function normalizeSelectedImagePaths(materialImages) {
     const paths = Array.isArray(materialImages?.paths) ? materialImages.paths : []
-    return paths.map(cleanText).filter(Boolean).filter(isImagePath)
+    return paths.map(pathText).filter(Boolean).filter(isImagePath)
   }
 
   function normalizeDirectoryListingFiles(materialRootFiles) {
@@ -359,11 +370,11 @@
     return paths
       .map((entry, index) => {
         const rawPath = typeof entry === 'string' ? entry : entry?.path
-        const filePath = cleanText(rawPath)
+        const filePath = pathText(rawPath)
         if (!filePath || !isImagePath(filePath)) return null
         return {
           path: filePath,
-          relativePath: cleanText(entry?.relativePath || ''),
+          relativePath: pathText(entry?.relativePath || ''),
           mtimeMs: Number.isFinite(Number(entry?.mtimeMs)) ? Number(entry.mtimeMs) : index,
           order: index,
         }
@@ -372,7 +383,7 @@
   }
 
   function normalizePathParts(path) {
-    return cleanText(path).replace(/\\/g, '/').split('/').filter(Boolean)
+    return pathText(path).replace(/\\/g, '/').split('/').filter(Boolean)
   }
 
   function pathStartsWithParts(parts, rootParts) {
@@ -477,7 +488,7 @@
   }
 
   function buildRootMaterialPaths(root, productId, count) {
-    const base = cleanText(root).replace(/[\\/]+$/g, '')
+    const base = pathText(root).replace(/[\\/]+$/g, '')
     if (!base || !productId || count <= 0) return []
     const list = []
     for (let index = 1; index <= count; index += 1) {
@@ -489,7 +500,7 @@
   function uniqueRefs(list) {
     const seen = new Set()
     return (list || []).filter(ref => {
-      const key = cleanText(ref)
+      const key = pathText(ref)
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
@@ -625,7 +636,7 @@
     const rootRefs = buildRootMaterialPaths(options.materialRoot, materialKey, materialCount)
     if (rootRefs.length) {
       if (Array.isArray(options.materialRootFiles?.paths)) {
-        const pathKey = value => cleanText(value).replace(/\\/g, '/').toLowerCase()
+        const pathKey = value => pathText(value).replace(/\\/g, '/').toLowerCase()
         const available = new Set(normalizeDirectoryListingFiles(options.materialRootFiles).map(file => pathKey(file.path)))
         if (rootRefs.some(ref => !available.has(pathKey(ref)))) {
           return { refs: [], source: '素材根目录', error: `未匹配到素材图片包：商家编码 ${merchantCode || '未填写'}，商品ID ${productId || '未填写'}；请检查目录扫描结果或填写实际素材图片路径` }
@@ -784,7 +795,7 @@
   }
 
   function refsKey(refs) {
-    return (refs || []).map(cleanText).sort().join('\n')
+    return (refs || []).map(pathText).sort().join('\n')
   }
 
   function outputMaterialDetail(materials) {
@@ -913,7 +924,7 @@
     const files = Array.from(input?.files || [])
     const byName = new Map()
     for (const file of files) {
-      byName.set(cleanText(file.name), file)
+      byName.set(pathText(file.name), file)
     }
     return byName
   }
@@ -932,7 +943,92 @@
     })
   }
 
+  function uploadDataUrlWithImageSpaceUploader(dataUrl, name) {
+    return new Promise((resolve, reject) => {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.style.position = 'fixed'
+      button.style.left = '-9999px'
+      button.style.top = '-9999px'
+      ;(document.body || document.documentElement).appendChild(button)
+      const uploader = new window.ImageSpaceUploader({
+        button,
+        appkey: 'tu',
+        auto: true,
+        multiple: false,
+        maxCount: 1,
+        filters: {
+          mimeTypes: 'jpg,jpeg,png',
+          maxFileSize: '3mb',
+          minWidth: MIN_CROP_SIDE,
+          minHeight: MIN_CROP_SIDE,
+        },
+      })
+      const cleanup = () => {
+        try { uploader.destroy?.() } catch (error) {}
+        try { button.remove?.() } catch (error) {}
+      }
+      const timeout = setTimeout(() => {
+        cleanup()
+        reject(new Error(`图片上传超时：${name}`))
+      }, 45000)
+      const samples = []
+      const sampleText = () => {
+        try {
+          return JSON.stringify(samples).slice(0, 600)
+        } catch (error) {
+          return String(samples).slice(0, 600)
+        }
+      }
+      const remember = payload => {
+        if (payload !== undefined) samples.push(payload)
+      }
+      const done = payload => {
+        remember(payload)
+        clearTimeout(timeout)
+        cleanup()
+        const list = []
+        for (const sample of samples) {
+          if (Array.isArray(sample)) list.push(...sample)
+          else list.push(sample)
+        }
+        const first = list.find(Boolean) || payload
+        const url = findFirstRemoteUrl(list) || findFirstRemoteUrl(first)
+        if (!url) {
+          reject(new Error(`图片空间上传未返回 URL：${name}；返回样本 ${sampleText()}`))
+          return
+        }
+        resolve({ url, name, uploadResult: first })
+      }
+      const failed = error => {
+        clearTimeout(timeout)
+        cleanup()
+        reject(new Error(error?.message || error?.errorCode || `图片上传失败：${name}`))
+      }
+      uploader.on('FileSuccess', remember)
+      uploader.on('UploadComplete', done)
+      uploader.on('UploadError', failed)
+      // Plupload initializes asynchronously. Adding before Init silently loses the file;
+      // starting before FilesAdded emits an empty completion. auto starts the queued file.
+      let queued = false
+      const enqueue = () => {
+        if (queued) return
+        queued = true
+        uploader.addBase64File(dataUrl, name)
+      }
+      if (uploader._uploader?.bind) {
+        uploader._uploader.bind('Init', enqueue)
+        if (uploader._uploader.runtime) enqueue()
+      } else {
+        enqueue()
+      }
+    })
+  }
+
   async function uploadDataUrlWithPageHelper(dataUrl, name) {
+    if (typeof window.$startFileUpload !== 'function' && typeof window.ImageSpaceUploader === 'function') {
+      return await uploadDataUrlWithImageSpaceUploader(dataUrl, name)
+    }
     if (typeof window.$startFileUpload !== 'function') {
       throw new Error('当前页面未暴露图片上传工具 $startFileUpload，请刷新千牛素材中心搜推素材页后重试')
     }
@@ -1166,14 +1262,14 @@
         pageNo: 1,
         pageSize: 10,
         scene: DEFAULT_SCENE,
-        condition: JSON.stringify({ itemId: String(productId) }),
+        condition: JSON.stringify({ itemIds: [String(productId)] }),
         orderBys: '',
         source: SOURCE,
       }, { type: 'GET' })
       const result = data?.result || data?.model || data
       const list = result?.data || result?.list || result?.items || []
       const items = Array.isArray(list) ? list : []
-      return items.find(item => cleanText(item.itemId || item.id || item.item_id) === String(productId)) || items[0] || null
+      return items.find(item => cleanText(item.itemId || item.id || item.item_id) === String(productId)) || null
     } catch (error) {
       return null
     }
@@ -1188,7 +1284,7 @@
       const result = data?.result || data
       const list = result?.list || result?.items || result?.data || []
       const items = Array.isArray(list) ? list : []
-      return items.find(item => cleanText(item.itemId || item.id || item.item_id) === String(productId)) || items[0] || null
+      return items.find(item => cleanText(item.itemId || item.id || item.item_id) === String(productId)) || null
     } catch (error) {
       return null
     }
@@ -1522,6 +1618,9 @@
       autoCropMaterial,
       autoCropMaterials,
       describeError,
+      uploadDataUrlWithPageHelper,
+      fetchItemFromFeedsList,
+      cropFileToDataUrl,
       normalizeSelectedImagePaths,
       normalizeDirectoryListingFiles,
       extractKocMerchantCodes,

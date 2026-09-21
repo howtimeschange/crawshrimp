@@ -1,6 +1,6 @@
 id: mop-ops-assistant
 name: MOP 运营助手
-version: 0.1.1
+version: 0.1.2
 author: codex
 description: "千牛素材中心与 MOP 云盘运营自动化：批量提交 KOL 短视频、发布搜推图文素材、下载云盘模拍图并梳理搭配关系"
 entry_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video

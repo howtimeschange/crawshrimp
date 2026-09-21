@@ -44,3 +44,59 @@ test('unrecognized headers produce an actionable result instead of zero rows', a
   assert.equal(result.data.length, 1)
   assert.match(result.data[0].备注, /表头/)
 })
+test('preserves repeated spaces in directory, filename and explicit paths', async () => {
+  const paths = files('55X081F7404H  (刘老板').map(p => p.replace('uuid.jpg', 'image  01.jpg'))
+  for (const input of [row, { ...row, 素材图片: paths.join(';') }]) {
+    const result = await run([input], paths)
+    assert.equal(result.data[0].执行结果, '预检通过')
+    assert.match(result.data[0].素材明细, /55X081F7404H  \(刘老板/)
+    assert.match(result.data[0].素材明细, /image  01.jpg/)
+  }
+})
+test('uses current ImageSpaceUploader when legacy upload helper is absent', async () => {
+  const exports = {}, handlers = {}; let destroyed = false
+  class Uploader {
+    on(name, fn) { handlers[name] = fn }
+    addBase64File(data, name) { assert.equal(data, 'data:image/jpeg;base64,AA'); assert.equal(name, 'photo.jpg'); this.start() }
+    start() { handlers.FileSuccess({ url: 'https://img.example/photo.jpg' }); handlers.UploadComplete([]) }
+    destroy() { destroyed = true }
+  }
+  await vm.runInNewContext(source, { window: { __CRAWSHRIMP_PHASE__: '__exports__', __CRAWSHRIMP_EXPORTS__: exports, ImageSpaceUploader: Uploader }, document: { createElement: () => ({ style: {}, remove() {} }), body: { appendChild() {} } }, setTimeout, clearTimeout })
+  const result = await exports.uploadDataUrlWithPageHelper('data:image/jpeg;base64,AA', 'photo.jpg')
+  assert.equal(result.url, 'https://img.example/photo.jpg')
+  assert.equal(destroyed, true)
+})
+test('waits for uploader Init before queuing the file', async () => {
+  const exports = {}, handlers = {}; let init; let added = 0
+  class Uploader {
+    constructor() { this._uploader = { bind(event, fn) { assert.equal(event, 'Init'); init = fn } } }
+    on(event, fn) { handlers[event] = fn }
+    addBase64File() { added++; handlers.FileSuccess({ url: 'https://img.example/ready.jpg' }); handlers.UploadComplete([]) }
+    destroy() {}
+  }
+  await vm.runInNewContext(source, { window: { __CRAWSHRIMP_PHASE__: '__exports__', __CRAWSHRIMP_EXPORTS__: exports, ImageSpaceUploader: Uploader }, document: { createElement: () => ({ style: {}, remove() {} }), body: { appendChild() {} } }, setTimeout, clearTimeout })
+  const promise = exports.uploadDataUrlWithPageHelper('data:image/jpeg;base64,AA', 'photo.jpg')
+  assert.equal(added, 0)
+  init(); init()
+  assert.equal((await promise).url, 'https://img.example/ready.jpg')
+  assert.equal(added, 1)
+})
+test('queries current itemIds array and never accepts an unrelated first product', async () => {
+  const exports = {}; let matched = false
+  await vm.runInNewContext(source, { window: { __CRAWSHRIMP_PHASE__: '__exports__', __CRAWSHRIMP_EXPORTS__: exports, lib: { mtop: { async request(p) {
+    assert.deepEqual(JSON.parse(p.data.condition), { itemIds: ['123456789'] })
+    return { ret: ['SUCCESS::ok'], data: { model: { data: [{ itemId: matched ? '123456789' : '999999999' }] } } }
+  } } } } })
+  assert.equal(await exports.fetchItemFromFeedsList('123456789'), null)
+  matched = true
+  assert.equal((await exports.fetchItemFromFeedsList('123456789')).itemId, '123456789')
+})
+test('compresses oversized upload output while preserving crop dimensions', async () => {
+  const exports = {}; const qualities = []
+  class ImageMock { set src(v) { this.naturalWidth=1200; this.naturalHeight=1600; this.onload() } }
+  class Reader { readAsDataURL(blob) { this.result='data:image/jpeg;base64,' + (blob.size || 'source'); this.onload() } }
+  const canvas = { getContext: () => ({ drawImage() {} }), toBlob(fn, type, quality) { qualities.push(quality); fn({size:quality>0.82 ? 4000000 : 2000000}) } }
+  await vm.runInNewContext(source, { window: { __CRAWSHRIMP_PHASE__: '__exports__', __CRAWSHRIMP_EXPORTS__: exports }, Image:ImageMock, FileReader:Reader, document:{createElement:()=>canvas} })
+  const r=await exports.cropFileToDataUrl({name:'large.jpg',size:5000000,type:'image/jpeg'},'3:4')
+  assert.equal(r.width,1200);assert.equal(r.height,1600);assert.equal(qualities.at(-1),0.82)
+})
