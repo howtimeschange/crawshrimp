@@ -392,26 +392,36 @@
     return [...new Set(matches.map(item => normalizeMerchantCode(item.toUpperCase())).filter(Boolean))]
   }
 
-  function findKocMainImageMeta(file, root) {
+  function findKocMainImageMeta(file, root, merchantCodes = []) {
     const parts = relativePartsForListingFile(file, root)
-    if (parts.length < 5) return null
+    if (parts.length < 3) return null
     const topFolder = parts[0] || ''
-    const imageDirIndex = parts.findIndex(part => /^图片(?:\(\d+\))?$/.test(part))
-    if (imageDirIndex < 0) return null
-    const mainIndex = imageDirIndex + 1
-    if (parts[mainIndex] !== '主图') return null
-    const creator = parts[mainIndex + 1] || ''
-    const fileName = parts[parts.length - 1] || ''
-    if (!creator || !fileName || parts.length <= mainIndex + 2) return null
-    const codes = extractKocMerchantCodes(topFolder)
+    const tokens = topFolder.toUpperCase().match(/[A-Z0-9]+/g) || []
+    const codes = [...new Set([
+      ...extractKocMerchantCodes(topFolder),
+      ...merchantCodes.map(code => normalizeMerchantCode(code).toUpperCase()).filter(code => tokens.includes(code)),
+    ])]
     if (!codes.length) return null
+    const imageDirIndex = parts.findIndex(part => /^图片(?:\(\d+\))?$/.test(part))
+    let creator = ''
+    if (imageDirIndex >= 0 && parts[imageDirIndex + 1] === '主图' && parts.length === imageDirIndex + 4) {
+      creator = parts[imageDirIndex + 2]
+    } else if (parts.length === 3 && parts[1] === '主图') {
+      creator = cleanText(topFolder.match(/[（(](.*)$/)?.[1] || '').replace(/[）)]$/, '').trim()
+      // Without a creator suffix, keep this folder as its own package.
+      creator = creator || topFolder
+    } else {
+      return null
+    }
+    const fileName = parts[parts.length - 1] || ''
+    if (!creator || !fileName) return null
     return { codes, creator, fileName, topFolder }
   }
 
-  function groupKocMainImageGroupsByMerchantCode(materialRootFiles, root) {
+  function groupKocMainImageGroupsByMerchantCode(materialRootFiles, root, merchantCodes = []) {
     const grouped = {}
     const files = normalizeDirectoryListingFiles(materialRootFiles)
-      .map(file => ({ file, meta: findKocMainImageMeta(file, materialRootFiles?.root || root) }))
+      .map(file => ({ file, meta: findKocMainImageMeta(file, materialRootFiles?.root || root, merchantCodes) }))
       .filter(item => item.meta)
       .sort((a, b) => (
         a.meta.topFolder.localeCompare(b.meta.topFolder, 'zh-CN', { numeric: true }) ||
@@ -613,7 +623,16 @@
     }
 
     const rootRefs = buildRootMaterialPaths(options.materialRoot, materialKey, materialCount)
-    if (rootRefs.length) return { refs: rootRefs, source: '素材根目录' }
+    if (rootRefs.length) {
+      if (Array.isArray(options.materialRootFiles?.paths)) {
+        const pathKey = value => cleanText(value).replace(/\\/g, '/').toLowerCase()
+        const available = new Set(normalizeDirectoryListingFiles(options.materialRootFiles).map(file => pathKey(file.path)))
+        if (rootRefs.some(ref => !available.has(pathKey(ref)))) {
+          return { refs: [], source: '素材根目录', error: `未匹配到素材图片包：商家编码 ${merchantCode || '未填写'}，商品ID ${productId || '未填写'}；请检查目录扫描结果或填写实际素材图片路径` }
+        }
+      }
+      return { refs: rootRefs, source: '素材根目录' }
+    }
 
     return { refs: [], source: '' }
   }
@@ -653,10 +672,25 @@
     return ''
   }
 
+  function recoverTaskRows(rows) {
+    if (!Array.isArray(rows)) return []
+    const identityHeaders = [...PRODUCT_ID_ALIASES, ...MERCHANT_CODE_ALIASES].map(normalizeHeader)
+    const titleHeaders = ['添加标题', '标题', 'title'].map(normalizeHeader)
+    if (rows.some(row => Object.keys(row || {}).some(key => identityHeaders.includes(normalizeHeader(key))))) return rows
+    const headerIndex = rows.slice(0, 10).findIndex(row => {
+      const values = Object.values(row || {}).map(normalizeHeader)
+      return values.some(value => identityHeaders.includes(value)) && values.some(value => titleHeaders.includes(value))
+    })
+    if (headerIndex < 0) return rows
+    const columns = Object.entries(rows[headerIndex]).filter(([, value]) => cleanText(value))
+    return rows.slice(headerIndex + 1).map(row => Object.fromEntries(columns.map(([key, header]) => [cleanText(header), row[key]])))
+  }
+
   function normalizeJobs(rows, options = {}) {
+    rows = recoverTaskRows(rows)
     const selectedPaths = normalizeSelectedImagePaths(options.materialImages || {})
     const selectedByProduct = groupSelectedImagesByProduct(selectedPaths)
-    const kocMainImageGroupsByCode = groupKocMainImageGroupsByMerchantCode(options.materialRootFiles || {}, options.materialRoot)
+    const kocMainImageGroupsByCode = groupKocMainImageGroupsByMerchantCode(options.materialRootFiles || {}, options.materialRoot, rows.map(row => getRowValue(row, MERCHANT_CODE_ALIASES)))
     const jobs = []
     const invalidRows = []
     const sourceRows = Array.isArray(rows) ? rows : []
@@ -676,8 +710,10 @@
         kocMainImageGroupsByCode,
         materialRoot: options.materialRoot,
         defaultMaterialCount: options.defaultMaterialCount,
+        materialRootFiles: options.materialRootFiles,
       })
       const errors = []
+      if (material.error) errors.push(material.error)
       if (!productId && !merchantCode) errors.push('商品ID或商家编码必填')
       const titleError = validateTitle(title)
       if (titleError) errors.push(titleError)
@@ -1339,6 +1375,7 @@
         note: `计划发布 ${job.materialRefs.length} 张图片`,
       })),
     ]
+    if (!previewRows.length) return complete([buildOutputRow({}, { status: '预检失败', note: '未识别到商品数据，请检查商品ID、商家编码、添加标题等表头' })], shared)
     if (params.execute_mode !== 'live') {
       return complete(previewRows, {
         ...shared,
