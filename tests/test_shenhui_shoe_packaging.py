@@ -3844,7 +3844,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             shenhui_shoe_packaging.SHOE_LABEL_OCR_DEFAULT_MODEL_CHAIN,
             (
                 "gpt-5.6-sol",
-                "gemini-3.5-flash",
+                "gemini-3.8-flash",
                 "qwen3.7-plus",
                 "gpt-5.6-terra",
                 "kimi-k2.7-code",
