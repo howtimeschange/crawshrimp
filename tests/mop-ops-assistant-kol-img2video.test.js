@@ -1116,7 +1116,7 @@ test('search recommend builds page-matched publish payload', async () => {
   assert.equal(request.publishExtra.post_channel, 'normal')
 })
 
-test('search recommend submit phase calls publish API and records content id', async () => {
+test('search recommend submit phase starts one pending publish receipt without replaying the POST', async () => {
   const helpers = await loadSearchRecommendExports()
   const job = helpers.normalizeJobs([validSearchRecommendRow({
     素材图片: 'https://img.example/01.jpg;https://img.example/02.jpg;https://img.example/03.jpg',
@@ -1129,6 +1129,7 @@ test('search recommend submit phase calls publish API and records content id', a
       { ref: '02', url: 'https://img.example/02.jpg' },
       { ref: '03', url: 'https://img.example/03.jpg' },
     ],
+    publishOptions: { requestId: 'req-pending-001' },
   }
   const calls = []
   const shared = {
@@ -1154,8 +1155,46 @@ test('search recommend submit phase calls publish API and records content id', a
   })
 
   assert.equal(result.success, true, JSON.stringify(result))
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'wait_publish_receipt')
+  assert.equal(result.meta.shared.active_job.publishOptions.requestId.length > 0, true)
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].api, 'mtop.taobao.spongebob.item.material.publish')
+})
+
+test('search recommend wait phase consumes an existing receipt without submitting again', async () => {
+  const helpers = await loadSearchRecommendExports()
+  const job = helpers.normalizeJobs([validSearchRecommendRow({
+    素材图片: 'https://img.example/01.jpg;https://img.example/02.jpg;https://img.example/03.jpg',
+  })]).jobs[0]
+  const activeJob = {
+    ...job,
+    item: { itemId: job.productId, title: '测试商品标题', picUrl: 'https://img.example/item.jpg' },
+    resolvedMaterials: [
+      { ref: '01', url: 'https://img.example/01.jpg' },
+      { ref: '02', url: 'https://img.example/02.jpg' },
+      { ref: '03', url: 'https://img.example/03.jpg' },
+    ],
+    publishOptions: { requestId: 'req-receipt-001' },
+  }
+  const shared = {
+    ...helpers.buildRunShared([job], { executeMode: 'live' }),
+    active_job: activeJob,
+  }
+  const key = helpers.publishReceiptKey(activeJob, activeJob.publishOptions)
+  const calls = []
+  const result = await runSearchRecommendAdapter({
+    phase: 'wait_publish_receipt',
+    shared,
+    contextExtra: {
+      windowExtras: {
+        __MOP_SEARCH_RECOMMEND_PUBLISH_RECEIPTS__: {
+          [key]: { status: 'done', contentId: 'content-001', requestId: 'req-receipt-001' },
+        },
+        lib: { mtop: { async request(payload) { calls.push(payload); return { ret: ['SUCCESS'] } } } },
+      },
+    },
+  })
   assert.equal(result.meta.shared.results[0].执行结果, '发布成功')
   assert.equal(result.meta.shared.results[0].发布内容ID, 'content-001')
+  assert.equal(calls.length, 0)
 })

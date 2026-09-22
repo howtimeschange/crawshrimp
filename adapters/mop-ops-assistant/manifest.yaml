@@ -156,7 +156,7 @@ tasks:
     skip_auth: false
     execution_ui_mode: precheck_before_live
     validation_only_label: 仅校验 Excel / 素材规划
-    auto_precheck_note: 执行前会先校验商品 ID/商家编码、标题、内容描述和素材路径；live 模式会先按商家编码解析商品 ID，再上传本地图片并发布搜推图文素材。
+    auto_precheck_note: 执行前会先校验商品 ID/商家编码、标题、内容描述和素材路径；live 模式会先按商家编码解析商品 ID，再上传本地图片并发布搜推图文素材。CDP 短暂断开时先恢复连接并读取原发布回执，不自动重复提交；回执缺失会标记为“发布待核实”。
     params:
       - id: mode
         type: radio

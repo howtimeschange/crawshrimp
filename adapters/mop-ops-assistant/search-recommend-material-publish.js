@@ -1421,6 +1421,75 @@
     return cleanText(data?.contentId || data?.id || result?.contentId || '')
   }
 
+  // Keep the POST and its receipt in the page.  A CDP socket can disappear
+  // while the browser is still waiting for the MTop response; re-evaluating
+  // this phase must poll the original promise instead of submitting again.
+  function publishReceiptKey(job, options = {}) {
+    const runToken = cleanText(window.__CRAWSHRIMP_RUN_TOKEN__ || '')
+    const requestId = cleanText(options.requestId || '')
+    return `${runToken}:${job?.rowNo || ''}:${job?.productId || ''}:${requestId}`
+  }
+
+  function startPublishReceipt(job, options = {}) {
+    const receipts = window.__MOP_SEARCH_RECOMMEND_PUBLISH_RECEIPTS__ = window.__MOP_SEARCH_RECOMMEND_PUBLISH_RECEIPTS__ || {}
+    const key = publishReceiptKey(job, options)
+    let receipt = receipts[key]
+    if (receipt) return receipt
+
+    receipt = receipts[key] = {
+      key,
+      requestId: cleanText(options.requestId || ''),
+      startedAt: Date.now(),
+      status: 'pending',
+    }
+    let payload
+    try {
+      payload = buildPublishPayload(job, job.item, job.resolvedMaterials || [], options)
+    } catch (error) {
+      receipt.status = 'error'
+      receipt.error = describeError(error)
+      return receipt
+    }
+    Promise.resolve()
+      .then(() => callMtop(payload.api, payload.data, payload.options))
+      .then(result => {
+        const contentId = extractContentId(result)
+        if (!contentId) throw new Error('接口已返回成功，但未识别到内容ID')
+        receipt.status = 'done'
+        receipt.contentId = contentId
+        receipt.result = result
+        receipt.receipt = `${payload.api} SUCCESS contentId=${contentId} requestId=${receipt.requestId}`
+      })
+      .catch(error => {
+        receipt.status = 'error'
+        receipt.error = describeError(error)
+      })
+    return receipt
+  }
+
+  function pollPublishReceipt(job, options = {}) {
+    const publishOptions = options.publishOptions || job?.publishOptions || {}
+    const key = publishReceiptKey(job, publishOptions)
+    const receipts = window.__MOP_SEARCH_RECOMMEND_PUBLISH_RECEIPTS__ || {}
+    let receipt = receipts[key]
+    if (!receipt && options.start) receipt = startPublishReceipt(job, publishOptions)
+    if (!receipt) {
+      throw new Error('发布连接已恢复，但原发布回执不存在；结果待核实，请先在千牛搜推素材列表确认，勿重复发布')
+    }
+    if (receipt.status === 'error') throw new Error(receipt.error || '搜推素材发布接口返回失败')
+    if (receipt.status === 'done') return receipt
+    const startedAt = Number(receipt.startedAt || 0)
+    if (startedAt && Date.now() - startedAt > 180000) {
+      throw new Error('等待搜推素材发布回执超过 180 秒；结果待核实，请先在千牛搜推素材列表确认，勿重复发布')
+    }
+    return null
+  }
+
+  function isPublishReceiptUnknownError(error) {
+    const text = describeError(error).toLowerCase()
+    return /回执不存在|结果待核实|keepalive ping timeout|no close frame|connection closed|连接已恢复/.test(text)
+  }
+
   function buildRunShared(jobs, options = {}) {
     return {
       jobs,
@@ -1551,6 +1620,7 @@
       const itemVO = normalizeItemVO(resolvedJob.productId, feedsItem || shopItem || resolvedJob.item, material)
       const materials = await autoCropMaterials(await resolveMaterialUrls(resolvedJob), resolvedJob.cropRatio || params.crop_ratio || DEFAULT_CROP_RATIO)
       const publishOptions = await fetchPublishRuntimeConfig(resolvedJob)
+      publishOptions.requestId = createRequestId()
       const enrichedJob = {
         ...resolvedJob,
         item: itemVO,
@@ -1576,9 +1646,17 @@
     const activeJob = shared.active_job || window.__MOP_SEARCH_RECOMMEND_ACTIVE_JOB__
     if (!activeJob) return nextPhase('process_row', 0, shared)
     try {
-      const payload = buildPublishPayload(activeJob, activeJob.item, activeJob.resolvedMaterials || [], activeJob.publishOptions || {})
-      const result = await callMtop(payload.api, payload.data, payload.options)
-      const contentId = extractContentId(result)
+      const receipt = pollPublishReceipt(activeJob, {
+        start: true,
+        publishOptions: activeJob.publishOptions || {},
+      })
+      if (!receipt) {
+        return nextPhase('wait_publish_receipt', 1000, {
+          ...shared,
+          current_store: '等待搜推发布回执（连接恢复可继续，不重新提交）',
+        })
+      }
+      const contentId = receipt.contentId || ''
       const successShared = finishCurrentJob(shared, buildOutputRow(activeJob, {
         status: contentId ? '发布成功' : '提交成功',
         contentId,
@@ -1590,7 +1668,42 @@
       return nextPhase('process_row', shared.submit_delay_ms || 0, { ...successShared, active_job: null })
     } catch (error) {
       const failedShared = finishCurrentJob(shared, buildOutputRow(activeJob, {
-        status: '发布失败',
+        status: isPublishReceiptUnknownError(error) ? '发布待核实' : '发布失败',
+        item: activeJob.item,
+        materials: activeJob.resolvedMaterials || [],
+        materialSource: activeJob.materialSource,
+        note: describeError(error),
+      }))
+      return nextPhase('process_row', shared.submit_delay_ms || 0, { ...failedShared, active_job: null })
+    }
+  }
+
+  async function runWaitPublishReceiptPhase() {
+    const activeJob = shared.active_job || window.__MOP_SEARCH_RECOMMEND_ACTIVE_JOB__
+    if (!activeJob) return nextPhase('process_row', 0, shared)
+    try {
+      const receipt = pollPublishReceipt(activeJob, {
+        start: false,
+        publishOptions: activeJob.publishOptions || {},
+      })
+      if (!receipt) {
+        return nextPhase('wait_publish_receipt', 1000, {
+          ...shared,
+          current_store: '等待搜推发布回执（连接恢复可继续，不重新提交）',
+        })
+      }
+      const successShared = finishCurrentJob(shared, buildOutputRow(activeJob, {
+        status: '发布成功',
+        contentId: receipt.contentId || '',
+        item: activeJob.item,
+        materials: activeJob.resolvedMaterials || [],
+        materialSource: activeJob.materialSource,
+        note: receipt.contentId ? '' : '接口已返回成功，但未识别到内容ID，请在千牛搜推素材列表中确认',
+      }))
+      return nextPhase('process_row', shared.submit_delay_ms || 0, { ...successShared, active_job: null })
+    } catch (error) {
+      const failedShared = finishCurrentJob(shared, buildOutputRow(activeJob, {
+        status: isPublishReceiptUnknownError(error) ? '发布待核实' : '发布失败',
         item: activeJob.item,
         materials: activeJob.resolvedMaterials || [],
         materialSource: activeJob.materialSource,
@@ -1639,6 +1752,10 @@
       buildRunShared,
       buildOutputRow,
       extractContentId,
+      publishReceiptKey,
+      startPublishReceipt,
+      pollPublishReceipt,
+      isPublishReceiptUnknownError,
       MIN_IMAGE_COUNT,
       MAX_IMAGE_COUNT,
       TITLE_MAX,
@@ -1655,6 +1772,7 @@
     if (phase === 'main' || phase === 'init') return await runMainPhase()
     if (phase === 'process_row') return await runProcessRowPhase()
     if (phase === 'submit_job') return await runSubmitJobPhase()
+    if (phase === 'wait_publish_receipt') return await runWaitPublishReceiptPhase()
     return fail(`未知 phase: ${phase}`)
   } catch (error) {
     return fail(error?.message || error)

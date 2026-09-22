@@ -44,6 +44,8 @@ TRANSIENT_CDP_TRANSPORT_ERROR_MARKERS = (
     "no close frame received",
     "connection closed",
     "connection is closed",
+    "keepalive ping timeout",
+    "sent 1011",
 )
 WASH_CARE_FIELDS = ("washing", "bleaching", "drying", "ironing", "dryCleaning")
 WASH_CARE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
@@ -433,6 +435,11 @@ class JSRunner:
         # Only read-only tasks opt in while they run.  Replaying a write after a
         # dropped WebSocket could duplicate a business action.
         self._retry_transient_cdp_errors = False
+        # Write workflows may opt into transport-only recovery.  The current
+        # phase is evaluated again after refreshing the WebSocket, but timeout
+        # replay remains disabled; write adapters must keep their own pending
+        # request/receipt state in the page.
+        self._recover_cdp_connection = False
 
     def _next_id(self) -> int:
         self._msg_id += 1
@@ -475,7 +482,17 @@ class JSRunner:
                 "userGesture": bool(user_gesture),
             }
         })
-        async with websockets.connect(self.ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
+        # CDP is already carried over a local browser WebSocket.  The
+        # websockets library keepalive can mistake a busy Runtime.evaluate
+        # (for example an in-page MTop request) for a dead peer and close the
+        # socket with 1011 keepalive ping timeout.  Transport recovery is
+        # handled by evaluate_with_reconnect instead.
+        async with websockets.connect(
+            self.ws_url,
+            max_size=50 * 1024 * 1024,
+            proxy=None,
+            ping_interval=None,
+        ) as ws:
             check_execution()
             await ws.send(payload)
             while True:
@@ -4113,7 +4130,7 @@ class JSRunner:
         while not result.success and retry < 4:
             navigation_error = self._retry_transient_cdp_errors and self._is_navigation_error(result.error or "")
             transport_error = (
-                self._retry_transient_cdp_errors
+                (self._retry_transient_cdp_errors or self._recover_cdp_connection)
                 and self._is_transient_cdp_transport_error(result.error or "")
             )
             if not navigation_error and not transport_error:
@@ -4137,6 +4154,7 @@ class JSRunner:
         params: dict = None,
         control_hook=None,
         retry_transient_cdp_errors: bool = False,
+        recover_cdp_connection: bool = False,
     ) -> List[dict]:
         """执行脚本文件，支持自动分页 + 多阶段重入，返回合并后的所有 data 记录
         params: 用户填写的参数，注入为 window.__CRAWSHRIMP_PARAMS__
@@ -4144,6 +4162,10 @@ class JSRunner:
         retry_transient_cdp_errors: 仅供幂等、只读脚本开启。Chrome 的 CDP
         WebSocket 非正常断开或阶段超时且结果未返回时，会重新执行当前阶段。
         写入脚本默认禁止超时重放，回执未知时交由适配器查询核实。
+
+        recover_cdp_connection: 供带有页面内 pending receipt 的写入脚本使用。
+        只对瞬时 WebSocket 断开刷新连接并重新读取当前阶段，不对 timeout
+        做页面刷新或阶段重放；发布适配器必须保证同一阶段重入不会重复提交。
         """
         script = script_path.read_text(encoding="utf-8")
         all_data: List[dict] = []
@@ -4155,12 +4177,15 @@ class JSRunner:
         self.last_runtime_page = 0
         self.last_runtime_phase = ""
         previous_retry_setting = self._retry_transient_cdp_errors
+        previous_recovery_setting = self._recover_cdp_connection
         self._retry_transient_cdp_errors = bool(retry_transient_cdp_errors)
+        self._recover_cdp_connection = bool(recover_cdp_connection)
 
         try:
             await self._persist_run_params(run_token, params_json)
         except BaseException:
             self._retry_transient_cdp_errors = previous_retry_setting
+            self._recover_cdp_connection = previous_recovery_setting
             raise
 
         async def cooperate(kind: str, page: int, phase: str, shared: Optional[dict] = None, extra: Optional[dict] = None) -> None:
@@ -4800,3 +4825,4 @@ class JSRunner:
             await self._clear_run_params(run_token)
             self._page_file_cache_keys = set()
             self._retry_transient_cdp_errors = previous_retry_setting
+            self._recover_cdp_connection = previous_recovery_setting

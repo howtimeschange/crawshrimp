@@ -1306,6 +1306,30 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runner.calls, 1)
         self.assertEqual(runner.refreshes, 0)
 
+    async def test_evaluate_with_reconnect_transport_only_mode_recovers_keepalive_timeout(self):
+        class PublishRecoveryRunner(JSRunner):
+            def __init__(self):
+                super().__init__("ws://example.invalid")
+                self.calls = 0
+                self.refreshes = 0
+
+            async def evaluate(self, expression: str, user_gesture: bool = False) -> JSResult:
+                self.calls += 1
+                if self.calls == 1:
+                    return JSResult(success=False, error="sent 1011 (internal error) keepalive ping timeout; no close frame received")
+                return JSResult(success=True, data=[], meta={"has_more": False})
+
+            async def _refresh_ws_url(self) -> None:
+                self.refreshes += 1
+
+        runner = PublishRecoveryRunner()
+        runner._recover_cdp_connection = True
+        result = await runner.evaluate_with_reconnect("pending publish receipt", allow_navigation_retry=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(runner.calls, 2)
+        self.assertEqual(runner.refreshes, 1)
+
     async def test_run_script_file_recovers_a_long_read_only_batch_after_unclean_cdp_close(self):
         class LongReadOnlyBatchRunner(JSRunner):
             def __init__(self):

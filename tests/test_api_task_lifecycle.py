@@ -247,6 +247,36 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("无法连接 Chrome CDP", rows[-1]["备注"])
         self.assertIn("wait_product_readback", rows[-1]["备注"])
 
+    async def test_mop_search_recommend_cached_rows_marks_publish_receipt_unknown(self):
+        rows = api_server._mop_search_recommend_cached_rows_from_shared(
+            {
+                "results": [{"商品ID": "100000001", "执行结果": "发布成功", "发布内容ID": "c-1"}],
+                "jobs": [{
+                    "rowNo": 3,
+                    "productId": "100000002",
+                    "merchantCode": "MOP-002",
+                    "title": "搜推标题",
+                    "description": "搜推描述",
+                    "materialRefs": ["/tmp/01.jpg", "/tmp/02.jpg", "/tmp/03.jpg"],
+                }],
+                "job_index": 0,
+                "active_job": {
+                    "rowNo": 3,
+                    "productId": "100000002",
+                    "merchantCode": "MOP-002",
+                    "title": "搜推标题",
+                    "description": "搜推描述",
+                    "materialRefs": ["/tmp/01.jpg", "/tmp/02.jpg", "/tmp/03.jpg"],
+                },
+            },
+            "sent 1011 (internal error) keepalive ping timeout",
+            "wait_publish_receipt",
+        )
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[-1]["执行结果"], "发布待核实")
+        self.assertIn("勿重复发布", rows[-1]["备注"])
+
     async def test_backend_instance_lock_windows_locks_first_byte(self):
         positions = []
 

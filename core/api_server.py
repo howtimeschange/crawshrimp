@@ -646,6 +646,74 @@ def _is_bala_short_video_batch_upload(adapter_id: str, task_id: str) -> bool:
     return adapter_id == "bala-ai-video-assistant" and task_id == "short_video_batch_upload"
 
 
+def _is_mop_search_recommend_material_publish(adapter_id: str, task_id: str) -> bool:
+    return adapter_id == "mop-ops-assistant" and task_id == "search_recommend_material_publish"
+
+
+def _mop_search_recommend_cached_rows_from_shared(
+    shared_state: Optional[dict],
+    error: str = "",
+    phase: str = "",
+) -> list[dict]:
+    """Recover durable搜推 rows after a CDP failure without replaying a POST."""
+    if not isinstance(shared_state, dict):
+        return []
+
+    rows = [*_dict_rows(shared_state.get("invalid_rows")), *_dict_rows(shared_state.get("results"))]
+    jobs = _dict_rows(shared_state.get("jobs"))
+    try:
+        job_index = max(0, int(shared_state.get("job_index") or 0))
+    except Exception:
+        job_index = 0
+    active = shared_state.get("active_job") if isinstance(shared_state.get("active_job"), dict) else {}
+    job = dict(active or (jobs[job_index] if 0 <= job_index < len(jobs) else {}))
+    if not job:
+        return rows
+
+    identity = (str(job.get("productId") or job.get("product_id") or "").strip(), str(job.get("merchantCode") or job.get("merchant_code") or "").strip())
+    already_reported = any(
+        (identity[0] and str(row.get("商品ID") or "").strip() == identity[0])
+        or (identity[1] and str(row.get("商家编码") or "").strip() == identity[1])
+        for row in rows
+    )
+    if already_reported:
+        return rows
+
+    refs = job.get("materialRefs") or job.get("material_refs") or []
+    if not isinstance(refs, list):
+        refs = []
+    phase_text = str(phase or "").strip()
+    publish_phase = phase_text in {"submit_job", "wait_publish_receipt"}
+    note = "Chrome CDP 连接恢复失败"
+    if publish_phase:
+        status = "发布待核实"
+        note += "；发布请求可能已到达平台，请先回查千牛搜推素材列表，勿重复发布"
+    else:
+        status = "连接恢复失败"
+        note += "；本行未确认进入发布提交阶段"
+    if error:
+        note += f"；阶段错误：{str(error).strip()}"
+
+    rows.append({
+        "表格行号": job.get("rowNo") or job.get("row_no") or "",
+        "商品ID": identity[0],
+        "商家编码": identity[1],
+        "达人": str(job.get("creator") or "").strip(),
+        "商品标题": str(job.get("itemTitle") or job.get("item_title") or (job.get("item") or {}).get("title") or "").strip(),
+        "添加标题": str(job.get("title") or "").strip(),
+        "内容描述": str(job.get("description") or "").strip(),
+        "裁剪比例": str(job.get("cropRatio") or job.get("crop_ratio") or "").strip(),
+        "素材来源": str(job.get("materialSource") or job.get("material_source") or "").strip(),
+        "素材数量": len(refs),
+        "素材明细": "\n".join(str(ref).strip() for ref in refs if str(ref).strip()),
+        "发布内容ID": "",
+        "执行结果": status,
+        "备注": note,
+        "抓取时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    return rows
+
+
 def _dict_rows(value) -> list[dict]:
     if not isinstance(value, list):
         return []
@@ -8630,6 +8698,42 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"[warn] 短视频任务中断，已导出缓存结果 {len(cached_rows)} 行")
             return cached_rows, finalized_files
 
+        def recover_mop_search_recommend_cached_rows(current_rows, error_message: str) -> list[dict]:
+            if not _is_mop_search_recommend_material_publish(adapter_id, task_id) or not runner:
+                return list(current_rows or [])
+            cached_shared = {}
+            if run_control and isinstance(run_control.get('shared_progress'), dict):
+                cached_shared.update(run_control.get('shared_progress') or {})
+            runner_shared = getattr(runner, 'last_runtime_shared', None)
+            if isinstance(runner_shared, dict):
+                cached_shared.update(runner_shared)
+            phase_name = str(getattr(runner, 'last_runtime_phase', '') or '').strip()
+            cached_rows = _mop_search_recommend_cached_rows_from_shared(cached_shared, error_message, phase_name)
+            rows, positions = [], {}
+            for row in [*cached_rows, *(current_rows or [])]:
+                if not isinstance(row, dict):
+                    continue
+                key = (str(row.get("商品ID") or ""), str(row.get("商家编码") or ""), str(row.get("表格行号") or ""))
+                if any(key) and key in positions:
+                    rows[positions[key]].update(row)
+                else:
+                    if any(key):
+                        positions[key] = len(rows)
+                    rows.append(dict(row))
+            return rows
+
+        async def export_mop_search_recommend_cached_rows_on_error(error_message: str) -> tuple[list[dict], list[str]]:
+            if not _is_mop_search_recommend_material_publish(adapter_id, task_id) or not runner:
+                return [], []
+            recovered_rows = recover_mop_search_recommend_cached_rows(data, error_message)
+            if not recovered_rows:
+                return [], []
+            runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
+            exported_files = await export_outputs(recovered_rows)
+            finalized_files = await finalize_output_files(recovered_rows, runtime_files, exported_files)
+            log(f"[warn] 搜推任务异常中断，已导出缓存结果 {len(recovered_rows)} 行")
+            return recovered_rows, finalized_files
+
         def recover_shenhui_shoe_partial_rows(current_rows) -> list[dict]:
             rows = [row for row in (current_rows or []) if isinstance(row, dict)]
             if rows or (adapter_id, task_id) != ("shenhui-new-arrival", "prepare_shoe_upload_package"):
@@ -8770,18 +8874,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 aggregated_data.extend(item_rows)
             data = aggregated_data
         else:
-            data = await runner.run_script_file(
-                script_path,
-                params=run_params,
-                control_hook=wait_for_control,
+            script_run_kwargs = {
+                "params": run_params,
+                "control_hook": wait_for_control,
                 # PLM 尺码表下载仅查询页面内的 RequestHandler；若 Chrome
                 # CDP 短暂断连，安全重放尚未返回结果的当前款号阶段。
-                retry_transient_cdp_errors=(adapter_id, task_id) == ("plm-ops-assistant", "size_chart_downloader"),
+                "retry_transient_cdp_errors": (adapter_id, task_id) == ("plm-ops-assistant", "size_chart_downloader"),
+            }
+            if _is_mop_search_recommend_material_publish(adapter_id, task_id):
                 # 搜推发布把 POST 和回执保存在页面内。允许恢复 Runtime.evaluate
                 # 的 WebSocket 连接，但不允许按 timeout 刷新页面或重放发布阶段；
                 # 重新提交由脚本的 pending receipt 状态决定。
-                recover_cdp_connection=(adapter_id, task_id) == ("mop-ops-assistant", "search_recommend_material_publish"),
-            )
+                script_run_kwargs["recover_cdp_connection"] = True
+            data = await runner.run_script_file(script_path, **script_run_kwargs)
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
         if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
@@ -9002,6 +9107,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         data = list(e.partial_data or data or [])
         if 'recover_short_video_cached_rows' in locals():
             data = recover_short_video_cached_rows(data, err)
+        if 'recover_mop_search_recommend_cached_rows' in locals():
+            data = recover_mop_search_recommend_cached_rows(data, err)
         if 'recover_shenhui_shoe_partial_rows' in locals():
             data = recover_shenhui_shoe_partial_rows(data)
         raw_count = len(data)
@@ -9072,6 +9179,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             run_control['pause_logged'] = False
         if 'recover_shenhui_shoe_partial_rows' in locals():
             data = recover_shenhui_shoe_partial_rows(data)
+        if 'recover_mop_search_recommend_cached_rows' in locals():
+            data = recover_mop_search_recommend_cached_rows(data, err)
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
         if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
@@ -9136,6 +9245,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     output_files = recovered_files
             except Exception as export_error:
                 log(f"[warn] 短视频异常收尾导出失败: {export_error}")
+        if _is_mop_search_recommend_material_publish(adapter_id, task_id) and 'export_mop_search_recommend_cached_rows_on_error' in locals():
+            try:
+                recovered_rows, recovered_files = await export_mop_search_recommend_cached_rows_on_error(err)
+                if recovered_rows:
+                    data = recovered_rows
+                    output_files = recovered_files
+            except Exception as export_error:
+                log(f"[warn] 搜推异常收尾导出失败: {export_error}")
         if (adapter_id, task_id) == ("shenhui-new-arrival", "prepare_shoe_upload_package") and 'export_shenhui_shoe_partial_rows_on_error' in locals():
             try:
                 recovered_rows, recovered_files = await export_shenhui_shoe_partial_rows_on_error(err)
