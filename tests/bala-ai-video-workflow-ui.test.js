@@ -1594,6 +1594,8 @@ test('video task dialog can write prompt from selected images with a vision LLM 
     'gemini-3.1-pro-preview',
     'qwen3.8-max-preview',
     'qwen3.7-plus',
+    'glm-5.3-flash',
+    'glm-5.3',
     'glm-5.2',
     'kimi-k3',
   ])

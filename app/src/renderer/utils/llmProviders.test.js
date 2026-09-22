@@ -8,7 +8,7 @@ test('builtin rows preserve supported models, per-route status and default', () 
   assert.equal(rows.find(row => row.isDefault).id, 'overseas_anthropic')
   assert.equal(rows.find(row => row.id === 'overseas_anthropic').configured, true)
   assert.equal(rows.find(row => row.id === 'overseas_openai').configured, false)
-  assert.equal(rows.flatMap(row => row.models).length, 24)
+  assert.equal(rows.flatMap(row => row.models).length, 29)
 })
 test('blank and masked edits preserve write-only keys', () => {
   for (const api_key of ['', LLM_MASKED_CREDENTIAL_VALUE]) assert.deepEqual(buildProviderPatch({}, { id: 'domestic', name: '森马', base_url: 'https://example.com/v1', api_key, custom: false }), { 'ai.llm.domestic_base_url': 'https://example.com/v1' })
