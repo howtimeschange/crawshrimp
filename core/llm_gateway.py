@@ -66,8 +66,11 @@ OVERSEAS_OPENAI_MODELS = (
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-pro-preview",
-    "gemini-3.5-flash",
 )
 OVERSEAS_ANTHROPIC_MODELS = (
     "claude-opus-4-8",
@@ -79,6 +82,8 @@ DOMESTIC_OPENAI_MODELS = (
     "deepseek-v4.1-flash",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
+    "glm-5.3-flash",
+    "glm-5.3",
     "glm-5.2",
     "kimi-k3",
     "kimi-k2.7-code",
@@ -90,13 +95,13 @@ SUPPORTED_MODELS = (
     *DEEPSEEK_OFFICIAL_MODELS,
     *GLM_OFFICIAL_CHAT_MODELS,
 )
-DEFAULT_MODEL = "gemini-3.5-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 GATEWAY_FALLBACK_MODEL = "gpt-5.6-terra"
 GUANG_TITLE_MIN_CHARS = 24
 GUANG_TITLE_MAX_CHARS = 30
 RECOMMEND_TITLE_MIN_CHARS = 16
 RECOMMEND_TITLE_MAX_CHARS = 20
-BALA_VIDEO_PROMPT_DEFAULT_MODEL = "gemini-3.5-flash"
+BALA_VIDEO_PROMPT_DEFAULT_MODEL = "gemini-3.8-flash"
 BALA_VIDEO_PROMPT_DEEPSEEK_VISION_MODELS = (
     "deepseek-official-flash",
     "deepseek-official-v4-flash-vision-exp",
@@ -107,8 +112,11 @@ BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS = (
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "claude-sonnet-5",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-pro-preview",
-    "gemini-3.5-flash",
     "qwen3.8-max-preview",
     "qwen3.7-plus",
     "glm-5.2",

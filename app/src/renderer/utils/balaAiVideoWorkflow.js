@@ -27,9 +27,10 @@ export const BALA_VIDEO_PROMPT_MODEL_OPTIONS = Object.freeze([
   { value: 'gpt-5.6-luna', label: '森马网关 · GPT-5.6 Luna', keyScope: 'gateway' },
   { value: 'claude-sonnet-5', label: '森马网关 · Claude Sonnet 5', keyScope: 'gateway' },
   { value: 'gemini-3.1-pro-preview', label: '森马网关 · Gemini 3.1 Pro Preview', keyScope: 'gateway' },
-  { value: 'gemini-3.5-flash', label: '森马网关 · Gemini 3.5 Flash', keyScope: 'gateway' },
   { value: 'qwen3.8-max-preview', label: '森马网关 · Qwen 3.8 Max Preview', keyScope: 'gateway' },
   { value: 'qwen3.7-plus', label: '森马网关 · Qwen 3.7 Plus', keyScope: 'gateway' },
+  { value: 'glm-5.3-flash', label: '森马网关 · GLM 5.3 Flash', keyScope: 'gateway' },
+  { value: 'glm-5.3', label: '森马网关 · GLM 5.3', keyScope: 'gateway' },
   { value: 'glm-5.2', label: '森马网关 · GLM 5.2', keyScope: 'gateway' },
   { value: 'kimi-k3', label: '森马网关 · Kimi K3', keyScope: 'gateway' },
 ])

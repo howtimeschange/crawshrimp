@@ -128,7 +128,7 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             params["input_file"]["templates"][0]["file"],
             "templates/tmall-video-copy-template.xlsx",
         )
-        self.assertEqual(params["model_id"]["default"], "gemini-3.5-flash")
+        self.assertEqual(params["model_id"]["default"], "gemini-3.8-flash")
         self.assertEqual(
             model_ids,
             [
@@ -139,14 +139,19 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
                 "gpt-5.5",
-                "claude-opus-4-8",
-                "claude-sonnet-5",
-                "gemini-3.1-pro-preview",
-                "gemini-3.5-flash",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-pro-preview",
                 "qwen3.8-max-preview",
                 "qwen3.7-plus",
                 "deepseek-v4-flash",
                 "deepseek-v4-pro",
+                "glm-5.3-flash",
+                "glm-5.3",
                 "glm-5.2",
                 "kimi-k3",
                 "kimi-k2.7-code",

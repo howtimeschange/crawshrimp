@@ -2731,7 +2731,7 @@ BALA_VIDEO_TEMPLATE_CATALOG_JSON = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.j
 BALA_VIDEO_TEMPLATE_CATALOG_CSV = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.csv"
 BALA_SEEDANCE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "seedanceCLI"
 BALA_SEEDANCE_DEFAULT_MODEL = "doubao-seedance-2-0-260128"
-BALA_VIDEO_COPY_DEFAULT_MODEL = "gemini-3.5-flash"
+BALA_VIDEO_COPY_DEFAULT_MODEL = "gemini-3.8-flash"
 BALA_VIDEO_PROMPT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 BALA_HAPPYHORSE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "bailianCLI"
 BALA_HAPPYHORSE_MODELS = {
@@ -8777,6 +8777,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 # PLM 尺码表下载仅查询页面内的 RequestHandler；若 Chrome
                 # CDP 短暂断连，安全重放尚未返回结果的当前款号阶段。
                 retry_transient_cdp_errors=(adapter_id, task_id) == ("plm-ops-assistant", "size_chart_downloader"),
+                # 搜推发布把 POST 和回执保存在页面内。允许恢复 Runtime.evaluate
+                # 的 WebSocket 连接，但不允许按 timeout 刷新页面或重放发布阶段；
+                # 重新提交由脚本的 pending receipt 状态决定。
+                recover_cdp_connection=(adapter_id, task_id) == ("mop-ops-assistant", "search_recommend_material_publish"),
             )
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)

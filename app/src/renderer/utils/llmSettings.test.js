@@ -19,10 +19,10 @@ import {
 } from './llmSettings.mjs'
 
 test('LLM settings expose all configured gateway defaults and supported model ids', () => {
-  assert.equal(LLM_DEFAULTS['ai.llm.default_model'], 'gemini-3.5-flash')
+  assert.equal(LLM_DEFAULTS['ai.llm.default_model'], 'gemini-3.8-flash')
   assert.equal(LLM_DEFAULTS['ai.llm.deepseek_base_url'], 'https://api.deepseek.com')
   assert.equal(LLM_DEFAULTS['ai.llm.glm_base_url'], GLM_OFFICIAL_BASE_URL_DEFAULT)
-  assert.equal(LLM_MODELS.length, 24)
+  assert.equal(LLM_MODELS.length, 29)
   assert.deepEqual(
     LLM_MODELS.map(item => item.value),
     [
@@ -40,13 +40,18 @@ test('LLM settings expose all configured gateway defaults and supported model id
       'gpt-5.5',
       'claude-opus-4-8',
       'claude-sonnet-5',
+      'gemini-3.8-flash',
+      'gemini-3.7-flash',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
       'gemini-3.1-pro-preview',
-      'gemini-3.5-flash',
       'qwen3.8-max-preview',
       'qwen3.7-plus',
       'deepseek-v4.1-flash',
       'deepseek-v4-flash',
       'deepseek-v4-pro',
+      'glm-5.3-flash',
+      'glm-5.3',
       'glm-5.2',
       'kimi-k3',
       'kimi-k2.7-code',

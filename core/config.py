@@ -65,7 +65,7 @@ DEFAULT_CONFIG = {
             "deepseek_base_url": "https://api.deepseek.com",
             "glm_api_key": "",
             "glm_base_url": "https://open.bigmodel.cn/api/paas/v4",
-            "default_model": "gemini-3.5-flash",
+            "default_model": "gemini-3.8-flash",
         },
     },
     "cloud_approval": {

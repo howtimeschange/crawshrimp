@@ -486,7 +486,7 @@ SHOE_POSE_DEFAULT_FALLBACK_MODELS: tuple[str, ...] = (
 )
 SHOE_LABEL_OCR_DEFAULT_MODEL_CHAIN: tuple[str, ...] = (
     "gpt-5.6-sol",
-    "gemini-3.5-flash",
+    "gemini-3.8-flash",
     "qwen3.7-plus",
     "gpt-5.6-terra",
     "kimi-k2.7-code",
@@ -507,7 +507,7 @@ SHOE_POSE_MODEL_CANDIDATES = (
     "claude-opus-4-8",
     "claude-sonnet-5",
     "gemini-3.1-pro-preview",
-    "gemini-3.5-flash",
+    "gemini-3.8-flash",
     "qwen3.8-max-preview",
     "qwen3.7-plus",
     "deepseek-v4-flash",

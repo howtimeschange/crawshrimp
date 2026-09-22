@@ -14,7 +14,7 @@ export const LLM_DEFAULTS = Object.freeze({
   'ai.llm.domestic_base_url': 'https://ai-aigw.semir.com/bailian-codingplan/v1',
   'ai.llm.deepseek_base_url': DEEPSEEK_OFFICIAL_BASE_URL_DEFAULT,
   'ai.llm.glm_base_url': GLM_OFFICIAL_BASE_URL_DEFAULT,
-  'ai.llm.default_model': 'gemini-3.5-flash',
+  'ai.llm.default_model': 'gemini-3.8-flash',
 })
 
 export const LLM_MODELS = Object.freeze([
@@ -32,13 +32,18 @@ export const LLM_MODELS = Object.freeze([
   { value: 'gpt-5.5', label: '海外 · GPT-5.5' },
   { value: 'claude-opus-4-8', label: '海外 · Claude Opus 4.8' },
   { value: 'claude-sonnet-5', label: '海外 · Claude Sonnet 5' },
+  { value: 'gemini-3.8-flash', label: '海外 · Gemini 3.8 Flash' },
+  { value: 'gemini-3.7-flash', label: '海外 · Gemini 3.7 Flash' },
+  { value: 'gemini-3.6-flash', label: '海外 · Gemini 3.6 Flash' },
+  { value: 'gemini-3.5-flash-lite', label: '海外 · Gemini 3.5 Flash Lite' },
   { value: 'gemini-3.1-pro-preview', label: '海外 · Gemini 3.1 Pro Preview' },
-  { value: 'gemini-3.5-flash', label: '海外 · Gemini 3.5 Flash（默认）' },
   { value: 'qwen3.8-max-preview', label: '国内 · Qwen 3.8 Max Preview' },
   { value: 'qwen3.7-plus', label: '国内 · Qwen 3.7 Plus' },
   { value: 'deepseek-v4.1-flash', label: '国内 · DeepSeek V4.1 Flash（网关）' },
   { value: 'deepseek-v4-flash', label: '国内 · DeepSeek V4 Flash（网关）' },
   { value: 'deepseek-v4-pro', label: '国内 · DeepSeek V4 Pro（网关）' },
+  { value: 'glm-5.3-flash', label: '国内 · GLM 5.3 Flash（森马网关）' },
+  { value: 'glm-5.3', label: '国内 · GLM 5.3（森马网关）' },
   { value: 'glm-5.2', label: '国内 · GLM 5.2' },
   { value: 'kimi-k3', label: '国内 · Kimi K3' },
   { value: 'kimi-k2.7-code', label: '国内 · Kimi K2.7 Code' },

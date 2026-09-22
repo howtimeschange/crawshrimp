@@ -53,6 +53,19 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(route.protocol, "openai")
         self.assertIn("gpt-6-astra", llm_gateway.BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS)
 
+    def test_supported_semir_gemini_models_are_overseas_openai_models(self):
+        for model in (
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-pro-preview",
+        ):
+            route = llm_gateway.route_for_model(model, self.config())
+            self.assertEqual(route.base_url, "https://openai.example/v1")
+            self.assertEqual(route.protocol, "openai")
+            self.assertIn(model, llm_gateway.BALA_VIDEO_PROMPT_GATEWAY_VISION_MODELS)
+
     def config(self):
         return {
             "ai": {
@@ -63,19 +76,21 @@ class LlmGatewayTests(unittest.TestCase):
                     "domestic_base_url": "https://domestic.example/v1",
                     "glm_api_key": "glm-unit-key",
                     "glm_base_url": "https://glm.example/api/paas/v4",
-                    "default_model": "gemini-3.5-flash",
+                    "default_model": "gemini-3.8-flash",
                 }
             }
         }
 
     def test_model_routes_match_protocol_and_region(self):
-        overseas = llm_gateway.route_for_model("gemini-3.5-flash", self.config())
+        overseas = llm_gateway.route_for_model("gemini-3.8-flash", self.config())
         anthropic = llm_gateway.route_for_model("claude-sonnet-5", self.config())
         domestic_flash = llm_gateway.route_for_model("deepseek-v4-flash", self.config())
         domestic_pro = llm_gateway.route_for_model("deepseek-v4-pro", self.config())
         domestic_kimi = llm_gateway.route_for_model("kimi-k3", self.config())
         glm_flash = llm_gateway.route_for_model("glm-official-5.3-flash", self.config())
         glm = llm_gateway.route_for_model("glm-official-5.3", self.config())
+        semir_glm_flash = llm_gateway.route_for_model("glm-5.3-flash", self.config())
+        semir_glm = llm_gateway.route_for_model("glm-5.3", self.config())
 
         self.assertEqual(overseas.protocol, "openai")
         self.assertEqual(overseas.base_url, "https://openai.example/v1")
@@ -95,6 +110,10 @@ class LlmGatewayTests(unittest.TestCase):
         self.assertEqual(glm_flash.model_id, "glm-5.3-flash")
         self.assertEqual(glm.protocol, "openai")
         self.assertEqual(glm.model_id, "glm-5.3")
+        self.assertEqual(semir_glm_flash.model_id, "glm-5.3-flash")
+        self.assertEqual(semir_glm_flash.base_url, "https://domestic.example/v1")
+        self.assertEqual(semir_glm.model_id, "glm-5.3")
+        self.assertEqual(semir_glm.base_url, "https://domestic.example/v1")
 
     def test_deepseek_official_routes_use_dedicated_key_and_real_model_names(self):
         config = self.config()
@@ -182,7 +201,7 @@ class LlmGatewayTests(unittest.TestCase):
         config["ai"]["llm"].pop("deepseek_api_key", None)
         with patch.dict(os.environ, {}, clear=True):
             route = llm_gateway.route_for_model("", config)
-        self.assertEqual(route.model_id, "gemini-3.5-flash")
+        self.assertEqual(route.model_id, "gemini-3.8-flash")
         self.assertEqual(route.api_key, "unit-key")
 
     def test_saved_glm_official_default_falls_back_to_gateway_when_glm_key_is_missing(self):
@@ -191,7 +210,7 @@ class LlmGatewayTests(unittest.TestCase):
         config["ai"]["llm"].pop("glm_api_key", None)
         with patch.dict(os.environ, {}, clear=True):
             route = llm_gateway.route_for_model("", config)
-        self.assertEqual(route.model_id, "gemini-3.5-flash")
+        self.assertEqual(route.model_id, "gemini-3.8-flash")
         self.assertEqual(route.api_key, "unit-key")
 
     def test_gateway_default_model_is_gemini_flash(self):
@@ -200,8 +219,8 @@ class LlmGatewayTests(unittest.TestCase):
 
         route = llm_gateway.route_for_model("", config)
 
-        self.assertEqual(llm_gateway.DEFAULT_MODEL, "gemini-3.5-flash")
-        self.assertEqual(route.model_id, "gemini-3.5-flash")
+        self.assertEqual(llm_gateway.DEFAULT_MODEL, "gemini-3.8-flash")
+        self.assertEqual(route.model_id, "gemini-3.8-flash")
 
     def test_runtime_environment_key_can_be_used_without_persisting_it_in_config(self):
         config = self.config()
@@ -342,7 +361,7 @@ class LlmGatewayTests(unittest.TestCase):
     def test_openai_request_converts_remote_images_to_base64_for_gemini(self):
         captured = {}
         route = llm_gateway.LlmRoute(
-            model_id="gemini-3.5-flash",
+            model_id="gemini-3.8-flash",
             protocol="openai",
             base_url="https://openai.example/v1",
             api_key="unit-key",
@@ -468,12 +487,12 @@ class LlmGatewayTests(unittest.TestCase):
                 system_prompt="识别鞋品姿势",
                 user_prompt="只返回 JSON",
                 image_inputs=["https://img.example/remote.png"],
-                model_id="gemini-3.5-flash",
+                model_id="gemini-3.8-flash",
                 config=self.config(),
             )
 
         self.assertEqual(payload, {"ok": True})
-        self.assertEqual(route.model_id, "gemini-3.5-flash")
+        self.assertEqual(route.model_id, "gemini-3.8-flash")
         download.assert_called_once_with("https://img.example/remote.png")
         image_payload = captured["payload"]["messages"][1]["content"][1]["image_url"]
         self.assertEqual(image_payload["url"], "data:image/png;base64,iVBORw0KGgo=")
@@ -621,7 +640,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
             llm_gateway,
             "generate_video_copies",
             return_value=(llm_gateway.normalize_video_copies(valid_scripts()), llm_gateway.LlmRoute(
-                model_id="gemini-3.5-flash",
+                model_id="gemini-3.8-flash",
                 protocol="openai",
                 base_url="https://openai.example/v1",
                 api_key="unit-key",
@@ -629,7 +648,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
         ):
             rows = await api_server._apply_video_copy_generation(
                 source,
-                {"model_id": "gemini-3.5-flash", "generation_concurrency": 2},
+                {"model_id": "gemini-3.8-flash", "generation_concurrency": 2},
                 lambda payload=None: asyncio.sleep(0, result=waits.append(payload)),
                 lambda _: None,
             )
@@ -654,7 +673,7 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
             llm_gateway,
             "generate_video_copies",
             return_value=(llm_gateway.normalize_video_copies(valid_scripts()), llm_gateway.LlmRoute(
-                model_id="gemini-3.5-flash",
+                model_id="gemini-3.8-flash",
                 protocol="openai",
                 base_url="https://openai.example/v1",
                 api_key="unit-key",
@@ -668,8 +687,8 @@ class TmallVideoCopyPostProcessTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(len(rows), 3)
-        self.assertEqual(generate.call_args.kwargs["model_id"], "gemini-3.5-flash")
-        self.assertTrue(any("准备使用 gemini-3.5-flash" in item for item in logs))
+        self.assertEqual(generate.call_args.kwargs["model_id"], "gemini-3.8-flash")
+        self.assertTrue(any("准备使用 gemini-3.8-flash" in item for item in logs))
 
     async def test_final_workbook_matches_batch_upload_headers_and_text_ids(self):
         with tempfile.TemporaryDirectory() as tmpdir:

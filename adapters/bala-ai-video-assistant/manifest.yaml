@@ -14,7 +14,7 @@ auth:
 tasks:
   - id: tmall_video_copy_generate
     name: AI生成视频标题和文案
-    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，默认用 gemini-3.5-flash 生成3组更小红书体的逛逛标题、搜推标题与约30秒文案，并按短视频批量上传模板导出
+    description: 从千牛“我的商品”进入指定商品编辑页，读取商品标题和最多5张1:1主图，默认用 gemini-3.8-flash 生成3组更小红书体的逛逛标题、搜推标题与约30秒文案，并按短视频批量上传模板导出
     script: tmall-video-copy-generate.js
     entry_url: https://myseller.taobao.com/home.htm/SellManage/on_sale?current=1&pageSize=20
     tab_match_prefixes:
@@ -46,7 +46,7 @@ tasks:
       - id: model_id
         type: select
         label: 文案生成模型
-        default: gemini-3.5-flash
+        default: gemini-3.8-flash
         options:
           - value: deepseek-official-v4-flash
             label: DeepSeek 官方 · V4 Flash
@@ -66,10 +66,16 @@ tasks:
             label: 海外 · Claude Opus 4.8
           - value: claude-sonnet-5
             label: 海外 · Claude Sonnet 5
+          - value: gemini-3.8-flash
+            label: 海外 · Gemini 3.8 Flash
+          - value: gemini-3.7-flash
+            label: 海外 · Gemini 3.7 Flash
+          - value: gemini-3.6-flash
+            label: 海外 · Gemini 3.6 Flash
+          - value: gemini-3.5-flash-lite
+            label: 海外 · Gemini 3.5 Flash Lite
           - value: gemini-3.1-pro-preview
             label: 海外 · Gemini 3.1 Pro Preview
-          - value: gemini-3.5-flash
-            label: 海外 · Gemini 3.5 Flash（默认）
           - value: qwen3.8-max-preview
             label: 国内 · Qwen 3.8 Max Preview
           - value: qwen3.7-plus
@@ -78,13 +84,17 @@ tasks:
             label: 国内 · DeepSeek V4 Flash（网关）
           - value: deepseek-v4-pro
             label: 国内 · DeepSeek V4 Pro（网关）
+          - value: glm-5.3-flash
+            label: 国内 · GLM 5.3 Flash（森马网关）
+          - value: glm-5.3
+            label: 国内 · GLM 5.3（森马网关）
           - value: glm-5.2
             label: 国内 · GLM 5.2
           - value: kimi-k3
             label: 国内 · Kimi K3
           - value: kimi-k2.7-code
             label: 国内 · Kimi K2.7 Code
-        hint: 默认使用 gemini-3.5-flash；DeepSeek 官方模型走独立 API Key，国内 DeepSeek 网关模型走百炼 CodingPlan 兼容地址。切换到 Gemini 系列时商品图会自动转为 base64 传输，其他 OpenAI 兼容模型保持图片 URL 直传。
+        hint: 默认使用 gemini-3.8-flash；DeepSeek 官方模型走独立 API Key，国内 DeepSeek 网关模型走百炼 CodingPlan 兼容地址。切换到 Gemini 系列时商品图会自动转为 base64 传输，其他 OpenAI 兼容模型保持图片 URL 直传。
       - id: output_dir
         type: directory
         label: Excel 导出目录
