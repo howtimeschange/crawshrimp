@@ -13,7 +13,7 @@ async function loadExports(options = {}) {
     window: {
       __CRAWSHRIMP_PARAMS__: {},
       __CRAWSHRIMP_PHASE__: '__exports__',
-      __CRAWSHRIMP_SHARED__: {},
+      __CRAWSHRIMP_SHARED__: options.shared || {},
       __CRAWSHRIMP_EXPORTS__: exportsBox,
     },
     document: {},
@@ -40,6 +40,119 @@ async function loadExports(options = {}) {
   await vm.runInNewContext(source, context, { filename: SCRIPT_PATH })
   return exportsBox
 }
+
+async function runPhase(phase, shared = {}, fetchImpl = async () => jsonResponse({}), options = {}) {
+  const context = {
+    window: { __CRAWSHRIMP_PHASE__: phase, __CRAWSHRIMP_SHARED__: shared, __CRAWSHRIMP_PARAMS__: options.params || {} },
+    location: { href: options.href || 'https://fmp.semirapp.com/web/index#/home/file', hash: '#/home/file' },
+    document: {}, fetch: fetchImpl, URLSearchParams, navigator: { userAgent: 'test' },
+    console, setTimeout, clearTimeout,
+  }
+  return vm.runInNewContext(fs.readFileSync(SCRIPT_PATH, 'utf8'), context, { filename: SCRIPT_PATH })
+}
+
+const expiredResponse = () => ({ ok: false, status: 401, text: async () => '{"error_code":40106,"error_msg":"登录超时"}' })
+
+test('real incident whitespace pairs receive unique paths including Windows case and earlier batches', async () => {
+  const helpers = await loadExports({
+    shared: { result_rows: [{ __runtime_filename: '208127104005__hang_tag__still__IMG_9828 拷贝.jpg' }] },
+    fetch: async () => jsonResponse({ uri: 'https://example.test/image' }),
+  })
+  const rows = [], downloads = []
+  const names = [9828, 9829, 9830, 9831, 9833, 9835].flatMap(n => [`IMG_${n}  拷贝.jpg`, `IMG_${n} 拷贝.jpg`])
+  names.push('img_9828 拷贝.JPG', 'IMG_9828 拷贝_2.jpg')
+  await helpers.addDownloadRows('208127104005', { still: { mountId: '1' } }, rows, downloads, 'hang_tag',
+    names.map(filename => ({ filename, fullpath: `folder/${filename}`, __source_type: 'still' })))
+  assert.equal(downloads.length, names.length)
+  assert.equal(new Set(downloads.map(item => item.filename.toLowerCase())).size, names.length)
+  assert.ok(downloads.every(item => item.filename.toLowerCase() !== '208127104005__hang_tag__still__img_9828 拷贝.jpg'))
+  assert.deepEqual(Array.from(rows, row => row.__runtime_filename), Array.from(downloads, item => item.filename))
+})
+
+test('single file link failure is recorded and remaining files still download', async () => {
+  let calls = 0
+  const helpers = await loadExports({ fetch: async () => {
+    calls += 1
+    if (calls === 2) return { ok: false, status: 500, text: async () => 'file unavailable' }
+    return jsonResponse({ uri: 'https://example.test/image' })
+  } })
+  const rows = [], downloads = []
+  await helpers.addDownloadRows('123', { still: { mountId: '1' } }, rows, downloads, 'hang_tag',
+    ['one.jpg', 'bad.jpg', 'three.jpg'].map(filename => ({ filename, fullpath: filename, __source_type: 'still' })))
+  assert.equal(calls, 3)
+  assert.equal(downloads.length, 2)
+  assert.equal(rows[1]['下载结果'], '获取下载链接失败')
+  const final = helpers.finalizeRows(rows, { items: [
+    { success: false, error: 'HTTP 404' }, { success: true, path: '/three.jpg' },
+  ] })
+  assert.deepEqual(Array.from(final, row => row['下载结果']), ['下载失败', '获取下载链接失败', '已下载'])
+  assert.equal(final[2]['本地文件'], '/three.jpg')
+})
+
+test('auth errors escape file and folder catches instead of marking assets missing', async () => {
+  const helpers = await loadExports({ fetch: async () => expiredResponse() })
+  await assert.rejects(helpers.listFolderItems('1', 'folder'), { code: 'CLOUD_AUTH_EXPIRED' })
+  await assert.rejects(helpers.addDownloadRows('123', { still: { mountId: '1' } }, [], [], 'hang_tag',
+    [{ filename: 'one.jpg', fullpath: 'one.jpg', __source_type: 'still' }]), { code: 'CLOUD_AUTH_EXPIRED' })
+})
+
+test('API auth payload and login redirect are recognized', async () => {
+  for (const response of [jsonResponse({ error_code: 40106 }), jsonResponse({ error_code: 401060 }),
+    { ok: true, redirected: true, url: 'https://sso.example/login' },
+    { ok: true, headers: { get: () => 'text/html' } }]) {
+    const helpers = await loadExports({ fetch: async () => response })
+    await assert.rejects(helpers.fetchJson('/fengcloud/1/account/mount'), { code: 'CLOUD_AUTH_EXPIRED' })
+  }
+})
+
+test('expired session preserves completed rows and resumes the interrupted phase after login', async () => {
+  const prior = { '输入款号': 'first', '下载结果': '已下载', '本地文件': '/first.jpg' }
+  const shared = { target_codes: ['first', 'second'], code_index: 1, current_code: 'second',
+    result_rows: [prior], source_configs: { still: { mountId: '1' } }, download_completed_files: 1 }
+  const expired = await runPhase('collect_code', shared, async () => expiredResponse())
+  assert.equal(expired.meta.action, 'reload_page')
+  assert.equal(expired.meta.next_phase, 'wait_cloud_login')
+  assert.equal(expired.meta.shared.code_index, 1)
+  assert.deepEqual(expired.meta.shared.result_rows, [prior])
+  const waiting = await runPhase('wait_cloud_login', expired.meta.shared, async () => { throw Error('must not fetch SSO') }, { href: 'https://sso.example/login' })
+  assert.equal(waiting.meta.next_phase, 'wait_cloud_login')
+  const resumed = await runPhase('wait_cloud_login', waiting.meta.shared, async () => jsonResponse([{ mount_id: '1' }]))
+  assert.equal(resumed.meta.next_phase, 'collect_code')
+  assert.equal(resumed.meta.shared.download_completed_files, 1)
+  assert.deepEqual(resumed.meta.shared.result_rows, [prior])
+  const timedOut = await runPhase('wait_cloud_login', { ...expired.meta.shared, auth_wait_started_at: Date.now() - 600001 })
+  assert.equal(timedOut.meta.action, 'complete')
+  assert.equal(timedOut.data.length, 2)
+  assert.equal(timedOut.data[0], prior)
+  assert.equal(timedOut.data[1]['下载结果'], '登录中断，未完成')
+})
+
+test('repeated auth rejection is bounded and a failed style does not stop the next style', async () => {
+  const shared = { target_codes: ['bad', 'next'], code_index: 0, current_code: 'bad', result_rows: [],
+    source_configs: { still: { mountId: '1' } } }
+  const rejected = await runPhase('collect_code', { ...shared, auth_recovery_attempts: 2 }, async () => expiredResponse())
+  assert.equal(rejected.meta.action, 'complete')
+  assert.equal(rejected.data.length, 2)
+  const failed = await runPhase('collect_code', shared, async () => { throw Error('search network failed') })
+  assert.equal(failed.meta.next_phase, 'plan_code')
+  assert.equal(failed.meta.shared.code_index, 1)
+  assert.equal(failed.meta.shared.result_rows[0]['下载结果'], '处理失败，已跳过')
+  const next = await runPhase('plan_code', failed.meta.shared)
+  assert.equal(next.meta.shared.current_code, 'next')
+})
+
+test('failed image download preserves successes and advances to next code', async () => {
+  const result = await runPhase('finalize_code_download', {
+    target_codes: ['one', 'two'], code_index: 0, current_code: 'one', result_rows: [],
+    pending_code_rows: [{ '文件名': 'bad.jpg' }, { '文件名': 'good.jpg' }],
+    last_code_download_result: { items: [{ success: false, error: '404' }, { success: true, path: '/good.jpg' }] },
+  })
+  assert.equal(result.meta.next_phase, 'plan_code')
+  assert.equal(result.meta.shared.code_index, 1)
+  assert.equal(result.meta.shared.download_failed_files, 1)
+  assert.equal(result.meta.shared.download_success_files, 1)
+  assert.equal(result.meta.shared.result_rows[1]['本地文件'], '/good.jpg')
+})
 
 function jsonResponse(payload) {
   return {

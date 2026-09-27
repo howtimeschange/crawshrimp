@@ -11,6 +11,8 @@
   const DOWNLOAD_RETRY_ATTEMPTS = 5
   const DOWNLOAD_RETRY_DELAY_MS = 2000
   const DOWNLOAD_TIMEOUT_SECONDS = 120
+  const AUTH_WAIT_MS = 10 * 60 * 1000
+  const AUTH_MAX_RECOVERIES_PER_CODE = 2
   const SHOE_LABEL_GENERIC_CANDIDATE_LIMIT_PER_COLOR = 8
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tif', 'tiff'])
   const PDF_EXTS = new Set(['pdf'])
@@ -28,6 +30,7 @@
     still: '平拍路径',
   })
   const ASSET_KIND_LABELS = Object.freeze({
+    notice: '任务提示',
     hang_tag: '吊牌',
     wash_label: '洗唛',
     tile: '平铺图',
@@ -42,6 +45,22 @@
   function toSafeFilename(value, fallback = 'file') {
     const text = String(value || '').trim().replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ')
     return text.replace(/^_+|_+$/g, '') || fallback
+  }
+
+  function allocateRuntimeFilename(base, downloadItems) {
+    // Windows ignores case. Include earlier batches because multiple inputs can
+    // resolve to the same style and asset name; never reuse a downloaded path.
+    const key = value => String(value || '').normalize('NFC').replace(/[ .]+$/g, '').toLowerCase()
+    const used = new Set([
+      ...(shared.result_rows || []).map(row => key(row.__runtime_filename)),
+      ...downloadItems.map(item => key(item.filename)),
+    ])
+    const dot = base.lastIndexOf('.')
+    const stem = dot > 0 ? base.slice(0, dot) : base
+    const ext = dot > 0 ? base.slice(dot) : ''
+    let candidate = base
+    for (let index = 2; used.has(key(candidate)); index += 1) candidate = `${stem}_${index}${ext}`
+    return candidate
   }
 
   function parseCloudPath(rawValue) {
@@ -760,11 +779,46 @@
       credentials: 'include',
       ...init,
     })
+    if (response.status === 401 || (response.redirected && /login|logout|signin|passport|auth/i.test(response.url || ''))) {
+      throw authExpiredError()
+    }
     if (!response.ok) {
       const text = await response.text().catch(() => '')
       throw new Error(`HTTP ${response.status}: ${text.slice(0, 240) || response.statusText}`)
     }
-    return response.json()
+    if (/text\/html/i.test(response.headers?.get('content-type') || '')) throw authExpiredError()
+    const payload = await response.json()
+    if ([40106, 401060].includes(Number(payload?.error_code))) throw authExpiredError()
+    return payload
+  }
+
+  function authExpiredError() {
+    const error = new Error('森马云盘登录超时，请在任务浏览器中重新登录；已完成进度保留')
+    error.code = 'CLOUD_AUTH_EXPIRED'
+    return error
+  }
+
+  function finishAuthInterrupted(reason) {
+    const codes = Array.isArray(shared.target_codes) ? shared.target_codes : normalizeCodes(params.item_codes)
+    const remaining = codes.slice(Number(shared.code_index || 0))
+    const rows = [...(shared.result_rows || []), ...remaining.map(code => rowForNotice(code, 'notice', '登录中断，未完成', reason))]
+    return complete(rows, { ...shared, pending_code_rows: [], auth_interrupted: true, current_store: reason })
+  }
+
+  function beginAuthRecovery() {
+    const attempts = Number(shared.auth_recovery_attempts || 0) + 1
+    if (attempts > AUTH_MAX_RECOVERIES_PER_CODE) return finishAuthInterrupted('当前款号反复登录失效，已停止重试并保留已下载结果')
+    const result = nextPhase('wait_cloud_login', 2000, {
+      ...shared,
+      auth_resume_phase: phase,
+      auth_wait_started_at: Date.now(),
+      auth_recovery_attempts: attempts,
+      current_store: '云盘登录超时，请在任务浏览器中登录，完成后自动继续（最多等待10分钟）',
+    })
+    // Cloud routes differ only by hash. A route navigation need not load a new
+    // document; explicitly reload so the SPA rechecks login and shared survives.
+    result.meta.action = 'reload_page'
+    return result
   }
 
   async function fetchMounts() {
@@ -885,6 +939,7 @@
         }
         return { ok: true, items: all, endpoint: `${attempt.method} ${attempt.endpoint}` }
       } catch (error) {
+        if (error?.code === 'CLOUD_AUTH_EXPIRED') throw error
         errors.push(String(error?.message || error))
       }
     }
@@ -985,10 +1040,10 @@
           rows.push({ ...row, '下载结果': '获取下载链接失败', '备注': 'file/info 未返回 uri' })
           continue
         }
-        const runtimeFilename = toSafeFilename(
+        const runtimeFilename = allocateRuntimeFilename(toSafeFilename(
           `${row['输入款号']}__${kind}__${sourceType || 'source'}__${getFileStem(item?.filename || item?.name || '') || 'file'}.${getExt(item) || 'bin'}`,
           `${row['输入款号']}__${kind}.${getExt(item) || 'bin'}`,
-        )
+        ), downloadItems)
         rows.push({ ...row, '__runtime_filename': runtimeFilename })
         downloadItems.push({
           url: downloadUrl,
@@ -999,6 +1054,7 @@
           no_proxy: true,
         })
       } catch (error) {
+        if (error?.code === 'CLOUD_AUTH_EXPIRED') throw error
         rows.push({ ...row, '下载结果': '获取下载链接失败', '备注': String(error?.message || error) })
       }
     }
@@ -1154,6 +1210,7 @@
       return nextPhase('plan_code', 0, {
         ...nextShared,
         code_index: nextIndex,
+        auth_recovery_attempts: 0,
         result_rows: allRows,
         pending_code_rows: [],
         last_code_download_result: null,
@@ -1226,6 +1283,10 @@
       buildCodePlan,
       finalizeRows,
       summarizeDownloadResult,
+      allocateRuntimeFilename,
+      fetchJson,
+      addDownloadRows,
+      listFolderItems,
     })
   }
 
@@ -1236,6 +1297,25 @@
   }
 
   try {
+    if (phase === 'wait_cloud_login') {
+      if (Date.now() - Number(shared.auth_wait_started_at || 0) >= AUTH_WAIT_MS) {
+        return finishAuthInterrupted('等待云盘登录超过10分钟，已保留已下载结果；其余款号未完成')
+      }
+      // Do not call a relative cloud API while the browser is on an SSO origin.
+      if (/^https:\/\/fmp\.semirapp\.com\/web\//i.test(location.href || '')) {
+        try {
+          const mounts = await fetchMounts()
+          if (mounts.length) {
+            return nextPhase(shared.auth_resume_phase || 'plan_code', 0, {
+              ...shared, auth_wait_started_at: null, current_store: '云盘登录已恢复，继续当前款号',
+            })
+          }
+        } catch (_error) {
+          // A login redirect/network transition is expected while the user signs in.
+        }
+      }
+      return nextPhase('wait_cloud_login', 3000, shared)
+    }
     if (phase === 'init' || phase === 'main') {
       const stillPath = parseCloudPath(params.still_cloud_path)
       const modelPath = String(params.model_cloud_path || '').trim() ? parseCloudPath(params.model_cloud_path) : null
@@ -1395,6 +1475,16 @@
 
     return { success: false, error: `未知 phase: ${phase}` }
   } catch (error) {
+    if (error?.code === 'CLOUD_AUTH_EXPIRED') return beginAuthRecovery()
+    if (phase === 'collect_code') {
+      const codes = Array.isArray(shared.target_codes) ? shared.target_codes : []
+      const index = Number(shared.code_index || 0)
+      const code = String(shared.current_code || codes[index] || '')
+      const rows = [...(shared.result_rows || []), rowForNotice(code, 'notice', '处理失败，已跳过', String(error?.message || error))]
+      return advanceAfterCode(codes, index, code, {
+        ...shared, search_completed_codes: index + 1,
+      }, rows)
+    }
     return { success: false, error: String(error?.message || error) }
   }
 })()

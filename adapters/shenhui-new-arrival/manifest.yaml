@@ -1,7 +1,7 @@
 manifest_version: 2
 id: shenhui-new-arrival
 name: 深绘上新助手
-version: 0.3.0
+version: 0.3.1
 author: codex
 description: "从森马云盘按款合并模特图与静物图，按深绘上新 SOP 规整后导出待上传图包"
 
