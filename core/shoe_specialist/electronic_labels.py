@@ -132,7 +132,7 @@ class ElectronicLabels:
                     fact = tile_facts(record, region)
                     evidence['tiles'].append({'region': region, 'fact': fact, 'lines': record['lines']})
                     if fact and fact['style'] == style:
-                        collected[fact['color']].append({**fact, 'source': source})
+                        collected[fact['color']].append({**fact, 'source': source, 'lines': record['lines']})
             except (OSError, ValueError, RuntimeError) as error:
                 evidence['error'] = str(error)
         refs = {}

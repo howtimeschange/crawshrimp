@@ -384,13 +384,19 @@ def _gray_mates(ctx, anchor_name):
     for key, name in ctx["ids"].items():
         path = ctx["entries"][name]["path"]
         other = _source_visual_fact(ctx, path, 'pose')
+        # Same export-family JPEGs can differ at the foreground edge after
+        # replacing white with gray. Still require unchanged foreground pixels
+        # below; a shared basename alone cannot authorize a replacement.
+        max_distance = (s.SHOE_BACKGROUND_PAIR_MAX_DISTANCE
+                        if s._copy_variant_key(name) == s._copy_variant_key(anchor_name)
+                        else s.SHOE_VISUAL_VARIANT_MAX_DISTANCE)
         if not (
             other.valid
             and 235 <= other.background_luma < s.SHOE_WHITE_BACKGROUND_LUMA
             and abs(feature.aspect_ratio - other.aspect_ratio) <= 0.05
             and abs(feature.bounding_coverage - other.bounding_coverage) <= 0.05
             and s._binary_pose_distance(feature, other)
-            <= s.SHOE_VISUAL_VARIANT_MAX_DISTANCE
+            <= max_distance
         ):
             continue
         if signature is None:

@@ -40,10 +40,23 @@ def color_fields(texts, boxes=None):
                     if not (max(hx, vx) < min(hx+hw, vx+vw)
                             and 0 <= hy-vy <= max(hh, vh)*5):
                         continue
-                match = re.fullmatch(r"([\u4e00-\u9fff/／、]{0,20})(\d{5})", value)
+                match = re.fullmatch(r"([\u4e00-\u9fffA-Za-z/／、]{0,20})(\d{5})", value)
                 if match:
                     fields.append({"code": match[2], "name": match[1], "line": j, "source": "color_header"})
     return fields
+
+
+def sku_fields(texts):
+    """Printed footwear SKU line, independent of the requested identity."""
+    joined = ' '.join(texts).upper()
+    if not all(marker in joined for marker in ('EUR', 'CHN', 'RMB')):
+        return []
+    result = []
+    for i, text in enumerate(texts):
+        match = re.fullmatch(r'\s*(\d{12})\s+(\d{5})\s+\d{2}\s*[-~～]\s*\d{2}\s*', text)
+        if match:
+            result.append({'style': match[1], 'code': match[2], 'name': '', 'line': i, 'source': 'printed_sku_row'})
+    return result
 
 
 def verify(texts, style, color, boxes=None):
@@ -58,7 +71,7 @@ def verify(texts, style, color, boxes=None):
                 ignored_ean.append(compact)
                 continue
         styles.update(re.findall(r"(?<!\d)\d{12}(?!\d)", text))
-    fields = color_fields(texts, boxes)
+    fields = color_fields(texts, boxes) + sku_fields(texts)
     colors = {f["code"] for f in fields}
     passed = styles == {style} and colors == {color}
     mismatch = bool(styles - {style} or colors - {color})

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps
 from .foreground import read_crop
-from .identity import verify
+from .identity import verify, sku_fields
 from .util import sha
 
 
@@ -74,6 +74,21 @@ def resolve_label(group, initial_lines, recognize, electronic=None, initial_barc
             check = verify([l["text"] for l in lines], style, color, [l["box"] for l in lines])
             attempt = {"path": candidate["path"], "stage": stage, "check": check, "lines": lines, "barcodes": record.get("barcodes", [])}
             attempts.append(attempt)
+            if check['passed'] and not any(l['text'].strip() == style for l in lines):
+                merged = sku_fields([l['text'] for l in lines])
+                if len(merged) == 1:
+                    line = lines[merged[0]['line']]
+                    x, y, w, h = line['box']
+                    # Re-read only the leading style number. Never invent its
+                    # bounding box by splitting the full SKU line proportionally.
+                    region = [max(0, x-.003), max(0, 1-y-h-.003),
+                              min(1, x+w*.54), min(1, 1-y+.003)]
+                    reread = recognize([{**job, 'region': region}])[0]
+                    attempt['style_region_ocr'] = reread
+                    exact = [l for l in reread['lines'] if l['text'].strip() == style
+                             and l.get('confidence', 0) >= .9]
+                    if len(exact) == 1:
+                        lines = [*lines, exact[0]]
             try:
                 group["label"] = label_data(lines, style, color)
                 group["slots"]["wpz6"] = candidate
@@ -94,11 +109,12 @@ def resolve_label(group, initial_lines, recognize, electronic=None, initial_barc
                 return
             except ValueError as error:
                 attempt["error"] = str(error)
-            # A positively conflicting identity must not be hidden by retries.
+            # Reject this source permanently. Another physical label in the
+            # same folder may be valid, but must independently pass identity.
             if check["status"] == "mismatch":
-                group["label_status"] = "mismatch"
-                group["label_error"] = attempt["error"]
-                return
+                group.setdefault('rejected_label_sources', []).append({
+                    'path': candidate['path'], 'check': check, 'error': attempt['error']})
+                break
             if stage == "full" and lines:
                 boxes = [l["box"] for l in lines]
                 region = [max(0, min(b[0] for b in boxes)-.025),
@@ -131,8 +147,57 @@ def resolve_label(group, initial_lines, recognize, electronic=None, initial_barc
             group["slots"]["wpz6"] = next(c for c in candidates if c["path"] == attempt["path"])
             group["label_status"] = "verified"
             return
-    group["label_status"] = "unconfirmed"
-    group["label_error"] = f"{style}/{color} 鞋盒OCR款色无法确认，局部重识别及候选图核验后仍待复核"
+    rejected = group.get('rejected_label_sources') or []
+    group["label_status"] = "mismatch" if rejected else "unconfirmed"
+    group["label_error"] = (rejected[0]['error'] if rejected else
+        f"{style}/{color} 鞋盒OCR款色无法确认，局部重识别及候选图核验后仍待复核")
+
+
+def is_standard_box_label(lines):
+    """A readable SKU is not enough: require the Chinese box certificate fields."""
+    text = ' '.join(line['text'] for line in lines)
+    return all(marker in text for marker in ('产品名称', '颜色', '帮面材料')) and any(
+        marker in text for marker in ('合格证', '执行标准', '产品等级'))
+
+
+def ensure_standard_label(group, recognize, electronic):
+    """Keep identity evidence separate from the label used in the deliverable."""
+    if group.get('label_status') == 'verified' and is_standard_box_label(group['label']['lines']):
+        group['label']['output_kind'] = 'standard_box_photo'
+        return
+    style, color = group['style'], group['color']
+    group['nonstandard_label_source'] = group['slots']['wpz6']
+    # Prefer another independently verified standard physical box label.
+    for candidate in group.get('label_candidates', []):
+        if candidate['path'] == group['slots']['wpz6']['path']:
+            continue
+        record = recognize([{'id': style+'-'+color, 'path': candidate['path']}])[0]
+        if not is_standard_box_label(record['lines']):
+            continue
+        try:
+            label = label_data(record['lines'], style, color)
+        except ValueError:
+            continue
+        group['label'] = {**label, 'output_kind': 'standard_box_photo'}
+        group['label_status'] = 'verified'
+        group['slots']['wpz6'] = candidate
+        return
+    reference = electronic.references(style).get(color) if electronic else None
+    if reference and reference['status'] == 'verified':
+        for tile in reference.get('tiles', []):
+            if tile['kind'] != 'box_label' or not is_standard_box_label(tile.get('lines', [])):
+                continue
+            try:
+                label = label_data(tile['lines'], style, color)
+            except ValueError:
+                continue
+            group['label'] = {**label, 'output_kind': 'electronic_box_label',
+                'output_source': tile['source'], 'label_bbox': tile['region'],
+                'electronic_label': {'status': 'verified', 'reference': reference}}
+            group['label_status'] = 'verified'
+            return
+    group['label_status'] = 'unconfirmed'
+    group['label_error'] = f'{style}/{color} 缺少标准鞋盒标签，同款电子盒标未核验通过；缝标和简式盒标不可用于标签成品'
 
 
 def run(inp, bundle, out):
@@ -283,6 +348,7 @@ def run(inp, bundle, out):
     for g in results:
         record = ocr[f"{g['style']}-{g['color']}"]
         resolve_label(g, record["lines"], recognize, electronic, record.get("barcodes", []))
+        ensure_standard_label(g, recognize, electronic)
         (out / f"{g['style']}-{g['color']}-label-attempts.json").write_text(
             json.dumps(g["label_attempts"], ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "electronic-label-evidence.json").write_text(json.dumps(electronic.evidence, ensure_ascii=False, indent=2))

@@ -8626,6 +8626,7 @@ def _create_tmq_asset(
     style_code: str = "",
     require_style_code_bbox: bool = False,
     style_code_bbox_verified: bool = False,
+    preserve_full_label: bool = False,
 ) -> Path:
     from PIL import Image, ImageDraw, ImageOps
 
@@ -8678,6 +8679,25 @@ def _create_tmq_asset(
                 style_code_bbox=style,
                 style_code=style_code,
             )
+    if preserve_full_label:
+        if style is None:
+            raise ShoeSelectionError("电子盒标缺少独立核验款号坐标")
+        left, top, right, bottom = (round(label[0]*width), round(label[1]*height),
+                                    round(label[2]*width), round(label[3]*height))
+        tile = image.crop((left, top, right, bottom))
+        canvas_size = SHOE_TMQ_CANVAS_SIZE
+        scale = canvas_size / max(tile.size)
+        resized = tile.resize((round(tile.width*scale), round(tile.height*scale)), Image.Resampling.LANCZOS)
+        crop = Image.new('RGB', (canvas_size, canvas_size), 'white')
+        ox, oy = (canvas_size-resized.width)//2, (canvas_size-resized.height)//2
+        crop.paste(resized, (ox, oy))
+        rect = [ox+(style[0]*width-left)*scale-3, oy+(style[1]*height-top)*scale-3,
+                ox+(style[2]*width-left)*scale+3, oy+(style[3]*height-top)*scale+3]
+        ImageDraw.Draw(crop).rectangle(rect, outline='red', width=3)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        crop.save(target, quality=95)
+        return target
+
     label_px = (
         label[0] * width,
         label[1] * height,
@@ -8710,7 +8730,7 @@ def _create_tmq_asset(
         # few pixels. Keep the box anchored to the recognized text while sizing
         # it for a full 12-digit style code.
         min_width_px = style_height_px * max(5.5, min(len(_text(style_code)) * 0.58, 8.8))
-        if style_width_px < min_width_px:
+        if not style_code_bbox_verified and style_width_px < min_width_px:
             center = (style[0] + style[2]) / 2
             half_width = (min_width_px / width) / 2
             expanded_x1 = max(label_x1, center - half_width)
@@ -8729,8 +8749,8 @@ def _create_tmq_asset(
     draw = ImageDraw.Draw(crop)
     scale = canvas_size / side
     style_height_on_crop = max(1.0, (style[3] - style[1]) * height * scale)
-    pad_left = max(3, round(style_height_on_crop * 0.22))
-    pad_right = max(4, round(style_height_on_crop * 0.32))
+    pad_left = max(3, round(style_height_on_crop * (0.08 if style_code_bbox_verified else 0.22)))
+    pad_right = max(3, round(style_height_on_crop * 0.08)) if style_code_bbox_verified else max(4, round(style_height_on_crop * 0.32))
     pad_y = max(3, round(style_height_on_crop * 0.30))
     rectangle = (
         max(0, round((style[0] * width - left) * scale) - pad_left),
@@ -10277,6 +10297,7 @@ def prepare_shoe_packages(
                 wpz_by_index = dict(_selection_indexed(selections_by_color[color_name], "wpz", 6))
                 box_source_name = wpz_by_index.get(6, "")
                 box_entry = entries_by_name.get(box_source_name) if box_source_name else None
+                box_entry = selections_by_color[color_name].get("_label_tmq_source") or box_entry
                 if not box_entry:
                     report_rows.append(_skipped_slot_report_row(
                         style_code=style_code,
@@ -10306,6 +10327,7 @@ def prepare_shoe_packages(
                                 style_code_bbox=selections_by_color[color_name].get("style_code_bbox"),
                                 style_code=style_code,
                                 require_style_code_bbox=True,
+                                preserve_full_label=bool(selections_by_color[color_name].get("_label_tmq_source")),
                                 style_code_bbox_verified=bool(
                                     selections_by_color[color_name].get("_specialist_evidence")
                                     and selections_by_color[color_name].get("_label_verified")

@@ -211,6 +211,23 @@ def prepare(
             label_bbox=packaging_bbox(label["label_bbox"]),
             style_code_bbox=packaging_bbox(label["style_code_bbox"]) if label["style_code_bbox"] else None,
         )
+        if label.get('output_source'):
+            source = label['output_source']
+            slots['_label_tmq_source'] = {'filename': source['filename'], 'path': source['path'],
+                'row': {'云盘路径': source['cloud_path']}}
+            from PIL import Image, ImageOps
+            crop_path = run / f'{style}-{color}-electronic-box.png'
+            with Image.open(source['path']) as original:
+                original = ImageOps.exif_transpose(original)
+                x1, y1, x2, y2 = label['label_bbox']
+                original.crop((int(x1*original.width), int(y1*original.height),
+                               int(x2*original.width), int(y2*original.height))).save(crop_path)
+            entry = {'filename': source['filename'], 'path': crop_path,
+                     'row': {'云盘路径': source['cloud_path'], '原文件名': source['filename']}}
+            by[source['filename']] = entry
+            entries.append(entry)
+            slots['wpz'][5] = source['filename']
+            slots['_label_warning'] = '非标准实拍标签已排除，标签成品使用同款独立核验的电子盒标'
         slots = p._apply_o_category_rule(g["category"], slots)
         # Preserve the existing exporter policy: TMZ1..4 use a gray counterpart
         # only when unchanged foreground pixels and silhouette agree.
@@ -237,6 +254,14 @@ def prepare(
                     }
                 )
         slots["yq"][0] = slots["tmz2"]
+        for index in (1, 2):
+            previous = slots['yq'][index]
+            mates = _gray_mates(ctx, previous)
+            if mates:
+                slots['yq'][index] = mates[0]
+                corrections.append({'slot': f'yq{index+1}', 'before': previous,
+                                    'after': mates[0],
+                                    'rule': 'same foreground pixels and silhouette, gray counterpart'})
         slots = p._apply_o_category_rule(g["category"], slots)
         evidence = {
             "version": "bala-shoe-dinov2-onnx-v2",
@@ -246,11 +271,15 @@ def prepare(
             "yx": g.get("yx_evidence"),
             "scores_uncalibrated": g["scores_uncalibrated"],
             "background_corrections": corrections,
+            "rejected_label_sources": g.get("rejected_label_sources", []),
             "source_sha256": {name: sha(entry["path"]) for name, entry in by.items()},
             "independent_test": False,
             "llm_calls": 0,
         }
         slots["_specialist_evidence"] = evidence
+        if g.get('rejected_label_sources'):
+            slots['_label_warning'] = '已排除款色冲突标签，使用另一张独立核验通过的标签：' + '；'.join(
+                Path(item['path']).name for item in g['rejected_label_sources'])
         if not slots["yx"]:
             slots["_pending_slots"] = {
                 "yx": "小模型未选中功能卡；不等同于全部源素材不存在，请查看完整原图"

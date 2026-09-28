@@ -67,6 +67,21 @@ class SpecialistTests(unittest.TestCase):
             )
             self.assertEqual(run.call_args.kwargs["pose_strategy"], "bala_specialist")
 
+    def test_verified_narrow_style_box_does_not_expand_into_adjacent_color(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'label.png'
+            Image.new('RGB', (800,800), 'white').save(source)
+            target = packaging._create_tmq_asset(
+                source=source, target=Path(directory)/'tmq.jpg',
+                label_bbox=[100,100,900,900], style_code_bbox=[200,400,300,450],
+                style_code='208127146006', style_code_bbox_verified=True)
+            with Image.open(target) as image:
+                xs=[x for y in range(image.height) for x in range(image.width)
+                    if (lambda c:c[0]>180 and c[1]<90 and c[2]<90)(image.getpixel((x,y)))]
+            self.assertTrue(xs)
+            self.assertLess(max(xs)-min(xs),110)
+
     def test_missing_resources_fail_without_fallback(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaisesRegex(

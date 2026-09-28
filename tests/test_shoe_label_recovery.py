@@ -71,10 +71,55 @@ class RecoveryTests(unittest.TestCase):
 
     def test_conflict_is_not_hidden_by_retry(self):
         g = group()
+        g['label_candidates'] = g['label_candidates'][:1]
         reader = Mock(side_effect=AssertionError('must not erase conflicting identity'))
         resolve_label(g, lines('颜色：浅灰20001'), reader)
         self.assertEqual(g['label_status'], 'mismatch')
         reader.assert_not_called()
+
+    def test_conflicting_source_is_rejected_but_verified_other_source_can_recover(self):
+        g = group()
+        reader = Mock(return_value=[{'lines': lines('颜色：灰黄00323')}])
+        resolve_label(g, lines('颜色：浅灰20001'), reader)
+        self.assertEqual(g['label_status'], 'verified')
+        self.assertEqual(g['slots']['wpz6']['path'], 'second.jpg')
+        self.assertEqual(g['rejected_label_sources'][0]['path'], 'first.jpg')
+        self.assertEqual(reader.call_args.args[0], [{'id': STYLE+'-00323', 'path':'second.jpg'}])
+
+    def test_printed_sku_line_requires_label_context_and_independent_style_crop(self):
+        merged = [{'text':t, 'box':[.1,.2,.6,.05], 'confidence':.99}
+                  for t in ['EUR','CHN','RMB 329.00',STYLE+' 00323 21-30']]
+        self.assertTrue(check(merged)['passed'])
+        self.assertEqual(check(merged, '00416')['status'], 'mismatch')
+        self.assertFalse(check(merged[-1:])['passed'])
+        g = group()
+        reader = Mock(return_value=[{'lines':[{'text':STYLE,'box':[.1,.2,.3,.05],'confidence':.99}]}])
+        resolve_label(g, merged, reader)
+        self.assertEqual(g['label_status'], 'verified')
+        self.assertAlmostEqual(g['label']['style_code_bbox'][2], .4)
+        self.assertIn('style_region_ocr',g['label_attempts'][0])
+        g = group()
+        g['label_candidates'] = g['label_candidates'][:1]
+        resolve_label(g, merged, Mock(return_value=[{'lines': []}]))
+        self.assertNotEqual(g['label_status'], 'verified')
+
+    def test_two_color_headers_do_not_prefix_the_same_value_twice(self):
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        from unittest.mock import patch
+        from core.shoe_specialist.ocr import recognize
+        def item(x,y,w,text):
+            return [[[x,y],[x+w,y],[x+w,y+20],[x,y+20]],text,.99]
+        raw=[item(100,100,70,'颜色'),item(190,100,70,'色号'),
+             item(100,140,170,'白红色调00416'),item(100,60,180,STYLE)]
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'label.png';Image.new('RGB',(500,400),'white').save(path)
+            with patch('rapidocr_onnxruntime.RapidOCR',return_value=Mock(return_value=(raw,None))):
+                record=recognize([{'id':'test','path':str(path)}])[0]
+        text=[l['text'] for l in record['lines']]
+        self.assertEqual(text[2],'颜色：白红色调00416')
+        self.assertTrue(verify(text,STYLE,'00416')['passed'])
 
     def test_preflight_requires_every_style_but_keeps_other_strategies(self):
         from core.api_server import _validate_shenhui_shoe_categories
@@ -111,15 +156,16 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'source.png'
             Image.new('RGB', (1000,800), 'white').save(path)
-            result = [[[[10,20],[110,20],[110,60],[10,60]], '6"914678701777', .99]]
-            barcode = SimpleNamespace(text='6914678701777', format=zxingcpp.BarcodeFormat.EAN13)
-            with patch('rapidocr_onnxruntime.RapidOCR', return_value=Mock(return_value=(result,None))), patch('zxingcpp.read_barcodes',side_effect=[[barcode],[]]):
-                output = recognize([{'id':STYLE,'path':str(path),'region':[.2,.25,.8,.75]}])
-            self.assertEqual(output[0]['lines'][0]['text'],'6914678701777')
-            self.assertTrue(output[0]['lines'][0]['barcode_verified'])
-            with patch('rapidocr_onnxruntime.RapidOCR', return_value=Mock(return_value=(result,None))), patch('zxingcpp.read_barcodes',return_value=[]):
-                unverified = recognize([{'id':STYLE,'path':str(path)}])
-            self.assertEqual(unverified[0]['lines'][0]['text'],'6"914678701777')
+            for raw_text in ['6"914678701777', '6 l914678701777]']:
+                result = [[[[10,20],[110,20],[110,60],[10,60]], raw_text, .99]]
+                barcode = SimpleNamespace(text='6914678701777', format=zxingcpp.BarcodeFormat.EAN13)
+                with patch('rapidocr_onnxruntime.RapidOCR', return_value=Mock(return_value=(result,None))), patch('zxingcpp.read_barcodes',side_effect=[[barcode],[]]):
+                    output = recognize([{'id':STYLE,'path':str(path),'region':[.2,.25,.8,.75]}])
+                self.assertEqual(output[0]['lines'][0]['text'],'6914678701777')
+                self.assertTrue(output[0]['lines'][0]['barcode_verified'])
+                with patch('rapidocr_onnxruntime.RapidOCR', return_value=Mock(return_value=(result,None))), patch('zxingcpp.read_barcodes',return_value=[]):
+                    unverified = recognize([{'id':STYLE,'path':str(path)}])
+                self.assertEqual(unverified[0]['lines'][0]['text'],raw_text)
 
     def test_pending_color_is_cached_and_originals_are_retained(self):
         import tempfile,json

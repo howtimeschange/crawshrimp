@@ -42,7 +42,9 @@ def recognize(jobs):
         # OCR can drop the separate leading EAN digit. Only normalize against
         # a barcode independently decoded from pixels; never against expected style.
         for line in lines:
-            compact = re.sub(r'[\s\"\'‘’“”]', '', line['text'])
+            # Barcode bars can be read as l/I or punctuation. Normalize only
+            # against an EAN independently decoded from these same pixels.
+            compact = re.sub(r'[^0-9]', '', line['text']) if re.fullmatch(r'[0-9\s\"\'‘’“”\[\]|lI]+', line['text']) else line['text']
             matched = [b for b in barcodes if compact.isdigit() and len(compact) >= 12 and compact in b]
             if len(matched) == 1:
                 line['raw_text'] = line['text']
@@ -64,6 +66,7 @@ def recognize(jobs):
                 value = min(candidates, key=lambda item: item[0])[1]
                 if re.search(r'(?<!\d)\d{5}(?!\d)', value['text']):
                     value['raw_text'] = value.get('raw_text', value['text'])
-                    value['text'] = '颜色：' + value['text']
+                    if not re.match(r'^(?:颜色|色号)[:：]', value['text']):
+                        value['text'] = '颜色：' + value['text']
         output.append({'id': job['id'], 'lines': lines, 'barcodes': view_barcodes})
     return output
