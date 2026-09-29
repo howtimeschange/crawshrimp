@@ -175,7 +175,9 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root/'bundle.json').write_text('{}')
-            source = root/'source.jpg';source.write_bytes(b'original-source')
+            from PIL import Image
+            source = root/'source.jpg'
+            Image.new('RGB', (100, 100), 'white').save(source)
             rows = [{'输入款号':STYLE,'颜色':'00323','下载结果':'已下载','本地文件':str(source),'原文件名':'source.jpg'}]
             def launch(command, **kwargs):
                 out = Path(command[command.index('--out')+1])
@@ -189,7 +191,7 @@ class RecoveryTests(unittest.TestCase):
                 reports, roots = specialist.prepare(data_rows=rows,output_root=root/'out',specialist_bundle=root,shoe_categories={STYLE:'运动'})
             self.assertFalse(roots)
             self.assertEqual(reports[0]['处理动作'],'待复核已跳过')
-            self.assertEqual((Path(reports[0]['本地文件'])/'source.jpg').read_bytes(),b'original-source')
+            self.assertEqual((Path(reports[0]['本地文件'])/'source.jpg').read_bytes(),source.read_bytes())
 
     def test_finalize_keeps_pending_style_alongside_completed_style(self):
         import tempfile

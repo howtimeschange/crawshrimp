@@ -63,7 +63,9 @@ def verify(texts, style, color, boxes=None):
     styles = set()
     ignored_ean = []
     for text in texts:
-        compact = re.sub(r"\s", "", text)
+        # OCR inserts quote-like marks into the separately printed EAN digits.
+        # Ignore only a complete checksum-valid EAN, never a bare 12-digit SKU.
+        compact = re.sub(r"[\s\"'‘’“”″′]", "", text)
         if re.fullmatch(r"\d{13}", compact):
             check = (10 - sum(int(n) * (1 if i % 2 == 0 else 3)
                               for i, n in enumerate(compact[:12])) % 10) % 10

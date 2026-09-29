@@ -1,0 +1,21 @@
+{
+  "styles": 84,
+  "expected_styles": 84,
+  "groups": 142,
+  "missing_styles": [],
+  "extra_styles": [],
+  "download_success": 4021,
+  "download_failed": 0,
+  "output_slot_records": 2882,
+  "unique_output_files": 2882,
+  "decode_errors": [],
+  "missing_visual_audits": [],
+  "yx_absent_groups": 50,
+  "yx_unverified": [],
+  "categories": {
+    "运动": 22,
+    "休闲": 21,
+    "婴童": 25,
+    "雪地靴": 16
+  }
+}

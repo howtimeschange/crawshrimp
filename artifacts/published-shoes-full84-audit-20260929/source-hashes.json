@@ -1,0 +1,7 @@
+{
+  "core/shenhui_shoe_fast.py": "c96d711e33fdd4f91c0e3826dfbe2a6def731b921d900f927c37cb862c5a4c53",
+  "core/shenhui_shoe_specialist.py": "3d291ab862dc029e0558675ccb7d7f92e8beb7517760e42277ad81e61d3e8977",
+  "core/shoe_specialist/electronic_labels.py": "598b5555d53af9101edc2e8dff5540c2623b893f0ba41747dd462fc58dec1625",
+  "core/shoe_specialist/identity.py": "f5ff3d93fa61c391118820c2d051593b744aa6c14697299b380e6a39aff6d807",
+  "core/shoe_specialist/worker.py": "481e33f3f752b0782e32be09047c2f49cbde95e25cbb1fa98f53ea4cebb1ddb5"
+}

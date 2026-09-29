@@ -116,7 +116,9 @@ class ElectronicLabels:
             return self.cache[style]
         collected = defaultdict(list)
         seen = set()
-        for source in [s for s in self.sources if s['style'] == style][:32]:
+        # Cloud order often lists dozens of marketing images before the
+        # production-label sheets. A positional cap silently loses labels.
+        for source in [s for s in self.sources if s['style'] == style]:
             if source['sha256'] in seen:
                 continue
             seen.add(source['sha256'])
@@ -128,6 +130,15 @@ class ElectronicLabels:
                 regions = label_regions(source['path'])
                 records = self.recognize([{'id': f"{source['id']}-{i}", 'path': source['path'], 'region': region}
                                           for i, region in enumerate(regions)])
+                # Grid detection can find shoe decoration/barcode fragments
+                # instead of the outer border. Retry the complete source only
+                # when none of those crops yields an independently bound label.
+                # Full-page identity checks still reject mixed style/color pages.
+                if regions != [[0, 0, 1, 1]] and not any(
+                        tile_facts(record, region) for region, record in zip(regions, records)):
+                    regions = regions + [[0, 0, 1, 1]]
+                    records = records + self.recognize([
+                        {'id': f"{source['id']}-full", 'path': source['path'], 'region': [0, 0, 1, 1]}])
                 for region, record in zip(regions, records):
                     fact = tile_facts(record, region)
                     evidence['tiles'].append({'region': region, 'fact': fact, 'lines': record['lines']})

@@ -9,6 +9,60 @@ from core.shoe_specialist.identity import packaging_bbox
 DEFAULT_BUNDLE = Path(__file__).resolve().parent / "shoe_specialist" / "assets"
 
 
+def _unreadable_sources(records):
+    """Fully decode once so one truncated asset cannot abort a model batch."""
+    from PIL import Image, UnidentifiedImageError
+    failures = {}
+    for record in records:
+        path = str(Path(record["path"]).resolve())
+        if path in failures:
+            continue
+        try:
+            with Image.open(path) as image:
+                image.load()
+        except (OSError, UnidentifiedImageError, ValueError) as error:
+            failures[path] = str(error)
+    return failures
+
+
+
+def _has_studio_background(path):
+    """Reject unfinished photographic backgrounds before pose export."""
+    import numpy as np
+    from PIL import Image, ImageOps
+    with Image.open(path) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.thumbnail((128, 128))
+        pixels = np.asarray(image, dtype=float)
+    edge = np.concatenate([pixels[0], pixels[-1], pixels[:, 0], pixels[:, -1]])
+    background = np.median(edge, axis=0)
+    uniform = np.mean(np.max(abs(edge - background), axis=1) <= 8)
+    return bool(background.mean() >= 235 and background.max() - background.min() <= 8
+                and uniform >= 0.90)
+
+
+def _reject_unfinished_pose_sources(slots, entries, category):
+    for key in ("tmz1", "tmz2", "tmz3", "tmz4", "yq2", "yq3"):
+        if key == "tmz4" and category == "雪地":
+            continue  # Generated lining crops intentionally fill the frame.
+        index = int(key[-1]) - 1
+        source = slots.get(key, "") if key.startswith("tmz") else slots["yq"][index]
+        if not source or _has_studio_background(entries[source]["path"]):
+            continue
+        reason = "选中原图背景未修整，不能作为成品姿势图；需要补充同姿势修图后重跑"
+        slots.setdefault("_pending_slots", {})[key] = reason
+        slots.setdefault("_rejected_pose_sources", []).append(
+            {"slot": key, "filename": source, "reason": reason})
+        if key.startswith("tmz"):
+            slots[key] = ""
+            slots["wpz"][index] = ""
+            if key == "tmz2":
+                slots["yq"][0] = ""
+        else:
+            slots["yq"][index] = ""
+    return slots
+
+
 def prepare(
     *,
     data_rows,
@@ -84,6 +138,35 @@ def prepare(
                     "cloud_path": cloud,
                 }
             )
+    # Include AI exports as well as model candidates in the integrity gate.
+    invalid = _unreadable_sources(
+        [e for entries in grouped.values() for e in entries] + label_sources)
+    damaged_reports = []
+    if invalid:
+        for row in data_rows:
+            path = str(Path(row.get("本地文件") or "").resolve())
+            if path not in invalid:
+                continue
+            style = str(row.get("输入款号") or row.get("__shenhui_group_code") or "")
+            color = str(row.get("__shoe_color_code") or row.get("颜色") or "")
+            filename = str(row.get("__shoe_original_filename") or row.get("原文件名") or Path(path).name)
+            warning = f"原图无法完整解码，已隔离并继续其他素材：{filename}；{invalid[path]}"
+            log(f"[warn] {style}/{color} {warning}")
+            target = Path(output_root) / style / "_损坏素材" / p._safe_path_component(color or "未分色") / Path(path).name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            damaged_reports.append(p._skipped_slot_report_row(
+                style_code=style, color=color, slot="损坏原图", source_name=filename,
+                output_path=str(target), warning=warning, action="损坏原图已隔离",
+                download_result="已下载"))
+        data_rows = [r for r in data_rows if str(Path(r.get("本地文件") or "").resolve()) not in invalid]
+        rows = [r for r in rows if r["path"] not in invalid]
+        label_sources = [r for r in label_sources if r["path"] not in invalid]
+        grouped = {key: [e for e in entries if str(e["path"].resolve()) not in invalid]
+                   for key, entries in grouped.items()}
+        grouped = {key: entries for key, entries in grouped.items() if entries}
+        if not rows:
+            return damaged_reports, {}
     analysis = Path(output_root) / "_shoe_analysis" / "bala-specialist"
     analysis.mkdir(parents=True, exist_ok=True)
     # Unique run folder avoids stale inference being mistaken for a new result.
@@ -233,8 +316,13 @@ def prepare(
         # only when unchanged foreground pixels and silhouette agree.
         from core.shenhui_shoe_fast import _gray_mates
 
-        pose_by = {k: v for k, v in by.items() if "ai角度" not in k.lower()}
-        ctx = {"entries": pose_by, "ids": {k: k for k in pose_by}}
+        feature_cards = set(g.get("yx_evidence", {}).get("feature_card_filenames", []))
+        if name("yx"):
+            feature_cards.add(name("yx"))
+        pose_by = {k: v for k, v in by.items()
+                   if "ai角度" not in k.lower() and k not in feature_cards}
+        ctx = {"entries": pose_by, "ids": {k: k for k in pose_by},
+               "strong_gray_pair_evidence": True}
         corrections = []
         for i in range(1, 5):
             key = f"tmz{i}"
@@ -262,6 +350,7 @@ def prepare(
                 corrections.append({'slot': f'yq{index+1}', 'before': previous,
                                     'after': mates[0],
                                     'rule': 'same foreground pixels and silhouette, gray counterpart'})
+        slots = _reject_unfinished_pose_sources(slots, by, g["category"])
         slots = p._apply_o_category_rule(g["category"], slots)
         evidence = {
             "version": "bala-shoe-dinov2-onnx-v2",
@@ -281,9 +370,8 @@ def prepare(
             slots['_label_warning'] = '已排除款色冲突标签，使用另一张独立核验通过的标签：' + '；'.join(
                 Path(item['path']).name for item in g['rejected_label_sources'])
         if not slots["yx"]:
-            slots["_pending_slots"] = {
-                "yx": "小模型未选中功能卡；不等同于全部源素材不存在，请查看完整原图"
-            }
+            slots.setdefault("_pending_slots", {})["yx"] = (
+                "小模型未选中功能卡；不等同于全部源素材不存在，请查看完整原图")
         # Cache only verified source decisions. Existing exporter owns all physical paths/conversions.
         cache[style, color] = {
             "slots": slots,
@@ -318,4 +406,4 @@ def prepare(
             shutil.copy2(entry["path"], target)
         report["本地文件"] = str(raw_root)
         # Do not count an all-unconfirmed style as a completed package.
-    return reports, roots
+    return reports + damaged_reports, roots

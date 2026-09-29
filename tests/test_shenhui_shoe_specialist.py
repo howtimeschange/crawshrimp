@@ -143,3 +143,38 @@ class SpecialistTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_unfinished_background_abstains_without_shifting_slots(tmp_path):
+    from PIL import Image, ImageDraw
+    gray = tmp_path / 'gray.png'
+    raw = tmp_path / 'raw.png'
+    im = Image.new('RGB', (200, 200), (242, 242, 242))
+    ImageDraw.Draw(im).rectangle((50, 60, 150, 150), fill='brown')
+    im.save(gray)
+    im = Image.new('RGB', (200, 200), (220, 219, 225))
+    ImageDraw.Draw(im).rectangle((50, 60, 150, 150), fill='brown')
+    im.save(raw)
+    slots = {**{f'tmz{i}': 'gray' for i in range(1,6)},
+             'tmz4': 'raw', 'wpz': ['gray']*3+['raw','gray','gray'],
+             'yq': ['gray']*3, 'tms': 'gray', 'yx': 'gray', 'o': 'gray'}
+    specialist._reject_unfinished_pose_sources(slots, {'gray': {'path': gray}, 'raw': {'path': raw}}, '休闲')
+    assert slots['tmz4'] == '' and slots['wpz'][3] == ''
+    assert slots['wpz'][4:] == ['gray', 'gray']
+    assert slots['_rejected_pose_sources'][0]['filename'] == 'raw'
+    assignments, warnings = packaging.build_output_assignments({'color': slots})
+    assert not any(r['slot'] in ('tmz4', 'wpz4') for r in assignments)
+    assert any(r['slot'] == 'wpz6' for r in assignments)
+    assert any(r['slot'] == 'tmz4' for r in warnings)
+
+
+def test_truncated_source_is_isolated_without_global_pillow_override(tmp_path):
+    from PIL import Image, ImageFile
+    good = tmp_path / 'good.jpg'
+    bad = tmp_path / 'bad.jpg'
+    Image.new('RGB', (100, 100), 'red').save(good)
+    bad.write_bytes(good.read_bytes()[:-30])
+    previous = ImageFile.LOAD_TRUNCATED_IMAGES
+    failures = specialist._unreadable_sources([{'path': good}, {'path': bad}])
+    assert set(failures) == {str(bad.resolve())}
+    assert ImageFile.LOAD_TRUNCATED_IMAGES == previous

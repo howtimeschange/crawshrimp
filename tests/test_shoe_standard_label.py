@@ -31,6 +31,17 @@ def test_standard_physical_candidate_precedes_electronic():
     assert g['slots']['wpz6']['path']=='standard.jpg'
     p.references.assert_not_called()
 
+def test_small_certificate_field_retries_crop_without_weakening_identity():
+    for color, passed in [('00416', True), ('01210', False)]:
+        g=group()
+        g['label']={'lines':lines(True), 'label_bbox':[.1,.2,.7,.8]}
+        g['label']['lines'][3]['text']='帮萄材料：织物'
+        recognize=Mock(return_value=[{'lines':lines(True,color)}])
+        ensure_standard_label(g,recognize,None)
+        assert (g['label_status']=='verified') == passed
+        assert recognize.call_args.args[0][0]['region']==[.1,.2,.7,.8]
+        if passed: assert g['label']['output_kind']=='standard_box_photo'
+
 def test_explicit_color_name_preserves_printed_letter_suffix():
     from core.shoe_specialist.identity import color_fields
     assert color_fields(['颜色：梦幻粉A61519'])[0]['name'] == '梦幻粉A'
@@ -54,3 +65,16 @@ def test_landscape_electronic_label_preserves_both_edges(tmp_path):
         assert result.size==(800,800)
         assert result.getpixel((10,400))[2]>200
         assert result.getpixel((790,400))[1]>90
+
+
+def test_quoted_checksum_valid_ean_does_not_become_conflicting_style():
+    from core.shoe_specialist.identity import verify
+    from core.shoe_specialist.worker import label_data
+    texts = ['208127146205', '颜色：白花色调00410', '6″914678500516']
+    result = verify(texts, '208127146205', '00410')
+    assert result['passed']
+    assert result['ignored_valid_ean13'] == ['6914678500516']
+    lines = [{'text': text, 'box': [.1, .8-i*.1, .5, .05]} for i,text in enumerate(texts)]
+    assert label_data(lines, '208127146205', '00410')['check']['passed']
+    assert not verify(texts + ['208127146206'], '208127146205', '00410')['passed']
+    assert not verify(texts[:-1] + ['6″914678500517'], '208127146205', '00410')['passed']

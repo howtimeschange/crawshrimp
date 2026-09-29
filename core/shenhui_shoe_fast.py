@@ -393,22 +393,36 @@ def _gray_mates(ctx, anchor_name):
         if not (
             other.valid
             and 235 <= other.background_luma < s.SHOE_WHITE_BACKGROUND_LUMA
-            and abs(feature.aspect_ratio - other.aspect_ratio) <= 0.05
             and abs(feature.bounding_coverage - other.bounding_coverage) <= 0.05
-            and s._binary_pose_distance(feature, other)
-            <= max_distance
         ):
+            continue
+        distance = s._binary_pose_distance(feature, other)
+        aspect_delta = abs(feature.aspect_ratio - other.aspect_ratio)
+        strict_shape = aspect_delta <= 0.05 and distance <= max_distance
+        # Background replacement changes segmentation at pale shoe edges and
+        # shadows. Strong aligned RGB evidence can resolve those mask changes;
+        # retain bounded shape/coverage checks and never rely on names alone.
+        tolerant_shape = (ctx.get("strong_gray_pair_evidence", False) and distance <= 0.075 and
+                          aspect_delta / max(feature.aspect_ratio, other.aspect_ratio) <= 0.10)
+        if not (strict_shape or tolerant_shape):
             continue
         if signature is None:
             signature = _source_visual_fact(ctx, entry['path'], 'signature')
-        if (
-            s._same_background_foreground_pixel_match(
-                signature, _source_visual_fact(ctx, path, 'signature')
-            )
-            >= s.SHOE_SAME_BACKGROUND_VISUAL_MIN_PIXEL_MATCH
-        ):
-            found.append(key)
-    return found
+        pixel_match = s._same_background_foreground_pixel_match(
+            signature, _source_visual_fact(ctx, path, 'signature'))
+        # Tighter geometry permits a small amount of pale-edge mask noise.
+        # This also covers gray copies renamed ykN; names are not evidence.
+        tight_pair = (tolerant_shape
+                      and distance <= 0.05
+                      and aspect_delta / max(feature.aspect_ratio, other.aspect_ratio) <= 0.06
+                      and abs(feature.bounding_coverage - other.bounding_coverage) <= 0.02
+                      and pixel_match >= 0.80)
+        if ((strict_shape and pixel_match >= s.SHOE_SAME_BACKGROUND_VISUAL_MIN_PIXEL_MATCH)
+                or (tolerant_shape and pixel_match >= 0.85) or tight_pair):
+            found.append((pixel_match, key))
+    if ctx.get("strong_gray_pair_evidence", False):
+        found.sort(key=lambda item: item[0], reverse=True)
+    return [key for _, key in found]
 
 
 def _options(ctx, slots, pending, expanded=False):

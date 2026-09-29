@@ -162,6 +162,35 @@ def is_standard_box_label(lines):
 
 def ensure_standard_label(group, recognize, electronic):
     """Keep identity evidence separate from the label used in the deliverable."""
+    # A whole shoe-box photo can bind identity while its small material text
+    # remains unreadable. Re-read the certificate at its actual resolution;
+    # do not relax the required fields or infer them from a known SKU.
+    label = group.get('label', {})
+    text = ' '.join(line['text'] for line in label.get('lines', []))
+    if (group.get('label_status') == 'verified'
+            and not is_standard_box_label(label.get('lines', []))
+            and label.get('label_bbox')
+            and all(marker in text for marker in ('产品名称', '颜色'))
+            and any(marker in text for marker in ('合格证', '执行标准', '产品等级'))):
+        record = recognize([{'id': group['style']+'-'+group['color']+'-standard',
+                             'path': group['slots']['wpz6']['path'],
+                             'region': label['label_bbox']}])[0]
+        group.setdefault('standard_label_attempts', []).append(record)
+        crop_check = verify([line['text'] for line in record['lines']], group['style'],
+                            group['color'], [line['box'] for line in record['lines']])
+        # Keep the already verified identity from this same physical source.
+        # Crop OCR may improve tiny material text but damage another header.
+        # Only supplement the material field, never SKU/color/barcode facts.
+        material_lines = [line for line in record['lines']
+                          if line['text'].startswith('帮面材料')
+                          and line.get('confidence', 0) >= .85]
+        combined = label['lines'] + material_lines
+        if crop_check['status'] != 'mismatch' and is_standard_box_label(combined):
+            try:
+                reread = label_data(combined, group['style'], group['color'])
+                group['label'] = reread
+            except ValueError:
+                pass
     if group.get('label_status') == 'verified' and is_standard_box_label(group['label']['lines']):
         group['label']['output_kind'] = 'standard_box_photo'
         return
@@ -278,6 +307,8 @@ def run(inp, bundle, out):
                     "model_sha256": metadata["files"]["yx.json"],
                     "threshold": threshold,
                     "decision": "selected" if prob.max() >= threshold else "pending_review",
+                    "feature_card_filenames": [rows[pool[int(i)]]["filename"]
+                                               for i in np.flatnonzero(prob >= threshold)],
                     "top_candidates": [{"id": rows[pool[int(i)]]["id"],
                                         "filename": rows[pool[int(i)]]["filename"],
                                         "sha256": rows[pool[int(i)]]["sha256"],
