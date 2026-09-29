@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from core.js_runner import (
     JSRunner,
@@ -1483,6 +1483,50 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data, [{"ok": True}])
         self.assertEqual(runner.calls[0]["phase"], "main")
         self.assertTrue(runner.calls[0]["allow_navigation_retry"])
+
+    async def test_short_video_crash_and_timeout_refresh_without_replaying_phase(self):
+        class CrashRunner(JSRunner):
+            def __init__(self, error, cap=False):
+                super().__init__("ws://example.invalid")
+                self.error = error
+                self.cap = cap
+                self.phases = []
+                self.reloads = []
+            async def _persist_run_params(self, *args): pass
+            async def _clear_run_params(self, *args): pass
+            async def _refresh_ws_url(self): pass
+            async def _cdp_send(self, method, params): self.reloads.append(method)
+            async def evaluate(self, expression, **kwargs):
+                phase = json.loads(_extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__"))
+                state = json.loads(_extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__"))
+                self.phases.append(phase)
+                if phase == "main":
+                    return JSResult(success=True, data=[], meta={
+                        "action": "next_phase", "next_phase": "publish_guang_api", "sleep_ms": 0,
+                        "shared": {"jobs": [{}], "results": [{"id": "done"}],
+                                   "page_recovery_count": 12 if self.cap else 0}})
+                if phase == "publish_guang_api":
+                    return JSResult(success=False, error=self.error)
+                assert phase == "recover_page"
+                assert state["page_recovery_phase"] == "publish_guang_api"
+                return JSResult(success=True, data=state["results"], meta={"action": "complete"})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir) / "bala-ai-video-assistant"
+            directory.mkdir()
+            script = directory / "short-video-batch-upload.js"
+            script.write_text("/* recovery-aware adapter */")
+            for error in ("{'code': -32000, 'message': 'Target crashed'}", "timeout"):
+                runner = CrashRunner(error)
+                with patch("core.js_runner.asyncio.sleep", new=AsyncMock()):
+                    result = await runner.run_script_file(script)
+                self.assertEqual(result, [{"id": "done"}])
+                self.assertEqual(runner.phases, ["main", "publish_guang_api", "recover_page"])
+                self.assertEqual(runner.reloads, ["Page.reload"])
+            runner = CrashRunner("Target crashed", cap=True)
+            with self.assertRaisesRegex(RuntimeError, "Target crashed"):
+                await runner.run_script_file(script)
+            self.assertEqual(runner.reloads, [])
 
     async def test_timeout_replay_requires_explicit_read_only_contract(self):
         class TimeoutRunner(JSRunner):

@@ -1510,6 +1510,35 @@
     })
   }
 
+  if (phase === 'recover_page') {
+    const interrupted = compact(shared.page_recovery_phase)
+    const state = { ...shared, page_ready_attempts: 0, upload_attempts: 0, selector_attempts: 0 }
+    delete state.page_recovery_phase
+    const target = interrupted.includes('recommend') ? 'recommend'
+      : /selector|video_record|sell|product/.test(interrupted) ? 'product' : 'guang'
+    const key = `${state.job_index}:${target}`
+    const attempts = { ...(state.page_recovery_attempts || {}) }
+    attempts[key] = Number(attempts[key] || 0) + 1
+    state.page_recovery_attempts = attempts
+    // A crashed renderer loses pending receipts. Never resubmit an ambiguous write.
+    if (/^(publish_(guang|recommend)_api|wait_(guang|recommend)_receipt|submit_product_api)$/.test(interrupted)) {
+      const uncertain = appendNote(mergeWork(state, { [`${target}_status`]: '待核实' }),
+        `网页崩溃或超时，${interrupted}提交结果待核实；未重复提交，请核实平台结果`)
+      return target === 'guang' ? routeAfterGuang(uncertain)
+        : target === 'recommend' ? routeAfterRecommend(uncertain) : finishJob(uncertain)
+    }
+    if (attempts[key] > 2) {
+      const failed = appendNote(mergeWork(state, { [`${target}_status`]: '失败' }), '当前入口连续恢复失败，已跳过并继续后续任务')
+      return target === 'guang' ? routeAfterGuang(failed)
+        : target === 'recommend' ? routeAfterRecommend(failed) : finishJob(failed)
+    }
+    if (/sell_readback/.test(interrupted)) return nextPhase('wait_sell_readback', 1200, state)
+    if (target === 'product') return nextPhase('navigate_selector', 0, state)
+    delete state[`${target}_page_job_index`]
+    delete state[`${target}_injected_job_index`]
+    return nextPhase(`navigate_${target}`, 0, state)
+  }
+
   if (phase === 'navigate_guang') {
     const { job } = currentJob(shared)
     if (!job) return complete([...(shared.invalid_rows || []), ...(shared.results || [])], shared)

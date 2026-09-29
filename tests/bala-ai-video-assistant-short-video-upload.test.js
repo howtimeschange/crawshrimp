@@ -923,3 +923,46 @@ test('Guang and recommend publication phases return promptly and consume their o
     assert.equal(submits, 1)
   }
 })
+
+test('renderer recovery restarts only the interrupted upload and preserves completed work', async () => {
+  const shared = {
+    jobs: [{ publish_guang: true, publish_recommend: true }], job_index: 0,
+    results: [{ 内容ID: '123456789' }], current_work: { guang_content_id: '987654321', guang_status: '成功' },
+    page_recovery_phase: 'wait_recommend_upload', recommend_page_job_index: 0,
+    recommend_injected_job_index: 0, upload_attempts: 80,
+  }
+  const result = await runAdapter({ phase: 'recover_page', shared })
+  assert.equal(result.meta.next_phase, 'navigate_recommend')
+  assert.equal(result.meta.shared.recommend_injected_job_index, undefined)
+  assert.equal(result.meta.shared.recommend_page_job_index, undefined)
+  assert.equal(result.meta.shared.upload_attempts, 0)
+  assert.deepEqual(plain(result.meta.shared.results), shared.results)
+  assert.deepEqual(plain(result.meta.shared.current_work), shared.current_work)
+})
+
+for (const interrupted of ['publish_guang_api', 'wait_guang_receipt', 'publish_recommend_api', 'wait_recommend_receipt', 'submit_product_api']) {
+  test(`renderer recovery never replays ${interrupted}`, async () => {
+    const shared = {
+      jobs: [{ publish_guang: true, publish_recommend: true, bind_product: false }], job_index: 0,
+      results: [], current_work: { guang_content_id: '987654321' }, page_recovery_phase: interrupted,
+    }
+    const result = await runAdapter({ phase: 'recover_page', shared })
+    if (interrupted.includes('guang')) {
+      assert.equal(result.meta.next_phase, 'navigate_recommend')
+      assert.equal(result.meta.shared.current_work.guang_status, '待核实')
+    } else {
+      assert.equal(result.meta.action, 'complete')
+      assert.match(JSON.stringify(result.data), /待核实/)
+    }
+    assert.match(JSON.stringify(result.meta.shared), /未重复提交/)
+  })
+}
+
+test('repeated renderer failures skip the failing target within a bounded retry count', async () => {
+  const result = await runAdapter({ phase: 'recover_page', shared: {
+    jobs: [{ publish_guang: true, publish_recommend: true }], job_index: 0, results: [],
+    page_recovery_phase: 'prepare_guang_upload', page_recovery_attempts: { '0:guang': 2 },
+  } })
+  assert.equal(result.meta.next_phase, 'navigate_recommend')
+  assert.equal(result.meta.shared.current_work.guang_status, '失败')
+})

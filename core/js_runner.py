@@ -4206,6 +4206,42 @@ class JSRunner:
                 payload.update(extra)
             await control_hook(payload)
 
+        async def recover_short_video_page(error, failed_phase, state):
+            # Only this adapter implements the host recovery phase. Never replay a
+            # write phase after losing the renderer's in-memory publish receipt.
+            if (script_path.name != "short-video-batch-upload.js"
+                    or script_path.parent.name != "bala-ai-video-assistant"
+                    or not state.get("jobs")):
+                return False
+            message = str(error or "").lower()
+            if not any(value in message for value in (
+                    "target crashed", "session deleted because of page crash",
+                    "timeout", "timed out", "脚本执行超时")):
+                return False
+            count = int(state.get("page_recovery_count", 0))
+            if count >= 12 or failed_phase == "recover_page":
+                return False
+            state["page_recovery_count"] = count + 1
+            state["page_recovery_phase"] = failed_phase
+            state["current_store"] = "网页崩溃或超时，正在自动刷新并恢复进度"
+            await cooperate("page_recovery", page, failed_phase, state)
+            logger.warning("短视频网页崩溃或超时，自动刷新恢复 %s/12 (phase=%s)", count + 1, failed_phase)
+            # A failed reload is not recovery. Retry the reload, never the POST.
+            for attempt in range(2):
+                try:
+                    await self._refresh_ws_url()
+                    reply = await self._cdp_send("Page.reload", {"ignoreCache": True})
+                    if (reply or {}).get("error"):
+                        raise RuntimeError(str(reply["error"]))
+                    self._page_file_cache_keys.clear()
+                    await asyncio.sleep(2.0)
+                    await self._refresh_ws_url()
+                    return True
+                except Exception:
+                    if attempt:
+                        raise
+            return False
+
         try:
             try:
                 page_shared: dict = {}
@@ -4240,6 +4276,9 @@ class JSRunner:
                                 self._is_navigation_error(error_message) or self._is_transient_cdp_transport_error(error_message)
                             ):
                                 error_message += '；结果待核实，未自动重试，请先核实平台结果，避免重复提交'
+                            if await recover_short_video_page(error_message, phase, shared):
+                                phase = "recover_page"
+                                continue
                             logger.error(f"脚本执行失败 (page={page}, phase={phase}): {error_message}")
                             raise RuntimeError(error_message)
 
@@ -4307,9 +4346,15 @@ class JSRunner:
                             await cooperate("before_file_inject", page, phase, shared, {
                                 "file_item_total": len(items),
                             })
-                            inject_result = await self.inject_files(items)
-                            if not inject_result.success:
-                                raise RuntimeError(inject_result.error or "文件注入失败")
+                            try:
+                                inject_result = await self.inject_files(items)
+                                if not inject_result.success:
+                                    raise RuntimeError(inject_result.error or "文件注入失败")
+                            except Exception as error:
+                                if await recover_short_video_page(error, phase, shared):
+                                    phase = "recover_page"
+                                    continue
+                                raise
                             post_sleep = float(meta.get("sleep_ms", 500)) / 1000.0
                             await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(post_sleep * 1000)})
                             await asyncio.sleep(post_sleep)
@@ -4758,7 +4803,13 @@ class JSRunner:
                             if not next_phase or not url.startswith("https://"):
                                 raise RuntimeError("发布器导航缺少有效网址或下一阶段")
                             await cooperate("before_navigate_publisher", page, phase, shared)
-                            await self._navigate_publisher(url)
+                            try:
+                                await self._navigate_publisher(url)
+                            except Exception as error:
+                                if await recover_short_video_page(error, phase, shared):
+                                    phase = "recover_page"
+                                    continue
+                                raise
                             phase = str(next_phase)
                             await self._refresh_ws_url()
                             continue
