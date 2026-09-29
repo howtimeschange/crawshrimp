@@ -5,11 +5,11 @@ This checklist is the required evidence record before claiming desktop updater r
 ## Release Identity
 
 - Release scope (`PATCH` / `MINOR` / `MAJOR`): `PATCH`
-- Version selection rationale: 修复搜推图文发布的素材识别、断线回执恢复与重复提交风险，并更新模型配置和适配包；未新增独立一级功能或改变架构，按 PATCH 升版。
-- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.10`
+- Version selection rationale: 修复鞋品标签核验、灰底素材配对、损坏图片隔离、短视频崩溃恢复和上新标签下载；未新增独立一级功能或改变架构，按 PATCH 升版。
+- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.11`
 - Source commit: `PENDING`
-- Old version under test: `v2.5.9`
-- New version under test: `v2.5.10`
+- Old version under test: `v2.5.10`
+- New version under test: `v2.5.11`
 - GitHub main build run ID: `PENDING`
 - GitHub tag build run ID: `PENDING`
 - Formal release URL: `PENDING`
