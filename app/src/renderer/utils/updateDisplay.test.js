@@ -66,6 +66,46 @@ test('downloading status rounds and clamps progress without an action', () => {
   )
 })
 
+test('downloading without progress shows indeterminate copy instead of fixed zero', () => {
+  for (const progress of [null, undefined, {}, { percent: null }, { percent: '' }, { percent: ' ' }]) {
+    assert.deepEqual(
+      buildSidebarUpdatePresentation({
+        status: 'downloading',
+        currentVersion: '2.0.0',
+        latestVersion: '2.0.1',
+        progress,
+      }, false),
+      {
+        action: null,
+        label: '准备下载',
+        versionLabel: 'v2.0.0',
+        title: '准备下载 v2.0.1',
+        tone: 'downloading',
+        percent: null,
+      },
+    )
+  }
+})
+
+test('downloading preserves a reported zero percent progress', () => {
+  assert.deepEqual(
+    buildSidebarUpdatePresentation({
+      status: 'downloading',
+      currentVersion: '2.0.0',
+      latestVersion: '2.0.1',
+      progress: { percent: 0 },
+    }, false),
+    {
+      action: null,
+      label: '下载中 0%',
+      versionLabel: 'v2.0.0',
+      title: '正在下载 v2.0.1',
+      tone: 'downloading',
+      percent: 0,
+    },
+  )
+})
+
 test('waiting status remains installable instead of blocking on task count', () => {
   assert.deepEqual(
     buildSidebarUpdatePresentation({

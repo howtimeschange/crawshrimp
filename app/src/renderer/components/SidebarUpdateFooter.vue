@@ -45,11 +45,12 @@
       class="download-progress"
       role="progressbar"
       :aria-label="presentation.title"
-      :aria-valuenow="presentation.percent"
+      :aria-valuenow="presentation.percent === null ? undefined : presentation.percent"
       aria-valuemin="0"
       aria-valuemax="100"
+      :class="{ indeterminate: presentation.percent === null }"
     >
-      <span class="download-progress-fill" :style="{ width: `${presentation.percent || 0}%` }"></span>
+      <span class="download-progress-fill" :style="{ width: `${presentation.percent ?? 100}%` }"></span>
     </div>
   </footer>
 </template>
@@ -213,6 +214,10 @@ button.update-control:focus-visible {
   height: 100%;
   border-radius: inherit;
   background: var(--orange);
+}
+
+.download-progress.indeterminate .download-progress-fill {
+  opacity: 0.42;
 }
 
 .sidebar-update-footer.collapsed {

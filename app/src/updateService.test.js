@@ -2,6 +2,8 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const { createUpdateService, fetchLatestReleaseNotes } = require('./updateService')
+const { CancellationToken } = require('builder-util-runtime')
+const quietLog = { info() {}, warn() {}, error() {}, debug() {} }
 
 function createUpdater() {
   const updater = new EventEmitter()
@@ -17,6 +19,7 @@ function createService(options = {}) {
     app: { isPackaged: true, getVersion: () => '2.0.0' },
     autoUpdater: createUpdater(),
     platformSupport: { supported: true, reason: '' },
+    log: quietLog,
     ...options,
   })
 }
@@ -55,7 +58,7 @@ test('available update records the time of the automatic check', async () => {
   assert.match(service.getStatus().lastCheckedAt, /^\d{4}-\d{2}-\d{2}T/)
 })
 
-test('downloaded update becomes waiting or ready only through readiness input', () => {
+test('downloaded update becomes waiting or ready only through readiness input', async () => {
   const updater = createUpdater()
   const service = createUpdateService({
     app: { isPackaged: true, getVersion: () => '2.0.0' },
@@ -63,7 +66,9 @@ test('downloaded update becomes waiting or ready only through readiness input', 
     platformSupport: { supported: true, reason: '' },
   })
 
-  updater.emit('update-downloaded', { version: '2.0.1' })
+  updater.emit('update-available', { version: '2.0.1' })
+  updater.downloadUpdate = async () => updater.emit('update-downloaded', { version: '2.0.1' })
+  await service.downloadUpdate()
   assert.equal(service.getStatus().status, 'ready-to-install')
   service.setInstallReadiness({
     ready: false,
@@ -120,7 +125,7 @@ test('no available update publishes the declared up-to-date status', () => {
   assert.equal(service.getStatus().status, 'up-to-date')
 })
 
-test('download progress is normalized to a stable percent and byte shape', () => {
+test('download progress is normalized to a stable percent and byte shape', async () => {
   const updater = createUpdater()
   const service = createUpdateService({
     app: { isPackaged: true, getVersion: () => '2.0.0' },
@@ -128,12 +133,14 @@ test('download progress is normalized to a stable percent and byte shape', () =>
     platformSupport: { supported: true, reason: '' },
   })
 
-  updater.emit('download-progress', {
+  updater.downloadUpdate = async () => updater.emit('download-progress', {
     percent: 34.567,
     transferred: 34567,
     total: 100000,
     bytesPerSecond: 1234,
   })
+  updater.emit('update-available', { version: '2.0.1' })
+  await service.downloadUpdate()
 
   assert.deepEqual(service.getStatus().progress, {
     percent: 34.57,
@@ -204,14 +211,16 @@ test('disk probe failure publishes an update error and skips download', async ()
   assert.match(service.getStatus().error, /statfs failed/)
 })
 
-test('quitAndInstall rejects until a downloaded update is explicitly installing', () => {
+test('quitAndInstall rejects until a downloaded update is explicitly installing', async () => {
   const updater = createUpdater()
   let installs = 0
   updater.quitAndInstall = () => { installs += 1 }
   const service = createService({ autoUpdater: updater })
 
   assert.throws(() => service.quitAndInstall(), /尚未准备好安装/)
-  updater.emit('update-downloaded', { version: '2.0.1' })
+  updater.emit('update-available', { version: '2.0.1' })
+  updater.downloadUpdate = async () => updater.emit('update-downloaded', { version: '2.0.1' })
+  await service.downloadUpdate()
   assert.throws(() => service.quitAndInstall(), /尚未准备好安装/)
   service.setInstalling()
   service.quitAndInstall()
@@ -227,7 +236,7 @@ test('configured feed URL uses the generic updater provider', () => {
     updateFeedUrl: 'https://updates.crawshrimp.com/',
   })
 
-  assert.deepEqual(feeds, [{ provider: 'generic', url: 'https://updates.crawshrimp.com/' }])
+  assert.deepEqual(feeds, [{ provider: 'generic', url: 'https://updates.crawshrimp.com/', useMultipleRangeRequest: false }])
 })
 
 test('Cloudflare update check falls back to GitHub when the primary feed is unavailable', async () => {
@@ -251,9 +260,157 @@ test('Cloudflare update check falls back to GitHub when the primary feed is unav
 
   assert.equal(service.getStatus().status, 'available')
   assert.deepEqual(feeds, [
-    { provider: 'generic', url: 'https://updates.crawshrimp.com/' },
+    { provider: 'generic', url: 'https://updates.crawshrimp.com/', useMultipleRangeRequest: false },
     { provider: 'github', owner: 'howtimeschange', repo: 'crawshrimp' },
   ])
+})
+
+test('a new check restores single-range configuration after GitHub fallback', async () => {
+  const updater = createUpdater()
+  const feeds = []
+  let checks = 0
+  updater.setFeedURL = feed => feeds.push(feed)
+  updater.checkForUpdates = async () => {
+    if (++checks === 1) throw new Error('primary unavailable')
+    updater.emit('update-available', { version: '2.1.3' })
+  }
+  const service = createService({ autoUpdater: updater, updateFeedUrl: 'https://updates.crawshrimp.com/' })
+  await service.checkForUpdates()
+  await service.checkForUpdates()
+  assert.deepEqual(feeds.at(-1), {
+    provider: 'generic', url: 'https://updates.crawshrimp.com/', useMultipleRangeRequest: false,
+  })
+})
+
+test('downloads pass a cancellation token and concurrent calls share the same attempt', async () => {
+  const updater = createUpdater()
+  let resolveDownload
+  let calls = 0
+  let token
+  updater.downloadUpdate = input => {
+    calls += 1
+    token = input
+    return new Promise(resolve => { resolveDownload = resolve })
+  }
+  const service = createService({ autoUpdater: updater })
+  updater.emit('update-available', { version: '2.0.1' })
+  const first = service.downloadUpdate()
+  const second = service.downloadUpdate()
+  await Promise.resolve()
+  assert.equal(calls, 1)
+  assert.ok(token instanceof CancellationToken)
+  assert.equal(service.getStatus().status, 'downloading')
+  assert.equal(service.getStatus().progress, null)
+  resolveDownload(['update.zip'])
+  assert.deepEqual(await first, ['update.zip'])
+  assert.deepEqual(await second, ['update.zip'])
+})
+
+test('automatic checks cannot reset an active download or replace its provider', async () => {
+  const updater = createUpdater()
+  let resolveDownload
+  let checks = 0
+  updater.checkForUpdates = async () => { checks += 1 }
+  updater.downloadUpdate = () => new Promise(resolve => { resolveDownload = resolve })
+  const service = createService({ autoUpdater: updater })
+  updater.emit('update-available', { version: '2.0.1' })
+  const pending = service.downloadUpdate()
+  await Promise.resolve()
+  updater.emit('download-progress', { percent: 20, transferred: 20, total: 100 })
+  await service.checkForUpdates()
+  assert.equal(checks, 0)
+  assert.equal(service.getStatus().progress.percent, 20)
+  assert.equal(service.getStatus().status, 'downloading')
+  resolveDownload([])
+  await pending
+})
+
+test('cancelled download events cannot overwrite its error and retry waits for cleanup', async () => {
+  const updater = createUpdater()
+  let token
+  let rejectDownload
+  let downloads = 0
+  updater.downloadUpdate = input => {
+    downloads += 1
+    token = input
+    return new Promise((resolve, reject) => { rejectDownload = reject })
+  }
+  const service = createService({ autoUpdater: updater })
+  updater.emit('update-available', { version: '2.0.1' })
+  const pending = service.downloadUpdate()
+  const rejection = assert.rejects(pending, /timeout/)
+  await Promise.resolve()
+  token.cancel()
+  updater.emit('download-progress', { percent: 90 })
+  updater.emit('update-downloaded', { version: '2.0.1' })
+  updater.emit('error', new Error('late updater failure'))
+  assert.equal(service.getStatus().status, 'downloading')
+  const duplicate = service.downloadUpdate()
+  const duplicateRejection = assert.rejects(duplicate, /timeout/)
+  assert.equal(downloads, 1)
+  rejectDownload(new Error('timeout'))
+  await Promise.all([rejection, duplicateRejection])
+  assert.equal(service.getStatus().status, 'error')
+  updater.emit('download-progress', { percent: 100 })
+  updater.emit('update-downloaded', { version: '2.0.1' })
+  updater.emit('error', new Error('late cancellation'))
+  assert.equal(service.getStatus().status, 'error')
+  assert.equal(service.getStatus().error, 'timeout')
+  updater.downloadUpdate = async input => {
+    assert.notEqual(input, token)
+    assert.equal(input.cancelled, false)
+    downloads += 1
+    updater.emit('update-downloaded', { version: '2.0.1' })
+    return ['retry.zip']
+  }
+  assert.deepEqual(await service.downloadUpdate(), ['retry.zip'])
+  assert.equal(downloads, 2)
+  assert.equal(service.getStatus().status, 'ready-to-install')
+})
+
+test('dispose cancels active downloads and does not start downloads after a pending disk probe', async () => {
+  const updater = createUpdater()
+  const originalLogger = { info() {}, warn() {}, error() {} }
+  updater.logger = originalLogger
+  let resolveDisk
+  let downloads = 0
+  updater.downloadUpdate = async () => { downloads += 1 }
+  const service = createService({
+    autoUpdater: updater,
+    getAvailableBytes: () => new Promise(resolve => { resolveDisk = resolve }),
+  })
+  updater.emit('update-available', { version: '2.0.1' })
+  const pending = service.downloadUpdate()
+  const rejection = assert.rejects(pending, /cancelled/)
+  await Promise.resolve()
+  service.dispose()
+  resolveDisk(1_000_000)
+  await rejection
+  assert.equal(downloads, 0)
+  assert.equal(updater.logger, originalLogger)
+  assert.equal(updater.listenerCount('download-progress'), 0)
+  await assert.rejects(service.downloadUpdate(), /已关闭/)
+})
+
+test('an unavailable disk probe is not treated as zero free bytes', async () => {
+  const updater = createUpdater()
+  let downloads = 0
+  updater.downloadUpdate = async () => { downloads += 1 }
+  const service = createService({ autoUpdater: updater })
+  updater.emit('update-available', { version: '2.0.1', files: [{ size: 1000 }] })
+  await service.downloadUpdate()
+  assert.equal(downloads, 1)
+})
+
+test('updater diagnostic messages reach the provided desktop logger', () => {
+  const updater = createUpdater()
+  const entries = []
+  const service = createService({ autoUpdater: updater, log: { warn: (...args) => entries.push(args) } })
+  updater.logger.warn('Cannot download differentially, fallback to full download')
+  assert.match(entries[0][0], /fallback to full download/)
+  assert.doesNotThrow(() => updater.logger.info('info'))
+  assert.doesNotThrow(() => updater.logger.error('error'))
+  service.dispose()
 })
 
 test('release notes prefer GitHub latest release API before Cloudflare fallbacks', async () => {

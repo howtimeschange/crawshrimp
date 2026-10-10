@@ -1,5 +1,8 @@
 'use strict'
 
+const { CancellationToken, CancellationError } = require('builder-util-runtime')
+const { installUpdateDownloadTransport } = require('./updateDownloadTransport')
+
 const LATEST_RELEASE_URL = 'https://github.com/howtimeschange/crawshrimp/releases/latest'
 const GITHUB_FALLBACK_FEED = Object.freeze({
   provider: 'github',
@@ -18,12 +21,19 @@ function createUpdateService({
   getAvailableBytes,
   log = console,
   emit,
+  downloadStallTimeoutMs = 120_000,
 }) {
   const support = platformSupport || { supported: false, reason: '当前环境不支持桌面更新。' }
   const subscribers = new Set()
   let disposed = false
   let requiredBytes = 0
   let usingGitHubFallback = false
+  let activeDownload = null
+  let ignoreCancelledDownloadErrors = false
+  const previousLogger = autoUpdater?.logger
+  const updaterLogger = Object.fromEntries(['info', 'warn', 'error', 'debug'].map(level => [
+    level, (...args) => (log?.[level] || log?.log)?.call(log, ...args),
+  ]))
 
   const state = {
     status: support.supported ? 'idle' : 'disabled',
@@ -39,6 +49,16 @@ function createUpdateService({
   }
 
   configureUpdater(autoUpdater, updateFeedUrl, log)
+  autoUpdater.logger = updaterLogger
+  const restoreTransport = installUpdateDownloadTransport({
+    executor: autoUpdater.httpExecutor,
+    inactivityTimeoutMs: downloadStallTimeoutMs,
+    getCancellationToken: () => activeDownload?.token,
+    onTimeout: (error, token) => {
+      if (activeDownload && activeDownload.token === token) activeDownload.failureReason = error
+      updaterLogger.warn(error.message)
+    },
+  })
 
   function snapshot() {
     return {
@@ -82,13 +102,20 @@ function createUpdateService({
       progress: null,
       lastCheckedAt: new Date().toISOString(),
     }),
-    'download-progress': progress => publish({
-      status: 'downloading',
-      progress: normalizeProgress(progress),
-      error: '',
-    }),
+    'download-progress': progress => {
+      if (!activeDownload || activeDownload.token.cancelled) return
+      const nextProgress = normalizeProgress(progress)
+      const bucket = Math.floor(nextProgress.percent / 10)
+      if (bucket !== activeDownload.lastLoggedProgress) {
+        activeDownload.lastLoggedProgress = bucket
+        updaterLogger.info(`Desktop update download ${nextProgress.percent}% (${formatBytes(nextProgress.transferred)} / ${formatBytes(nextProgress.total)})`)
+      }
+      publish({ status: 'downloading', progress: nextProgress, error: '' })
+    },
     'update-downloaded': info => {
+      if (!activeDownload || activeDownload.token.cancelled) return
       rememberUpdateInfo(info)
+      updaterLogger.info(`Desktop update v${state.latestVersion} downloaded`)
       publish({
         status: 'ready-to-install',
         latestVersion: state.latestVersion,
@@ -99,11 +126,10 @@ function createUpdateService({
         downloaded: true,
       })
     },
-    error: error => publish({
-      status: 'error',
-      progress: null,
-      error: readableError(error),
-    }),
+    error: error => {
+      if (activeDownload?.token.cancelled || ignoreCancelledDownloadErrors) return
+      publish({ status: 'error', progress: null, error: readableError(error) })
+    },
   }
 
   for (const [eventName, handler] of Object.entries(handlers)) {
@@ -112,6 +138,8 @@ function createUpdateService({
 
   async function checkForUpdates() {
     ensureSupported()
+    if (activeDownload || state.downloaded) return snapshot()
+    ignoreCancelledDownloadErrors = false
     publish({ status: 'checking', error: '', progress: null, lastCheckedAt: new Date().toISOString() })
     if (usingGitHubFallback) {
       configureUpdater(autoUpdater, updateFeedUrl, log)
@@ -139,19 +167,39 @@ function createUpdateService({
   }
 
   async function downloadUpdate() {
+    ensureSupported()
+    if (disposed) throw new Error('桌面更新服务已关闭。')
+    if (activeDownload) return activeDownload.promise
     if (state.status !== 'available' && !(state.status === 'error' && state.latestVersion)) {
       throw new Error('当前没有可下载的桌面更新。')
     }
+    const attempt = { token: new CancellationToken(), promise: null, failureReason: null, lastLoggedProgress: -1 }
+    activeDownload = attempt
+    ignoreCancelledDownloadErrors = false
+    attempt.promise = Promise.resolve().then(() => runDownload(attempt))
+    return attempt.promise
+  }
+
+  async function runDownload(attempt) {
     try {
       const freeBytes = typeof getAvailableBytes === 'function' ? await getAvailableBytes() : null
-      if (requiredBytes > 0 && Number.isFinite(Number(freeBytes)) && Number(freeBytes) < requiredBytes) {
+      if (attempt.token.cancelled) throw new CancellationError()
+      if (requiredBytes > 0 && freeBytes != null && Number.isFinite(Number(freeBytes)) && Number(freeBytes) < requiredBytes) {
         throw new Error(`磁盘空间不足：更新需要 ${formatBytes(requiredBytes)}，当前可用 ${formatBytes(Number(freeBytes))}。`)
       }
       publish({ status: 'downloading', error: '', progress: null })
-      return await autoUpdater.downloadUpdate()
+      updaterLogger.info(`Downloading desktop update v${state.latestVersion}`)
+      return await autoUpdater.downloadUpdate(attempt.token)
     } catch (error) {
-      publish({ status: 'error', error: readableError(error), progress: null })
-      throw error
+      const failure = attempt.failureReason || error
+      ignoreCancelledDownloadErrors = true
+      attempt.token.cancel()
+      updaterLogger.error('Desktop update download failed', failure)
+      publish({ status: 'error', error: readableError(failure), progress: null })
+      throw failure
+    } finally {
+      if (activeDownload === attempt) activeDownload = null
+      attempt.token.dispose()
     }
   }
 
@@ -194,6 +242,9 @@ function createUpdateService({
 
   function dispose() {
     disposed = true
+    activeDownload?.token.cancel()
+    restoreTransport()
+    if (autoUpdater.logger === updaterLogger) autoUpdater.logger = previousLogger
     subscribers.clear()
     for (const [eventName, handler] of Object.entries(handlers)) {
       autoUpdater?.removeListener?.(eventName, handler)
@@ -304,7 +355,7 @@ function configureUpdater(autoUpdater, updateFeedUrl, log) {
   const feedUrl = String(updateFeedUrl || '').trim()
   if (feedUrl) {
     try {
-      autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl })
+      autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl, useMultipleRangeRequest: false })
     } catch (error) {
       log?.warn?.('Failed to configure desktop update feed', error)
       throw error

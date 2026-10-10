@@ -2305,7 +2305,9 @@ const updateService = createUpdateService({
     return Number(stats.bavail) * Number(stats.bsize)
   },
   emit: sendUpdateStatus,
-  log: console,
+  log: Object.fromEntries(['info', 'warn', 'error', 'debug'].map(level => [
+    level, (...args) => log(`[update:${level}] ${args.map(value => value?.message || String(value)).join(' ')}`),
+  ])),
 })
 
 const updateCoordinator = createUpdateInstallCoordinator({

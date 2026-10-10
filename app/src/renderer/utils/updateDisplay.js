@@ -29,11 +29,13 @@ export function buildSidebarUpdatePresentation(updateStatus = {}, collapsed = fa
   }
 
   if (status === 'downloading') {
-    const percent = normalizePercent(updateStatus.progress?.percent)
+    const percent = hasProgressPercent(updateStatus.progress) ? normalizePercent(updateStatus.progress.percent) : null
     return {
       ...base,
-      label: `下载中 ${percent}%`,
-      title: `正在下载 ${formatFullVersion(latestVersion || currentVersion)}`,
+      label: percent === null ? '准备下载' : `下载中 ${percent}%`,
+      title: percent === null
+        ? `准备下载 ${formatFullVersion(latestVersion || currentVersion)}`
+        : `正在下载 ${formatFullVersion(latestVersion || currentVersion)}`,
       tone: 'downloading',
       percent,
     }
@@ -96,6 +98,13 @@ function normalizePercent(value) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return 0
   return Math.max(0, Math.min(100, Math.round(numeric)))
+}
+
+function hasProgressPercent(progress) {
+  if (!progress || typeof progress !== 'object') return false
+  const value = progress.percent
+  if (value == null || (typeof value === 'string' && !value.trim())) return false
+  return Number.isFinite(Number(value))
 }
 
 function normalizeVersion(value) {

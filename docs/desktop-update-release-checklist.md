@@ -17,6 +17,20 @@ This checklist is the required evidence record before claiming desktop updater r
 - Cloudflare R2 update source (`https://updates.crawshrimp.com/`): `PENDING`
 - Formal build marked with `crawshrimpUpdateTestBuild`: `NO`
 
+## Download Transport Regression
+
+Before packaged acceptance, run the isolated Electron download regression:
+
+```bash
+cd app
+npm run test:update-download
+npm run test:update-download:live
+```
+
+The local run checks the service's single-range provider configuration against an R2-like server, differential reconstruction and full-download SHA512, request timeout/cancellation followed by a successful retry, and HTTP redirects. It uses temporary user data and files and does not install an update. On headless Linux it requires `xvfb-run`.
+
+The live run records small single- and multi-range requests through the system proxy and direct connection. It aborts after the first data chunk; inspect HTTP status and `Content-Range`, including any proxy returning a full `200` response. A completed probe does not prove a full installer download or installation succeeded. These regressions do not replace the signed packaged acceptance below.
+
 ## Test Build Feed
 
 The signed packaged E2E flow uses two non-formal test builds only. Build the old and new versions with the marker; do not reuse these artifacts for a formal release.
