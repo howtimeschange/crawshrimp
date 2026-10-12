@@ -7559,7 +7559,7 @@ def _finalize_tiktok_creator_video_outputs(
     return final_refs
 
 
-def _rows_raw_to_table(rows_raw, header_row: int = 1):
+def _rows_raw_to_table(rows_raw, header_row: int = 1, grouped_header_columns: Optional[set[int]] = None):
     if not rows_raw:
         return {"headers": [], "rows": [], "total": 0}
 
@@ -7567,8 +7567,11 @@ def _rows_raw_to_table(rows_raw, header_row: int = 1):
     if hi < 0 or hi >= len(rows_raw):
         return {"error": f"Header row index {hi} out of range", "headers": [], "rows": [], "total": 0}
 
-    def _stringify_row(raw_row):
-        return [str(c) if c is not None else '' for c in raw_row]
+    def _stringify_row(raw_row, width: Optional[int] = None):
+        values = [str(c) if c is not None else '' for c in raw_row]
+        if width is not None and len(values) < width:
+            values.extend([''] * (width - len(values)))
+        return values
 
     def _dedupe_headers(raw_headers):
         used = {}
@@ -7584,19 +7587,49 @@ def _rows_raw_to_table(rows_raw, header_row: int = 1):
         return headers
 
     def _build_headers():
-        primary = _stringify_row(rows_raw[hi])
+        table_width = max((len(raw_row) for raw_row in rows_raw[hi:] if raw_row is not None), default=0)
+        primary = _stringify_row(rows_raw[hi], table_width)
         if hi + 1 >= len(rows_raw):
             return _dedupe_headers(primary), hi + 1
 
-        secondary = _stringify_row(rows_raw[hi + 1])
+        secondary = _stringify_row(rows_raw[hi + 1], table_width)
         width = max(len(primary), len(secondary))
-        # Only collapse when row 2 is clearly filling blanks from row 1.
-        # Trailing blank header cells in wide templates should not treat row 2 as another header row.
-        has_grouped_children = any(
-            not str(primary[index] if index < len(primary) else '').strip()
-            and str(secondary[index] if index < len(secondary) else '').strip()
+        blank_child_indexes = [
+            index
             for index in range(width)
-        )
+            if not str(primary[index] if index < len(primary) else '').strip()
+            and str(secondary[index] if index < len(secondary) else '').strip()
+        ]
+        named_primary_indexes = [
+            index
+            for index in range(width)
+            if str(primary[index] if index < len(primary) else '').strip()
+        ]
+        last_named_primary_index = named_primary_indexes[-1] if named_primary_indexes else -1
+
+        metadata_grouped_children = False
+        if grouped_header_columns:
+            metadata_grouped_children = any(
+                index in grouped_header_columns
+                and str(secondary[index] if index < len(secondary) else '').strip()
+                for index in range(width)
+            )
+
+        # Only collapse when row 2 is clearly filling a grouped header. A trailing
+        # unnamed data column must stay in the first data row, while a real
+        # horizontal merge in the header row can still define a final grouped band.
+        has_grouped_children = metadata_grouped_children
+        if not has_grouped_children and blank_child_indexes:
+            has_middle_blank_child = any(index < last_named_primary_index for index in blank_child_indexes)
+            group_parent_indexes = [index for index in named_primary_indexes if index < blank_child_indexes[0]]
+            group_parent_index = group_parent_indexes[-1] if group_parent_indexes else -1
+            has_rowspan_identity = bool(
+                named_primary_indexes
+                and named_primary_indexes[0] < group_parent_index
+                and not secondary[named_primary_indexes[0]].strip()
+                and secondary[group_parent_index].strip()
+            )
+            has_grouped_children = has_middle_blank_child or has_rowspan_identity
         if not has_grouped_children:
             return _dedupe_headers(primary), hi + 1
 
@@ -7642,6 +7675,71 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
             pass
         return list(ws.iter_rows(values_only=True))
 
+    def _xlsx_header_group_columns(xlsx_path: Path, target_header_row: int) -> dict[str, set[int]]:
+        if xlsx_path.suffix.lower() not in ('.xlsx', '.xlsm'):
+            return {}
+        try:
+            from openpyxl.utils.cell import range_boundaries
+            import xml.etree.ElementTree as ET
+        except Exception:
+            return {}
+
+        try:
+            with zipfile.ZipFile(xlsx_path) as archive:
+                workbook_xml = ET.fromstring(archive.read("xl/workbook.xml"))
+                rels_xml = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+                rel_targets = {}
+                for rel in rels_xml:
+                    rel_id = rel.attrib.get("Id")
+                    target = rel.attrib.get("Target")
+                    if not rel_id or not target:
+                        continue
+                    target_path = target.lstrip("/")
+                    if not target_path.startswith("xl/"):
+                        target_path = f"xl/{target_path}"
+                    rel_targets[rel_id] = target_path
+
+                namespaces = {
+                    "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+                    "rel": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+                }
+                sheet_paths = {}
+                for sheet_node in workbook_xml.findall(".//main:sheets/main:sheet", namespaces):
+                    title = sheet_node.attrib.get("name")
+                    rel_id = sheet_node.attrib.get(f"{{{namespaces['rel']}}}id")
+                    target = rel_targets.get(rel_id or "")
+                    if title and target:
+                        sheet_paths[title] = target
+
+                grouped_columns_by_sheet = {}
+                for title, sheet_path in sheet_paths.items():
+                    grouped_columns: set[int] = set()
+                    try:
+                        with archive.open(sheet_path) as sheet_stream:
+                            # Keep the merge scan streaming like the value reader;
+                            # materializing the whole XML doubles large-sheet memory.
+                            parents = []
+                            for event, element in ET.iterparse(sheet_stream, events=("start", "end")):
+                                if event == "start":
+                                    parents.append(element)
+                                    continue
+                                if element.tag == f"{{{namespaces['main']}}}mergeCell":
+                                    ref = str(element.attrib.get("ref") or "").strip()
+                                    if ref:
+                                        min_col, min_row, max_col, max_row = range_boundaries(ref)
+                                        if min_row == target_header_row and max_row == target_header_row and max_col > min_col:
+                                            grouped_columns.update(range(min_col - 1, max_col))
+                                parents.pop()
+                                if parents:
+                                    parents[-1].remove(element)
+                                element.clear()
+                    except KeyError:
+                        continue
+                    grouped_columns_by_sheet[title] = grouped_columns
+                return grouped_columns_by_sheet
+        except Exception:
+            return {}
+
     suffix = p.suffix.lower()
     try:
         if suffix in ('.xlsx', '.xls', '.xlsm'):
@@ -7649,9 +7747,14 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
 
             wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
             try:
+                grouped_columns_by_sheet = _xlsx_header_group_columns(p, header_row)
                 if sheet:
                     ws = wb[sheet]
-                    table = _rows_raw_to_table(_worksheet_rows(ws), header_row)
+                    table = _rows_raw_to_table(
+                        _worksheet_rows(ws),
+                        header_row,
+                        grouped_header_columns=grouped_columns_by_sheet.get(ws.title),
+                    )
                     table["sheet_name"] = ws.title
                     table["sheets"] = {
                         ws.title: {
@@ -7664,7 +7767,11 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
 
                 workbook_tables = {}
                 for ws in wb.worksheets:
-                    workbook_tables[ws.title] = _rows_raw_to_table(_worksheet_rows(ws), header_row)
+                    workbook_tables[ws.title] = _rows_raw_to_table(
+                        _worksheet_rows(ws),
+                        header_row,
+                        grouped_header_columns=grouped_columns_by_sheet.get(ws.title),
+                    )
 
                 active_name = wb.active.title if wb.active else (wb.sheetnames[0] if wb.sheetnames else "Sheet1")
                 active_table = workbook_tables.get(active_name) or {"headers": [], "rows": [], "total": 0}

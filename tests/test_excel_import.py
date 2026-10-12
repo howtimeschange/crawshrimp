@@ -41,6 +41,101 @@ class ExcelImportTests(unittest.TestCase):
         self.assertEqual(table["rows"][0]["SPU"], "123")
         self.assertEqual(table["rows"][0]["流量情况/点击量"], "10")
 
+    def test_rows_raw_to_table_keeps_trailing_unnamed_data_column(self):
+        table = _rows_raw_to_table([
+            ["ID", "标题", "视频", "文案", None],
+            ["1068531817393", "短视频标题", "C:/video.mp4", "模板文案", "毛衫"],
+            ["1068531817394", "短视频标题2", "C:/video2.mp4", "模板文案2", "T恤"],
+        ])
+
+        self.assertEqual(table["headers"], ["ID", "标题", "视频", "文案", "列5"])
+        self.assertEqual(table["total"], 2)
+        self.assertEqual(table["rows"][0]["ID"], "1068531817393")
+        self.assertEqual(table["rows"][0]["列5"], "毛衫")
+        self.assertEqual(table["rows"][1]["ID"], "1068531817394")
+
+    def test_rows_raw_to_table_collapses_trailing_grouped_header_with_identity_columns(self):
+        table = _rows_raw_to_table([
+            ["外层站点", "SPU", "流量情况", None, None, None],
+            [None, None, "曝光量", "点击量", "支付订单数", "支付件数"],
+            ["全球", "123", "100", "10", "2", "3"],
+        ])
+
+        self.assertEqual(
+            table["headers"],
+            [
+                "外层站点",
+                "SPU",
+                "流量情况/曝光量",
+                "流量情况/点击量",
+                "流量情况/支付订单数",
+                "流量情况/支付件数",
+            ],
+        )
+        self.assertEqual(table["rows"][0]["流量情况/支付件数"], "3")
+
+    def test_rows_raw_to_table_keeps_blank_optional_fields_before_unnamed_column(self):
+        table = _rows_raw_to_table([
+            ["款号", "ID", "定时/日", "定时/具体时间", "上传情况", "内容ID"],
+            ["208426103206", "1068531817393", 46307, None, "", "", "毛衫"],
+            ["208426106205", "1057751785354", 46307, None, "", "", "棉服"],
+        ])
+
+        self.assertEqual(table["total"], 2)
+        self.assertEqual(table["headers"][-1], "列7")
+        self.assertEqual(table["rows"][0]["ID"], "1068531817393")
+        self.assertEqual(table["rows"][0]["列7"], "毛衫")
+
+    def test_read_local_excel_preserves_text_number_and_general_ids(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["款号", "ID", "内容ID"])
+        expected_ids = ["1068531817393", "1057751785354", "1072125749433"]
+        for row_no, (item_id, number_format) in enumerate(zip(expected_ids, ["@", "0", "General"]), 2):
+            value = item_id if number_format == "@" else int(item_id)
+            ws.append(["208426103206", value, None, "毛衫"])
+            ws.cell(row_no, 2).number_format = number_format
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "id-formats.xlsx"
+            wb.save(path)
+            result = _read_local_excel(str(path))
+
+        self.assertEqual(result["total"], 3)
+        self.assertEqual([row["ID"] for row in result["rows"]], expected_ids)
+        self.assertEqual(result["rows"][0]["列4"], "毛衫")
+
+    def test_read_local_excel_keeps_unmerged_trailing_grouped_header_compatible(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["SPU", "流量情况", None])
+        ws.append([None, "曝光量", "点击量"])
+        ws.append(["123", 100, 10])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "unmerged-grouped.xlsx"
+            wb.save(path)
+            result = _read_local_excel(str(path))
+
+        self.assertEqual(result["headers"], ["SPU", "流量情况/曝光量", "流量情况/点击量"])
+        self.assertEqual(result["rows"], [{"SPU": "123", "流量情况/曝光量": "100", "流量情况/点击量": "10"}])
+
+    def test_read_local_excel_recognizes_merged_group_without_identity_columns(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.merge_cells("A1:B1")
+        ws["A1"] = "流量情况"
+        ws.append(["曝光量", "点击量"])
+        ws.append([100, 10])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "merged-only-group.xlsx"
+            wb.save(path)
+            result = _read_local_excel(str(path))
+
+        self.assertEqual(result["headers"], ["流量情况/曝光量", "流量情况/点击量"])
+        self.assertEqual(result["rows"], [{"流量情况/曝光量": "100", "流量情况/点击量": "10"}])
+
     def test_read_local_excel_round_trips_grouped_header_workbook(self):
         wb = Workbook()
         ws = wb.active
@@ -66,6 +161,24 @@ class ExcelImportTests(unittest.TestCase):
         self.assertEqual(result["headers"][:4], ["外层站点", "SPU", "流量情况/曝光量", "流量情况/点击量"])
         self.assertEqual(result["rows"][0]["SPU"], "123")
         self.assertEqual(result["rows"][0]["流量情况/支付件数"], "3")
+
+    def test_read_local_excel_keeps_trailing_unnamed_data_column(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "短视频上传"
+        ws.append(["ID", "标题", "视频", "文案", None])
+        ws.append(["1068531817393", "短视频标题", "C:/video.mp4", "模板文案", "毛衫"])
+        ws.append(["1068531817394", "短视频标题2", "C:/video2.mp4", "模板文案2", "T恤"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "short-video.xlsx"
+            wb.save(path)
+            result = _read_local_excel(str(path))
+
+        self.assertEqual(result["headers"], ["ID", "标题", "视频", "文案", "列5"])
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["rows"][0]["ID"], "1068531817393")
+        self.assertEqual(result["rows"][0]["列5"], "毛衫")
 
     def test_read_local_excel_ignores_stale_worksheet_dimension(self):
         wb = Workbook()
