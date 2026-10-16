@@ -3,6 +3,17 @@ const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const path = require('node:path')
 
+function parseRegressionResult(stdout) {
+  // Electron's first-run installer may log before the single-line JSON result.
+  const lines = String(stdout).trim().split(/\r?\n/)
+  return JSON.parse(lines.at(-1))
+}
+
+test('regression JSON accepts first-run installer output but rejects a missing result', () => {
+  assert.deepEqual(parseRegressionResult('Downloading Electron binary...\n{"ok":true,"mode":"local"}\n'), { ok: true, mode: 'local' })
+  assert.throws(() => parseRegressionResult('Downloading Electron binary...\n'))
+})
+
 function runRegression() {
   return new Promise((resolve, reject) => {
     let settled = false
@@ -40,7 +51,7 @@ function runRegression() {
         return
       }
       try {
-        resolve(JSON.parse(out))
+        resolve(parseRegressionResult(out))
       } catch (error) {
         reject(new Error(`cannot parse regression JSON: ${error.message}\n${err}\n${out}`))
       }
