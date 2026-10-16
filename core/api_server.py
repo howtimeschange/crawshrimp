@@ -4924,6 +4924,11 @@ def _finalize_shenhui_label_tile_download_outputs(
     runtime_artifact_dir: str,
     log,
 ) -> list[str]:
+    from core.label_tile_manifest import assign_output_names, enrich_row, write_manifest
+
+    for row in data_rows or []:
+        if isinstance(row, dict):
+            enrich_row(row)
     runtime_dir = Path(runtime_artifact_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4950,6 +4955,10 @@ def _finalize_shenhui_label_tile_download_outputs(
 
     if successful_rows:
         successful_rows = _filter_shenhui_shoe_label_ocr_candidates(successful_rows, log)
+        for row in data_rows:
+            row["分类依据"] = "；".join(str(row.get(k) or "") for k in ("匹配策略", "备注")).strip("；")
+            enrich_row(row)
+        assign_output_names([row for row, _ in successful_rows])
         compressed_count = 0
         saved_bytes = 0
         for row, local_path in successful_rows:
@@ -4995,9 +5004,10 @@ def _finalize_shenhui_label_tile_download_outputs(
             data_rows,
             log,
             context="Shenhui label tile download",
-            columns=("下载结果", "本地文件", "备注"),
+            columns=("文件名", "输出文件名", "原文件名", "分类依据", "云盘目录归属", "标签货号核验", "下载结果", "本地文件", "备注"),
         )
         final_refs.append(str(external_dir))
+        final_refs.extend(write_manifest(external_dir, data_rows))
         for file_path in exported_files or []:
             source = Path(str(file_path or "")).expanduser()
             if not source.is_file():
@@ -5006,6 +5016,7 @@ def _finalize_shenhui_label_tile_download_outputs(
             final_refs.append(str(copied))
         log(f"Shenhui label/tile download folder moved to output folder: {external_dir}")
     else:
+        final_refs.extend(write_manifest(target_root, data_rows))
         if package_root.exists():
             shutil.rmtree(package_root, ignore_errors=True)
         for file_path in exported_files or []:

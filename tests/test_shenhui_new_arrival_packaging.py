@@ -556,7 +556,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
 
             package_dir = export_dir / "测试吊牌洗唛平铺图"
             copied_excel = package_dir / "summary.xlsx"
-            self.assertEqual({Path(path) for path in result}, {package_dir, copied_excel})
+            self.assertEqual({Path(path) for path in result}, {package_dir, copied_excel, package_dir / "素材清单.json", package_dir / "素材清单.csv"})
             self.assertTrue((package_dir / "208426108223" / "208426108223-00316_有模拍.jpg").is_file())
             self.assertTrue((package_dir / "208426108223" / "208426108223_吊牌_yq1.jpg").is_file())
             self.assertFalse(tile_file.exists())
@@ -694,8 +694,8 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 )
 
             package_dir = export_dir / "测试鞋品标签下载"
-            final_style = package_dir / "204426141122" / "204426141122-00322.jpg"
-            final_box = package_dir / "204426141122" / "GUDO6815.jpg"
+            final_style = package_dir / "204426141122" / "204426141122_平铺图_01.jpg"
+            final_box = package_dir / "204426141122" / "204426141122_吊牌_01.jpg"
             final_detail = package_dir / "204426141122" / "GUDO6811.jpg"
             copied_excel = package_dir / "summary.xlsx"
 
@@ -716,7 +716,9 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             local_file_index = header.index("本地文件")
             note_index = header.index("备注")
             self.assertEqual(rows[2][download_result_index], "已下载")
-            self.assertIn("GUDO6815.jpg", rows[2][local_file_index])
+            self.assertIn("204426141122_吊牌_01.jpg", rows[2][local_file_index])
+            self.assertEqual(data_rows[1]["原文件名"], "GUDO6815.jpg")
+            self.assertEqual(rows[2][header.index("文件名")], "204426141122_吊牌_01.jpg")
             self.assertEqual(rows[3][download_result_index], "已跳过")
             self.assertEqual(rows[3][local_file_index], None)
             self.assertIn("未读到当前款号", rows[3][note_index])
