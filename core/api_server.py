@@ -4307,6 +4307,38 @@ def _shenhui_shoe_box_label_candidate_result(
     }
 
 
+def _shenhui_light_supply_label_candidate_result(row: dict, local_path: Path, log) -> dict:
+    """Supplier labels belong to the exact style folder; never invent a color mapping."""
+    style_code = str(row.get("__shenhui_group_code") or row.get("输入款号") or "").strip()
+    parts = str(row.get("云盘路径") or "").replace("\\", "/").split("/")
+    valid_path = (
+        bool(style_code) and len(parts) >= 4 and parts[-2] == style_code
+        and "轻供" in parts[:-2] and "鞋品" in parts[:-2]
+        and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.(?:png|jpe?g|webp)", parts[-1], re.I)
+    )
+    if not valid_path:
+        return {"accepted": False, "note": "轻供标签候选路径或 UUID 文件名不符合要求"}
+    try:
+        _text, confidence, normalized = _shenhui_shoe_label_ocr_text(local_path)
+    except Exception as exc:
+        return {"accepted": False, "note": f"轻供电子标签 OCR 失败：{exc}"}
+    signals = _shenhui_shoe_label_ocr_structure_signals(normalized, style_code=style_code)
+    # Unlike photographed brown boxes, flat electronic certificates can be white.
+    # Require multiple independent certificate fields, not a product-photo score.
+    accepted = (
+        confidence >= 35 and "label_words" in signals and "standard" in signals
+        and len(signals) >= 4 and any(word in normalized for word in ("合格证", "产品货号", "产品名称"))
+    )
+    note = (
+        ("OCR确认轻供电子合格证；归属依据为云盘款号目录，未校验供应商货号与内部款号映射，未推断色码"
+         if accepted else "轻供电子标签 OCR 结构证据不足")
+        + f"；signals={','.join(signals)} confidence={confidence:.0f}"
+    )
+    if log:
+        log(f"Light-supply label OCR: {local_path.name} ({note})")
+    return {"accepted": accepted, "note": note}
+
+
 def _filter_shenhui_shoe_label_ocr_candidates(
     successful_rows: list[tuple[dict, Path]],
     log,
@@ -4316,6 +4348,17 @@ def _filter_shenhui_shoe_label_ocr_candidates(
     passthrough: list[tuple[dict, Path]] = []
 
     for row, local_path in successful_rows:
+        if (row.get("__shenhui_asset_role") == "shoe_label"
+                and row.get("__shoe_label_candidate_kind") == "light_supply_ocr"):
+            result = _shenhui_light_supply_label_candidate_result(row, local_path, log)
+            _append_shenhui_label_tile_note(row, str(result.get("note") or ""))
+            if result.get("accepted"):
+                row["__shoe_label_candidate_kind"] = "light_supply_ocr_selected"
+                passthrough.append((row, local_path))
+            else:
+                row["下载结果"] = "已跳过"
+                row["本地文件"] = ""
+            continue
         if _is_shenhui_shoe_label_ocr_candidate_row(row):
             generic_candidates.setdefault(
                 _shenhui_shoe_label_candidate_key(row),

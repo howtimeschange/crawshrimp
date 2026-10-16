@@ -493,6 +493,40 @@
     return score
   }
 
+  // Light-supply assets use layout/size folders, not business color codes.
+  function lightSupplyRelativeParts(item, code) {
+    const parts = pathSegments(item?.fullpath || item?.path || '')
+    const index = parts.findIndex(part => part.toLowerCase() === getGroupCode(code).toLowerCase())
+    if (index < 0 || !parts.slice(0, index).includes('轻供') || !parts.slice(0, index).includes('鞋品')) return []
+    return parts.slice(index + 1)
+  }
+
+  function isLightSupplyUuidLabel(item, code) {
+    const parts = lightSupplyRelativeParts(item, code)
+    return !getShoeColorCodeFromInput(code) && parts.length === 1 && isImageItem(item)
+      && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.(?:png|jpe?g|webp)$/i.test(parts[0])
+  }
+
+  function selectLightSupplyLayoutItems(items, code) {
+    // Unknown colors cannot satisfy a requested SKC. Keep original names and provenance.
+    if (getShoeColorCodeFromInput(code)) return []
+    const candidates = dedupeItemsByFullpath(items).filter(item => isImageItem(item)
+      && !hasWasteLabelMarker(item) && !hasShoeNegativeLabelMarker(item))
+    const sku = candidates.filter(item => lightSupplyRelativeParts(item, code)[0]?.toLowerCase() === 'sku')
+    const pool = sku.length ? sku : candidates.filter(item => lightSupplyRelativeParts(item, code)[0] === '白底')
+    if (!pool.length) return []
+    const resolution = item => {
+      const parts = lightSupplyRelativeParts(item, code)
+      const folder = parts.slice(1, -1).find(part => /^\d{3,4}$/.test(part))
+      const stem = getFileStem(parts[parts.length - 1])
+      return Number(folder || (/^(750|800|1200)(?:$|[\s(_-])/.exec(stem)?.[1]) || 0)
+    }
+    const best = Math.max(...pool.map(resolution))
+    return pool.filter(item => resolution(item) === best).map(item => ({
+      ...item, __light_supply_layout: sku.length ? 'SKU' : '白底', __shoe_color_code: '',
+    }))
+  }
+
   function selectShoeStyleColorItems(items, code) {
     const groups = new Map()
     for (const item of dedupeItemsByFullpath(items).filter(candidate => isShoeStyleColorImage(candidate, code))) {
@@ -501,13 +535,14 @@
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key).push(item)
     }
-    return Array.from(groups.values()).map(groupItems => groupItems
+    const named = Array.from(groups.values()).map(groupItems => groupItems
       .slice()
       .sort((left, right) => (
         shoeStyleColorPriority(left, code) - shoeStyleColorPriority(right, code)
         || String(left?.filename || '').localeCompare(String(right?.filename || ''), 'zh-Hans-CN')
         || String(left?.fullpath || '').localeCompare(String(right?.fullpath || ''), 'zh-Hans-CN')
       ))[0])
+    return named.length ? named : selectLightSupplyLayoutItems(items, code)
   }
 
   function hasShoeNegativeLabelMarker(item) {
@@ -597,7 +632,12 @@
       generic.push(...capped)
     }
 
-    return [...explicit, ...generic].sort((left, right) => (
+    const lightSupply = dedupeItemsByFullpath(items)
+      .filter(item => isLightSupplyUuidLabel(item, code))
+      .sort((a, b) => String(a.fullpath).localeCompare(String(b.fullpath)))
+      .slice(0, SHOE_LABEL_GENERIC_CANDIDATE_LIMIT_PER_COLOR)
+      .map(item => ({ ...item, __shoe_color_code: '', __shoe_label_candidate_kind: 'light_supply_ocr' }))
+    return [...explicit, ...generic, ...lightSupply].sort((left, right) => (
       shoeLabelPriority(left) - shoeLabelPriority(right)
       || String(left.__shoe_color_code || '').localeCompare(String(right.__shoe_color_code || ''), 'zh-Hans-CN')
       || String(left?.filename || '').localeCompare(String(right?.filename || ''), 'zh-Hans-CN')
@@ -746,7 +786,7 @@
       '模拍路径命中': options.modelMatched ? '是' : '否',
       '下载结果': '',
       '本地文件': '',
-      '备注': options.note || '',
+      '备注': item?.__light_supply_layout ? `轻供${item.__light_supply_layout}目录图；保留原文件名，未推断业务色码` : (options.note || ''),
       '__shenhui_group_code': groupCode,
       '__shenhui_asset_role': kind,
       '__shenhui_source_type': sourceType,
@@ -1083,11 +1123,11 @@
       ].join('；')
 
       await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'shoe_style_color', styleColorItems, {
-        strategy: '鞋品仅保留每个款色的款色命名图',
+        strategy: styleColorItems.some(item => item.__light_supply_layout) ? '轻供鞋品优先 SKU、白底兜底，保留最高分辨率组' : '鞋品仅保留每个款色的款色命名图',
         missingNote: statsNote,
       })
       await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'shoe_label', shoeLabelItems, {
-        strategy: shoeLabelItems.some(item => item.__shoe_label_candidate_kind === 'generic_ocr')
+        strategy: shoeLabelItems.some(item => ['generic_ocr', 'light_supply_ocr'].includes(item.__shoe_label_candidate_kind))
           ? '鞋品下载少量无语义候选，后端 OCR 识别鞋盒标签'
           : '鞋品仅保留显式鞋盒标签/电子吊牌图',
         missingNote: statsNote,
@@ -1269,6 +1309,8 @@
       extractShoeStyleColorKeyFromFilename,
       isShoeStyleColorImage,
       selectShoeStyleColorItems,
+      selectLightSupplyLayoutItems,
+      isLightSupplyUuidLabel,
       isShoeLabelItem,
       isGenericShoeLabelCandidateItem,
       selectShoeLabelItems,

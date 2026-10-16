@@ -550,3 +550,30 @@ test('isShoeCodePlan classifies each code from matched item paths instead of glo
   assert.equal(helpers.isShoeCodePlan(shoeScopedSourceConfigs, apparelItems), false)
   assert.equal(helpers.isShoeCodePlan({}, shoeItems), true)
 })
+
+test('light-supply SKU layout prefers highest resolution without inventing colors; white fallback stays scoped', async () => {
+  const h = await loadExports()
+  const code = '2084261412A7'
+  const base = `冬/轻供/鞋品/幸福玛丽/${code}/`
+  const item = p => ({ filename: p.split('/').at(-1), fullpath: base + p, dir: 0 })
+  const items = ['sku/800/31.jpg', 'sku/1200/31.jpg', 'sku/1200/32.jpg', '白底/1200.jpg', '详情/1200.jpg'].map(item)
+  assert.deepEqual(Array.from(h.selectShoeStyleColorItems(items, code), x => x.filename), ['31.jpg', '32.jpg'])
+  assert.equal(h.selectShoeStyleColorItems(items, code + '-00301').length, 0)
+  assert.equal(h.selectShoeStyleColorItems(items, '2084261412A9').length, 0)
+  const white = ['白底/800.jpg', '白底/1200.jpg', '详情/1200.jpg'].map(item)
+  assert.deepEqual(Array.from(h.selectShoeStyleColorItems(white, code), x => x.fullpath), [base + '白底/1200.jpg'])
+  assert.equal(h.selectShoeStyleColorItems(items.map(x => ({ ...x, fullpath: x.fullpath.replace('/轻供/', '/期货/') })), code).length, 0)
+})
+
+test('UUID labels only enter OCR from the exact light-supply style root', async () => {
+  const h = await loadExports(), code = '2084261412A7'
+  const filename = 'daf0269c-5d45-414f-aba3-f2f31bfa6dd3.png'
+  const root = `冬/轻供/鞋品/幸福玛丽/${code}/`
+  const item = { filename, fullpath: root + filename, dir: 0 }
+  const selected = h.selectShoeLabelItems([item, { ...item, fullpath: root + '详情/' + filename }], code)
+  assert.equal(selected.length, 1)
+  assert.equal(selected[0].__shoe_label_candidate_kind, 'light_supply_ocr')
+  assert.equal(selected[0].__shoe_color_code, '')
+  assert.equal(h.selectShoeLabelItems([item], code + '-00301').length, 0)
+  assert.equal(h.selectShoeLabelItems([item], '2084261412A9').length, 0)
+})
