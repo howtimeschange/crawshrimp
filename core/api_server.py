@@ -4307,12 +4307,46 @@ def _shenhui_shoe_box_label_candidate_result(
     }
 
 
+def _shenhui_light_supply_box_candidate_result(row: dict, local_path: Path, log) -> dict:
+    """Small photographed boxes: verify full style and label fields, never filename alone."""
+    from core.label_tile_manifest import matches_style_directory
+    style = str(row.get("__shenhui_group_code") or row.get("输入款号") or "").strip()
+    parts = str(row.get("云盘路径") or "").replace("\\", "/").split("/")
+    root_index = next((i for i, part in enumerate(parts[:-1]) if matches_style_directory(part, style)), -1)
+    relative = parts[root_index + 1:] if root_index >= 0 else []
+    stem = Path(parts[-1]).stem
+    is_root_box = len(relative) == 1 and re.match(r"^鞋盒(?:$|[\s_（(-])", stem)
+    is_camera = (len(relative) == 1 or (len(relative) == 2 and relative[0] == "修片大图")) and re.fullmatch(r"_?[0-9][A-Z][0-9][A-Z]\d+", stem, re.I)
+    if not (root_index >= 0 and "轻供" in parts[:root_index] and "鞋品" in parts[:root_index]
+            and (is_root_box or is_camera)):
+        return {"accepted": False, "note": "轻供实拍标签候选路径或文件名不符合要求"}
+    # Root-scoped batches have no known business color. Preserve all verified
+    # labels independently, rather than collapsing them under an empty color.
+    for scope, recognize in (("整图", _shenhui_shoe_label_ocr_text), ("裁剪", _shenhui_shoe_label_crop_ocr_text)):
+        try:
+            _text, confidence, normalized = recognize(local_path)
+            signals = _shenhui_shoe_label_ocr_structure_signals(normalized, style_code=style)
+            # Preserve OCR line boundaries: concatenating lines can append a
+            # stray Latin character to an otherwise exact business code.
+            exact_style = bool(
+                re.search(r"(?<![A-Za-z0-9])" + re.escape(style) + r"(?![A-Za-z0-9])", _text, re.I)
+                or re.search(r"(?<![0-9])" + re.escape(style) + r"(?![A-Za-z0-9])", normalized, re.I)
+            )
+            if confidence >= 35 and exact_style and "standard" in signals and len(signals) >= 3:
+                return {"accepted": True, "note": f"OCR{scope}确认轻供鞋盒标签；完整款号 {style} 已核验；未推断业务色码；signals={','.join(signals)} confidence={confidence:.0f}"}
+        except Exception as exc:
+            if log:
+                log(f"Light-supply box OCR {scope} failed: {local_path.name} ({exc})")
+    return {"accepted": False, "note": "轻供实拍标签 OCR 未同时确认完整款号和标签结构"}
+
+
 def _shenhui_light_supply_label_candidate_result(row: dict, local_path: Path, log) -> dict:
     """Supplier labels belong to the exact style folder; never invent a color mapping."""
+    from core.label_tile_manifest import matches_style_directory
     style_code = str(row.get("__shenhui_group_code") or row.get("输入款号") or "").strip()
     parts = str(row.get("云盘路径") or "").replace("\\", "/").split("/")
     valid_path = (
-        bool(style_code) and len(parts) >= 4 and parts[-2] == style_code
+        bool(style_code) and len(parts) >= 4 and matches_style_directory(parts[-2], style_code)
         and "轻供" in parts[:-2] and "鞋品" in parts[:-2]
         and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.(?:png|jpe?g|webp)", parts[-1], re.I)
     )
@@ -4349,11 +4383,16 @@ def _filter_shenhui_shoe_label_ocr_candidates(
 
     for row, local_path in successful_rows:
         if (row.get("__shenhui_asset_role") == "shoe_label"
-                and row.get("__shoe_label_candidate_kind") == "light_supply_ocr"):
-            result = _shenhui_light_supply_label_candidate_result(row, local_path, log)
+                and row.get("__shoe_label_candidate_kind") in ("light_supply_ocr", "light_supply_box_ocr")):
+            kind = row["__shoe_label_candidate_kind"]
+            recognize = (_shenhui_light_supply_box_candidate_result if kind == "light_supply_box_ocr"
+                         else _shenhui_light_supply_label_candidate_result)
+            result = recognize(row, local_path, log)
             _append_shenhui_label_tile_note(row, str(result.get("note") or ""))
             if result.get("accepted"):
-                row["__shoe_label_candidate_kind"] = "light_supply_ocr_selected"
+                row["__shoe_label_candidate_kind"] = kind + "_selected"
+                if kind == "light_supply_box_ocr":
+                    row["标签货号核验"] = "OCR已核验完整款号；未推断业务色码"
                 passthrough.append((row, local_path))
             else:
                 row["下载结果"] = "已跳过"

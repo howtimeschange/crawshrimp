@@ -1,6 +1,7 @@
 """Shared naming and audit manifest for downloaded and locally repackaged assets."""
 import csv
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -9,13 +10,17 @@ FIELDS = ('输入款号', '输入编码', '原文件名', '文件名', '输出�
 NAMES = {'款色图': '平铺图', '鞋盒标签图/电子吊牌图': '吊牌'}
 
 
+def matches_style_directory(name, style):
+    return bool(style and re.fullmatch(re.escape(style) + r'(?:[-_\s]+(?:已选|已写|已补|回齐))?', name, re.I))
+
+
 def enrich_row(row):
     source = str(row.get('云盘路径') or '').replace('\\', '/')
     row.setdefault('原文件名', source.rsplit('/', 1)[-1] or row.get('文件名') or '')
     evidence = '；'.join(str(row.get(k) or '') for k in ('匹配策略', '备注')).strip('；')
     row['分类依据'] = row.get('分类依据') or evidence
     style = str(row.get('输入款号') or '')
-    row['云盘目录归属'] = ('完整款号目录匹配' if style and style in source.split('/')[:-1]
+    row['云盘目录归属'] = ('完整款号目录匹配' if style and any(matches_style_directory(part, style) for part in source.split('/')[:-1])
                            else '参见云盘路径及匹配策略')
     row['标签货号核验'] = row.get('标签货号核验') or (
         '未核验；目录归属不等于标签货号映射已核验'

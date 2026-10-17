@@ -493,10 +493,15 @@
     return score
   }
 
+  // Status suffixes are metadata, not part of the business style code.
+  function isLightSupplyStyleFolder(part, code) {
+    return new RegExp(`^${escapeRegExp(getGroupCode(code))}(?:[-_\\s]+(?:已选|已写|已补|回齐))?$`, 'i').test(part)
+  }
+
   // Light-supply assets use layout/size folders, not business color codes.
   function lightSupplyRelativeParts(item, code) {
     const parts = pathSegments(item?.fullpath || item?.path || '')
-    const index = parts.findIndex(part => part.toLowerCase() === getGroupCode(code).toLowerCase())
+    const index = parts.findIndex(part => isLightSupplyStyleFolder(part, code))
     if (index < 0 || !parts.slice(0, index).includes('轻供') || !parts.slice(0, index).includes('鞋品')) return []
     return parts.slice(index + 1)
   }
@@ -513,7 +518,15 @@
     const candidates = dedupeItemsByFullpath(items).filter(item => isImageItem(item)
       && !hasWasteLabelMarker(item) && !hasShoeNegativeLabelMarker(item))
     const sku = candidates.filter(item => lightSupplyRelativeParts(item, code)[0]?.toLowerCase() === 'sku')
-    const pool = sku.length ? sku : candidates.filter(item => lightSupplyRelativeParts(item, code)[0] === '白底')
+    const white = candidates.filter(item => lightSupplyRelativeParts(item, code)[0] === '白底')
+    const transparent = candidates.filter(item => lightSupplyRelativeParts(item, code)[0] === '透明图')
+    const namedWhite = candidates.filter(item => {
+      const parts = lightSupplyRelativeParts(item, code)
+      return parts.length === 2 && ['大图', '修片大图'].includes(parts[0])
+        && /白底/.test(item.filename) && !hasAny(item.filename, LABEL_IMAGE_PATTERNS)
+    })
+    const pool = sku.length ? sku : white.length ? white : transparent.length ? transparent : namedWhite
+    const layout = sku.length ? 'SKU' : white.length ? '白底' : transparent.length ? '透明图' : '白底文件名'
     if (!pool.length) return []
     const resolution = item => {
       const parts = lightSupplyRelativeParts(item, code)
@@ -523,7 +536,7 @@
     }
     const best = Math.max(...pool.map(resolution))
     return pool.filter(item => resolution(item) === best).map(item => ({
-      ...item, __light_supply_layout: sku.length ? 'SKU' : '白底', __shoe_color_code: '',
+      ...item, __light_supply_layout: layout, __shoe_color_code: '',
     }))
   }
 
@@ -593,6 +606,26 @@
     return 90
   }
 
+  function selectLightSupplyBoxCandidates(items, code) {
+    if (getShoeColorCodeFromInput(code)) return []
+    const eligible = dedupeItemsByFullpath(items).filter(item => {
+      if (!isImageItem(item) || hasWasteLabelMarker(item) || hasShoeNegativeLabelMarker(item)) return false
+      const parts = lightSupplyRelativeParts(item, code)
+      const root = parts.length === 1
+      const retouched = parts.length === 2 && parts[0] === '修片大图'
+      const name = getFileStem(item.filename)
+      return (root && /^鞋盒(?:$|[\s_（(-])/.test(name))
+        || ((root || retouched) && /^_?[0-9][A-Z][0-9][A-Z]\d+$/i.test(name))
+    })
+    // Prefer the root's dedicated photo batch; only use the retouched batch
+    // when no root candidate exists. All candidates still need content OCR.
+    const root = eligible.filter(item => lightSupplyRelativeParts(item, code).length === 1)
+    return (root.length ? root : eligible)
+      .sort((a, b) => String(a.filename).localeCompare(String(b.filename), 'en', { numeric: true }))
+      .slice(-SHOE_LABEL_GENERIC_CANDIDATE_LIMIT_PER_COLOR)
+      .map(item => ({ ...item, __shoe_color_code: '', __shoe_label_candidate_kind: 'light_supply_box_ocr' }))
+  }
+
   function selectShoeLabelItems(items, code = '') {
     const explicit = dedupeItemsByFullpath(items)
       .filter(item => isShoeLabelItem(item, code))
@@ -637,7 +670,7 @@
       .sort((a, b) => String(a.fullpath).localeCompare(String(b.fullpath)))
       .slice(0, SHOE_LABEL_GENERIC_CANDIDATE_LIMIT_PER_COLOR)
       .map(item => ({ ...item, __shoe_color_code: '', __shoe_label_candidate_kind: 'light_supply_ocr' }))
-    return [...explicit, ...generic, ...lightSupply].sort((left, right) => (
+    return [...explicit, ...generic, ...lightSupply, ...selectLightSupplyBoxCandidates(items, code)].sort((left, right) => (
       shoeLabelPriority(left) - shoeLabelPriority(right)
       || String(left.__shoe_color_code || '').localeCompare(String(right.__shoe_color_code || ''), 'zh-Hans-CN')
       || String(left?.filename || '').localeCompare(String(right?.filename || ''), 'zh-Hans-CN')
@@ -1125,11 +1158,11 @@
       ].join('；')
 
       await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'shoe_style_color', styleColorItems, {
-        strategy: styleColorItems.some(item => item.__light_supply_layout) ? '轻供鞋品优先 SKU、白底兜底，保留最高分辨率组' : '鞋品仅保留每个款色的款色命名图',
+        strategy: styleColorItems.some(item => item.__light_supply_layout) ? '轻供鞋品优先 SKU，白底/透明图及白底文件名兜底，保留最高分辨率组' : '鞋品仅保留每个款色的款色命名图',
         missingNote: statsNote,
       })
       await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'shoe_label', shoeLabelItems, {
-        strategy: shoeLabelItems.some(item => ['generic_ocr', 'light_supply_ocr'].includes(item.__shoe_label_candidate_kind))
+        strategy: shoeLabelItems.some(item => ['generic_ocr', 'light_supply_ocr', 'light_supply_box_ocr'].includes(item.__shoe_label_candidate_kind))
           ? '鞋品下载少量无语义候选，后端 OCR 识别鞋盒标签'
           : '鞋品仅保留显式鞋盒标签/电子吊牌图',
         missingNote: statsNote,
@@ -1312,6 +1345,8 @@
       isShoeStyleColorImage,
       selectShoeStyleColorItems,
       selectLightSupplyLayoutItems,
+      selectLightSupplyBoxCandidates,
+      isLightSupplyStyleFolder,
       isLightSupplyUuidLabel,
       isShoeLabelItem,
       isGenericShoeLabelCandidateItem,

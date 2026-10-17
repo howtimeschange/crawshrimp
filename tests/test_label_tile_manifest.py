@@ -76,3 +76,19 @@ def test_unknown_uuid_is_not_accepted_as_label(tmp_path):
     with pytest.raises(ValueError, match='识别依据'):
         repackage(source, tmp_path / 'out')
     assert not (tmp_path / 'out').exists()
+
+
+def test_status_directory_keeps_listingify_style_and_auditable_ocr_status():
+    from core.label_tile_manifest import assign_output_names
+    rows = [
+        {'输入款号': '2081271412V1', '素材类型': kind, '下载结果': '已下载',
+         '云盘路径': f'冬/轻供/鞋品/幻视/2081271412V1-已选/{name}',
+         '本地文件': f'/tmp/{name}', '匹配策略': '白底文件名' if kind == '款色图' else 'OCR完整款号和标签结构',
+         '标签货号核验': '不适用' if kind == '款色图' else 'OCR已核验完整款号；未推断业务色码'}
+        for kind, name in [('款色图', '_S6A1141白底.jpg'), ('鞋盒标签图/电子吊牌图', '鞋盒.JPG')]
+    ]
+    assign_output_names(rows)
+    assert [r['输出文件名'] for r in rows] == ['2081271412V1_平铺图_01.jpg', '2081271412V1_吊牌_01.jpg']
+    assert all(r['云盘目录归属'] == '完整款号目录匹配' for r in rows)
+    assert rows[1]['标签货号核验'].startswith('OCR已核验完整款号')
+    assert rows[1]['原文件名'] == '鞋盒.JPG'

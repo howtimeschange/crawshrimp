@@ -41,3 +41,64 @@ def test_filter_preserves_multiple_unmapped_labels_and_marks_rejected_rows():
     assert len(kept) == 2
     assert rows[2][0]['下载结果'] == '已跳过'
     assert rows[2][0]['本地文件'] == ''
+
+
+def box_row():
+    r = row()
+    r.update(输入款号='2081271412V2', 云盘路径='冬/轻供/鞋品/幻视/2081271412V2-已选/5S7A3390.JPG',
+             __shoe_label_candidate_kind='light_supply_box_ocr')
+    return r
+
+
+def test_small_box_requires_full_alphanumeric_style_and_structure_not_visual_size():
+    from core.api_server import _shenhui_light_supply_box_candidate_result
+    text = 'balaOne2081271412V2合格证执行标准QB/T4331-2021帮面材质织物产地浙江'
+    with patch('core.api_server._shenhui_shoe_label_ocr_text', return_value=(text, 64, text)), \
+         patch('core.api_server._shenhui_shoe_label_visual_metrics') as visual:
+        result = _shenhui_light_supply_box_candidate_result(box_row(), Path('/tmp/a.jpg'), None)
+        assert result['accepted']
+        visual.assert_not_called()
+    for bad in ['2081271412V3', '2081271412V20', '12081271412V2']:
+        wrong = text.replace('2081271412V2', bad)
+        with patch('core.api_server._shenhui_shoe_label_ocr_text', return_value=(wrong, 80, wrong)), \
+             patch('core.api_server._shenhui_shoe_label_crop_ocr_text', return_value=(wrong, 80, wrong)):
+            assert not _shenhui_light_supply_box_candidate_result(box_row(), Path('/tmp/a.jpg'), None)['accepted']
+
+
+def test_box_crop_recovery_and_multiple_labels_are_preserved_with_verified_evidence():
+    text = '2081271412V2合格证执行标准QB/T4331-2021帮面材质织物产地浙江'
+    rows = [(box_row(), Path('/tmp/a.jpg')), (box_row(), Path('/tmp/b.jpg'))]
+    with patch('core.api_server._shenhui_shoe_label_ocr_text', return_value=('', 0, '')), \
+         patch('core.api_server._shenhui_shoe_label_crop_ocr_text', return_value=(text, 70, text)):
+        kept = _filter_shenhui_shoe_label_ocr_candidates(rows, None)
+        assert len(kept) == 2
+        assert all('已核验完整款号' in r['标签货号核验'] for r, _ in kept)
+
+
+def test_box_wrong_path_and_ordinary_photo_rejected():
+    from core.api_server import _shenhui_light_supply_box_candidate_result
+    for path in ['冬/轻供/鞋品/2081271412V20-已选/5S7A3390.JPG',
+                 '冬/轻供/鞋品/2081271412V2-已选/详情图/5S7A3390.JPG',
+                 '冬/轻供/鞋品/2081271412V2-已选/1.jpg']:
+        r = box_row(); r['云盘路径'] = path
+        with patch('core.api_server._shenhui_shoe_label_ocr_text') as ocr:
+            assert not _shenhui_light_supply_box_candidate_result(r, Path('/tmp/a.jpg'), None)['accepted']
+            ocr.assert_not_called()
+    with patch('core.api_server._shenhui_shoe_label_ocr_text', return_value=('新品童鞋', 90, '新品童鞋')), \
+         patch('core.api_server._shenhui_shoe_label_crop_ocr_text', return_value=('新品童鞋', 90, '新品童鞋')):
+        assert not _shenhui_light_supply_box_candidate_result(box_row(), Path('/tmp/a.jpg'), None)['accepted']
+
+
+def test_uuid_certificate_accepts_status_folder_without_claiming_style_verification():
+    r = row(); r['云盘路径'] = r['云盘路径'].replace('/2084261412A7/', '/2084261412A7-已选/')
+    text = '合格证产品货号BaHF-1775执行标准QB/T4552-2020帮面材质织物产地浙江'
+    with patch('core.api_server._shenhui_shoe_label_ocr_text', return_value=(text, 80, text)):
+        assert _shenhui_light_supply_label_candidate_result(r, Path('/tmp/a.png'), None)['accepted']
+
+
+def test_box_style_at_end_of_ocr_line_is_not_lost_by_normalization():
+    from core.api_server import _shenhui_light_supply_box_candidate_result
+    raw = 'balaOne 2081271412V2\nn 合格证执行标准QB/T4331-2021帮面材质织物产地浙江'
+    normalized = raw.replace(' ', '').replace('\n', '')
+    with patch('core.api_server._shenhui_shoe_label_ocr_text', return_value=(raw, 55, normalized)):
+        assert _shenhui_light_supply_box_candidate_result(box_row(), Path('/tmp/a.jpg'), None)['accepted']

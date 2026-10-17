@@ -577,3 +577,32 @@ test('UUID labels only enter OCR from the exact light-supply style root', async 
   assert.equal(h.selectShoeLabelItems([item], code + '-00301').length, 0)
   assert.equal(h.selectShoeLabelItems([item], '2084261412A9').length, 0)
 })
+
+test('status-suffixed light-supply styles use transparent or named white images without color inference', async () => {
+  const h = await loadExports()
+  const code = '2081271412V2'
+  const base = `冬/轻供/鞋品/幻视/${code}-已选/`
+  const item = name => ({ filename: name.split('/').at(-1), fullpath: base + name, dir: 0 })
+  const files = ['透明图/5S7A2057.png', '透明图/5S7A2063.png', '大图/相机白底.jpg', '主图/1.jpg', '1.jpg', '10.jpg'].map(item)
+  assert.deepEqual(Array.from(h.selectShoeStyleColorItems(files, code), x => x.filename), ['5S7A2057.png', '5S7A2063.png'])
+  assert.ok(h.selectShoeStyleColorItems(files, code).every(x => x.__shoe_color_code === ''))
+  assert.deepEqual(Array.from(h.selectShoeStyleColorItems([item('大图/相机白底.jpg'), item('主图/1.jpg')], code), x => x.filename), ['相机白底.jpg'])
+  for (const wrong of [code + '0-已选', code + '-00323', code + '-其他', '2081271412V3-已选']) {
+    assert.equal(h.selectShoeStyleColorItems(files.map(x => ({ ...x, fullpath: x.fullpath.replace(code + '-已选', wrong) })), code).length, 0)
+  }
+  assert.equal(h.selectShoeStyleColorItems(files, code + '-00323').length, 0)
+})
+
+test('light-supply photographed box candidates stay scoped and need OCR, retain different copies', async () => {
+  const h = await loadExports()
+  const code = '2081271412V1'
+  const base = `冬/轻供/鞋品/幻视/${code}-已选/`
+  const item = name => ({ filename: name.split('/').at(-1), fullpath: base + name, dir: 0 })
+  const chosen = h.selectShoeLabelItems(['鞋盒.JPG', '鞋盒 - 副本.JPG', '5S7A3390.JPG', '1.jpg', '详情图/5S7A3391.JPG', '大图/5S7A3392.JPG', '鞋盒无标签.JPG'].map(item), code)
+  assert.equal(chosen.length, 3)
+  assert.ok(chosen.every(x => x.__shoe_label_candidate_kind === 'light_supply_box_ocr' && x.__shoe_color_code === ''))
+  const batch = Array.from({ length: 20 }, (_, i) => item(`修片大图/5S7A${3300 + i}.JPG`))
+  assert.equal(h.selectLightSupplyBoxCandidates(batch, code).length, 8)
+  assert.equal(h.selectLightSupplyBoxCandidates(batch, code)[0].filename, '5S7A3312.JPG')
+  assert.equal(h.selectLightSupplyBoxCandidates(batch.map(x => ({ ...x, fullpath: x.fullpath.replace('/轻供/', '/期货/') })), code).length, 0)
+})
