@@ -5,17 +5,26 @@ This checklist is the required evidence record before claiming desktop updater r
 ## Release Identity
 
 - Release scope (`PATCH` / `MINOR` / `MAJOR`): `PATCH`
-- Version selection rationale: 修复鞋品标签核验、灰底素材配对、损坏图片隔离、短视频崩溃恢复和上新标签下载；未新增独立一级功能或改变架构，按 PATCH 升版。
-- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.11`
-- Source commit: `PENDING`
-- Old version under test: `v2.5.10`
-- New version under test: `v2.5.11`
+- Version selection rationale: 修复轻供服饰/鞋品素材目录发现、带状态后缀的款号目录、鞋盒标签 OCR 核验及吊牌 PDF 分类；未新增独立一级功能或改变架构，按 PATCH 升版。
+- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.13`
+- Source commit: `dece3156db341fa361c7dc766077ba076d2cd2af`（功能源码；含发布元数据的最终提交见下方 CI）
+- Old version under test: `v2.5.12`
+- New version under test: `v2.5.13`
 - GitHub main build run ID: `PENDING`
 - GitHub tag build run ID: `PENDING`
 - Formal release URL: `PENDING`
 - Rolling `desktop-latest` release URL: `PENDING`
 - Cloudflare R2 update source (`https://updates.crawshrimp.com/`): `PENDING`
 - Formal build marked with `crawshrimpUpdateTestBuild`: `NO`
+
+## v2.5.13 Pre-release Validation（2026-10-24）
+
+- `npm --prefix app test`: 527 passed。
+- `node --test tests/shenhui-new-arrival-batch-label-tile-download.test.js`: 24 passed。
+- `PYTHONPATH=. venv/bin/python -m pytest tests/test_light_supply_label_download.py tests/test_label_tile_manifest.py tests/test_shenhui_shoe_verified_label.py tests/test_shenhui_shoe_label_first.py tests/test_shenhui_apparel_label_processing.py -q`: 117 passed。
+- `npm --prefix app run vite:build`: passed；保留现有大体积 chunk 提示。
+- 应用与 lockfile 版本一致，README 仅保留 v2.5.13 / v2.5.12 / v2.5.11 三个版本说明，历史 Release Notes 保留。
+- 打包、签名、公证、GitHub/R2 发布结果以本次 CI 为准；下方实际安装与更新验收未执行的项目继续保持 `PENDING`。
 
 ## Download Transport Regression
 
