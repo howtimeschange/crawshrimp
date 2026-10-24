@@ -25,6 +25,8 @@ This checklist is the required evidence record before claiming desktop updater r
 - `npm --prefix app run vite:build`: passed；保留现有大体积 chunk 提示。
 - 应用与 lockfile 版本一致，README 仅保留 v2.5.13 / v2.5.12 / v2.5.11 三个版本说明，历史 Release Notes 保留。
 - 打包、签名、公证、GitHub/R2 发布结果以本次 CI 为准；下方实际安装与更新验收未执行的项目继续保持 `PENDING`。
+- 首次 CI 在 macOS Intel 运行时安装中选中缺少 Intel wheel 的 PyMuPDF 2.0 并转为源码构建；将范围限定为 `>=1.24.0,<2.0.0`，PyPI 已核对上一版 CI 使用的 1.28.2 同时提供 Intel / ARM wheel。
+- 使用隔离目录安装 PyMuPDF 1.28.2，重新运行上述五个 Python 测试文件及 `tests/test_shenhui_pdf_screenshot.py`：130 passed。
 
 ## Download Transport Regression
 
