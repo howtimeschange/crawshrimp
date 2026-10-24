@@ -606,3 +606,77 @@ test('light-supply photographed box candidates stay scoped and need OCR, retain 
   assert.equal(h.selectLightSupplyBoxCandidates(batch, code)[0].filename, '5S7A3312.JPG')
   assert.equal(h.selectLightSupplyBoxCandidates(batch.map(x => ({ ...x, fullpath: x.fullpath.replace('/轻供/', '/期货/') })), code).length, 0)
 })
+
+const incidentModule = '巴拉货控/02 产品上新模块/2-2 巴拉产品上新'
+const incidentSeason = `${incidentModule}/2026年巴拉冬`
+
+function incidentSource(type, relativePath = `${incidentSeason}/${type === 'model' ? '模拍原图' : '平拍原图'}`) {
+  return { mountId: '2023', relativePath, broadRelativePath: incidentModule }
+}
+
+test('October 24 light-supply paths are discovered from standard defaults for all eight missing styles', async () => {
+  const apparel = ['208426103181', '208426121099', '208426121298', '208426108197', '208426108196']
+  const shoes = ['2084261412W7', '2081271402W9', '2084261412W8']
+  for (const code of [...apparel, ...shoes]) {
+    const root = apparel.includes(code)
+      ? `${incidentSeason}/轻供/中童-红叶/静物图/10.30上市-已写/${code}-静物图 已审核-已写`
+      : `${incidentSeason}/轻供/鞋品/10.30上市/幻视/${code}-已选`
+    const filename = apparel.includes(code) ? `${code}-00466.jpg` : '1200-1.jpg'
+    const asset = { dir: 0, filename, fullpath: `${root}/${apparel.includes(code) ? '' : 'SKU/'}${filename}` }
+    const h = await loadExports({ fetch: async url => String(url).includes('/search')
+      ? jsonResponse({ total: 1, list: [{ dir: 1, filename: root.split('/').at(-1), fullpath: root }] })
+      : jsonResponse({ total: 1, list: [asset] }) })
+    const result = await h.collectCandidateAssets(code, incidentSource('still'), { sourceType: 'still', folderScanDepth: 3 })
+    assert.equal(result.folderCount, 1, code)
+    assert.deepEqual(Array.from(result.items, x => x.fullpath), [asset.fullpath], code)
+    assert.equal(result.items[0].__source_type, 'still')
+  }
+})
+
+test('light-supply source aliases distinguish stills, labels and AI models within the owning module', async () => {
+  const h = await loadExports()
+  const root = `${incidentSeason}/轻供/中童-红叶`
+  for (const folder of ['静物图/10.30上市-已写', '电子吊牌洗唛']) {
+    const p = `${root}/${folder}/208426103181`
+    assert.equal(h.isWithinBroadSourceScope(p, incidentSource('still'), 'still'), true)
+    assert.equal(h.isWithinBroadSourceScope(p, incidentSource('model'), 'model'), false)
+  }
+  const model = `${root}/AI模拍/208426103181-AI模特图-已审核9.15已选9.18`
+  assert.equal(h.isWithinBroadSourceScope(model, incidentSource('model'), 'model'), true)
+  assert.equal(h.isWithinBroadSourceScope(model, incidentSource('still'), 'still'), false)
+  for (const p of [`${root}/尺寸表/208426103181.png`, `${root}/AI视频/208426103181`,
+    '巴拉货控/杂七杂八/14 物流图/208426103181.jpg',
+    `其他业务/轻供/中童-红叶/静物图/208426103181`,
+    `${incidentModule}备份/2026年巴拉冬/轻供/中童-红叶/静物图/208426103181`]) {
+    assert.equal(h.isWithinBroadSourceScope(p, incidentSource('still'), 'still'), false, p)
+    assert.equal(h.isWithinBroadSourceScope(p, incidentSource('model'), 'model'), false, p)
+  }
+})
+
+test('explicit light-supply root excludes models and size charts and preserves complete style boundaries', async () => {
+  const code = '208426103181'
+  const root = `${incidentSeason}/轻供/中童-红叶`
+  const paths = [`静物图/${code}-已写/${code}-00422.jpg`, `电子吊牌洗唛/${code}/401_${code}_红叶.pdf`,
+    `AI模拍/${code}-已选/${code}-00422.jpg`, `尺寸表/${code}.png`,
+    `静物图/${code}9-已写/${code}9-00422.jpg`]
+  const h = await loadExports({ fetch: async () => jsonResponse({ total: paths.length, list: paths.map(p => ({
+    dir: 0, filename: p.split('/').at(-1), fullpath: `${root}/${p}`,
+  })) }) })
+  const result = await h.collectCandidateAssets(code, incidentSource('still', root), { sourceType: 'still', folderScanDepth: 0 })
+  assert.deepEqual(Array.from(result.items, x => x.fullpath), paths.slice(0, 2).map(p => `${root}/${p}`))
+})
+
+test('light-supply numbered supplier PDFs are hang tags, not wash labels inherited from the combined folder', async () => {
+  const h = await loadExports()
+  for (const [index, code] of ['208426103181', '208426121099', '208426121298', '208426108197', '208426108196'].entries()) {
+    const root = `${incidentSeason}/轻供/中童-红叶/电子吊牌洗唛/${code}`
+    const pdf = { dir: 0, filename: `${401 + index}_${code}_红叶.pdf`, fullpath: `${root}/${401 + index}_${code}_红叶.pdf` }
+    const wash = { dir: 0, filename: 'image.jpeg', fullpath: `${root}/image.jpeg` }
+    assert.equal(h.inferLabelKind(pdf, code), 'hang_tag', code)
+    assert.deepEqual(Array.from(h.selectLabelItems([pdf, wash], 'hang_tag', code), x => x.filename), [pdf.filename])
+    assert.deepEqual(Array.from(h.selectLabelItems([pdf, wash], 'wash_label', code), x => x.filename), ['image.jpeg'])
+    assert.equal(h.inferLabelKind({ ...pdf, filename: `${code}洗唛.pdf`, fullpath: `${root}/${code}洗唛.pdf` }, code), 'wash_label')
+    assert.equal(h.inferLabelKind({ ...pdf, filename: `${code}吊牌.pdf`, fullpath: `${root}/${code}吊牌.pdf` }, code), 'hang_tag')
+    assert.notEqual(h.inferLabelKind({ ...pdf, fullpath: pdf.fullpath.replace(`/电子吊牌洗唛/${code}/`, `/电子吊牌洗唛/${code}9/`) }, code), 'hang_tag')
+  }
+})

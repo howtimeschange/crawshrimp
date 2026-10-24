@@ -266,6 +266,22 @@
     const prefix = String(sourceConfig?.broadRelativePath || '').trim()
     if (prefix && !(normalized === prefix || normalized.startsWith(`${prefix}/`))) return false
     return pathSegments(normalized).includes(getSourceMarker(sourceType))
+      || isLightSupplySourcePath(normalized, sourceType)
+  }
+
+  function isLightSupplySourcePath(fullpath, sourceType) {
+    const segments = pathSegments(fullpath)
+    const lightSupplyIndex = segments.indexOf('轻供')
+    if (lightSupplyIndex < 0) return false
+    // Light-supply apparel keeps labels, stills and model shots in sibling
+    // folders. Do not widen the fallback to size charts, videos or logistics.
+    const sourceSegments = segments.slice(lightSupplyIndex + 1)
+    if (sourceSegments.some(segment => /视频|尺寸表/.test(segment))) return false
+    const model = sourceSegments.some(segment => /^(?:AI)?模拍(?:原图)?$|^模特图$/i.test(segment))
+    if (sourceType === 'model') return model
+    return !model && sourceSegments.some(segment => (
+      /^(?:静物图|平铺图|平拍原图|电子吊牌洗唛|吊牌洗唛|吊牌|洗唛|鞋品)$/.test(segment)
+    ))
   }
 
   function isShoePathValue(value) {
@@ -371,10 +387,27 @@
     if (hasWasteLabelMarker(item)) return ''
     const yqKind = yqKindFromFilename(item?.filename || item?.name || '')
     if (yqKind) return yqKind
+    const filename = item?.filename || item?.name || ''
+    // Explicit filenames outrank the enclosing combined label folder.
+    if (hasAny(filename, WASH_LABEL_PATTERNS)) return 'wash_label'
+    if (hasAny(filename, HANG_TAG_PATTERNS)) return 'hang_tag'
+    if (isLightSupplyNumberedHangTagPdf(item, code)) return 'hang_tag'
     const text = `${item?.filename || item?.name || ''} ${item?.fullpath || item?.path || ''}`
     if (hasAny(text, WASH_LABEL_PATTERNS)) return 'wash_label'
     if (hasAny(text, HANG_TAG_PATTERNS) || hasLabelStatusParentMarker(item)) return 'hang_tag'
     return ''
+  }
+
+  function isLightSupplyNumberedHangTagPdf(item, code) {
+    if (getExt(item) !== 'pdf') return false
+    const target = getGroupCode(code)
+    const parts = pathSegments(item?.fullpath || item?.path || '')
+    const combined = parts.indexOf('电子吊牌洗唛')
+    if (!target || combined < 0 || !parts.slice(0, combined).includes('轻供')) return false
+    if (parts[combined + 1] !== target || parts.length !== combined + 3) return false
+    // Observed supplier naming: 401_208426103181_红叶.pdf. Requiring the
+    // complete style and folder prevents a generic PDF becoming a hang tag.
+    return new RegExp(`^\\d+_${escapeRegExp(target)}_[^/]+$`, 'i').test(getFileStem(item?.filename || item?.name || ''))
   }
 
   function labelPriority(item, kind, code = '') {
@@ -1048,7 +1081,10 @@
   async function collectCandidateAssets(inputCode, sourceConfig, options = {}) {
     const searchItems = await searchFiles(sourceConfig.mountId, inputCode)
     const sourceType = options.sourceType
-    const primaryScoped = searchItems.filter(item => isWithinRelativePath(item?.fullpath, sourceConfig.relativePath))
+    const primaryScoped = searchItems.filter(item => (
+      isWithinRelativePath(item?.fullpath, sourceConfig.relativePath)
+      && (!pathSegments(item?.fullpath).includes('轻供') || isLightSupplySourcePath(item?.fullpath, sourceType))
+    ))
     const fallbackScoped = searchItems.filter(item => isWithinBroadSourceScope(item?.fullpath, sourceConfig, sourceType))
     const primaryMatchedFolders = primaryScoped.filter(item => matchesFolderItemForCode(item, inputCode))
     const fallbackMatchedFolders = fallbackScoped.filter(item => matchesFolderItemForCode(item, inputCode))
@@ -1186,6 +1222,8 @@
     await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'hang_tag', hangTags, {
       strategy: hangTags.some(item => yqKindFromFilename(item?.filename || item?.name || '') === 'hang_tag')
         ? '优先命中 yq1'
+        : hangTags.some(item => isLightSupplyNumberedHangTagPdf(item, inputCode))
+          ? '轻供电子吊牌洗唛目录内“序号_完整款号_供应商”PDF，按吊牌归类'
         : '按吊牌/合格证文件名查找',
       modelMatched,
       missingNote: statsNote,
