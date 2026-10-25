@@ -2,6 +2,8 @@
 
 **面向电商运营的本地自动化、AI 图片/视频生产与云端审批协作平台。**
 
+**[访问抓虾官网 · 查看项目介绍](https://crawshrimp.com/)**
+
 [![GitHub release](https://img.shields.io/github/v/release/howtimeschange/crawshrimp?label=latest)](https://github.com/howtimeschange/crawshrimp/releases)
 [![Build Desktop App](https://github.com/howtimeschange/crawshrimp/actions/workflows/build-desktop.yml/badge.svg)](https://github.com/howtimeschange/crawshrimp/actions/workflows/build-desktop.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
@@ -12,7 +14,7 @@
 
 欢迎联系项目作者，交流电商自动化与 AI 应用、探讨项目合作，或赞助支持抓虾持续开发。
 
-使用微信扫描下方二维码添加好友，备注「抓虾 + 合作 / 交流 / 赞助」即可。此二维码与[抓虾官网](https://crawshrimp.com/)使用的联系方式一致。
+使用微信扫描下方二维码添加好友，备注「抓虾 + 合作 / 交流 / 赞助」即可。也可以前往[抓虾官网](https://crawshrimp.com/)查看项目介绍。
 
 <a href="docs/images/wechat-qr.jpg">
   <img src="docs/images/wechat-qr.jpg" alt="抓虾项目作者的微信二维码，用于抓虾合作交流与赞助联系" width="280" />
