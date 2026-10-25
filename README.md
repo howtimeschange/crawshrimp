@@ -1,6 +1,6 @@
 # 🦐 抓虾 · Crawshrimp
 
-**[访问抓虾 Harness 官网 · 查看介绍与下载](https://harness.crawshrimp.com/)**
+**[访问抓虾官网 · 查看介绍与下载](https://crawshrimp.com/)**
 
 **面向电商运营的本地自动化、AI 图片/视频生产与云端审批协作平台。**
 
