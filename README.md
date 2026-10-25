@@ -10,12 +10,12 @@
 
 ## 合作交流与赞助
 
-欢迎联系作者邢易成，交流电商自动化与 AI 应用、探讨项目合作，或赞助支持抓虾持续开发。
+欢迎联系项目作者，交流电商自动化与 AI 应用、探讨项目合作，或赞助支持抓虾持续开发。
 
 使用微信扫描下方二维码添加好友，备注「抓虾 + 合作 / 交流 / 赞助」即可。此二维码与[抓虾官网](https://crawshrimp.com/)使用的联系方式一致。
 
 <a href="docs/images/wechat-qr.jpg">
-  <img src="docs/images/wechat-qr.jpg" alt="作者邢易成的微信二维码，用于抓虾合作交流与赞助联系" width="280" />
+  <img src="docs/images/wechat-qr.jpg" alt="抓虾项目作者的微信二维码，用于抓虾合作交流与赞助联系" width="280" />
 </a>
 
 ## v2.5.13 轻供素材目录发现与鞋盒标签核验（2026-10-24）
@@ -432,4 +432,4 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 
 ## License
 
-[Apache-2.0](LICENSE). Copyright 2025-2026 xingyicheng/邢易成. See [NOTICE](NOTICE).
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE).
