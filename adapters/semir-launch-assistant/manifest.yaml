@@ -1,0 +1,295 @@
+id: semir-launch-assistant
+name: 森马上新助手
+version: 0.2.0
+author: codex
+description: 森马上新资料准备：PLM尺码、批次图包、SCM洗唛吊牌与三方检测报告
+entry_url: https://smplm.semirapp.com/WebAccess/home.html
+tab_match_prefixes: &id001
+- https://smplm.semirapp.com/WebAccess/
+auth:
+  check_script: auth_check.js
+  login_url: https://smplm.semirapp.com/WebAccess/
+tasks:
+- id: size_chart_downloader
+  name: 森马 PLM 尺码表批量导出
+  description: 按款号读取森马 PLM 尺寸表当前修订版，输出宽表和长表；业务阶段需人工确认。
+  script: size-chart-downloader.js
+  entry_url: https://smplm.semirapp.com/WebAccess/home.html
+  tab_match_prefixes: *id001
+  skip_auth: false
+  params:
+  - id: mode
+    type: radio
+    label: 打开方式
+    default: current
+    options:
+    - value: current
+      label: 当前登录页（推荐）
+    - value: new
+      label: 新开 PLM 页面
+  - id: style_codes
+    type: textarea
+    label: 款号
+    rows: 6
+    required: true
+    default: ''
+    placeholder: '一行一个森马款号，例如：
+
+      101526106001'
+    hint: 支持从 Excel 复制多行；脚本会按款号去重后逐个下载。
+  - id: size_scope
+    type: select
+    label: 尺码范围
+    default: selected
+    options:
+    - value: selected
+      label: 页面已选尺码（推荐）
+    - value: all
+      label: 全部尺码（含未选尺码）
+    hint: 默认只导出尺寸表页面已选尺码；全部尺码包含未选尺码，需人工核对。
+  - id: output_shape
+    type: select
+    label: 输出格式
+    default: both
+    ui_span: half
+    options:
+    - value: both
+      label: 宽表 + 长表（推荐）
+    - value: wide
+      label: 仅宽表
+    - value: long
+      label: 仅长表
+    hint: 宽表每个测量点一行；长表每个尺码值一行。输出当前修订版，业务阶段需核实。
+  - id: output_dir
+    type: directory
+    label: 导出目录
+    placeholder: 点击选择导出目录
+    hint: 可选。选择后会把最终 Excel 复制到该目录；留空则使用抓虾运行时默认输出目录。
+  trigger:
+    type: manual
+  output:
+  - type: excel
+    filename: 森马PLM尺码表_当前修订版_{timestamp}.xlsx
+    sheet_key: __sheet_name
+    columns:
+    - 输出表
+    - 款号
+    - 款式名称
+    - 款式URL
+    - 尺码表阶段
+    - 尺码表名称
+    - 尺码表URL
+    - 修订版
+    - 修订版URL
+    - 状态
+    - 尺码范围
+    - 基础尺码
+    - 测量点序号
+    - 测量点
+    - 测量点编码
+    - 描述
+    - 公差(-)
+    - 公差(+)
+    - 尺码
+    - 尺码值
+    - 修改确认
+    - 抓取结果
+    - 备注
+    - 抓取时间
+    sheets:
+    - name: 宽表
+      columns:
+      - 款号
+      - 款式名称
+      - 款式URL
+      - 尺码表阶段
+      - 尺码表名称
+      - 尺码表URL
+      - 修订版
+      - 修订版URL
+      - 状态
+      - 尺码范围
+      - 基础尺码
+      - 已选尺码
+      - 导出范围
+      - 测量点序号
+      - 测量点
+      - 测量点编码
+      - 描述
+      - 公差(-)
+      - 公差(+)
+      - 修改确认
+      - 抓取结果
+      - 备注
+      - 抓取时间
+    - name: 长表
+      columns:
+      - 款号
+      - 款式名称
+      - 款式URL
+      - 尺码表阶段
+      - 尺码表名称
+      - 尺码表URL
+      - 修订版
+      - 修订版URL
+      - 状态
+      - 尺码范围
+      - 基础尺码
+      - 已选尺码
+      - 导出范围
+      - 测量点序号
+      - 测量点
+      - 测量点编码
+      - 描述
+      - 公差(-)
+      - 公差(+)
+      - 尺码
+      - 尺码值
+      - 页面所选
+      - 修改确认
+      - 抓取结果
+      - 备注
+      - 抓取时间
+    - name: 错误
+      columns:
+      - 款号
+      - 款式名称
+      - 款式URL
+      - 尺码表阶段
+      - 尺码表名称
+      - 尺码表URL
+      - 修订版
+      - 修订版URL
+      - 状态
+      - 尺码范围
+      - 基础尺码
+      - 已选尺码
+      - 导出范围
+      - 测量点序号
+      - 测量点
+      - 测量点编码
+      - 描述
+      - 公差(-)
+      - 公差(+)
+      - 尺码
+      - 尺码值
+      - 修改确认
+      - 抓取结果
+      - 备注
+      - 抓取时间
+- id: prepare_image_package
+  name: 森马批次图包下载整理
+  description: 在指定批次目录按款号下载原始素材，保留款色及子目录、输出分款ZIP与SHA256清单。
+  script: prepare-image-package.js
+  entry_url: https://fmp.semirapp.com/web/index#/home/file
+  tab_match_prefixes:
+  - https://fmp.semirapp.com/
+  skip_auth: false
+  params:
+  - &id002
+    id: mode
+    type: radio
+    label: 打开方式
+    default: current
+    options:
+    - value: current
+      label: 当前登录页面
+    - value: new
+      label: 新开页面
+  - &id003
+    id: style_codes
+    type: textarea
+    label: 款号
+    rows: 8
+    required: true
+    hint: 一行一个款号，支持批量粘贴。
+  - &id004
+    id: export_folder
+    type: directory
+    label: 导出目录
+    required: true
+  - &id005
+    id: package_name
+    type: text
+    label: 资料包名称
+    hint: 自动附加时间，不覆盖已有资料包。
+  - &id006
+    id: auto_zip
+    type: checkbox
+    label: 生成分款 ZIP
+    default: true
+  - id: source_paths
+    type: textarea
+    label: 素材目录（每行一个）
+    rows: 6
+    required: true
+    placeholder: 静物|森马bu-森马商品//3-商品上新/3-01季度上新/2026年/26Q3/静物图/男/8p/
+    hint: 格式：静物|挂载点//批次目录；也支持模特、补图。每个目录分别保留，不跨批次自动补齐。
+  trigger:
+    type: manual
+  output:
+  - type: excel
+    filename: 森马批次图包下载整理_{timestamp}.xlsx
+    columns: &id007
+    - 款号
+    - 资料类型
+    - 色号
+    - 颜色
+    - 品牌
+    - 季节
+    - 单号
+    - 记录ID
+    - 中文成分
+    - 英文成分
+    - 检测项目
+    - 检测机构
+    - 文件名
+    - 来源路径
+    - 包内路径
+    - 本地文件
+    - 下载结果
+    - 备注
+- id: wash_hangtag_batch_download
+  name: 森马 SCM 洗唛吊牌下载
+  description: 完整分页读取款色洗唛、吊牌与中英文成分；保留当前页面其它筛选，缺件单独列出。
+  script: scm-material-download.js
+  entry_url: https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index
+  tab_match_prefixes:
+  - https://scm.semir.com/
+  skip_auth: false
+  params:
+  - *id002
+  - *id003
+  - *id004
+  - *id005
+  - *id006
+  - id: only_completed
+    type: checkbox
+    label: 仅下载已完成记录
+    default: true
+  trigger:
+    type: manual
+  output:
+  - type: excel
+    filename: 森马 SCM 洗唛吊牌下载_{timestamp}.xlsx
+    columns: *id007
+- id: quality_report_download
+  name: 森马 SCM 三方检测报告下载
+  description: 完整分页下载报告原件并保留检测项目、颜色和机构。保留页面筛选，功能/羽绒适用性需复核。
+  script: scm-material-download.js
+  entry_url: https://scm.semir.com/scm-quality-mgm/index/scm-qc-third-test-report-index
+  tab_match_prefixes:
+  - https://scm.semir.com/
+  skip_auth: false
+  params:
+  - *id002
+  - *id003
+  - *id004
+  - *id005
+  - *id006
+  trigger:
+    type: manual
+  output:
+  - type: excel
+    filename: 森马 SCM 三方检测报告下载_{timestamp}.xlsx
+    columns: *id007

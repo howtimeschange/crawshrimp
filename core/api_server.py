@@ -8777,7 +8777,17 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     log(f"[warn] 巴拉AI视频任务后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
-            if adapter_id == 'plm-ops-assistant' and task_id == 'size_chart_downloader':
+            if adapter_id == 'semir-launch-assistant' and task_id in {
+                'prepare_image_package', 'wash_hangtag_batch_download', 'quality_report_download',
+            }:
+                from core.semir_launch_packaging import package_materials
+                packaged_refs = await asyncio.to_thread(
+                    package_materials, data_rows=data_rows, run_params=run_params,
+                    runtime_artifact_dir=runtime_artifact_dir, log=log,
+                )
+                return merge_output_file_refs(packaged_refs)
+
+            if adapter_id in ('plm-ops-assistant', 'semir-launch-assistant') and task_id == 'size_chart_downloader':
                 try:
                     packaged_refs = await asyncio.to_thread(
                         _finalize_plm_size_chart_downloader_outputs,
@@ -9079,7 +9089,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 "control_hook": wait_for_control,
                 # PLM 尺码表下载仅查询页面内的 RequestHandler；若 Chrome
                 # CDP 短暂断连，安全重放尚未返回结果的当前款号阶段。
-                "retry_transient_cdp_errors": (adapter_id, task_id) == ("plm-ops-assistant", "size_chart_downloader"),
+                "retry_transient_cdp_errors": adapter_id in ("plm-ops-assistant", "semir-launch-assistant") and task_id == "size_chart_downloader",
             }
             if _is_mop_search_recommend_material_publish(adapter_id, task_id):
                 # 搜推发布把 POST 和回执保存在页面内。允许恢复 Runtime.evaluate
