@@ -75,7 +75,8 @@ test('desktop workflow signs with electron-builder and notarizes apps before DMG
   assert.match(workflow, /codesign -dv --verbose=4 "\$\{app_path\}"/)
   assert.match(workflow, /TeamIdentifier=62AR7GLNK3/)
   assert.match(workflow, /spctl --assess --type execute --verbose=2 "\$\{app_path\}"/)
-  assert.match(workflow, /xcrun stapler validate "\$\{app_path\}"/)
+  assert.match(workflow, /source scripts\/stapler-retry\.sh/)
+  assert.match(workflow, /run_stapler_with_retry validate "\$\{app_path\}"/)
   assert.match(workflow, /publish-release:[\s\S]*?if: startsWith\(github\.ref, 'refs\/tags\/v'\)/)
   assert.doesNotMatch(workflow, /if: github\.ref == 'refs\/heads\/main'/)
 
@@ -94,8 +95,8 @@ test('desktop workflow signs with electron-builder and notarizes apps before DMG
   assert.match(appNotarizeScript, /APPLE_NOTARY_POLL_INTERVAL/)
   assert.match(appNotarizeScript, /xcrun notarytool info/)
   assert.match(appNotarizeScript, /xcrun notarytool log/)
-  assert.match(appNotarizeScript, /xcrun stapler staple "\$\{app_path\}"/)
-  assert.match(appNotarizeScript, /xcrun stapler validate "\$\{app_path\}"/)
+  assert.match(appNotarizeScript, /run_stapler_with_retry staple "\$\{app_path\}"/)
+  assert.match(appNotarizeScript, /run_stapler_with_retry validate "\$\{app_path\}"/)
   assert.match(appNotarizeScript, /spctl --assess --type execute --verbose=2 "\$\{app_path\}"/)
 
   assert.match(notarizeScript, /xcrun notarytool submit/)
@@ -105,8 +106,8 @@ test('desktop workflow signs with electron-builder and notarizes apps before DMG
   assert.doesNotMatch(notarizeScript, /mktemp [^\n]+XXXXXX\.json/)
   assert.match(notarizeScript, /xcrun notarytool info/)
   assert.match(notarizeScript, /APPLE_NOTARY_POLL_INTERVAL/)
-  assert.match(notarizeScript, /xcrun stapler staple/)
-  assert.match(notarizeScript, /xcrun stapler validate/)
+  assert.match(notarizeScript, /run_stapler_with_retry staple/)
+  assert.match(notarizeScript, /run_stapler_with_retry validate/)
   assert.match(notarizeScript, /node scripts\/prepare-mac-update-metadata\.js dist\/latest-mac\.yml/)
 })
 
