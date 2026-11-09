@@ -354,7 +354,8 @@ jobs:
               exit 1
             fi
             spctl --assess --type execute --verbose=2 "${app_path}"
-            xcrun stapler validate "${app_path}"
+            source scripts/stapler-retry.sh
+            run_stapler_with_retry validate "${app_path}"
           done
 
       - name: Validate update artifacts

@@ -7,7 +7,7 @@ This checklist is the required evidence record before claiming desktop updater r
 - Release scope (`PATCH` / `MINOR` / `MAJOR`): `PATCH`
 - Version selection rationale: 新增森马与迷你巴拉上新适配器，覆盖素材采集、图包整理、检测报告与 PLM 尺码表导出，并调整巴拉助手名称；均为适配器级变更，未新增独立一级功能或改变产品架构，按 PATCH 升版。
 - Target version selected under the [release versioning policy](release-versioning.md): `v2.5.14`
-- Source commit: `9c1eb6baf`（功能源码；含发布元数据的最终提交见本次 CI）
+- Source commit: `PENDING`（以修复票据网络重试后的 v2.5.14 tag 为准）
 - Old version under test: `v2.5.13`
 - New version under test: `v2.5.14`
 - GitHub main build run ID: `PENDING`
@@ -19,6 +19,9 @@ This checklist is the required evidence record before claiming desktop updater r
 
 ## v2.5.14 Pre-release Validation（2026-11-09）
 
+- 云端完整测试：桌面端 525 passed / 2 skipped，适配器 JavaScript 1,381 passed，Python 1,777 passed / 1 skipped / 160 subtests passed。
+- 修复 runner 后 [main 42556195599](https://github.com/howtimeschange/crawshrimp/actions/runs/42556195599) 全部构建成功；[tag 42556195580](https://github.com/howtimeschange/crawshrimp/actions/runs/42556195580) 首次 macOS DMG 公证 Accepted 后，票据验证遇到 Apple CloudKit 网络中断（Error 68），仅重跑失败任务；attempt 2 应用公证 Accepted 后也遇到相同网络错误。
+- 应用、DMG 及 ZIP 验证统一对 stapler 的明确网络错误最多重试 5 次，票据/签名错误直接失败，持续网络错误仍阻止发布。新增 4 项模拟断线、恢复及耗尽测试通过，9 项工作流测试通过，Shell 语法与 diff 检查通过。
 - 首轮 main/tag CI 完整测试通过，但 macOS runner 分配失败：GitHub 于 2026-11-02 停用 macOS 14；改用官方支持的 `macos-15` ARM64 runner，保持 ARM64 / Intel 双架构打包。正式 Release 尚未发布，修复后重新运行 CI。
 - `npm --prefix app test`：527 passed。
 - `node --test tests/*.test.js`：1,381 passed。

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/stapler-retry.sh"
 
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 /path/to/App.app" >&2
@@ -147,8 +148,8 @@ while true; do
     case "${submission_status}" in
       Accepted)
         echo "Stapling notarization ticket to ${app_path}"
-        xcrun stapler staple "${app_path}"
-        xcrun stapler validate "${app_path}"
+        run_stapler_with_retry staple "${app_path}"
+        run_stapler_with_retry validate "${app_path}"
         codesign --verify --deep --strict --verbose=2 "${app_path}"
         spctl --assess --type execute --verbose=2 "${app_path}"
         exit 0

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/stapler-retry.sh"
 
 : "${APPLE_NOTARY_KEY:?APPLE_NOTARY_KEY is required}"
 : "${APPLE_NOTARY_KEY_ID:?APPLE_NOTARY_KEY_ID is required}"
@@ -147,8 +148,8 @@ while true; do
     case "${submission_status}" in
       Accepted)
         echo "Stapling notarization ticket to ${dmg}"
-        xcrun stapler staple "${dmg}"
-        xcrun stapler validate "${dmg}"
+        run_stapler_with_retry staple "${dmg}"
+        run_stapler_with_retry validate "${dmg}"
         stapled[$index]="1"
         ;;
       Invalid|Rejected)
