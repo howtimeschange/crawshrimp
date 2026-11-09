@@ -318,6 +318,7 @@ npm --prefix cloud/approval-workbench run check
 | `lazada-plus-v1` | Lazada | 生意参谋官方报表、优惠券与 Flexi Combo 批量创建 |
 | `mop-ops-assistant` | 千牛素材中心 / MOP | 云盘下载、搜推图文发布、KOL 素材转短视频 |
 | `plm-ops-assistant` | Centric PLM | 尺寸表单定位、尺码表下载、宽表/长表导出 |
+| `mini-bala-launch-assistant` | 迷你巴拉 PLM / 森马云盘 | 尺码表导出、图包整理、检测报告探查、已核准选图复现与示例验收 |
 | `semir-cloud-drive` | 森马云盘 / AI 平台 | 图包下载、搭配购匹配、AI 参考素材准备、自动生图 |
 | `shein-helper` | SHEIN | 商品评价、商品明细、质量数据、公网商品导出 |
 | `shenhui-new-arrival` | 森马云盘 / 深绘 | 上新图包整理、吊牌/洗唛/平铺图下载与核验、PDF 截图、深绘图片包上传 |

@@ -1,0 +1,13 @@
+{
+  "mode": "verification_only",
+  "output_root": "/Users/xingyicheng/Downloads/迷你巴拉脚本复跑_20261109/迷你巴拉整图_20261109_103718",
+  "standard_images": 274,
+  "output_images": 274,
+  "missing": [],
+  "extra": [],
+  "needs_visual_review": [],
+  "reference_images_copied": 0,
+  "ai_generalization_validated": false,
+  "verified_image_sha256_count": 274,
+  "reference_access_forbidden_during_generation": true
+}

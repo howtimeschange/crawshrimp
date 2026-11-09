@@ -1,0 +1,10 @@
+{
+  "model": "deepseek-flash",
+  "result": {
+    "composition_equal": true,
+    "care_meaning_equal": true,
+    "instructions_equal": true,
+    "style_code_equal": true,
+    "differences": []
+  }
+}

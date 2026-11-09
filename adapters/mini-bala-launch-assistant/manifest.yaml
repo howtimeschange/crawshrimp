@@ -1,0 +1,238 @@
+id: mini-bala-launch-assistant
+name: 迷你巴拉上新助手
+version: 0.3.0
+author: codex
+description: "批量导出 PLM 尺码表，按文案和运营选图整理森马云盘整图"
+entry_url: https://plm.balabala.com/WebAccess/home.html
+tab_match_prefixes:
+  - https://plm.balabala.com/WebAccess/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://plm.balabala.com/WebAccess
+
+tasks:
+  - id: size_chart_downloader
+    name: 迷你巴拉 PLM 尺码表批量导出
+    description: 优先按大货款号精确查询、款式名称兜底，默认下载大货阶段尺码表，输出宽表和长表字段，支持多款号区分。
+    script: size-chart-downloader.js
+    entry_url: https://plm.balabala.com/WebAccess/home.html
+    tab_match_prefixes:
+      - https://plm.balabala.com/WebAccess/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前登录页（推荐）
+          - value: new
+            label: 新开 PLM 页面
+      - id: style_codes
+        type: textarea
+        label: 款号
+        rows: 6
+        required: true
+        default: ""
+        placeholder: "一行一个款号，例如：\n231127108201"
+        hint: 支持从 Excel 复制多行；脚本会按款号去重后逐个下载。
+      - id: stage
+        type: text
+        label: 尺码表阶段
+        default: 大货
+        placeholder: "例如：大货"
+        hint: 默认选择尺寸表单中的“大货”阶段；也可填写初版、内评、订货等阶段。
+        ui_span: half
+      - id: output_shape
+        type: select
+        label: 输出格式
+        default: both
+        ui_span: half
+        options:
+          - value: both
+            label: 宽表 + 长表（推荐）
+          - value: wide
+            label: 仅宽表
+          - value: long
+            label: 仅长表
+        hint: 宽表每个测量点一行、尺码为动态列；长表每个尺码值一行，更适合后续数据处理。
+      - id: output_dir
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。选择后会把最终 Excel 复制到该目录；留空则使用抓虾运行时默认输出目录。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "迷你巴拉PLM尺码表_{stage}_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 输出表
+          - 款号
+          - 款式名称
+          - 款式URL
+          - 尺码表阶段
+          - 尺码表名称
+          - 尺码表URL
+          - 修订版
+          - 修订版URL
+          - 状态
+          - 尺码范围
+          - 基础尺码
+          - 测量点序号
+          - 测量点
+          - 测量点编码
+          - 描述
+          - 公差(-)
+          - 公差(+)
+          - 尺码
+          - 尺码值
+          - 修改确认
+          - 抓取结果
+          - 备注
+          - 抓取时间
+        sheets:
+          - name: 宽表
+            columns:
+              - 款号
+              - 款式名称
+              - 款式URL
+              - 尺码表阶段
+              - 尺码表名称
+              - 尺码表URL
+              - 修订版
+              - 修订版URL
+              - 状态
+              - 尺码范围
+              - 基础尺码
+              - 测量点序号
+              - 测量点
+              - 测量点编码
+              - 描述
+              - 公差(-)
+              - 公差(+)
+              - 修改确认
+              - 抓取结果
+              - 备注
+              - 抓取时间
+          - name: 长表
+            columns:
+              - 款号
+              - 款式名称
+              - 款式URL
+              - 尺码表阶段
+              - 尺码表名称
+              - 尺码表URL
+              - 修订版
+              - 修订版URL
+              - 状态
+              - 尺码范围
+              - 基础尺码
+              - 测量点序号
+              - 测量点
+              - 测量点编码
+              - 描述
+              - 公差(-)
+              - 公差(+)
+              - 尺码
+              - 尺码值
+              - 修改确认
+              - 抓取结果
+              - 备注
+              - 抓取时间
+          - name: 错误
+            columns:
+              - 款号
+              - 款式名称
+              - 款式URL
+              - 尺码表阶段
+              - 尺码表名称
+              - 尺码表URL
+              - 修订版
+              - 修订版URL
+              - 状态
+              - 尺码范围
+              - 基础尺码
+              - 测量点序号
+              - 测量点
+              - 测量点编码
+              - 描述
+              - 公差(-)
+              - 公差(+)
+              - 尺码
+              - 尺码值
+              - 修改确认
+              - 抓取结果
+              - 备注
+              - 抓取时间
+
+  - id: prepare_image_package
+    name: 整理迷你巴拉整图
+    description: 从森马云盘定位素材和检测报告，已核准款按选图清单整理，其他款结合文案与已有AI服务选图，输出图包及来源记录。
+    script: prepare-image-package.js
+    requires:
+      permissions: [browser.read, browser.download, filesystem.write, ai.invoke]
+      capabilities: [browser.cdp, filesystem.local, cloud_drive.semir, pdf.processing, ai.multimodal, data.excel]
+      backend_handlers: [mini_bala_package.prepare]
+      external_systems: [semir.cloud_drive]
+      sensitive_config: [ai.llm_provider_credentials]
+    entry_url: https://fmp.semirapp.com/web/index
+    tab_match_prefixes:
+      - https://fmp.semirapp.com/web/index
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前登录页
+          - value: new
+            label: 新开页面
+      - id: cloud_path
+        type: text
+        label: 云盘摄影目录
+        required: true
+        default: 迷你巴拉视觉//共享文件/对外文件/摄影/2026年/4-426冬季
+        hint: 选择年份或季节目录查找图片；检测报告自动扩大到相关挂载点，进入同款目录查找PDF。
+      - id: item_codes
+        type: textarea
+        label: 款号
+        rows: 5
+        required: true
+        placeholder: 一行一个12位款号
+      - id: copy_file
+        type: file_excel
+        label: 对应款号文案表
+        required: true
+        hint: 根据款号、款色号匹配。已核准款沿用选图清单，其他款使用设置中的 AI 服务判断面料和成长研究所。
+      - id: reference_dir
+        type: directory
+        label: 示例图包（验收可选）
+        hint: 逐张检查脚本结果的目录、选图和加工效果，输出差异清单；验收不会补图或改图。
+      - id: main_colors
+        type: textarea
+        label: 已确认主色（可选）
+        rows: 3
+        placeholder: "230426107212=00313"
+        hint: 一行一组“款号=主色色号”；未确认可留空。当前每色均建立1.1，主色仅用于面料主图选择。
+      - id: output_dir
+        type: directory
+        label: 图包导出目录
+        hint: 每次运行新建图包目录，原始文件不覆盖。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "迷你巴拉图包下载结果_{timestamp}.xlsx"
+        columns: [款号, 素材类型, 文件名, 云盘挂载点, 云盘路径, 下载结果, 本地文件, 报告探查, 备注]
+
+backend_handlers:
+  - id: mini_bala_package.prepare
+    runtime: platform
+    entrypoint: core.mini_bala_packaging:package_images
+    description: 根据文案与已有 AI 服务识别、归档和命名迷你巴拉整图
