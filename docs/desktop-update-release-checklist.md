@@ -5,17 +5,27 @@ This checklist is the required evidence record before claiming desktop updater r
 ## Release Identity
 
 - Release scope (`PATCH` / `MINOR` / `MAJOR`): `PATCH`
-- Version selection rationale: 修复轻供服饰/鞋品素材目录发现、带状态后缀的款号目录、鞋盒标签 OCR 核验及吊牌 PDF 分类；未新增独立一级功能或改变架构，按 PATCH 升版。
-- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.13`
-- Source commit: `dece3156db341fa361c7dc766077ba076d2cd2af`（功能源码；含发布元数据的最终提交见下方 CI）
-- Old version under test: `v2.5.12`
-- New version under test: `v2.5.13`
+- Version selection rationale: 新增森马与迷你巴拉上新适配器，覆盖素材采集、图包整理、检测报告与 PLM 尺码表导出，并调整巴拉助手名称；均为适配器级变更，未新增独立一级功能或改变产品架构，按 PATCH 升版。
+- Target version selected under the [release versioning policy](release-versioning.md): `v2.5.14`
+- Source commit: `9c1eb6baf`（功能源码；含发布元数据的最终提交见本次 CI）
+- Old version under test: `v2.5.13`
+- New version under test: `v2.5.14`
 - GitHub main build run ID: `PENDING`
 - GitHub tag build run ID: `PENDING`
 - Formal release URL: `PENDING`
 - Rolling `desktop-latest` release URL: `PENDING`
 - Cloudflare R2 update source (`https://updates.crawshrimp.com/`): `PENDING`
 - Formal build marked with `crawshrimpUpdateTestBuild`: `NO`
+
+## v2.5.14 Pre-release Validation（2026-11-09）
+
+- `npm --prefix app test`：527 passed。
+- `node --test tests/*.test.js`：1,381 passed。
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/test_mini_bala_manifest.py tests/test_mini_bala_packaging.py tests/test_mini_bala_recipes.py tests/test_mini_bala_reference_review.py tests/test_semir_launch_packaging.py tests/test_plm_size_chart_export_dir.py tests/test_adapter_loader.py -q`：43 passed。
+- `npm --prefix app run vite:build`：passed，保留现有 chunk 体积提示。
+- 应用与 lockfile 版本一致，`git diff --check` 通过。
+- README 仅保留 v2.5.14 / v2.5.13 / v2.5.12 三个版本说明，历史 Release Notes 保留。
+- 打包、签名、公证、GitHub/R2 发布结果以本次 CI 为准；下方实际安装与更新验收未执行的项目继续保持 `PENDING`。
 
 ## v2.5.13 Pre-release Validation（2026-10-24）
 
