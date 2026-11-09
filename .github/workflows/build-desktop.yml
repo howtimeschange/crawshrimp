@@ -75,7 +75,7 @@ jobs:
       matrix:
         include:
           - name: macOS arm64
-            os: macos-14
+            os: macos-15
             python_target: mac-arm64,mac-x64
             artifact_suffix: mac
             build_script: build:mac:ci

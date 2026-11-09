@@ -19,6 +19,7 @@ This checklist is the required evidence record before claiming desktop updater r
 
 ## v2.5.14 Pre-release Validation（2026-11-09）
 
+- 首轮 main/tag CI 完整测试通过，但 macOS runner 分配失败：GitHub 于 2026-11-02 停用 macOS 14；改用官方支持的 `macos-15` ARM64 runner，保持 ARM64 / Intel 双架构打包。正式 Release 尚未发布，修复后重新运行 CI。
 - `npm --prefix app test`：527 passed。
 - `node --test tests/*.test.js`：1,381 passed。
 - `PYTHONPATH=. .venv/bin/python -m pytest tests/test_mini_bala_manifest.py tests/test_mini_bala_packaging.py tests/test_mini_bala_recipes.py tests/test_mini_bala_reference_review.py tests/test_semir_launch_packaging.py tests/test_plm_size_chart_export_dir.py tests/test_adapter_loader.py -q`：43 passed。
