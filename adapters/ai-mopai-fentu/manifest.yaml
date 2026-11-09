@@ -1,5 +1,5 @@
 id: ai-mopai-fentu
-name: 上新运营助手
+name: 巴拉上新运营助手
 version: 2.0.1
 author: bwz
 description: "生成并上传模拍/静物分图审核结果，并可批量下载 PLM 尺码表及 SCM 洗唛、电子吊牌。"
