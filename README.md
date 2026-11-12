@@ -134,7 +134,7 @@ flowchart LR
 
 正式 `vX.Y.Z` Release 与 `desktop-latest` 都包含应用内更新 bridge 资产：macOS arm64/x64 ZIP 与 blockmap、`latest-mac.yml`，以及 Windows x64/ARM64 EXE blockmap 与包含双架构的 `latest.yml`。
 
-应用内稳定更新优先从 [Cloudflare R2 下载源](https://updates.crawshrimp.com/) 读取这些已校验资产；检查失败时会自动回退 GitHub。每次正式 tag 会先将资产同步到 R2，确认可读后才发布 GitHub Release；安装包仍保留原有 macOS 签名/公证和 `latest*.yml` 的 SHA512 校验。
+应用内稳定更新优先从 [Cloudflare R2 下载源](https://updates.crawshrimp.com/) 读取这些已校验资产，检查失败时自动回退 GitHub。每次正式 tag 会先将资产同步到 R2，确认公开更新清单和安装包可读后，自动清理 R2 中的旧版安装包及 blockmap，再发布 GitHub Release。历史版本继续保存在 GitHub Releases。安装包继续使用原有 macOS 签名、公证和 `latest*.yml` 的 SHA512 校验。
 
 安装包内置 Python 运行时，普通用户不需要单独安装 Python 或 Node.js。
 

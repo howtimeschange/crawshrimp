@@ -326,6 +326,11 @@ test('desktop workflow mirrors verified updater artifacts to Cloudflare R2 befor
   assert.doesNotMatch(r2Job, /find release-assets -type f/)
   assert.match(r2Job, /latest-mac\.yml/)
   assert.match(r2Job, /latest\.yml/)
+  const publicVerification = r2Job.indexOf('name: Verify public update feed and packages')
+  const cleanup = r2Job.indexOf('name: Remove older desktop packages from Cloudflare R2')
+  assert.ok(publicVerification > r2Job.indexOf('name: Verify Cloudflare R2 update metadata') && cleanup > publicVerification)
+  assert.match(r2Job.slice(cleanup), /version_tuple\(match\[1\]\) < current_version/)
+  assert.match(r2Job.slice(cleanup), /s3api\("delete-objects"/)
   assert.match(versionJob, /needs: \[release-source, publish-cloudflare-r2\]/)
 })
 

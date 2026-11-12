@@ -595,6 +595,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [release-source, build]
     if: ${{ !cancelled() && needs.release-source.result == 'success' && (needs.build.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.release_run_id != '' && needs.build.result == 'skipped')) }}
+    concurrency:
+      group: desktop-r2-update-mirror
+      cancel-in-progress: false
     permissions:
       contents: read
       actions: read
@@ -718,6 +721,22 @@ jobs:
           fi
           aws --version
 
+          current_metadata=$(mktemp)
+          status=$(curl --silent --show-error --max-time 20 --retry 2 \
+            --output "${current_metadata}" --write-out '%{http_code}' \
+            "https://updates.crawshrimp.com/latest-release.json?verify=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-before")
+          case "${status}" in
+            200)
+              current_version=$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "${current_metadata}")
+              if [ "$(printf '%s\n' "${APP_VERSION}" "${current_version}" | sort -V | tail -1)" != "${APP_VERSION}" ]; then
+                echo "::error::R2 already serves the newer version ${current_version}"
+                exit 1
+              fi
+              ;;
+            404) ;;
+            *) echo "::error::Cannot check the current R2 version (HTTP ${status})"; exit 1 ;;
+          esac
+
           upload_object() {
             local file="$1"
             local cache_control="$2"
@@ -790,6 +809,84 @@ jobs:
               raise SystemExit(f"latest-release.json version mismatch: {payload.get('version')}")
           if not str(payload.get("body") or "").strip():
               raise SystemExit("latest-release.json body is empty")
+          PY
+
+      - name: Verify public update feed and packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          origin=https://updates.crawshrimp.com
+          query="verify=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-published"
+          actual=$(mktemp)
+          verify_metadata() {
+            curl --fail --silent --show-error --max-time 20 --retry 3 --retry-all-errors \
+              --header 'Cache-Control: no-cache' --output "${actual}" "${origin}/$1?${query}"
+            if ! cmp --silent "$2" "${actual}"; then
+              echo "::error::Public update metadata differs from the published artifact: $1"
+              return 1
+            fi
+          }
+          verify_metadata latest-mac.yml release-assets/macos/latest-mac.yml
+          verify_metadata latest.yml release-assets/windows/latest.yml
+          verify_metadata latest-release.json cloudflare-latest-release.json
+          verify_metadata latest-release.md cloudflare-release-notes.md
+
+          for arch in arm64 x64; do
+            for package in "macos/crawshrimp-v${APP_VERSION}-mac-${arch}.zip" "windows/crawshrimp-v${APP_VERSION}-win-${arch}.exe"; do
+              for asset in "${package}" "${package}.blockmap"; do
+                expected_size=$(stat --format='%s' "release-assets/${asset}")
+                actual_size=$(curl --fail --silent --show-error --head --max-time 20 --retry 3 --retry-all-errors \
+                  "${origin}/${asset##*/}?${query}" | awk 'tolower($1) == "content-length:" { size = $2 } END { sub(/\r$/, "", size); print size }')
+                if [ "${actual_size}" != "${expected_size}" ]; then
+                  echo "::error::Public update asset size mismatch: ${asset##*/}"
+                  exit 1
+                fi
+              done
+            done
+          done
+
+      - name: Remove older desktop packages from Cloudflare R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          def version_tuple(version):
+              return tuple(int(part) for part in version.split("."))
+
+          current_version = version_tuple(os.environ["APP_VERSION"])
+          asset_pattern = re.compile(
+              r"crawshrimp-v([0-9]+\.[0-9]+\.[0-9]+)-(?:mac-(?:arm64|x64)\.zip|win-(?:arm64|x64)\.exe)(?:\.blockmap)?"
+          )
+
+          def s3api(operation, *args):
+              return json.loads(subprocess.check_output([
+                  "aws", "s3api", operation, "--bucket", os.environ["CLOUDFLARE_R2_BUCKET"],
+                  "--endpoint-url", os.environ["CLOUDFLARE_R2_S3_ENDPOINT"], "--output", "json", *args,
+              ]))
+
+          def older_keys():
+              keys = []
+              for obj in s3api("list-objects-v2", "--prefix", "crawshrimp-v").get("Contents", []):
+                  key = obj["Key"]
+                  match = asset_pattern.fullmatch(key)
+                  if match and version_tuple(match[1]) < current_version:
+                      keys.append(key)
+              return keys
+
+          keys = older_keys()
+          for offset in range(0, len(keys), 1000):
+              payload = {"Objects": [{"Key": key} for key in keys[offset:offset + 1000]]}
+              result = s3api("delete-objects", "--delete", json.dumps(payload))
+              if result.get("Errors"):
+                  raise SystemExit(f"R2 deletion errors: {result['Errors']}")
+          if keys and (remaining := older_keys()):
+              raise SystemExit(f"R2 still contains {len(remaining)} older desktop assets")
+          print(f"Removed {len(keys)} older desktop assets from R2")
           PY
 
   publish-version-release:
