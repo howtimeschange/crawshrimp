@@ -12,10 +12,13 @@ from core.api_server import (
     _SHENHUI_NEW_ARRIVAL_SINGLE_IMAGE_THRESHOLD_BYTES,
     _cleanup_orphaned_runtime_artifacts,
     _compress_shenhui_label_tile_image_if_beneficial,
+    _filter_shenhui_apparel_label_candidates,
     _finalize_shenhui_new_arrival_outputs,
     _prepare_shenhui_shoe_package_rows,
     _require_shenhui_shoe_package_result,
     _serialize_task_param,
+    _shenhui_apparel_label_kind,
+    _shenhui_light_supply_box_candidate_result,
     _shenhui_shoe_box_label_candidate_result,
 )
 from core.models import AdapterManifest
@@ -27,6 +30,47 @@ SHOE_PACKAGING_PATH = ROOT / "core" / "shenhui_shoe_packaging.py"
 
 
 class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
+    def test_apparel_fallback_classifies_content_and_deduplicates_mirrored_files(self):
+        style = "201127107001"
+        texts = {
+            "hang": f"合格证 产品货号：{style} 执行标准 Q/BALABALA 103-2021",
+            "wash": f"洗标材质：软聚酯带 成分：100%锦纶 洗涤说明 {style}",
+            "report": f"检验检测报告 产品货号：{style} 洗标材质",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            rows, files = [], []
+            for name, content, source in (
+                ("primary.pdf", "hang", "primary"),
+                ("primary.png", "wash", "primary"),
+                ("mirror.pdf", "hang", "supplement"),
+                ("test-report.pdf", "report", "supplement"),
+            ):
+                path = Path(directory) / name
+                path.write_text(content)
+                row = {"输入编码": style, "输入款号": style, "下载结果": "已下载",
+                       "本地文件": str(path), "__apparel_label_review": source}
+                rows.append(row)
+                files.append((row, path))
+            rows.extend({"输入编码": style, "素材类型": kind, "下载结果": "未匹配到素材"}
+                        for kind in ("吊牌", "洗唛"))
+            with patch("core.api_server._recognize_shenhui_apparel_label",
+                       side_effect=lambda path, code: _shenhui_apparel_label_kind(texts[path.read_text()], code)):
+                accepted = _filter_shenhui_apparel_label_candidates(rows, files, None)
+            self.assertEqual([row["素材类型"] for row, _ in accepted], ["吊牌", "洗唛"])
+            self.assertEqual([row["下载结果"] for row in rows], ["已下载", "已下载", "已跳过", "已跳过"])
+
+    def test_misfiled_light_supply_certificate_requires_ocr_to_confirm_requested_style(self):
+        style = "2084261400U6"
+        row = {"输入款号": style, "__shoe_label_candidate_kind": "light_supply_misfiled_ocr",
+               "云盘路径": f"轻供/鞋品/澳伦/2084261402U6/{style}吊牌图1.png"}
+        text = f"{style}\n合格证 执行标准 QB/T 4331-2021 鞋号 26-33 帮面材料 合成革"
+        with patch("core.api_server._shenhui_shoe_label_ocr_text", return_value=(text, 75, text)):
+            self.assertTrue(_shenhui_light_supply_box_candidate_result(row, Path("label.png"), None)["accepted"])
+        other = text.replace(style, "2084261402U6")
+        with patch("core.api_server._shenhui_shoe_label_ocr_text", return_value=(other, 75, other)), \
+                patch("core.api_server._shenhui_shoe_label_crop_ocr_text", return_value=(other, 75, other)):
+            self.assertFalse(_shenhui_light_supply_box_candidate_result(row, Path("label.png"), None)["accepted"])
+
     def test_shoe_raw_fallback_is_failure_and_preserves_report_reason(self):
         rows = [{"输入款号": "204426141029", "处理动作": "失败款跳过",
                  "规则告警": "整理失败，已跳过该款", "备注": "00316 姿势识别请求超时"}]
@@ -869,6 +913,17 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                     "__package_filename": "208426108223_吊牌_yq1.jpg",
                 },
             ]
+            second_image = runtime_dir / "runtime-second.jpg"
+            second_image.write_bytes(image_file.read_bytes())
+            data_rows.append({
+                **data_rows[0],
+                "素材类型": "洗唛",
+                "文件名": "yq2.jpg",
+                "云盘路径": "平拍原图/208426108223/yq2.jpg",
+                "本地文件": str(second_image),
+                "__package_filename": "yq2.jpg",
+            })
+            progress = []
             workbook = Workbook()
             sheet = workbook.active
             columns = [
@@ -893,7 +948,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             _finalize_shenhui_new_arrival_outputs(
                 task_id="batch_label_tile_download",
                 data_rows=data_rows,
-                runtime_files=[str(image_file)],
+                runtime_files=[str(image_file), str(second_image)],
                 exported_files=[str(exported)],
                 run_params={
                     "package_name": "测试压缩",
@@ -901,6 +956,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 },
                 runtime_artifact_dir=str(runtime_dir),
                 log=lambda _: None,
+                report_progress=lambda *event: progress.append(event),
             )
 
             package_dir = export_dir / "测试压缩"
@@ -912,6 +968,14 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 self.assertEqual(compressed.size, (256, 256))
             self.assertIn("已压缩", data_rows[0]["备注"])
             self.assertIn("高保真", data_rows[0]["备注"])
+            self.assertEqual(Path(data_rows[1]["本地文件"]).read_bytes(), final_image.read_bytes())
+            self.assertIn("已压缩", data_rows[1]["备注"])
+            self.assertEqual(progress, [
+                ("compress_images", 0, 2),
+                ("compress_images", 1, 2),
+                ("compress_images", 2, 2),
+                ("export_label_tile", 0, 0),
+            ])
 
             workbook = load_workbook(copied_excel, read_only=True, data_only=True)
             self.assertIn("已压缩", workbook.active["K2"].value)

@@ -1,6 +1,7 @@
-import unittest
+import gzip
 import os
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -67,6 +68,19 @@ class OcrServiceTests(unittest.TestCase):
         self.assertEqual(status["package"], "tesseract.js")
         self.assertIn("available", status)
         self.assertIn("node_modules", status)
+
+    def test_tesseract_cold_start_seeds_local_language_data_for_electron(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            languages = root / "lang"
+            languages.mkdir()
+            (languages / "chi_sim.traineddata.gz").write_bytes(gzip.compress(b"bundled Chinese data"))
+            (languages / "eng.traineddata.gz").write_bytes(gzip.compress(b"bundled English data"))
+            with patch.object(ocr_service.runtime_paths, "child_dir", return_value=root / "cache"):
+                cache = Path(ocr_service._prepare_local_tesseract_cache(str(languages), "chi_sim+eng"))
+                self.assertEqual((cache / "chi_sim.traineddata").read_bytes(), b"bundled Chinese data")
+                self.assertEqual((cache / "eng.traineddata").read_bytes(), b"bundled English data")
+                self.assertEqual(ocr_service._prepare_local_tesseract_cache("https://example.test/lang", "eng"), "")
 
     def test_tesseract_status_accepts_electron_asar_node_modules(self):
         with tempfile.TemporaryDirectory() as tmpdir:

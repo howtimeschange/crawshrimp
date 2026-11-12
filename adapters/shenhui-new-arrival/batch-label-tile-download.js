@@ -31,6 +31,7 @@
   })
   const ASSET_KIND_LABELS = Object.freeze({
     notice: '任务提示',
+    apparel_label_candidate: '待核验吊牌/洗唛',
     hang_tag: '吊牌',
     wash_label: '洗唛',
     tile: '平铺图',
@@ -188,7 +189,9 @@
   function hasLabelStatusParentMarker(item) {
     if (!isChatUploadImageFilename(item?.filename || item?.name || '')) return false
     const parent = parentPathSegment(item?.fullpath || item?.path || '')
-    return isStatusNoteFolderName(parent) && hasAny(parent, LABEL_IMAGE_PATTERNS)
+    return isStatusNoteFolderName(parent)
+      && !hasAny(parent, WASTE_LABEL_PATTERNS)
+      && hasAny(parent, LABEL_IMAGE_PATTERNS)
   }
 
   function hasWasteLabelMarker(item) {
@@ -392,9 +395,12 @@
     if (hasAny(filename, WASH_LABEL_PATTERNS)) return 'wash_label'
     if (hasAny(filename, HANG_TAG_PATTERNS)) return 'hang_tag'
     if (isLightSupplyNumberedHangTagPdf(item, code)) return 'hang_tag'
-    const text = `${item?.filename || item?.name || ''} ${item?.fullpath || item?.path || ''}`
-    if (hasAny(text, WASH_LABEL_PATTERNS)) return 'wash_label'
-    if (hasAny(text, HANG_TAG_PATTERNS) || hasLabelStatusParentMarker(item)) return 'hang_tag'
+    // A style/status folder can say "无吊牌 无水洗" while containing ordinary photos.
+    const labelFolders = pathSegments(item?.fullpath || item?.path || '')
+      .slice(0, -1)
+      .filter(folder => !isStatusNoteFolderName(folder) && !hasAny(folder, WASTE_LABEL_PATTERNS))
+    if (labelFolders.some(folder => hasAny(folder, WASH_LABEL_PATTERNS))) return 'wash_label'
+    if (labelFolders.some(folder => hasAny(folder, HANG_TAG_PATTERNS)) || hasLabelStatusParentMarker(item)) return 'hang_tag'
     return ''
   }
 
@@ -425,6 +431,26 @@
       .sort((left, right) => labelPriority(left, kind, code) - labelPriority(right, kind, code))
     const yqNamed = candidates.filter(item => yqKindFromFilename(item?.filename || item?.name || '') === kind)
     return yqNamed.length ? yqNamed : candidates
+  }
+
+  function isApparelLabelReviewFilename(item) {
+    return /^yq(?:\(?[1-9]\d*\)?|[一二])?$/i.test(normalizeYqStem(item?.filename || item?.name || ''))
+      && !hasWasteLabelMarker(item)
+  }
+
+  function isApparelLabelSupplement(item, inputCode, sourceConfig) {
+    const style = getGroupCode(inputCode)
+    const source = pathSegments(sourceConfig?.relativePath)
+    const marker = source.indexOf('平拍原图')
+    const parts = pathSegments(item?.fullpath)
+    if (marker < 1 || !/^\d{12}$/.test(style) || parts.includes('轻供') || isShoeItem(item)) return false
+    if (!source.slice(0, marker).every((segment, index) => segment === parts[index])) return false
+    const [area, section] = parts.slice(marker)
+    const isLabelDirectory = (area === '洗唛和电子吊牌' && /^(?:洗唛|电子吊牌)$/.test(section))
+      || (area === '幼童资料' && /^\d{3}幼童吊牌洗唛资料$/.test(section))
+    if (!isLabelDirectory || !isSupportedAssetItem(item) || hasWasteLabelMarker(item)) return false
+    const stem = getFileStem(item?.filename || item?.name || '')
+    return new RegExp(`(?:^|[^0-9])${style}(?![0-9])|^${style}\\d{13,14}_\\d+(?:\\s*\\(\\d+\\))?$`).test(stem)
   }
 
   function stripModelFilenamePrefix(stem) {
@@ -605,6 +631,18 @@
     return hasLabelStatusParentMarker(item)
   }
 
+  function isMisfiledLightSupplyShoeLabel(item, code) {
+    const style = getGroupCode(code)
+    const parts = pathSegments(item?.fullpath)
+    const parent = parts.at(-2) || ''
+    const prefix = parts.slice(0, -2)
+    return /^\d{10}[A-Z0-9]{2}$/i.test(style)
+      && /^\d{10}[A-Z0-9]{2}$/i.test(parent) && parent.toUpperCase() !== style.toUpperCase()
+      && prefix.includes('轻供') && prefix.includes('鞋品')
+      && isImageItem(item) && !hasWasteLabelMarker(item) && !hasShoeNegativeLabelMarker(item)
+      && new RegExp(`^${style}\\s*(?:电子吊牌|吊牌图|鞋盒标签)\\s*\\d*$`, 'i').test(getFileStem(item.filename))
+  }
+
   function isShoeYkFilename(filename) {
     return /^yk\s*[\d(（]/i.test(compact(getFileStem(filename)).replace(/\s+/g, ''))
   }
@@ -662,10 +700,16 @@
   function selectShoeLabelItems(items, code = '') {
     const explicit = dedupeItemsByFullpath(items)
       .filter(item => isShoeLabelItem(item, code))
+      .filter(item => {
+        const namedStyle = /^(\d{10}[A-Z0-9]{2})\s*(?:电子吊牌|吊牌图|鞋盒标签)\s*\d*$/i
+          .exec(getFileStem(item.filename))?.[1]
+        return !namedStyle || !isMisfiledLightSupplyShoeLabel(item, namedStyle)
+          || namedStyle.toUpperCase() === getGroupCode(code).toUpperCase()
+      })
       .map(item => ({
         ...item,
         __shoe_color_code: getShoeColorCodeFromItem(item, code),
-        __shoe_label_candidate_kind: 'explicit',
+        __shoe_label_candidate_kind: item.__misfiled_light_supply_label ? 'light_supply_misfiled_ocr' : 'explicit',
       }))
       .sort((left, right) => (
         shoeLabelPriority(left) - shoeLabelPriority(right)
@@ -861,6 +905,7 @@
       '__package_filename': packageFilename,
       '__shoe_color_code': shoeColorCode,
       '__shoe_label_candidate_kind': shoeCandidateKind,
+      ...(item?.__apparel_label_review ? { '__apparel_label_review': item.__apparel_label_review } : {}),
     }
   }
 
@@ -1106,7 +1151,12 @@
 
     const directAssets = primaryDirectAssets.length ? primaryDirectAssets : fallbackDirectAssets
     const usedDirectAssetFallback = !expandedAssets.length && directAssets.length > 0
-    const candidateItems = usedDirectAssetFallback ? directAssets : expandedAssets
+    let candidateItems = usedDirectAssetFallback ? directAssets : expandedAssets
+    if (sourceType === 'still' && !candidateItems.length && !matchedFolders.length) {
+      candidateItems = fallbackScoped.filter(item => isMisfiledLightSupplyShoeLabel(item, inputCode))
+        .slice(0, SHOE_LABEL_GENERIC_CANDIDATE_LIMIT_PER_COLOR)
+        .map(item => ({ ...item, __misfiled_light_supply_label: true }))
+    }
     return {
       searchCount: searchItems.length,
       folderCount: matchedFolders.length,
@@ -1115,6 +1165,10 @@
       usedDirectAssetFallback,
       folderErrors,
       items: dedupeItemsByFullpath(candidateItems).map(item => ({ ...item, __source_type: sourceType })),
+      apparelLabelSupplements: sourceType === 'still'
+        ? searchItems.filter(item => isApparelLabelSupplement(item, inputCode, sourceConfig))
+          .map(item => ({ ...item, __source_type: 'still', __apparel_label_review: 'supplement' }))
+        : [],
     }
   }
 
@@ -1198,7 +1252,7 @@
         missingNote: statsNote,
       })
       await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'shoe_label', shoeLabelItems, {
-        strategy: shoeLabelItems.some(item => ['generic_ocr', 'light_supply_ocr', 'light_supply_box_ocr'].includes(item.__shoe_label_candidate_kind))
+        strategy: shoeLabelItems.some(item => ['generic_ocr', 'light_supply_ocr', 'light_supply_box_ocr', 'light_supply_misfiled_ocr'].includes(item.__shoe_label_candidate_kind))
           ? '鞋品下载少量无语义候选，后端 OCR 识别鞋盒标签'
           : '鞋品仅保留显式鞋盒标签/电子吊牌图',
         missingNote: statsNote,
@@ -1210,8 +1264,25 @@
     }
 
     const modelMatched = !!(modelResult && (modelResult.folderCount > 0 || modelItems.length > 0))
-    const hangTags = selectLabelItems(allLabelItems, 'hang_tag', inputCode)
-    const washLabels = selectLabelItems(allLabelItems, 'wash_label', inputCode)
+    let hangTags = selectLabelItems(allLabelItems, 'hang_tag', inputCode)
+    let washLabels = selectLabelItems(allLabelItems, 'wash_label', inputCode)
+    const reviewLabels = (!hangTags.length || !washLabels.length)
+      && !isLightSupplySourcePath(sourceConfigs.still?.relativePath, 'still')
+      && !pathSegments(sourceConfigs.still?.relativePath).includes('轻供')
+      && !allLabelItems.some(item => pathSegments(item.fullpath).includes('轻供'))
+    let labelCandidates = []
+    if (reviewLabels) {
+      const reviewExisting = item => isApparelLabelReviewFilename(item)
+        ? { ...item, __apparel_label_review: 'existing' }
+        : item
+      hangTags = hangTags.map(reviewExisting)
+      washLabels = washLabels.map(reviewExisting)
+      const selectedPaths = new Set([...hangTags, ...washLabels].map(item => item.fullpath))
+      const localCandidates = allLabelItems.filter(item => isApparelLabelReviewFilename(item)
+        && pathContainsCode(item.fullpath, inputCode) && !selectedPaths.has(item.fullpath))
+        .map(item => ({ ...item, __apparel_label_review: 'primary' }))
+      labelCandidates = dedupeItemsByFullpath([...localCandidates, ...(stillResult?.apparelLabelSupplements || [])])
+    }
     const tileSelection = selectTileItems(modelItems, stillItems, inputCode)
 
     const statsNote = [
@@ -1237,6 +1308,12 @@
       modelMatched,
       missingNote: statsNote,
     })
+    if (labelCandidates.length) {
+      await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'apparel_label_candidate', labelCandidates, {
+        strategy: '仅核验款号目录中的 yq 文件及同季专用目录中的完整款号文件',
+        modelMatched,
+      })
+    }
     await addDownloadRows(inputCode, sourceConfigs, rows, downloadItems, 'tile', tileSelection.items, {
       strategy: tileSelection.sourceType === 'model' ? '优先从模拍路径查找平铺图' : '模拍路径未命中，回退平拍路径',
       sourceType: tileSelection.sourceType,

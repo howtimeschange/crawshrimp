@@ -27,6 +27,8 @@ import time
 import warnings
 import zipfile
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from subprocess import TimeoutExpired
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2297,6 +2299,7 @@ def _rewrite_summary_excel_row_columns(
     *,
     context: str,
     columns: tuple[str, ...],
+    replace_rows: bool = False,
 ) -> None:
     rows = [row for row in (data_rows or []) if isinstance(row, dict)]
     if not rows or not columns:
@@ -2334,8 +2337,10 @@ def _rewrite_summary_excel_row_columns(
                     continue
                 for offset, row in enumerate(rows, start=1):
                     for column_name, column_index in column_map.items():
-                        if column_name in row:
+                        if replace_rows or column_name in row:
                             sheet.cell(row=header_row + offset, column=column_index).value = str(row.get(column_name) or "")
+                if replace_rows and sheet.max_row > header_row + len(rows):
+                    sheet.delete_rows(header_row + len(rows) + 1, sheet.max_row - header_row - len(rows))
                 changed = True
             if changed:
                 workbook.save(path)
@@ -4317,8 +4322,16 @@ def _shenhui_light_supply_box_candidate_result(row: dict, local_path: Path, log)
     stem = Path(parts[-1]).stem
     is_root_box = len(relative) == 1 and re.match(r"^鞋盒(?:$|[\s_（(-])", stem)
     is_camera = (len(relative) == 1 or (len(relative) == 2 and relative[0] == "修片大图")) and re.fullmatch(r"_?[0-9][A-Z][0-9][A-Z]\d+", stem, re.I)
-    if not (root_index >= 0 and "轻供" in parts[:root_index] and "鞋品" in parts[:root_index]
-            and (is_root_box or is_camera)):
+    misfiled = (
+        row.get("__shoe_label_candidate_kind") == "light_supply_misfiled_ocr"
+        and re.fullmatch(r"\d{10}[A-Z0-9]{2}", style, re.I)
+        and len(parts) >= 4 and "轻供" in parts[:-2] and "鞋品" in parts[:-2]
+        and re.fullmatch(r"\d{10}[A-Z0-9]{2}", parts[-2], re.I)
+        and parts[-2].upper() != style.upper()
+        and re.fullmatch(re.escape(style) + r"\s*(?:电子吊牌|吊牌图|鞋盒标签)\s*\d*", stem, re.I)
+    )
+    if not (misfiled or (root_index >= 0 and "轻供" in parts[:root_index] and "鞋品" in parts[:root_index]
+                        and (is_root_box or is_camera))):
         return {"accepted": False, "note": "轻供实拍标签候选路径或文件名不符合要求"}
     # Root-scoped batches have no known business color. Preserve all verified
     # labels independently, rather than collapsing them under an empty color.
@@ -4333,6 +4346,8 @@ def _shenhui_light_supply_box_candidate_result(row: dict, local_path: Path, log)
                 or re.search(r"(?<![0-9])" + re.escape(style) + r"(?![A-Za-z0-9])", normalized, re.I)
             )
             if confidence >= 35 and exact_style and "standard" in signals and len(signals) >= 3:
+                if misfiled:
+                    return {"accepted": True, "note": f"OCR{scope}确认跨目录吊牌归属；完整款号 {style} 已核验；未推断业务色码"}
                 return {"accepted": True, "note": f"OCR{scope}确认轻供鞋盒标签；完整款号 {style} 已核验；未推断业务色码；signals={','.join(signals)} confidence={confidence:.0f}"}
         except Exception as exc:
             if log:
@@ -4383,15 +4398,15 @@ def _filter_shenhui_shoe_label_ocr_candidates(
 
     for row, local_path in successful_rows:
         if (row.get("__shenhui_asset_role") == "shoe_label"
-                and row.get("__shoe_label_candidate_kind") in ("light_supply_ocr", "light_supply_box_ocr")):
+                and row.get("__shoe_label_candidate_kind") in ("light_supply_ocr", "light_supply_box_ocr", "light_supply_misfiled_ocr")):
             kind = row["__shoe_label_candidate_kind"]
-            recognize = (_shenhui_light_supply_box_candidate_result if kind == "light_supply_box_ocr"
-                         else _shenhui_light_supply_label_candidate_result)
+            recognize = (_shenhui_light_supply_label_candidate_result if kind == "light_supply_ocr"
+                         else _shenhui_light_supply_box_candidate_result)
             result = recognize(row, local_path, log)
             _append_shenhui_label_tile_note(row, str(result.get("note") or ""))
             if result.get("accepted"):
                 row["__shoe_label_candidate_kind"] = kind + "_selected"
-                if kind == "light_supply_box_ocr":
+                if kind in ("light_supply_box_ocr", "light_supply_misfiled_ocr"):
                     row["标签货号核验"] = "OCR已核验完整款号；未推断业务色码"
                 passthrough.append((row, local_path))
             else:
@@ -4451,6 +4466,184 @@ def _filter_shenhui_shoe_label_ocr_candidates(
             _append_shenhui_label_tile_note(row, "同款色已选出更高置信度鞋盒标签图")
 
     return [*passthrough, *selected]
+
+
+def _shenhui_apparel_label_kind(text: str, style: str) -> tuple[str, bool]:
+    codes = set(re.findall(r"(?<!\d)\d{12}(?!\d)", text))
+    text = re.sub(r"\s+", "", text).upper()
+    if not text or re.search(r"检验检测报告|报告编号.{0,30}检验|第三方检测报告|尺码表", text):
+        return "", False
+    codes.update(re.findall(r"(?<!\d)\d{12}(?!\d)", text))
+    verified = bool(style and style in codes)
+    # A different readable style code is stronger evidence than the directory.
+    if any(code.startswith(("20", "21")) for code in codes) and not verified:
+        return "", False
+    hang_structure = (
+        "合格证" in text and bool(re.search(r"产品货号|产品等级|执行标准|安全技术|检验员|RMB", text))
+    ) or (
+        verified and bool(re.search(r"Q/?BALABALA|GB31701|LABELSIZE", text))
+        and bool(re.search(r"RMB|检验员|安全技术|合格品|PRODUCTCODE", text))
+    )
+    if hang_structure and verified:
+        return "hang_tag", True
+    wash_structure = (
+        bool(re.search(r"洗标材质|洗标折法|洗标类型", text))
+        or bool(re.search(r"洗涤说明|洗涤方法|不可干洗|COMPOSITION", text)
+                and re.search(r"面料|成分|里料|FABRIC|BALABALA", text))
+    )
+    if wash_structure and not hang_structure:
+        return "wash_label", verified
+    return "", False
+
+
+def _recognize_shenhui_apparel_label(path: Path, style: str) -> tuple[str, bool]:
+    def recognize_image(image_path: Path) -> tuple[str, bool]:
+        text, _, _ = _shenhui_shoe_label_ocr_text(image_path, timeout_seconds=30.0)
+        return _shenhui_apparel_label_kind(text, style)
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="crawshrimp-label-ocr-") as directory:
+        raster = Path(directory) / "page.png"
+        if path.suffix.lower() != ".pdf":
+            from PIL import Image, ImageOps
+
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+            overview = image.copy()
+            overview.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
+            overview.save(raster)
+            result = recognize_image(raster)
+            if result[1] or min(image.size) < 1000:
+                return result
+            # Photographs can include a large garment around a small sewn label.
+            crop = image.crop((image.width // 4, image.height // 5, 3 * image.width // 4, 4 * image.height // 5))
+            crop.thumbnail((2200, 2200), Image.Resampling.LANCZOS)
+            crop.save(raster)
+            closer = recognize_image(raster)
+            return closer if closer[1] or (closer[0] and not result[0]) else result
+
+        import fitz
+
+        with fitz.open(str(path)) as document:
+            # Supplier sheets usually repeat the same layout for each colour.
+            for index in range(min(3, len(document))):
+                page = document[index]
+                result = _shenhui_apparel_label_kind(page.get_text(), style)
+                if not result[0]:
+                    scale = min(3.0, 2300 / max(page.rect.width, page.rect.height))
+                    page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False).save(str(raster))
+                    result = recognize_image(raster)
+                if result[0]:
+                    return result
+    return "", False
+
+
+def _filter_shenhui_apparel_label_candidates(data_rows, successful_rows, log):
+    import hashlib
+
+    review_rows = [(row, path) for row, path in successful_rows if row.get("__apparel_label_review")]
+    if not review_rows:
+        return successful_rows
+
+    role_names = {"hang_tag": "吊牌", "wash_label": "洗唛"}
+    def row_key(row, role):
+        return str(row.get("输入编码") or ""), role
+
+    def recognize(path, style):
+        try:
+            return _recognize_shenhui_apparel_label(path, style)
+        except TimeoutExpired:
+            if log:
+                log(f"[warn] 服饰标签 OCR 超时：{path.name}")
+            return "", False
+        except Exception as error:
+            if log:
+                log(f"[warn] Shenhui apparel label OCR: {path.name} ({error})")
+            return "", False
+
+    # Same content is often copied from the dedicated folder to the photo folder.
+    jobs = {}
+    reviewed = []
+    if log:
+        log(f"开始核验 {len(review_rows)} 个服饰吊牌/洗唛候选")
+    # PyMuPDF document operations are serial. Image OCR can run separately.
+    with ThreadPoolExecutor(max_workers=2) as image_pool, ThreadPoolExecutor(max_workers=1) as pdf_pool:
+        for row, path in review_rows:
+            style = str(row.get("输入款号") or "")
+            with path.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").digest()
+            job_key = (style, digest)
+            if job_key not in jobs:
+                pool = pdf_pool if path.suffix.lower() == ".pdf" else image_pool
+                jobs[job_key] = pool.submit(recognize, path, style)
+            reviewed.append((row, path, digest, jobs[job_key]))
+        for completed, _ in enumerate(as_completed(jobs.values()), 1):
+            if log and (completed % 10 == 0 or completed == len(jobs)):
+                log(f"服饰标签已核验 {completed}/{len(jobs)} 个文件")
+
+    accepted = [(row, path) for row, path in successful_rows if not row.get("__apparel_label_review")]
+    candidates = []
+    covered = {row_key(row, row.get("__shenhui_asset_role")) for row, _ in accepted}
+    replaced = {}
+    retained_digests = set()
+
+    def update_role(row, role, verified):
+        row["__shenhui_asset_role"] = role
+        row["素材类型"] = role_names[role]
+        row["匹配策略"] = "读取标签内容后归类"
+        if verified:
+            row["标签货号核验"] = "已从标签内容核验完整款号"
+
+    for row, path, digest, future in reviewed:
+        role, verified = future.result()
+        if row["__apparel_label_review"] != "existing":
+            candidates.append((row, path, digest, role, verified))
+            continue
+        old_role = row["__shenhui_asset_role"]
+        # Keep a numbered label's established classification if the readback
+        # is inconclusive or the printed style cannot be confirmed.
+        if role and verified and old_role != role:
+            replaced[row_key(row, old_role)] = row.copy()
+            update_role(row, role, verified)
+        key = row_key(row, row["__shenhui_asset_role"])
+        covered.add(key)
+        retained_digests.add((key, digest))
+        accepted.append((row, path))
+
+    existing_coverage = set(covered)
+    primary_coverage = set()
+    for row, path, digest, role, verified in candidates:
+        key = row_key(row, role)
+        primary = row["__apparel_label_review"] == "primary"
+        if role and key not in existing_coverage and (primary or key not in primary_coverage) and (key, digest) not in retained_digests:
+            update_role(row, role, verified)
+            accepted.append((row, path))
+            covered.add(key)
+            retained_digests.add((key, digest))
+            if primary:
+                primary_coverage.add(key)
+        else:
+            row["下载结果"] = "已跳过"
+            row["本地文件"] = ""
+            _append_shenhui_label_tile_note(row, "已有同类素材或内容重复" if role else "内容未确认是同款吊牌或洗唛")
+
+    missing_role = {name: role for role, name in role_names.items()}
+    data_rows[:] = [
+        row for row in data_rows
+        if row.get("下载结果") != "未匹配到素材"
+        or row_key(row, missing_role.get(row.get("素材类型"))) not in covered
+    ]
+    for key, row in replaced.items():
+        if key not in covered:
+            data_rows.append({
+                "输入款号": row["输入款号"],
+                "输入编码": row["输入编码"],
+                "素材类型": role_names[key[1]],
+                "下载结果": "未匹配到素材",
+                "备注": "原编号文件经内容核验归为另一类标签",
+            })
+    return accepted
 
 
 def _shenhui_label_tile_temp_path(path: Path, marker: str) -> Path:
@@ -4555,6 +4748,7 @@ def _compress_shenhui_label_tile_image_if_beneficial(path: Path, log) -> tuple[s
     before_size = path.stat().st_size
     suffix = path.suffix.lower()
     temp_paths: list[tuple[str, Path, dict[str, float]]] = []
+    best_size = before_size
 
     try:
         from PIL import Image, ImageFilter, ImageOps
@@ -4573,12 +4767,18 @@ def _compress_shenhui_label_tile_image_if_beneficial(path: Path, log) -> tuple[s
             reference_edge_preview = reference_preview.convert("L").filter(ImageFilter.FIND_EDGES)
 
             def save_candidate(marker: str, image, format_name: str, **save_kwargs) -> None:
+                nonlocal best_size
                 temp_path = _shenhui_label_tile_temp_path(path, marker)
                 kwargs = {"optimize": True, **save_kwargs}
                 if icc_profile:
                     kwargs["icc_profile"] = icc_profile
                 try:
                     image.save(temp_path, format=format_name, **kwargs)
+                    size = temp_path.stat().st_size
+                    # A larger file cannot beat an already verified candidate.
+                    if size <= 0 or size >= before_size or size > best_size:
+                        temp_path.unlink()
+                        return
                     ok, metrics = _shenhui_label_tile_candidate_preserves_detail(
                         reference_size=reference_size,
                         reference_preview=reference_preview,
@@ -4589,13 +4789,14 @@ def _compress_shenhui_label_tile_image_if_beneficial(path: Path, log) -> tuple[s
                     temp_path.unlink(missing_ok=True)
                     raise
                 if ok:
+                    best_size = size
                     temp_paths.append((marker, temp_path, metrics))
                 else:
                     temp_path.unlink(missing_ok=True)
 
             if suffix in {".jpg", ".jpeg"}:
                 jpeg_image = _jpeg_image_for_high_quality_save(image)
-                for quality in _SHENHUI_LABEL_TILE_JPEG_QUALITIES:
+                for quality in reversed(_SHENHUI_LABEL_TILE_JPEG_QUALITIES):
                     save_candidate(
                         f"q{quality}",
                         jpeg_image,
@@ -4608,7 +4809,7 @@ def _compress_shenhui_label_tile_image_if_beneficial(path: Path, log) -> tuple[s
                 save_candidate("png-lossless", image, "PNG", compress_level=9)
             elif suffix == ".webp":
                 webp_image = image if image.mode in {"RGB", "RGBA"} else image.convert("RGB")
-                for quality in _SHENHUI_LABEL_TILE_WEBP_QUALITIES:
+                for quality in reversed(_SHENHUI_LABEL_TILE_WEBP_QUALITIES):
                     save_candidate(f"webp-q{quality}", webp_image, "WEBP", quality=quality, method=6)
     except Exception:
         for _marker, temp_path, _metrics in temp_paths:
@@ -4620,7 +4821,8 @@ def _compress_shenhui_label_tile_image_if_beneficial(path: Path, log) -> tuple[s
     best_marker = ""
     best_metrics: dict[str, float] = {}
     best_size = before_size
-    for marker, temp_path, metrics in temp_paths:
+    # Preserve the original higher-quality preference when candidate sizes tie.
+    for marker, temp_path, metrics in reversed(temp_paths):
         if not temp_path.is_file():
             continue
         size = temp_path.stat().st_size
@@ -4693,18 +4895,6 @@ def _compress_shenhui_label_tile_pdf_if_beneficial(path: Path, log) -> tuple[str
     if log:
         log(f"Shenhui label/tile PDF compressed: {path} ({note})")
     return note, before_size, after_size
-
-
-def _compress_shenhui_label_tile_file_if_beneficial(path: Path, log) -> tuple[str, int, int]:
-    if not path.is_file():
-        return "", 0, 0
-    suffix = path.suffix.lower()
-    if suffix in _SHENHUI_LABEL_TILE_IMAGE_SUFFIXES:
-        return _compress_shenhui_label_tile_image_if_beneficial(path, log)
-    if suffix in _SHENHUI_LABEL_TILE_PDF_SUFFIXES:
-        return _compress_shenhui_label_tile_pdf_if_beneficial(path, log)
-    size = path.stat().st_size
-    return "", size, size
 
 
 def _shenhui_new_arrival_path_key(path: Path) -> str:
@@ -4962,8 +5152,14 @@ def _finalize_shenhui_label_tile_download_outputs(
     run_params: dict,
     runtime_artifact_dir: str,
     log,
+    report_progress: Optional[Callable[[str, int, int], None]] = None,
 ) -> list[str]:
     from core.label_tile_manifest import assign_output_names, enrich_row, write_manifest
+
+    replace_summary_rows = any(isinstance(row, dict) and row.get("__apparel_label_review") for row in data_rows or [])
+    summary_columns = ("文件名", "输出文件名", "原文件名", "分类依据", "云盘目录归属", "标签货号核验", "下载结果", "本地文件", "备注")
+    if replace_summary_rows:
+        summary_columns += ("输入编码", "输入款号", "素材类型", "素材来源", "云盘路径", "匹配策略", "模拍路径命中")
 
     for row in data_rows or []:
         if isinstance(row, dict):
@@ -4994,12 +5190,13 @@ def _finalize_shenhui_label_tile_download_outputs(
 
     if successful_rows:
         successful_rows = _filter_shenhui_shoe_label_ocr_candidates(successful_rows, log)
+        successful_rows = _filter_shenhui_apparel_label_candidates(data_rows, successful_rows, log)
         for row in data_rows:
             row["分类依据"] = "；".join(str(row.get(k) or "") for k in ("匹配策略", "备注")).strip("；")
             enrich_row(row)
         assign_output_names([row for row, _ in successful_rows])
-        compressed_count = 0
-        saved_bytes = 0
+        images = []
+        pdfs = []
         for row, local_path in successful_rows:
             group_code = _safe_local_name(
                 row.get("__shenhui_group_code") or row.get("输入款号") or row.get("输入编码") or "未分类",
@@ -5011,15 +5208,53 @@ def _finalize_shenhui_label_tile_download_outputs(
             )
             target = package_root / group_code / clean_filename
             relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
-            compression_note, before_size, after_size = _compress_shenhui_label_tile_file_if_beneficial(relocated, log)
-            if compression_note:
-                _append_shenhui_label_tile_note(row, compression_note)
+            row["本地文件"] = str(relocated)
+            suffix = relocated.suffix.lower()
+            if suffix in _SHENHUI_LABEL_TILE_IMAGE_SUFFIXES:
+                images.append((row, relocated))
+            elif suffix in _SHENHUI_LABEL_TILE_PDF_SUFFIXES:
+                pdfs.append((row, relocated))
+
+        compressed_count = 0
+        saved_bytes = 0
+
+        def record_compression(row, result):
+            nonlocal compressed_count, saved_bytes
+            note, before_size, after_size = result
+            if note:
+                _append_shenhui_label_tile_note(row, note)
                 compressed_count += 1
                 saved_bytes += max(0, before_size - after_size)
-            row["本地文件"] = str(relocated)
+
+        if images:
+            total = len(images)
+            if report_progress:
+                report_progress("compress_images", 0, total)
+            workers = min(total, 3, max(1, (os.cpu_count() or 1) // 2))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(_compress_shenhui_label_tile_image_if_beneficial, path, log): row
+                    for row, path in images
+                }
+                for completed, future in enumerate(as_completed(futures), start=1):
+                    record_compression(futures[future], future.result())
+                    if report_progress:
+                        report_progress("compress_images", completed, total)
+
+        # PyMuPDF operations run serially. Keep PDFs out of the image count.
+        if pdfs:
+            total = len(pdfs)
+            if report_progress:
+                report_progress("compress_pdfs", 0, total)
+            for completed, (row, path) in enumerate(pdfs, start=1):
+                record_compression(row, _compress_shenhui_label_tile_pdf_if_beneficial(path, log))
+                if report_progress:
+                    report_progress("compress_pdfs", completed, total)
         if compressed_count:
             log(f"Shenhui label/tile files compressed: {compressed_count}, saved {_format_mb(saved_bytes)}")
 
+    if report_progress:
+        report_progress("export_label_tile", 0, 0)
     export_folder = str(run_params.get("export_folder") or "").strip()
     target_root = (
         _expand_user_configured_local_path(export_folder)
@@ -5043,7 +5278,8 @@ def _finalize_shenhui_label_tile_download_outputs(
             data_rows,
             log,
             context="Shenhui label tile download",
-            columns=("文件名", "输出文件名", "原文件名", "分类依据", "云盘目录归属", "标签货号核验", "下载结果", "本地文件", "备注"),
+            columns=summary_columns,
+            replace_rows=replace_summary_rows,
         )
         final_refs.append(str(external_dir))
         final_refs.extend(write_manifest(external_dir, data_rows))
@@ -5055,6 +5291,11 @@ def _finalize_shenhui_label_tile_download_outputs(
             final_refs.append(str(copied))
         log(f"Shenhui label/tile download folder moved to output folder: {external_dir}")
     else:
+        if replace_summary_rows:
+            _rewrite_summary_excel_row_columns(
+                exported_files, data_rows, log, context="Shenhui label tile download",
+                columns=summary_columns, replace_rows=True,
+            )
         final_refs.extend(write_manifest(target_root, data_rows))
         if package_root.exists():
             shutil.rmtree(package_root, ignore_errors=True)
@@ -5254,6 +5495,7 @@ def _finalize_shenhui_new_arrival_outputs(
     run_params: dict,
     runtime_artifact_dir: str,
     log,
+    report_progress: Optional[Callable[[str, int, int], None]] = None,
 ) -> list[str]:
     if task_id == "pdf_batch_screenshot":
         return finalize_pdf_batch_screenshot_outputs(
@@ -5354,6 +5596,7 @@ def _finalize_shenhui_new_arrival_outputs(
             run_params=run_params,
             runtime_artifact_dir=runtime_artifact_dir,
             log=log,
+            report_progress=report_progress,
         )
 
     if task_id != "prepare_upload_package":
@@ -8697,7 +8940,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         log(f"Notification skipped (condition not met: {out.condition})")
             return files
 
+        label_tile_finalize_task = None
+
         async def finalize_output_files(data_rows, runtime_files, exported_files):
+            nonlocal label_tile_finalize_task
             if adapter_id == 'amazon-ops-assistant' and task_id == 'amazon_label_batch_process':
                 try:
                     generated_refs = list(run_params.get("__amazon_generated_refs") or [])
@@ -8848,7 +9094,22 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
             if adapter_id == 'shenhui-new-arrival':
                 try:
-                    packaged_refs = await asyncio.to_thread(
+                    progress_options = {}
+                    if task_id == 'batch_label_tile_download':
+                        loop = asyncio.get_running_loop()
+
+                        def report_progress(phase, completed, total):
+                            loop.call_soon_threadsafe(_merge_live_status, live_jids, {
+                                'phase': phase,
+                                'compression_completed': completed,
+                                'compression_total': total,
+                                'last_seen_at': datetime.now().isoformat(),
+                            })
+
+                        report_progress('prepare_label_tile', 0, 0)
+                        progress_options['report_progress'] = report_progress
+
+                    finalize = asyncio.to_thread(
                         _finalize_shenhui_new_arrival_outputs,
                         task_id=task_id,
                         data_rows=data_rows,
@@ -8857,7 +9118,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         run_params=run_params,
                         runtime_artifact_dir=runtime_artifact_dir,
                         log=log,
+                        **progress_options,
                     )
+                    if progress_options:
+                        # Stopping during export must reuse this worker and its output paths.
+                        label_tile_finalize_task = asyncio.create_task(finalize)
+                        packaged_refs = await asyncio.shield(label_tile_finalize_task)
+                    else:
+                        packaged_refs = await finalize
                     return merge_output_file_refs(packaged_refs)
                 except Exception as package_error:
                     log(f"[warn] 深绘图包后处理失败，回退到原始输出: {package_error}")
@@ -9408,8 +9676,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before partial export")
         try:
             runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
-            exported = await _await_cleanup_after_cancel(export_outputs(data)) if runner else []
-            output_files = await _await_cleanup_after_cancel(finalize_output_files(data, runtime_files, exported)) if runner else []
+            if locals().get('label_tile_finalize_task') is not None:
+                output_files = merge_output_file_refs(await _await_cleanup_after_cancel(label_tile_finalize_task))
+            else:
+                exported = await _await_cleanup_after_cancel(export_outputs(data)) if runner else []
+                output_files = await _await_cleanup_after_cancel(finalize_output_files(data, runtime_files, exported)) if runner else []
         except Exception as export_error:
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")

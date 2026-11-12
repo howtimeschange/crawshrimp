@@ -454,6 +454,105 @@ function isShenhuiPrepareUploadPackageTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'shenhui-new-arrival' && normalizeKeyPart(taskId) === 'prepare_upload_package'
 }
 
+function labelTileProgressStage(phase) {
+  if (phase === 'compress_images' || phase === 'compress_pdfs') return phase
+  if (phase === 'prepare_label_tile' || phase === 'export_label_tile') return ''
+  return 'download'
+}
+
+function labelTileDownloadedCodes(live) {
+  return Math.max(0, toInt(live.search_completed_codes) - Number(Boolean(live.download_active)))
+}
+
+export function sampleLabelTileProgress(previous, live, now) {
+  const stage = labelTileProgressStage(live.phase)
+  if (!stage || live.status !== 'running') return []
+  const downloading = stage === 'download'
+  const total = toInt(downloading ? live.search_total_codes : live.compression_total)
+  const count = downloading
+    ? labelTileDownloadedCodes(live)
+    : toInt(live.compression_completed)
+  if (!total) return []
+  const recent = previous.filter(sample =>
+    sample.stage === stage && sample.runId === live.run_id && now - sample.time <= 60_000
+  )
+  return [...recent, { stage, runId: live.run_id, time: now, count, total }]
+}
+
+function labelTileEta(samples, stage) {
+  const start = samples[0]
+  const latest = samples.at(-1)
+  if (latest?.stage !== stage) return ''
+  const remaining = latest.total - latest.count
+  if (remaining <= 0) return ''
+  const elapsed = (latest.time - start.time) / 1000
+  const processed = latest.count - start.count
+  if (elapsed < 5 || processed <= 0) return '正在估算剩余时间'
+  const seconds = Math.ceil(remaining * elapsed / processed)
+  return seconds < 60 ? `预计还剩 ${seconds} 秒` : `预计还剩约 ${Math.ceil(seconds / 60)} 分钟`
+}
+
+export function buildLabelTileProgressTracks(live = {}, samples = []) {
+  const phase = live.phase
+  const finalizing = ['prepare_label_tile', 'compress_images', 'compress_pdfs', 'export_label_tile'].includes(phase)
+  const total = toInt(live.download_total)
+  const completed = Math.min(total, toInt(live.download_completed))
+  const failed = toInt(live.download_failed)
+  const codeTotal = toInt(live.search_total_codes)
+  const codesCompleted = Math.min(codeTotal, labelTileDownloadedCodes(live))
+  let downloadPercent = total > 0 ? Math.floor(completed / total * 100) : null
+  let downloadMain = finalizing ? '没有下载文件' : '正在查找素材'
+  const downloadMeta = []
+  if (total > 0) {
+    const succeeded = live.download_success ?? completed
+    downloadMain = finalizing
+      ? `已下载 ${succeeded} / ${total} 个文件`
+      : `已处理 ${completed} / 已发现 ${total} 个文件`
+  }
+  if (!finalizing && codeTotal > 0) {
+    if (total > 0) downloadMeta.push(downloadMain)
+    downloadMain = `已处理 ${codesCompleted} / ${codeTotal} 个款号`
+    downloadPercent = Math.floor(codesCompleted / codeTotal * 100)
+  }
+  if (failed > 0) {
+    if (finalizing) downloadMain += ` · 失败 ${failed} 个`
+    else downloadMeta.push(`失败 ${failed} 个`)
+  }
+  if (!finalizing && live.status === 'running') {
+    const speed = formatSpeed(live.download_speed_bps)
+    const eta = labelTileEta(samples, 'download')
+    if (live.download_active) downloadMeta.push(`网速 ${speed || '—'}`)
+    if (eta) downloadMeta.push(eta)
+  }
+
+  const compression = { title: '压缩进度', main: '等待下载完成', meta: '', percent: 0, active: finalizing }
+  const compressionTotal = toInt(live.compression_total)
+  if (phase === 'prepare_label_tile') {
+    compression.main = '正在整理待压缩文件'
+  } else if (phase === 'export_label_tile') {
+    compression.main = '正在导出素材和清单'
+    compression.percent = 100
+  } else if (compressionTotal > 0 && (phase === 'compress_images' || phase === 'compress_pdfs')) {
+    const processed = Math.min(compressionTotal, toInt(live.compression_completed))
+    const unit = phase === 'compress_images' ? '张图片' : '份 PDF'
+    compression.main = `已处理 ${processed} / ${compressionTotal} ${unit}`
+    compression.percent = Math.floor(processed / compressionTotal * 100)
+    if (live.status === 'running' && processed < compressionTotal) {
+      compression.meta = labelTileEta(samples, phase) || '正在估算剩余时间'
+    }
+  }
+  return [
+    {
+      title: '下载进度',
+      main: downloadMain,
+      meta: downloadMeta.join(' · '),
+      percent: downloadPercent,
+      active: !finalizing,
+    },
+    compression,
+  ]
+}
+
 function isShenhuiShoeUploadPackageTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'shenhui-new-arrival' && normalizeKeyPart(taskId) === 'prepare_shoe_upload_package'
 }

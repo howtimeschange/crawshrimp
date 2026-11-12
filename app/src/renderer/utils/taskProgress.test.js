@@ -3,9 +3,60 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import {
+  buildLabelTileProgressTracks,
   buildTaskRunnerProgressSummary,
   resolveTaskProgressConfig,
+  sampleLabelTileProgress,
 } from './taskProgress.js'
+
+test('label downloads show both progress bars from download through export', () => {
+  const downloading = buildLabelTileProgressTracks({
+    phase: 'collect_code', download_total: 12, download_completed: 12,
+    search_total_codes: 101, search_completed_codes: 4,
+  })
+  assert.deepEqual(downloading, [
+    { title: '下载进度', main: '已处理 4 / 101 个款号', meta: '已处理 12 / 已发现 12 个文件', percent: 3, active: true },
+    { title: '压缩进度', main: '等待下载完成', meta: '', percent: 0, active: false },
+  ])
+
+  const downloaded = { download_total: 859, download_completed: 859, download_success: 859 }
+  const compressing = buildLabelTileProgressTracks({
+    ...downloaded, phase: 'compress_images', compression_completed: 0, compression_total: 811,
+  })
+  assert.deepEqual(compressing, [
+    { title: '下载进度', main: '已下载 859 / 859 个文件', meta: '', percent: 100, active: false },
+    { title: '压缩进度', main: '已处理 0 / 811 张图片', meta: '', percent: 0, active: true },
+  ])
+  const [download, pdf] = buildLabelTileProgressTracks({
+    ...downloaded, phase: 'compress_pdfs', compression_completed: 12, compression_total: 48,
+  })
+  assert.deepEqual(download, compressing[0])
+  assert.deepEqual(pdf, { title: '压缩进度', main: '已处理 12 / 48 份 PDF', meta: '', percent: 25, active: true })
+  assert.deepEqual(buildLabelTileProgressTracks({ ...downloaded, phase: 'export_label_tile' })[1], {
+    title: '压缩进度', main: '正在导出素材和清单', meta: '', percent: 100, active: true,
+  })
+})
+
+test('label downloads report transfer speed and estimate each stage independently', () => {
+  const live = {
+    status: 'running', run_id: 1, phase: 'collect_code',
+    download_total: 20, download_completed: 12, download_active: true, download_speed_bps: 2 * 1024 * 1024,
+    search_total_codes: 30, search_completed_codes: 9,
+  }
+  const initial = sampleLabelTileProgress([], live, 1_000)
+  assert.match(buildLabelTileProgressTracks(live, initial)[0].meta, /2\.00 MB\/s.*正在估算/)
+  const downloading = { ...live, search_completed_codes: 13 }
+  const samples = sampleLabelTileProgress(initial, downloading, 17_000)
+  assert.match(buildLabelTileProgressTracks(downloading, samples)[0].meta, /预计还剩约 2 分钟/)
+
+  const compressing = { ...live, phase: 'compress_images', compression_total: 100, compression_completed: 20 }
+  const newPhase = sampleLabelTileProgress(samples, compressing, 18_000)
+  assert.equal(newPhase.length, 1)
+  assert.match(buildLabelTileProgressTracks(compressing, newPhase)[1].meta, /正在估算/)
+  const later = { ...compressing, compression_completed: 40 }
+  const measured = sampleLabelTileProgress(newPhase, later, 28_000)
+  assert.match(buildLabelTileProgressTracks(later, measured)[1].meta, /预计还剩 30 秒/)
+})
 
 test('task runner constrains long target metadata so it cannot push the progress bar out of alignment', () => {
   const taskRunnerSource = readFileSync(new URL('../views/TaskRunner.vue', import.meta.url), 'utf8')

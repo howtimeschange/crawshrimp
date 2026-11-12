@@ -516,127 +516,6 @@
           </div>
         </div>
 
-        <!-- 执行按钮 -->
-        <div class="action-row">
-          <button
-            class="run-btn"
-            :class="{ running: isRunning }"
-            :disabled="isRunning || missingRequired"
-            @click="runTask"
-          >
-            <span v-if="isRunning">{{ runningLabel }}</span>
-            <span v-else>▶ 立即执行</span>
-          </button>
-          <button
-            v-if="isTaskOdpsSyncable"
-            class="run-sub-btn run-sync-btn"
-            :disabled="isRunning || missingRequired"
-            @click="runTaskAndSyncOdps"
-          >
-            立即执行并同步DataWorks
-          </button>
-          <button
-            v-if="autoPrecheckFlow"
-            class="run-sub-btn"
-            :disabled="isRunning || missingRequired"
-            @click="runValidationOnly"
-          >
-            {{ validationOnlyLabel }}
-          </button>
-          <button
-            v-if="isRunning && liveStatus === 'running'"
-            class="run-sub-btn"
-            @click="pauseCurrentTask"
-          >
-            暂停
-          </button>
-          <button
-            v-if="isRunning && (liveStatus === 'paused' || liveStatus === 'pausing')"
-            class="run-sub-btn"
-            @click="resumeCurrentTask"
-          >
-            继续
-          </button>
-          <button
-            v-if="isRunning"
-            class="run-sub-btn run-sub-btn-stop"
-            :disabled="liveStatus === 'stopping'"
-            @click="stopCurrentTask"
-          >
-            停止
-          </button>
-          <span v-if="autoPrecheckFlow" class="action-note">{{ autoPrecheckNote }}</span>
-          <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
-          <span v-if="missingRequired" class="missing-hint">请填写必填项</span>
-          <span v-if="lastResult" :class="['result-badge', lastResult.ok ? 'ok' : 'err']">
-            {{ lastResult.msg }}
-          </span>
-          <button
-            v-if="approvalBoardUrl && !isTmallAiImageChainTask"
-            type="button"
-            class="run-sub-btn"
-            @click="openApprovalDrawer"
-          >
-            审图看板
-          </button>
-        </div>
-      </div>
-
-      <!-- 无参数任务的执行按钮 -->
-      <div
-        v-else-if="!isTmallAiImageChainTask || aiChainActiveStep === 'config'"
-        :class="['params-panel', { 'ai-chain-step-panel': isTmallAiImageChainTask }]"
-      >
-        <div class="action-row">
-          <button
-            class="run-btn"
-            :class="{ running: isRunning }"
-            :disabled="isRunning"
-            @click="runTask"
-          >
-            <span v-if="isRunning">{{ runningLabel }}</span>
-            <span v-else>▶ 立即执行</span>
-          </button>
-          <button
-            v-if="isTaskOdpsSyncable"
-            class="run-sub-btn run-sync-btn"
-            :disabled="isRunning"
-            @click="runTaskAndSyncOdps"
-          >
-            立即执行并同步DataWorks
-          </button>
-          <button
-            v-if="isRunning && liveStatus === 'running'"
-            class="run-sub-btn"
-            @click="pauseCurrentTask"
-          >
-            暂停
-          </button>
-          <button
-            v-if="isRunning && (liveStatus === 'paused' || liveStatus === 'pausing')"
-            class="run-sub-btn"
-            @click="resumeCurrentTask"
-          >
-            继续
-          </button>
-          <button
-            v-if="isRunning"
-            class="run-sub-btn run-sub-btn-stop"
-            :disabled="liveStatus === 'stopping'"
-            @click="stopCurrentTask"
-          >
-            停止
-          </button>
-          <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
-          <button
-            v-if="approvalBoardUrl && !isTmallAiImageChainTask"
-            type="button"
-            class="run-sub-btn"
-            @click="openApprovalDrawer"
-          >
-            审图看板
-          </button>
-        </div>
       </div>
 
       <section
@@ -723,8 +602,97 @@
 
       </div>
 
+      <section v-if="!isTmallAiImageChainTask || aiChainActiveStep === 'config'" class="action-row runner-action-bar" aria-label="任务操作">
+        <button
+          class="run-btn"
+          :class="{ running: isRunning }"
+          :disabled="isRunning || missingRequired"
+          @click="runTask"
+        >
+          <span v-if="isRunning">{{ runningLabel }}</span>
+          <span v-else>▶ 立即执行</span>
+        </button>
+        <button
+          v-if="isTaskOdpsSyncable"
+          class="run-sub-btn run-sync-btn"
+          :disabled="isRunning || missingRequired"
+          @click="runTaskAndSyncOdps"
+        >
+          立即执行并同步DataWorks
+        </button>
+        <button
+          v-if="autoPrecheckFlow"
+          class="run-sub-btn"
+          :disabled="isRunning || missingRequired"
+          @click="runValidationOnly"
+        >
+          {{ validationOnlyLabel }}
+        </button>
+        <button
+          v-if="isRunning && liveStatus === 'running'"
+          class="run-sub-btn"
+          @click="pauseCurrentTask"
+        >
+          暂停
+        </button>
+        <button
+          v-if="isRunning && (liveStatus === 'paused' || liveStatus === 'pausing')"
+          class="run-sub-btn"
+          @click="resumeCurrentTask"
+        >
+          继续
+        </button>
+        <button
+          v-if="isRunning"
+          class="run-sub-btn run-sub-btn-stop"
+          :disabled="liveStatus === 'stopping'"
+          @click="stopCurrentTask"
+        >
+          停止
+        </button>
+        <span v-if="autoPrecheckFlow" class="action-note">{{ autoPrecheckNote }}</span>
+        <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
+        <span v-if="missingRequired && !isRunning" class="missing-hint">请填写必填项</span>
+        <span v-if="lastResult" :class="['result-badge', lastResult.ok ? 'ok' : 'err']">
+          {{ lastResult.msg }}
+        </span>
+        <button
+          v-if="approvalBoardUrl && !isTmallAiImageChainTask"
+          type="button"
+          class="run-sub-btn"
+          @click="openApprovalDrawer"
+        >
+          审图看板
+        </button>
+      </section>
+
       <div class="runner-bottom-stack">
-        <div v-if="progressSummary && useEnhancedProgressUi" class="progress-strip progress-strip-enhanced" aria-live="polite">
+        <div v-if="labelTileProgressTracks" class="progress-strip progress-strip-stack" aria-live="polite">
+          <div v-for="track in labelTileProgressTracks" :key="track.title" class="progress-track">
+            <div v-if="track.active" class="progress-strip-main">
+              <span class="progress-strip-title">{{ track.title }}</span>
+              <span class="progress-strip-value">{{ track.main }}</span>
+              <span v-if="track.percent !== null" class="progress-strip-percent">{{ track.percent }}%</span>
+              <span v-if="track.meta" class="progress-track-label">{{ track.meta }}</span>
+            </div>
+            <div v-else class="progress-track-label">
+              <span><strong>{{ track.title }}</strong> · {{ track.main }}</span>
+              <span v-if="track.percent === 100">已完成</span>
+            </div>
+            <div
+              v-if="track.active"
+              class="progress-strip-bar"
+              role="progressbar"
+              :aria-label="track.title"
+              :aria-valuenow="track.percent"
+              :aria-valuetext="[track.main, track.meta].filter(Boolean).join('，')"
+            >
+              <div class="progress-strip-bar-fill" :style="{ width: `${track.percent ?? 0}%` }"></div>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="progressSummary && useEnhancedProgressUi" class="progress-strip progress-strip-enhanced" aria-live="polite">
           <div class="progress-strip-head">
             <div class="progress-strip-main">
               <span class="progress-strip-title">{{ progressSummary.title }}</span>
@@ -1031,7 +999,7 @@ import BalaAiMaterialSelectionDrawer from './BalaAiMaterialSelectionDrawer.vue'
 import TmallAiApprovalDrawer from './TmallAiApprovalDrawer.vue'
 import TaskOutputDrawer from './TaskOutputDrawer.vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
-import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
+import { buildLabelTileProgressTracks, buildTaskRunnerProgressSummary, resolveTaskProgressConfig, sampleLabelTileProgress } from '../utils/taskProgress'
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
 import { shouldResetTaskValues, taskIdentityKey, stoppedTaskResultMessage } from '../utils/taskRunnerState'
 import { buildEmbeddedCloudApprovalUrl, isTrustedCloudApprovalBoardUrl } from '../utils/cloudApprovalUrl'
@@ -1081,6 +1049,7 @@ const logs = ref([])
 const isRunning = ref(false)
 const lastResult = ref(null)
 const localLiveSnapshot = ref(null)
+const labelTileRateSamples = ref([])
 const outputFiles = ref([])
 const approvalBoardUrl = ref('')
 const localApprovalBoardUrl = ref('')
@@ -1152,7 +1121,6 @@ const pdfCropManifestDefaultValues = {
   },
 }
 const dateInputRefs = new Map()
-let pollTimer = null
 let aiChainBatchPollTimer = null
 let aiChainTerminalInstanceUpdateEmitted = false
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
@@ -1562,6 +1530,8 @@ const isInstanceMode = computed(() => !!effectiveInstanceUid.value)
 watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   if (!task) return
   if (!shouldResetTaskValues(activeTaskIdentityKey, task, adapterId)) return
+  const token = ++runAbortToken
+  currentRunId = null
   activeTaskIdentityKey = taskIdentityKey(adapterId, task)
   ownedInstanceUid.value = ''
   dynamicParamProbeToken += 1
@@ -1594,20 +1564,29 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   isRunning.value = false
   lastResult.value = null
   localLiveSnapshot.value = null
+  labelTileRateSamples.value = []
   runStage.value = ''
   // 异步加载该任务的历史日志
   nextTick(async () => {
     try {
       const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id, effectiveInstanceUid.value)
+      if (token !== runAbortToken) return
       if (logR.logs) logs.value = logR.logs
       const taskStatus = await window.cs.getTaskStatus(props.adapterId, task.task_id, effectiveInstanceUid.value)
+      if (token !== runAbortToken || isRunning.value) return
       const live = taskStatus?.live
       const last = taskStatus?.last_run
       if (live && isTaskActiveStatus(live.status)) {
         applyLocalLiveStatus(live)
         isRunning.value = true
+        if (isLabelTileDownload.value && !props.instanceUid) ownedInstanceUid.value = live.instance_uid || ''
         currentRunId = live.run_id ?? last?.id ?? null
         emit('status-change', live)
+        if (isLabelTileDownload.value) {
+          void waitForRunResult(token).then(result => {
+            if (token === runAbortToken && result.status !== 'cancelled') return finishRun(result)
+          }).catch(error => console.warn('恢复任务进度失败', error))
+        }
       } else if (last?.status === 'stopped' && activeTaskIdentityKey === taskIdentityKey(adapterId, task)) {
         // Keep the persisted stop reason visible after reopening this task.
         lastResult.value = { ok: false, msg: stoppedTaskResultMessage(last) }
@@ -1662,11 +1641,16 @@ const autoPrecheckNote = computed(() =>
   props.task?.auto_precheck_note || '执行前会自动做 Excel 预检'
 )
 
-const liveProgress = computed(() => ({
-  ...(props.task?.live || {}),
-  ...(localLiveSnapshot.value || {}),
-}))
+const liveProgress = computed(() => localLiveSnapshot.value || props.task?.live || {})
 const liveStatus = computed(() => liveProgress.value?.status || '')
+const isLabelTileDownload = computed(() =>
+  props.adapterId === 'shenhui-new-arrival' && props.task?.task_id === 'batch_label_tile_download'
+)
+const labelTileProgressTracks = computed(() =>
+  isRunning.value && isLabelTileDownload.value
+    ? buildLabelTileProgressTracks(liveProgress.value, labelTileRateSamples.value)
+    : null
+)
 const paramsGridClass = computed(() =>
   props.adapterId === 'shopee-webchat-bulk-reply' ? 'params-grid-shopee-bulk' : ''
 )
@@ -2168,6 +2152,12 @@ const runningLabel = computed(() => {
   if (liveStatus.value === 'pausing') return '⏳ 暂停中…'
   if (liveStatus.value === 'paused') return '⏸ 已暂停'
   if (liveStatus.value === 'stopping') return '⏳ 停止中…'
+  if (isLabelTileDownload.value) {
+    const { phase } = liveProgress.value
+    if (phase === 'prepare_label_tile') return '⏳ 正在整理下载文件…'
+    if (phase === 'export_label_tile') return '⏳ 正在导出文件…'
+    if (phase === 'compress_images' || phase === 'compress_pdfs') return '⏳ 正在压缩…'
+  }
   if (runStage.value === 'plan') return '⏳ 预检中…'
   if (runStage.value === 'live') return '⏳ live 执行中…'
   if (runStage.value === 'sync') return '⏳ 同步DataWorks…'
@@ -2549,8 +2539,6 @@ function isParamVisibleInForm(param) {
 }
 
 function forceReset() {
-  clearInterval(pollTimer)
-  pollTimer = null
   stopAiChainApprovalBatchPolling()
   runAbortToken += 1
   isRunning.value = false
@@ -2794,7 +2782,8 @@ function resetRunUi() {
   balaMaterialDrawerOpen.value = false
   balaReviewBoardUrl.value = ''
   balaReviewDrawerOpen.value = false
-  localLiveSnapshot.value = null
+  localLiveSnapshot.value = {}
+  labelTileRateSamples.value = []
   if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
   syncingOdps.value = false
   operatorAlertKeys.clear()
@@ -2805,6 +2794,9 @@ function applyLocalLiveStatus(status) {
   localLiveSnapshot.value = {
     ...(localLiveSnapshot.value || props.task?.live || {}),
     ...status,
+  }
+  if (isLabelTileDownload.value) {
+    labelTileRateSamples.value = sampleLabelTileProgress(labelTileRateSamples.value, localLiveSnapshot.value, performance.now())
   }
 }
 
@@ -2848,6 +2840,7 @@ async function stopCurrentTask() {
 }
 
 async function startTaskRun(params, pendingMessage) {
+  const token = runAbortToken
   const currentTabId = await resolveCurrentTabId(params)
   const runInstanceUid = await ensureTaskInstanceForRun(params)
   await window.cs.updateTaskInstance(runInstanceUid, { params })
@@ -2861,29 +2854,30 @@ async function startTaskRun(params, pendingMessage) {
   emit('status-change', { status: 'running' })
   await new Promise(res => setTimeout(res, 600))
   const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, runInstanceUid)
+  if (token !== runAbortToken) return { status: 'cancelled' }
   currentRunId = initStatus?.live?.run_id ?? initStatus?.last_run?.id ?? null
-  const token = runAbortToken
-  return await new Promise((resolve) => {
-    pollTimer = setInterval(async () => {
-      if (token !== runAbortToken) {
-        clearInterval(pollTimer)
-        pollTimer = null
-        resolve({ status: 'cancelled' })
-        return
-      }
-      const result = await pollStatusOnce()
-      if (!result) return
-      clearInterval(pollTimer)
-      pollTimer = null
-      resolve(result)
-    }, 800)
-  })
+  return waitForRunResult(token)
 }
 
-async function pollStatusOnce() {
+async function waitForRunResult(token) {
+  while (token === runAbortToken) {
+    await new Promise(resolve => setTimeout(resolve, 800))
+    if (token !== runAbortToken) break
+    try {
+      const result = await pollStatusOnce(token)
+      if (result) return result
+    } catch (error) {
+      console.warn('读取任务进度失败，将重试', error)
+    }
+  }
+  return { status: 'cancelled' }
+}
+
+async function pollStatusOnce(token) {
   const r = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, effectiveInstanceUid.value)
   const live = r.live
   const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id, effectiveInstanceUid.value)
+  if (token !== runAbortToken) return null
 
   if (logR.logs) logs.value = logR.logs
   const latestLogText = Array.isArray(logR.logs) ? logR.logs.slice(-30).join('\n') : ''
@@ -3056,8 +3050,6 @@ async function maybeOpenBalaImageReview(files = [], result = null) {
 }
 
 async function finishRun(result, options = {}) {
-  clearInterval(pollTimer)
-  pollTimer = null
   const keepRunning = !!options.keepRunning
   if (!keepRunning) {
     isRunning.value = false
@@ -4323,7 +4315,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  clearInterval(pollTimer)
+  runAbortToken += 1
   stopAiChainApprovalBatchPolling()
   if (instanceDraftSaveTimer) {
     clearTimeout(instanceDraftSaveTimer)
@@ -4371,6 +4363,12 @@ onUnmounted(() => {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+.runner-action-bar.action-row {
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--dock-bg);
 }
 .runner-bottom-stack {
   flex: 0 0 auto;

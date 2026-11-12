@@ -275,6 +275,22 @@ test('label tile plan preserves label filenames and filters waste markers', asyn
   )
 })
 
+test('status notes do not turn ordinary style photos into wash labels or hang tags', async () => {
+  const h = await loadExports()
+  const code = '201127107001'
+  const root = `平拍原图/全域/1p/幼童/${code} 无吊牌 无水洗-已写`
+  const asset = filename => ({ dir: '0', filename, fullpath: `${root}/${filename}` })
+  const photos = [`${code}-60642-1.jpg`, `${code}-60642.jpg`, 'IMG_0003.jpg', 'NB9A0911.png', 'yk1.jpg']
+  const items = [...photos, 'yq.pdf', 'yq.png', 'lQLPabc123.jpg'].map(asset)
+
+  assert.deepEqual(Array.from(h.selectLabelItems(items, 'wash_label', code)), [])
+  assert.deepEqual(Array.from(h.selectLabelItems(items, 'hang_tag', code)), [])
+  assert.deepEqual(Array.from(h.selectTileItems([], items, code).items, item => item.filename), [`${code}-60642.jpg`])
+  assert.equal(h.inferLabelKind(asset('yq1.jpg'), code), 'hang_tag')
+  assert.equal(h.inferLabelKind(asset('yq2.jpg'), code), 'wash_label')
+  assert.equal(h.inferLabelKind(asset('洗唛.pdf'), code), 'wash_label')
+})
+
 test('buildCodePlan downloads model-path tile first and appends 有模拍 to filename', async () => {
   const helpers = await loadExports({
     fetch: async (url) => {
@@ -613,6 +629,47 @@ const incidentSeason = `${incidentModule}/2026年巴拉冬`
 function incidentSource(type, relativePath = `${incidentSeason}/${type === 'model' ? '模拍原图' : '平拍原图'}`) {
   return { mountId: '2023', relativePath, broadRelativePath: incidentModule }
 }
+
+test('apparel label fallback reviews yq and same-season dedicated label files only', async () => {
+  const code = '201127107001'
+  const still = incidentSource('still')
+  const folder = `${still.relativePath}/全域/${code} 无吊牌 无水洗-已写`
+  const asset = fullpath => ({ dir: 0, filename: fullpath.split('/').at(-1), fullpath })
+  const label = asset(`${incidentSeason}/幼童资料/127幼童吊牌洗唛资料/全域/供应商${code}合格证.pdf`)
+  const stillFiles = ['yq.pdf', 'yq.png', 'IMG_0003.jpg', `${code}-60642.jpg`].map(name => asset(`${folder}/${name}`))
+  const search = [
+    { dir: 1, filename: folder.split('/').at(-1), fullpath: folder },
+    label,
+    asset(label.fullpath.replace('2026年巴拉冬', '2027年巴拉春')),
+    asset(label.fullpath.replace(code, `${code}9`)),
+    asset(`${incidentSeason}/制单/尺码表/${code}.pdf`),
+  ]
+  const h = await loadExports({ fetch: async url => String(url).includes('/search')
+    ? jsonResponse({ total: search.length, list: search })
+    : String(url).includes('/file/ls') ? jsonResponse({ total: stillFiles.length, list: stillFiles })
+      : jsonResponse({ uri: 'https://example.test/download' }) })
+  const plan = await h.buildCodePlan(code, { still })
+  assert.deepEqual(Array.from(plan.rows.filter(row => row.__apparel_label_review), row => row['云盘路径']),
+    [stillFiles[0].fullpath, stillFiles[1].fullpath, label.fullpath])
+  assert.equal(plan.rows.some(row => row['原文件名'] === 'IMG_0003.jpg'), false)
+})
+
+test('misfiled light-supply shoe certificates enter OCR without borrowing the other style photos', async () => {
+  const code = '2084261400U6'
+  const otherCode = '2084261402U6'
+  const folder = `${incidentSeason}/轻供/鞋品/10.23上市/澳伦/${otherCode}`
+  const assets = [`${code}吊牌图.png`, `${code}吊牌图1.png`, `${code}9吊牌图.png`, 'IMG_0001.jpg']
+    .map(filename => ({ dir: 0, filename, fullpath: `${folder}/${filename}` }))
+  const h = await loadExports({ fetch: async url => String(url).includes('/search')
+    ? jsonResponse({ total: assets.length, list: assets })
+    : jsonResponse({ uri: 'https://example.test/download' }) })
+  const plan = await h.buildCodePlan(code, { still: incidentSource('still') })
+  assert.deepEqual(Array.from(plan.rows.filter(row => row['云盘路径']), row => row['原文件名']),
+    assets.slice(0, 2).map(item => item.filename))
+  assert.ok(plan.rows.filter(row => row['云盘路径'])
+    .every(row => row.__shoe_label_candidate_kind === 'light_supply_misfiled_ocr'))
+  assert.equal(h.selectShoeLabelItems(assets.slice(0, 2), otherCode).length, 0)
+})
 
 test('October 24 light-supply paths are discovered from standard defaults for all eight missing styles', async () => {
   const apparel = ['208426103181', '208426121099', '208426121298', '208426108197', '208426108196']

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import os
 import re
@@ -12,6 +14,8 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from core import runtime_paths
 
 
 @dataclass(frozen=True)
@@ -477,6 +481,10 @@ async function main() {
   const options = { logger: () => {} };
   if (payload.corePath) options.corePath = payload.corePath;
   if (payload.langPath) options.langPath = payload.langPath;
+  if (payload.cachePath) {
+    options.cachePath = payload.cachePath;
+    options.cacheMethod = 'readOnly';
+  }
   const worker = await tesseractModule.createWorker(payload.lang || 'eng', 1, options);
   try {
     if (payload.whitelist) {
@@ -512,6 +520,40 @@ main().catch((error) => {
 """
 
 
+def _prepare_local_tesseract_cache(lang_path: str, lang: str) -> str:
+    # Electron can treat a local langPath as a fetch URL on a cold start.
+    # Seed the worker's local cache from the bundled data before starting it.
+    if not lang_path or not Path(lang_path).is_dir():
+        return ""
+    sources = []
+    for code in lang.split("+"):
+        if not re.fullmatch(r"[A-Za-z0-9_]+", code):
+            return ""
+        source = Path(lang_path) / f"{code}.traineddata.gz"
+        if not source.is_file():
+            return ""
+        sources.append(source)
+    fingerprints = [(str(source.resolve()), source.stat().st_size, source.stat().st_mtime_ns) for source in sources]
+    version = hashlib.sha256(repr(fingerprints).encode()).hexdigest()[:16]
+    cache = runtime_paths.child_dir("cache") / "tesseract" / version
+    cache.mkdir(parents=True, exist_ok=True)
+    for source in sources:
+        target = cache / source.stem
+        if target.is_file():
+            continue
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=cache, delete=False) as output:
+                temp_path = Path(output.name)
+                with gzip.open(source, "rb") as packed:
+                    shutil.copyfileobj(packed, output)
+            os.replace(temp_path, target)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+    return str(cache)
+
+
 def recognize_image_with_tesseract_js(
     image_path: Path | str,
     *,
@@ -523,10 +565,12 @@ def recognize_image_with_tesseract_js(
     if not status["available"]:
         raise RuntimeError("project tesseract.js runtime is not available")
     node_modules = Path(status["node_modules"])
+    lang_path = _default_tesseract_lang_path()
     payload = {
         "nodeModulesDir": str(node_modules),
         "corePath": str(node_modules / "tesseract.js-core"),
-        "langPath": _default_tesseract_lang_path(),
+        "langPath": lang_path,
+        "cachePath": _prepare_local_tesseract_cache(lang_path, lang),
         "lang": lang,
         "whitelist": whitelist,
     }

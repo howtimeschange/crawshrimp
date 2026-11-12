@@ -27,47 +27,38 @@
       </div>
       <div class="task-output-actions">
         <slot name="actions" />
-        <button v-if="activeTab === 'logs'" type="button" @click="$emit('clear-logs')">清空</button>
         <button
+          v-if="activeTab === 'logs'"
           type="button"
-          class="task-output-icon-btn"
-          :class="{ active: drawerState === 'minimized' }"
-          title="最小化"
-          aria-label="最小化输出面板"
-          @click="drawerState = 'minimized'"
+          :disabled="!logs.length"
+          @click="copyLogs"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M5 12h14" />
-          </svg>
+          <component :is="copyFeedback === '已复制' ? IconCheck : IconCopy" :size="15" aria-hidden="true" />
+          <span aria-live="polite">{{ copyFeedback || '复制全部日志' }}</span>
         </button>
         <button
+          v-if="activeTab === 'logs'"
           type="button"
-          class="task-output-icon-btn"
-          :class="{ active: drawerState === 'half' }"
-          title="半高"
-          aria-label="半高显示输出面板"
-          @click="drawerState = 'half'"
+          :disabled="!logs.length"
+          aria-haspopup="dialog"
+          @click="clearLogsDialog?.showModal()"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="4" y="5" width="16" height="14" rx="2" />
-            <path d="M4 13h16" />
-          </svg>
+          <IconTrash :size="15" aria-hidden="true" />
+          清空日志
         </button>
-        <button
-          type="button"
-          class="task-output-icon-btn"
-          :class="{ active: drawerState === 'expanded' }"
-          title="展开"
-          aria-label="展开输出面板"
-          @click="drawerState = 'expanded'"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M8 3H5a2 2 0 0 0-2 2v3" />
-            <path d="M16 3h3a2 2 0 0 1 2 2v3" />
-            <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
-            <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
-          </svg>
-        </button>
+        <div class="task-output-sizes" role="group" aria-label="输出面板高度">
+          <button
+            v-for="size in drawerSizes"
+            :key="size.value"
+            type="button"
+            :class="{ active: drawerState === size.value }"
+            :aria-pressed="drawerState === size.value"
+            @click="drawerState = size.value"
+          >
+            <component :is="size.icon" :size="15" aria-hidden="true" />
+            <span>{{ size.label }}</span>
+          </button>
+        </div>
       </div>
     </header>
 
@@ -91,11 +82,29 @@
         </div>
       </div>
     </div>
+
+    <dialog
+      ref="clearLogsDialog"
+      class="clear-logs-dialog"
+      role="alertdialog"
+      :aria-labelledby="clearLogsTitleId"
+      :aria-describedby="clearLogsDescriptionId"
+    >
+      <form @submit.prevent="confirmClearLogs">
+        <h2 :id="clearLogsTitleId">清空运行日志？</h2>
+        <p :id="clearLogsDescriptionId">清空后，当前任务已有的运行日志无法恢复。</p>
+        <div class="clear-logs-dialog-actions">
+          <button type="button" autofocus @click="clearLogsDialog?.close()">取消</button>
+          <button type="submit" class="confirm-clear-logs">确认清空</button>
+        </div>
+      </form>
+    </dialog>
   </section>
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, useId, watch } from 'vue'
+import { IconCheck, IconCopy, IconLayoutBottombar, IconMaximize, IconMinus, IconTrash } from '@tabler/icons-vue'
 import { buildOutputFileEntries, summarizeOutputFiles } from '../utils/taskOutputSummary'
 
 const props = defineProps({
@@ -106,10 +115,41 @@ const props = defineProps({
   autoOpenOnOutputFiles: { type: Boolean, default: true },
 })
 
-defineEmits(['clear-logs', 'open-file'])
+const emit = defineEmits(['clear-logs', 'open-file'])
 
 const activeTab = ref('logs')
 const drawerState = ref('minimized')
+const clearLogsDialog = ref(null)
+const clearLogsTitleId = useId()
+const clearLogsDescriptionId = useId()
+
+function confirmClearLogs() {
+  clearLogsDialog.value?.close()
+  emit('clear-logs')
+}
+
+const drawerSizes = [
+  { value: 'minimized', label: '收起面板', icon: IconMinus },
+  { value: 'half', label: '半高查看', icon: IconLayoutBottombar },
+  { value: 'expanded', label: '展开面板', icon: IconMaximize },
+]
+const copyFeedback = ref('')
+let copyFeedbackTimer
+
+async function copyLogs() {
+  const text = props.logs.join('\n')
+  if (!text) return
+  clearTimeout(copyFeedbackTimer)
+  try {
+    await navigator.clipboard.writeText(text)
+    copyFeedback.value = '已复制'
+  } catch {
+    copyFeedback.value = '复制失败'
+  }
+  copyFeedbackTimer = setTimeout(() => { copyFeedback.value = '' }, 2500)
+}
+
+onUnmounted(() => clearTimeout(copyFeedbackTimer))
 const logBodyEl = ref(null)
 const outputSummary = computed(() => summarizeOutputFiles(props.files))
 const displayOutputEntries = computed(() => buildOutputFileEntries(props.files))
@@ -136,9 +176,41 @@ watch(() => props.files.length, (nextLength, previousLength) => {
 </script>
 
 <style scoped>
+.clear-logs-dialog {
+  width: min(360px, calc(100% - 32px));
+  margin: auto;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg2);
+  color: var(--text);
+}
+.clear-logs-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+.clear-logs-dialog h2 { font-size: 16px; }
+.clear-logs-dialog p { margin-top: 8px; color: var(--text2); }
+.clear-logs-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.clear-logs-dialog-actions button {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--soft-fill);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.clear-logs-dialog-actions .confirm-clear-logs {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 40%, transparent);
+}
 .task-output-drawer {
   flex: 0 0 auto;
   min-height: 42px;
+  container-type: inline-size;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--bg2);
@@ -146,12 +218,17 @@ watch(() => props.files.length, (nextLength, previousLength) => {
   display: flex;
   flex-direction: column;
 }
-.task-output-drawer.minimized { height: 42px; }
+.task-output-actions {
+  grid-column: 3;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
 .task-output-drawer.half { height: min(240px, 28vh); }
 .task-output-drawer.expanded { height: min(420px, 46vh); }
 .task-output-head {
   min-height: 42px;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -168,9 +245,19 @@ watch(() => props.files.length, (nextLength, previousLength) => {
 .task-output-tabs {
   flex: 0 0 auto;
 }
+.task-output-sizes {
+  display: flex;
+  flex: 0 0 auto;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 .task-output-preview {
   flex: 1 1 auto;
-  min-width: 120px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -196,21 +283,21 @@ watch(() => props.files.length, (nextLength, previousLength) => {
   border-color: var(--border-strong);
   background: var(--soft-fill-hover);
 }
-.task-output-actions .task-output-icon-btn {
-  width: 34px;
-  height: 30px;
-  padding: 0;
-  display: inline-grid;
-  place-items: center;
+.task-output-sizes button:not(.active):not(:hover) {
+  border-color: transparent;
+  background: transparent;
 }
-.task-output-icon-btn svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.task-output-actions button {
+  white-space: nowrap;
+}
+.task-output-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.task-output-actions button:disabled {
+  cursor: default;
+  opacity: .55;
 }
 .task-output-actions button.active,
 .task-output-tabs button.active {
@@ -326,13 +413,13 @@ watch(() => props.files.length, (nextLength, previousLength) => {
 .log-line.ok { color: var(--green); }
 .log-line.err { color: var(--red); }
 .log-line.warn { color: var(--yellow); }
-@media (max-width: 720px) {
+@container (max-width: 640px) {
   .task-output-head {
+    display: flex;
     align-items: stretch;
     flex-direction: column;
     padding: 8px;
   }
-  .task-output-drawer.minimized { height: 82px; }
   .task-output-tabs,
   .task-output-actions {
     flex-wrap: wrap;
