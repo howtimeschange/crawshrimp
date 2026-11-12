@@ -424,7 +424,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs: [release-source, publish-version-release]
-    if: needs.release-source.result == 'success' && needs.publish-version-release.result == 'success'
+    if: ${{ !cancelled() && needs.release-source.result == 'success' && needs.publish-version-release.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -796,7 +796,7 @@ jobs:
     name: Publish Versioned GitHub Release
     runs-on: ubuntu-latest
     needs: [release-source, publish-cloudflare-r2]
-    if: needs.release-source.result == 'success' && needs.publish-cloudflare-r2.result == 'success'
+    if: ${{ !cancelled() && needs.release-source.result == 'success' && needs.publish-cloudflare-r2.result == 'success' }}
     permissions:
       contents: write
       actions: read
