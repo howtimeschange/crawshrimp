@@ -93,4 +93,6 @@ test('rolling desktop-latest publication waits for validated version release com
   assert.match(workflow, /publish-version-release:[\s\S]*gh release edit "\$\{RELEASE_TAG\}"[\s\S]*--draft=false[\s\S]*--latest/)
   assert.match(workflow, /publish-release:[\s\S]*needs:\s*\[release-source, publish-version-release\]/)
   assert.doesNotMatch(workflow, /publish-version-release:[\s\S]*needs:\s*publish-release/)
+  assert.match(workflow, /!cancelled\(\) && needs\.release-source\.result == 'success' && needs\.publish-cloudflare-r2\.result == 'success'/)
+  assert.match(workflow, /!cancelled\(\) && needs\.release-source\.result == 'success' && needs\.publish-version-release\.result == 'success'/)
 })

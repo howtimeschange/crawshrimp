@@ -8,7 +8,13 @@ This checklist is the required evidence record before claiming desktop updater r
 - Version selection rationale: 修复巴拉上新助手的吊牌洗唛匹配和桌面端 OCR 字库加载，改善现有批量任务的压缩进度、日志与导出体验。
 - Target version: `v2.5.15`
 - Update path under test: `v2.5.14` → `v2.5.15`
-- Source commit, GitHub builds, release assets, Cloudflare R2 and packaged update acceptance: `PENDING`
+- Source commit: `24d34d54fc7306e8dc6f44ba6bc008b588831185`
+- GitHub main 构建通过。[构建记录](https://github.com/howtimeschange/crawshrimp/actions/runs/43266408948)
+- 正式标签的测试、Windows x64 / ARM64 构建和 macOS 签名公证通过。R2 分片上传连续两次返回 `InvalidPart`。[标签构建记录](https://github.com/howtimeschange/crawshrimp/actions/runs/43266408584)
+- 恢复任务复用标签构建产物，改用单次 PUT 上传 R2。R2、正式 Release 和 `desktop-latest` 发布任务均通过。[发布恢复记录](https://github.com/howtimeschange/crawshrimp/actions/runs/43277751414)
+- 正式 Release 和 `desktop-latest` 各有 12 个同名、同大小的资产，两个标签指向同一源码提交。[正式 Release](https://github.com/howtimeschange/crawshrimp/releases/tag/v2.5.15) · [desktop-latest](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
+- R2 公开地址的 `latest-release.json` 返回 2.5.15。macOS 和 Windows 更新 YAML 与正式 Release 逐字节一致。四个安装包链接均可访问。[更新源](https://updates.crawshrimp.com/latest-release.json)
+- Packaged update acceptance: `PENDING`
 - 开发客户端复跑 101 款，补回全部 24 条确认漏匹配，导出 382 份素材。194 张平铺图与上一轮逐文件一致，Excel 与素材清单一致。
 
 ## Release Identity · v2.5.14

@@ -77,8 +77,9 @@ test('desktop workflow signs with electron-builder and notarizes apps before DMG
   assert.match(workflow, /spctl --assess --type execute --verbose=2 "\$\{app_path\}"/)
   assert.match(workflow, /source scripts\/stapler-retry\.sh/)
   assert.match(workflow, /run_stapler_with_retry validate "\$\{app_path\}"/)
-  assert.match(workflow, /publish-release:[\s\S]*?if: startsWith\(github\.ref, 'refs\/tags\/v'\)/)
-  assert.doesNotMatch(workflow, /if: github\.ref == 'refs\/heads\/main'/)
+  assert.match(workflow, /release-source:[\s\S]*?if: startsWith\(github\.ref, 'refs\/tags\/v'\)/)
+  assert.match(workflow, /publish-release:[\s\S]*?if:.*needs\.release-source\.result == 'success'.*needs\.publish-version-release\.result == 'success'/)
+  assert.match(workflow, /\["Test", "macOS arm64", "Windows x64", "Windows ARM64"\] - \$passed/)
 
   assert.match(appBridge, /context\.electronPlatformName !== 'darwin'/)
   assert.match(appBridge, /process\.env\.CRAWSHRIMP_NOTARIZE_APP !== '1'/)
