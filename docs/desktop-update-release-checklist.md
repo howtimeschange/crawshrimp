@@ -2,7 +2,16 @@
 
 This checklist is the required evidence record before claiming desktop updater release readiness. Keep blank values as `PENDING`; do not fill them from assumptions or DMG-only manual installs.
 
-## Release Identity
+## Release Identity · v2.5.15
+
+- Release scope: `PATCH`
+- Version selection rationale: 修复巴拉上新助手的吊牌洗唛匹配和桌面端 OCR 字库加载，改善现有批量任务的压缩进度、日志与导出体验。
+- Target version: `v2.5.15`
+- Update path under test: `v2.5.14` → `v2.5.15`
+- Source commit, GitHub builds, release assets, Cloudflare R2 and packaged update acceptance: `PENDING`
+- 开发客户端复跑 101 款，补回全部 24 条确认漏匹配，导出 382 份素材。194 张平铺图与上一轮逐文件一致，Excel 与素材清单一致。
+
+## Release Identity · v2.5.14
 
 - Release scope (`PATCH` / `MINOR` / `MAJOR`): `PATCH`
 - Version selection rationale: 新增森马与迷你巴拉上新适配器，覆盖素材采集、图包整理、检测报告与 PLM 尺码表导出，并调整巴拉助手名称；均为适配器级变更，未新增独立一级功能或改变产品架构，按 PATCH 升版。
