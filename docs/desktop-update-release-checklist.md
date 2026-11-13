@@ -2,6 +2,20 @@
 
 This checklist is the required evidence record before claiming desktop updater release readiness. Keep blank values as `PENDING`; do not fill them from assumptions or DMG-only manual installs.
 
+## Release Identity · v2.5.16
+
+- Release scope: `PATCH`
+- Version selection rationale: 调整巴拉上新助手鞋品图包文件名前缀，属于现有脚本级命名规则维护。
+- Target version: `v2.5.16`
+- Update path under test: `v2.5.15` → `v2.5.16`
+- Feature commit: `899ff574c`
+- GitHub main build: `PENDING`
+- GitHub tag build and publishing: `PENDING`
+- Packaged update acceptance: `PENDING`
+- 本地鞋品回归 621 passed、129 subtests passed，采集脚本 7 passed。
+- 使用真实原图与历史选图、OCR 结果回放两版导出，覆盖 6 款、9 个款色组、388 对文件，其中 84 个文件完成前缀改名，全部 SHA256 一致。
+- README 展示 v2.5.16 / v2.5.15 / v2.5.14 三个版本说明。
+
 ## Release Identity · v2.5.15
 
 - Release scope: `PATCH`
