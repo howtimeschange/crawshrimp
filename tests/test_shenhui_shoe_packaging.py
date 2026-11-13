@@ -4800,17 +4800,33 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(shenhui_shoe_packaging.output_filename("yk", 1), "yk1.jpg")
         self.assertEqual(shenhui_shoe_packaging.output_filename("yk", 2), "yk2.jpg")
         self.assertEqual(shenhui_shoe_packaging.output_filename("o"), "o.jpg")
-        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 1), "wpz (1).jpg")
-        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 4), "wpz (4).jpg")
-        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 5), "wpz (15).jpg")
-        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 6), "wpz (16).jpg")
-        self.assertEqual(shenhui_shoe_packaging.output_filename("tmz", 5), "tmz (5).jpg")
+        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 1), "yw (1).jpg")
+        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 4), "yw (4).jpg")
+        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 5), "yw (15).jpg")
+        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 6), "yw (16).jpg")
+        self.assertEqual(shenhui_shoe_packaging.output_filename("tmz", 5), "yz (5).jpg")
         self.assertEqual(
             shenhui_shoe_packaging.output_filename(
                 "tms",
                 source_filename="204326141005-00317.png",
             ),
             "tms.jpg",
+        )
+
+    def test_shoe_output_names_reserve_new_and_legacy_prefixes(self):
+        for prefix in ("tmz", "wpz", "yz", "yw", "yq"):
+            names = (
+                f"{prefix} (1).jpg",
+                f"{prefix}（16）.png",
+                f"{prefix.upper()}5.jpg",
+            )
+            for name in names:
+                with self.subTest(name=name):
+                    self.assertTrue(
+                        shenhui_shoe_packaging._is_reserved_shoe_output_filename(name)
+                    )
+        self.assertFalse(
+            shenhui_shoe_packaging._is_reserved_shoe_output_filename("GUDO3437.jpg")
         )
 
     def test_tms_source_filename_accepts_spaces_around_style_color_dash(self):
@@ -5267,7 +5283,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertNotIn("1.白紫色调00317/tms.jpg", outputs)
         self.assertIn("1.白紫色调00317/yk1.jpg", outputs)
         self.assertIn("1.白紫色调00317/yk2.jpg", outputs)
-        self.assertIn("tmz (1).jpg", outputs)
+        self.assertIn("yz (1).jpg", outputs)
         warning_slots = {warning["slot"] for warning in warnings}
         self.assertIn("tms", warning_slots)
         self.assertIn("wpz3", warning_slots)
@@ -5589,8 +5605,8 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
 
             package_root = package_roots["204326141005"]
             self.assertEqual(package_root, output_root / "204326141005")
-            self.assertTrue((package_root / "tmz (1).jpg").is_file())
-            self.assertTrue((package_root / "tmz (5).jpg").is_file())
+            self.assertTrue((package_root / "yz (1).jpg").is_file())
+            self.assertTrue((package_root / "yz (5).jpg").is_file())
             self.assertTrue((package_root / "1.白紫色调00317" / "o.jpg").is_file())
             self.assertFalse((package_root / "2.米白10301" / "o.jpg").exists())
             self.assertTrue((package_root / "1.白紫色调00317" / "yk1.jpg").is_file())
@@ -5699,7 +5715,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             with Image.open(
                 package_root / "1.白紫色调00317" / "o.jpg"
             ) as poster, Image.open(
-                package_root / "1.白紫色调00317" / "wpz (15).jpg"
+                package_root / "1.白紫色调00317" / "yw (15).jpg"
             ) as wpz5:
                 self.assertNotEqual(poster.tobytes(), wpz5.tobytes())
             self.assertEqual(
@@ -5836,7 +5852,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             )
 
             package_root = package_roots["204426141113"]
-            self.assertTrue((package_root / "tmz (1).jpg").is_file())
+            self.assertTrue((package_root / "yz (1).jpg").is_file())
             self.assertTrue((package_root / "1.灰蓝色00382" / "tms.jpg").exists())
             self.assertFalse(
                 any(row.get("规则槽位") == "整款" for row in report_rows)

@@ -158,11 +158,12 @@ def output_filename(
     if normalized in {"tmz", "yq"}:
         if not index:
             raise ShoeSelectionError(f"{normalized} 输出必须提供序号")
-        return f"{normalized} ({index}).jpg"
+        prefix = "yz" if normalized == "tmz" else normalized
+        return f"{prefix} ({index}).jpg"
     if normalized == "wpz":
         if not index:
             raise ShoeSelectionError("wpz 输出必须提供序号")
-        return f"wpz ({index if index <= 4 else index + 10}).jpg"
+        return f"yw ({index if index <= 4 else index + 10}).jpg"
     raise ShoeSelectionError(f"不支持的鞋品输出槽位：{slot}")
 
 
@@ -888,7 +889,7 @@ def _is_reserved_shoe_output_filename(filename: str) -> bool:
         return True
     return bool(
         re.match(
-            r"^(?:tmz|wpz|yq)\s*(?:[\(（]\s*)?\d+\s*[\)）]?$",
+            r"^(?:tmz|wpz|yz|yw|yq)\s*(?:[\(（]\s*)?\d+\s*[\)）]?$",
             stem,
             flags=re.IGNORECASE,
         )
