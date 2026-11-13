@@ -9,8 +9,11 @@ This checklist is the required evidence record before claiming desktop updater r
 - Target version: `v2.5.16`
 - Update path under test: `v2.5.15` → `v2.5.16`
 - Feature commit: `899ff574c`，追加原序号 15、16 对应新序号 5、6 的修正。
-- GitHub main build: `PENDING`
-- GitHub tag build and publishing: `PENDING`
+- GitHub main build: `success`。[构建记录](https://github.com/howtimeschange/crawshrimp/actions/runs/43356777291)
+- GitHub tag build and publishing: `success`，测试、macOS 双架构签名公证、Windows x64/ARM64、R2 与 GitHub 发布均通过。[正式构建记录](https://github.com/howtimeschange/crawshrimp/actions/runs/43356776945)
+- Source commit: `9411fdd50a5ba5433a07e3ac42c27392ef4d69fc`。用户要求复用 `v2.5.16`，上一轮标签构建已取消，标签更新到序号修正版。
+- 正式 Release 与 `desktop-latest` 各有 12 个同名同大小资产，两个标签均指向本次源码提交。[正式 Release](https://github.com/howtimeschange/crawshrimp/releases/tag/v2.5.16) · [desktop-latest](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
+- R2 的 `latest-release.json`、macOS/Windows 更新 YAML 均回读为 2.5.16，发布说明包含 yw (1)～(6)；两个 YAML 与正式 GitHub Release 逐字节一致。
 - Packaged update acceptance: `PENDING`
 - 本地鞋品回归 621 passed、129 subtests passed，采集脚本 7 passed。
 - 使用真实原图与历史选图、OCR 结果回放两版导出，覆盖 6 款、9 个款色组、388 对文件，其中 84 个文件完成前缀改名，全部 SHA256 一致。

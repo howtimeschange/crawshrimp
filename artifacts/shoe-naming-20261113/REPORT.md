@@ -49,7 +49,7 @@
 - [结构化核验结果](summary.json)
 - [复测脚本](retest.py)
 
-代码处于本地工作区，发布状态为待发布。
+正式源码 `9411fdd50` 已同步至 GitHub，v2.5.16 发布完成。main 与标签构建均成功，正式 Release、desktop-latest 和 R2 更新源已核验。
 
 ## 序号修正复测
 
