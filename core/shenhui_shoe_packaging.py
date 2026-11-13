@@ -163,7 +163,7 @@ def output_filename(
     if normalized == "wpz":
         if not index:
             raise ShoeSelectionError("wpz 输出必须提供序号")
-        return f"yw ({index if index <= 4 else index + 10}).jpg"
+        return f"yw ({index}).jpg"
     raise ShoeSelectionError(f"不支持的鞋品输出槽位：{slot}")
 
 

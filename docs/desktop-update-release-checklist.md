@@ -8,7 +8,7 @@ This checklist is the required evidence record before claiming desktop updater r
 - Version selection rationale: 调整巴拉上新助手鞋品图包文件名前缀，属于现有脚本级命名规则维护。
 - Target version: `v2.5.16`
 - Update path under test: `v2.5.15` → `v2.5.16`
-- Feature commit: `899ff574c`
+- Feature commit: `899ff574c`，追加原序号 15、16 对应新序号 5、6 的修正。
 - GitHub main build: `PENDING`
 - GitHub tag build and publishing: `PENDING`
 - Packaged update acceptance: `PENDING`

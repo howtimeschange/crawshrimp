@@ -4802,8 +4802,8 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
         self.assertEqual(shenhui_shoe_packaging.output_filename("o"), "o.jpg")
         self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 1), "yw (1).jpg")
         self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 4), "yw (4).jpg")
-        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 5), "yw (15).jpg")
-        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 6), "yw (16).jpg")
+        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 5), "yw (5).jpg")
+        self.assertEqual(shenhui_shoe_packaging.output_filename("wpz", 6), "yw (6).jpg")
         self.assertEqual(shenhui_shoe_packaging.output_filename("tmz", 5), "yz (5).jpg")
         self.assertEqual(
             shenhui_shoe_packaging.output_filename(
@@ -5715,7 +5715,7 @@ class ShenhuiShoePackagingRuleTests(unittest.TestCase):
             with Image.open(
                 package_root / "1.白紫色调00317" / "o.jpg"
             ) as poster, Image.open(
-                package_root / "1.白紫色调00317" / "yw (15).jpg"
+                package_root / "1.白紫色调00317" / "yw (5).jpg"
             ) as wpz5:
                 self.assertNotEqual(poster.tobytes(), wpz5.tobytes())
             self.assertEqual(
