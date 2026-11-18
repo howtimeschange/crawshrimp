@@ -2,6 +2,11 @@
 
 This checklist is the required evidence record before claiming desktop updater release readiness. Keep blank values as `PENDING`; do not fill them from assumptions or DMG-only manual installs.
 
+## Release Identity · v2.5.17
+
+- 版本等级为 `PATCH`。从 `v2.5.16` 升至 `v2.5.17`，修复现有云端审批、生图、桌面任务和更新流程中的问题。
+- 修复提交为 `5231455c6`。本地复测通过 4,090 项随仓测试和 35 项专项验证，1 项历史样本用例跳过。[复测报告](../artifacts/code-review-retest-2026-11-18.md)
+
 ## Release Identity · v2.5.16
 
 - Release scope: `PATCH`
