@@ -230,7 +230,11 @@ class FakeD1Statement {
     }
     if (sql.startsWith('insert into approval_events')) {
       const id = this.state.approvalEvents.length + 1
-      this.state.approvalEvents.push({ id, batch_uid: String(this.params[0]), style_id: numberOrNull(this.params[1]), asset_uid: stringOrNull(this.params[2]), event_type: String(this.params[3]), actor: String(this.params[4]), payload_json: String(this.params[5]), created_at: String(this.params[6]) })
+      if (sql.includes('asset.cloud_generate')) {
+        this.state.approvalEvents.push({ id, batch_uid: String(this.params[0]), style_id: numberOrNull(this.params[1]), asset_uid: null, event_type: 'asset.cloud_generate', actor: String(this.params[2]), payload_json: String(this.params[3]), created_at: String(this.params[4]) })
+      } else {
+        this.state.approvalEvents.push({ id, batch_uid: String(this.params[0]), style_id: numberOrNull(this.params[1]), asset_uid: stringOrNull(this.params[2]), event_type: String(this.params[3]), actor: String(this.params[4]), payload_json: String(this.params[5]), created_at: String(this.params[6]) })
+      }
       return result(1, id)
     }
     if (sql.startsWith('insert into dispatch_jobs')) {
@@ -304,15 +308,25 @@ class FakeD1Statement {
     }
     if (sql.startsWith("update ai_generation_requests set status = 'finalizing'")) {
       const request = this.state.generationRequests.find((row) => row.request_uid === String(this.params[1]))
-      if (!request || !['queued', 'running'].includes(request.status)) return result(0)
+      if (!request || (!['queued', 'running'].includes(request.status) &&
+        !(request.status === 'finalizing' && request.updated_at <= String(this.params[2])))) return result(0)
       request.status = 'finalizing'
       request.updated_at = String(this.params[0])
       return result(1)
     }
+    if (sql.startsWith("update ai_generation_requests set status = 'running'")) {
+      const request = this.state.generationRequests.find((row) => row.request_uid === String(this.params[3]))
+      if (!request || !['queued', 'running'].includes(request.status)) return result(0)
+      if (this.params.length > 4 && (request.updated_at !== this.params[4] || request.upstream_task_json !== this.params[5])) return result(0)
+      request.status = 'running'
+      request.upstream_task_json = String(this.params[0])
+      request.error_message = String(this.params[1])
+      request.updated_at = String(this.params[2])
+      return result(1)
+    }
     if (sql.startsWith('update ai_generation_requests set status =') && sql.includes('request_uid = ?')) {
       const request = this.state.generationRequests.find((row) => row.request_uid === String(this.params[5]))
-      if (!request) return result(0)
-      if (sql.includes("status != 'completed'") && request.status === 'completed') return result(0)
+      if (!request || request.status !== 'finalizing' || request.updated_at !== this.params[6]) return result(0)
       request.status = String(this.params[0])
       request.upstream_task_json = String(this.params[1])
       request.result_asset_uids_json = String(this.params[2])
@@ -337,6 +351,11 @@ class FakeD1Statement {
 
 class FakeD1Database {
   constructor(private readonly state: State) {}
+  async batch(statements: FakeD1Statement[]) {
+    const results = []
+    for (const statement of statements) results.push(await statement.run())
+    return results
+  }
   prepare(sql: string): FakeD1Statement {
     return new FakeD1Statement(this.state, sql)
   }
@@ -364,6 +383,10 @@ class FakeR2Bucket {
       httpMetadata: { contentType: object.contentType },
       arrayBuffer: async () => object.body.buffer.slice(object.body.byteOffset, object.body.byteOffset + object.body.byteLength),
     }
+  }
+
+  async delete(key: string) {
+    this.objects.delete(key)
   }
 
   async put(key: string, body: ReadableStream | ArrayBuffer | ArrayBufferView | string | null, options?: { httpMetadata?: { contentType?: string } }) {

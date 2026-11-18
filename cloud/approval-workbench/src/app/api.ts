@@ -1,6 +1,7 @@
 export interface ApiError {
   status: number
   message: string
+  requestUid?: string
 }
 
 export type JsonRecord = Record<string, unknown>
@@ -16,7 +17,9 @@ async function apiRequest<T>(method: string, path: string, body?: unknown): Prom
   const data = text ? safeJson(text) : null
   if (!response.ok) {
     const message = messageFor(data) || response.statusText || 'Request failed'
-    throw { status: response.status, message } satisfies ApiError
+    const record = data && typeof data === 'object' ? data as JsonRecord : null
+    const requestUid = typeof record?.request_uid === 'string' ? record.request_uid : undefined
+    throw { status: response.status, message, ...(requestUid ? { requestUid } : {}) } satisfies ApiError
   }
   return data as T
 }

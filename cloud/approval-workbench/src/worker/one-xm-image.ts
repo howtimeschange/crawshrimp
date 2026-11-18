@@ -9,6 +9,7 @@ export interface OneXmImageInput {
   outputFormat: string
   count: number
   idempotencyKey?: string
+  onTaskCreated?: (task: ReturnType<typeof oneXmTaskReceipt>) => Promise<void>
 }
 
 export type OneXmImageTaskResult =
@@ -38,6 +39,7 @@ export async function createAndPollOneXmImageTask(env: Env, input: OneXmImageInp
   const timeoutMs = numberFromEnv(env.ONE_XM_IMAGE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1_000, 900_000)
   const deadlineAt = Date.now() + timeoutMs
   const task = await createImageTask(baseUrl, apiKey, buildImageTaskPayload(env, model, input), input.idempotencyKey, deadlineAt)
+  await input.onTaskCreated?.(oneXmTaskReceipt(task))
   return settleImageTask(env, baseUrl, apiKey, task, deadlineAt)
 }
 
@@ -206,10 +208,10 @@ async function settleImageTask(env: Env, baseUrl: string, apiKey: string, initia
 
   for (;;) {
     const status = taskStatus(task)
+    if (FAILED_STATUSES.has(status)) throw new OneXmTaskFailed(`Image task ${status}: ${formatUpstreamError(task)}`)
     const dataUrls = await extractImageDataUrls(task, fetchTimeoutMs)
     if (dataUrls.length > 0) return { status: 'completed', dataUrls, task }
-    if (SUCCEEDED_STATUSES.has(status)) throw oneXmError('Model returned no image.', 502)
-    if (FAILED_STATUSES.has(status)) throw oneXmError(`Image task ${status}: ${formatUpstreamError(task)}`, 502)
+    if (SUCCEEDED_STATUSES.has(status)) throw new OneXmTaskFailed('Model returned no image.')
 
     const pollTarget = pollTargetFromTask(task)
     const nextPollAfterMs = pollAfterMs(env, task)
@@ -239,7 +241,10 @@ async function settleImageTask(env: Env, baseUrl: string, apiKey: string, initia
       }
       throw oneXmError(`Upstream ${response.status}: ${formatUpstreamError(data)}`, response.status)
     }
-    task = data
+    const receipt = oneXmTaskReceipt(task)
+    task = pollTargetFromTask(data) || !data || typeof data !== 'object'
+      ? data
+      : { ...data, id: receipt.id, poll_url: receipt.poll_url }
     attempts += 1
   }
 }
@@ -322,6 +327,18 @@ function modelFromTask(task: unknown): string {
 function buildPollUrl(baseUrl: string, pollTarget: string): string {
   if (/^https?:\/\//i.test(pollTarget)) return pollTarget
   return `${baseUrl}/images/tasks/${encodeURIComponent(pollTarget)}`
+}
+
+export class OneXmTaskFailed extends Error {}
+
+export function oneXmTaskReceipt(task: unknown) {
+  const row = task && typeof task === 'object' ? task as Record<string, unknown> : {}
+  return {
+    id: stringValue(row.id) || stringValue(row.task_id) || stringValue(row.taskId),
+    poll_url: stringValue(row.poll_url) || stringValue(row.pollUrl),
+    status: taskStatus(task),
+    poll_after: row.poll_after ?? row.pollAfter,
+  }
 }
 
 function pollTargetFromTask(task: unknown): string {

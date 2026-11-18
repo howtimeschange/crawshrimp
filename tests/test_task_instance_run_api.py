@@ -25,6 +25,52 @@ class TaskInstanceRunApiTests(unittest.IsolatedAsyncioTestCase):
         api_server.runtime_install_guard = api_server.RuntimeInstallGuard()
         self.addCleanup(lambda: setattr(api_server, "runtime_install_guard", original_guard))
 
+    async def test_persisted_disable_blocks_manual_instance_and_both_scheduler_paths(self):
+        from core import adapter_loader
+
+        adapter_id, task_id = "review-local-adapter", "demo-task"
+        source = Path(self.tmp.name) / "fixture"
+        source.mkdir()
+        (source / "manifest.yaml").write_text(
+            "id: review-local-adapter\nname: Review fixture\nversion: 1.0.0\nentry_url: https://example.test/\n"
+            "tasks:\n  - id: demo-task\n    name: Demo task\n    script: demo.js\n    trigger:\n      type: manual\n",
+            encoding="utf-8",
+        )
+        (source / "demo.js").write_text("{}", encoding="utf-8")
+        with (patch.multiple(adapter_loader, _adapters={}, _adapter_dirs={}, _enabled={}, _install_meta={}),
+              patch.object(api_server.sched_module, "register_adapter"),
+              patch.object(api_server.sched_module, "unregister_adapter"),
+              patch.object(api_server, "_run_task_background", new_callable=AsyncMock) as run):
+            adapter_loader.install_from_dir(str(source))
+            instance = data_sink.create_task_instance(adapter_id, task_id, "Test instance", {})
+            schedule = data_sink.create_task_schedule(adapter_id, task_id, "Test schedule", "daily", "10:00")
+            api_server.enable_adapter(adapter_id, api_server.EnableRequest(enabled=False))
+            adapter_loader._adapters.clear()
+            adapter_loader._adapter_dirs.clear()
+            adapter_loader._enabled.clear()
+            adapter_loader._install_meta.clear()
+            adapter_loader.scan_all()
+            adapter_loader.install_from_dir(str(source))
+            self.assertFalse(adapter_loader.is_enabled(adapter_id))
+
+            for start in (
+                lambda: api_server.run_task(adapter_id, task_id),
+                lambda: api_server.run_task_instance(instance["instance_uid"]),
+                lambda: api_server.run_task_schedule_now_endpoint(schedule["schedule_uid"]),
+            ):
+                with self.assertRaises(api_server.HTTPException) as denied:
+                    await start()
+                self.assertEqual(denied.exception.status_code, 409)
+            await api_server._run_scheduled_task(adapter_id, task_id)
+            await api_server._run_task_schedule(schedule["schedule_uid"])
+            self.assertEqual(data_sink.get_task_instance(instance["instance_uid"])["status"], "draft")
+            run.assert_not_awaited()
+
+            api_server.enable_adapter(adapter_id, api_server.EnableRequest(enabled=True))
+            self.assertTrue((await api_server.run_task(adapter_id, task_id))["ok"])
+            await asyncio.sleep(0)
+            run.assert_awaited_once()
+
     async def test_run_instance_injects_instance_uid(self):
         created = api_server.create_task_instance_endpoint(api_server.TaskInstanceCreateRequest(
             adapter_id="tmall-ops-assistant",

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   BailianVideoGenerationClient,
+  downloadFile,
   getBailianTaskId,
   getBailianTaskStatus,
   getBailianVideoUrl,
@@ -261,3 +264,29 @@ function jsonResponse(body, init = {}) {
     headers: { "Content-Type": "application/json" }
   });
 }
+
+test("download replaces a video only after the complete response and cleans up failed downloads", async () => {
+  const folder = await mkdtemp(join(tmpdir(), "video-download-test-"));
+  try {
+    const output = join(folder, "video.mp4");
+    await writeFile(output, "existing completed video");
+    const url = "https://video.example.test/local-fixture";
+    const bytes = new TextEncoder().encode("received prefix");
+    let sent = false;
+    const broken = new ReadableStream({
+      pull(controller) {
+        if (sent) return controller.error(new Error("download interrupted"));
+        sent = true;
+        controller.enqueue(bytes);
+      }
+    });
+    await assert.rejects(downloadFile(url, output, { fetchImpl: async () => new Response(broken) }), /download interrupted/);
+    assert.equal(await readFile(output, "utf8"), "existing completed video");
+    assert.deepEqual(await readdir(folder), ["video.mp4"]);
+    await downloadFile(url, output, { fetchImpl: async () => new Response("new completed video") });
+    assert.equal(await readFile(output, "utf8"), "new completed video");
+    assert.deepEqual(await readdir(folder), ["video.mp4"]);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});

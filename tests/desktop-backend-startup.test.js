@@ -281,7 +281,7 @@ test('desktop API helper supports request timeout for shutdown probes', () => {
   const backendApi = readRepoFile('app/src/backendApi.js')
 
   assert.match(backendApi, /const timeoutMs = Math\.max\(0, Number\(options\.timeoutMs \|\| 0\)\)/)
-  assert.match(backendApi, /if \(timeoutMs > 0\) \{\s*req\.setTimeout\(timeoutMs/)
+  assert.match(backendApi, /if \(timeoutMs > 0\) \{\s*deadline = setTimeout\([\s\S]*?\}, timeoutMs\)/)
 })
 
 test('desktop API helper rejects HTTP error responses with backend detail', () => {
@@ -290,7 +290,7 @@ test('desktop API helper rejects HTTP error responses with backend detail', () =
 
   assert.match(main, /const \{[\s\S]*?\brequestBackendApi,?[\s\S]*?\} = require\('\.\/backendApi'\)/)
   assert.match(main, /function apiCall\(method, urlPath, body = null, options = \{\}\) \{\s*return requestBackendApi\(\{/)
-  assert.match(backendApi, /if \(statusCode >= 400\) \{\s*reject\(backendErrorFromResponse\(statusCode, res\.statusMessage, payload\)\)/)
+  assert.match(backendApi, /if \(statusCode >= 400\) \{\s*finish\(backendErrorFromResponse\(statusCode, res\.statusMessage, payload\)\)/)
   assert.match(backendApi, /const detail = structuredErrorDetail\(payload\)/)
   assert.match(backendApi, /const error = new Error\(detail\.message \|\| fallback\)/)
   assert.match(backendApi, /for \(const key of \['detail', 'error'\]\)/)

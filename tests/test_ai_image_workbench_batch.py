@@ -456,6 +456,32 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
         self.assertEqual(len(run["retry_history"]), 2)
         self.assertIn("504", run["error"])
 
+    def test_restart_only_allows_retry_for_queue_entries_known_to_be_unsent(self):
+        uid = self.job["job_uid"]
+        runs = [
+            {"run_uid": "unsent", "status": "queued", "prompt": "unsent prompt", "provider_status": "pending_submission"},
+            {"run_uid": "reserved", "status": "queued", "prompt": "reserved prompt", "provider_status": "submitting",
+             "submitted_at": "2026-01-01T00:00:00Z"},
+            {"run_uid": "old-unknown", "status": "queued", "prompt": "legacy prompt"},
+            {"run_uid": "with-handle", "status": "running", "prompt": "saved task", "task_id": "saved"},
+        ]
+        data_sink.update_ai_image_job(uid, {"status": "running", "summary": {"runs": runs}})
+        client = FakeWorkbenchClient()
+        polls = []
+        kwargs = dict(settings=self._settings(), client_factory=lambda *_a, **_k: client,
+                      poll_submitter=lambda _func, _uid, run_uid, _client: polls.append(run_uid))
+        ai_image_service.recover_workbench_runs(**kwargs)
+        recovered = {item["run_uid"]: item for item in data_sink.get_ai_image_job(uid)["summary"]["runs"]}
+        self.assertEqual(recovered["unsent"]["error_code"], "SUBMISSION_INTERRUPTED")
+        for run_uid in ("reserved", "old-unknown"):
+            self.assertEqual(recovered[run_uid]["error_code"], "UNKNOWN_SUBMIT_RESULT")
+            with self.assertRaisesRegex(ValueError, "提交回执未知"):
+                ai_image_service.retry_workbench_run(uid, run_uid, **kwargs)
+        self.assertEqual(polls, ["with-handle"])
+        self.assertEqual(client.created_payloads, [])
+        ai_image_service.retry_workbench_run(uid, "unsent", **kwargs)
+        self.assertEqual([payload["prompt"] for payload, _key in client.created_payloads], ["unsent prompt"])
+
     def test_manual_retry_reuses_failed_run_snapshot_and_restarts_auto_retry_budget(self):
         run_uid = "run-manual-retry"
         retry_history = [

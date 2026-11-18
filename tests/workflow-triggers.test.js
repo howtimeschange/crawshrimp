@@ -56,7 +56,8 @@ test('desktop build workflow marks the validated version release as GitHub lates
   assert.match(workflow, /gh release create "\$\{RELEASE_TAG\}"[\s\S]*--draft[\s\S]*--latest=false[\s\S]*--verify-tag/)
   assert.match(workflow, /gh release view "\$\{RELEASE_TAG\}" --json assets/)
   assert.match(workflow, /Unexpected release asset set/)
-  assert.match(workflow, /gh release edit "\$\{RELEASE_TAG\}"[\s\S]*--draft=false[\s\S]*--latest/)
+  assert.match(workflow, /gh release edit "\$\{RELEASE_TAG\}" --latest\n/)
+  assert.match(workflow, /--draft=false \\[\s\S]*?--latest=false/)
   assert.doesNotMatch(workflow, /gh release create "\$\{RELEASE_TAG\}"[\s\S]*--latest\s*\\[\s\S]*--verify-tag/)
 })
 
@@ -90,7 +91,7 @@ test('desktop version release fails published asset mismatch before mutation', (
 test('rolling desktop-latest publication waits for validated version release completion', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/build-desktop.yml'), 'utf8')
 
-  assert.match(workflow, /publish-version-release:[\s\S]*gh release edit "\$\{RELEASE_TAG\}"[\s\S]*--draft=false[\s\S]*--latest/)
+  assert.match(workflow, /publish-version-release:[\s\S]*gh release edit "\$\{RELEASE_TAG\}"[\s\S]*--draft=false[\s\S]*--latest=false/)
   assert.match(workflow, /publish-release:[\s\S]*needs:\s*\[release-source, publish-version-release\]/)
   assert.doesNotMatch(workflow, /publish-version-release:[\s\S]*needs:\s*publish-release/)
   assert.match(workflow, /!cancelled\(\) && needs\.release-source\.result == 'success' && needs\.publish-cloudflare-r2\.result == 'success'/)

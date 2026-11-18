@@ -102,3 +102,52 @@ test('requestBackendApi preserves structured AI video error messages', async () 
     )
   })
 })
+
+test('backend requests read the endpoint and matching credential after every readiness check', async () => {
+  let attempts = 0
+  await withServer((req, res) => {
+    assert.equal(req.headers['x-crawshrimp-token'], 'second-token')
+    res.end('{"server":2}')
+  }, async secondPort => {
+    await withServer((_req, res) => {
+      assert.fail('A request reached the pre-readiness endpoint')
+      res.end()
+    }, async oldPort => {
+      let connection = { port: oldPort, token: 'old-token' }
+      const probe = http.createServer()
+      probe.listen(0, '127.0.0.1')
+      await once(probe, 'listening')
+      const firstPort = probe.address().port
+      await new Promise(resolve => probe.close(resolve))
+      const result = await requestBackendApi({
+        http, getConnection: () => connection, tokenHeader: 'X-Crawshrimp-Token', method: 'GET', urlPath: '/settings',
+        options: { retries: 1 },
+        runWhenReady: async (operation, { retryableCodes }) => {
+          connection = { port: firstPort, token: 'first-token' }
+          attempts += 1
+          await assert.rejects(operation, error => retryableCodes.has(error.code))
+          connection = { port: secondPort, token: 'second-token' }
+          attempts += 1
+          return operation()
+        },
+      })
+      assert.deepEqual(result, { server: 2 })
+      assert.equal(attempts, 2)
+    })
+  })
+})
+
+test('backend requests settle when a server drops a partial response or never finishes it', async () => {
+  for (const disconnect of [true, false]) {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.write('{"partial":')
+      if (disconnect) setTimeout(() => res.destroy(), 15)
+    }, async port => {
+      await assert.rejects(requestBackendApi({
+        http, port, token: 'test-token', tokenHeader: 'X-Crawshrimp-Token',
+        method: 'POST', urlPath: '/operation', options: { ensureReady: false, timeoutMs: 200 },
+      }), { code: disconnect ? 'ERR_BACKEND_RESPONSE_INTERRUPTED' : 'ETIMEDOUT' })
+    })
+  }
+})

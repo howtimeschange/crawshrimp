@@ -23,3 +23,16 @@ def test_verifier_never_fills_missing_images_or_rewrites_output(tmp_path):
     assert not (output.parent/'按人工标准复核').exists()
     with pytest.raises(ValueError,match='不同目录'):
         review_against_reference(data_rows=[{'款号':CODE}],reference_dir=reference.parent,output_root=reference.parent,log=lambda _:None)
+
+
+def test_transparent_black_is_not_original_opaque_black(tmp_path):
+    reference = tmp_path / 'reference' / CODE
+    output = tmp_path / 'output' / CODE
+    reference.mkdir(parents=True)
+    output.mkdir(parents=True)
+    Image.new('RGBA', (200, 200), (0, 0, 0, 255)).save(reference / 'source.png')
+    Image.new('RGBA', (200, 200), (0, 0, 0, 0)).save(output / 'source.png')
+    review = review_against_reference(
+        data_rows=[{'款号': CODE}], reference_dir=reference.parent, output_root=output.parent, log=lambda _: None,
+    )
+    assert [row['结果'] for row in review['needs_visual_review']] == ['需视觉核验']

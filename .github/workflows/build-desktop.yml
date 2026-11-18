@@ -425,6 +425,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [release-source, publish-version-release]
     if: ${{ !cancelled() && needs.release-source.result == 'success' && needs.publish-version-release.result == 'success' }}
+    concurrency:
+      group: desktop-github-release-pointers
+      cancel-in-progress: false
     permissions:
       contents: write
       actions: read
@@ -439,6 +442,15 @@ jobs:
         with:
           ref: ${{ needs.release-source.outputs.sha }}
           fetch-depth: 0
+
+      - name: Checkout current workflow release guard
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-workflow
+          sparse-checkout: app/scripts/check-desktop-release-pointers.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
@@ -554,6 +566,14 @@ jobs:
             echo "::error::No GitHub updater bridge assets found for desktop-latest"
             exit 1
           fi
+          check_pointers() {
+            local status=0
+            bash release-workflow/app/scripts/check-desktop-release-pointers.sh "${RELEASE_TAG}" "${GITHUB_REPOSITORY}" || status=$?
+            if [ "${status}" -eq 3 ]; then exit 0; fi
+            if [ "${status}" -ne 0 ]; then exit "${status}"; fi
+          }
+          check_pointers
+
           if gh release view desktop-latest >/dev/null 2>&1; then
             gh release view desktop-latest --json assets --jq '.assets[].name' | sort > existing-desktop-latest-assets.txt
             comm -23 existing-desktop-latest-assets.txt expected-bridge-assets.txt | while IFS= read -r asset_name; do
@@ -583,12 +603,17 @@ jobs:
             exit 1
           fi
 
-          git push --force origin "${RELEASE_SHA}:refs/tags/desktop-latest"
+          previous_tag_sha=$(git ls-remote --refs origin refs/tags/desktop-latest | awk 'NR == 1 { print $1 }')
+          check_pointers
+          git push --force-with-lease="refs/tags/desktop-latest:${previous_tag_sha}" origin "${RELEASE_SHA}:refs/tags/desktop-latest"
           REMOTE_DESKTOP_LATEST_SHA=$(git ls-remote --refs origin refs/tags/desktop-latest | awk 'NR == 1 { print $1 }')
           if [ "${REMOTE_DESKTOP_LATEST_SHA}" != "${RELEASE_SHA}" ]; then
             echo "::error::Remote desktop-latest tag did not resolve to ${RELEASE_SHA}; got ${REMOTE_DESKTOP_LATEST_SHA:-missing}"
             exit 1
           fi
+
+          check_pointers
+          gh release edit "${RELEASE_TAG}" --latest
 
   publish-cloudflare-r2:
     name: Publish Cloudflare R2 Update Mirror
@@ -1029,4 +1054,4 @@ jobs:
             --title "抓虾 Desktop v${APP_VERSION}" \
             --notes-file release-notes.md \
             --draft=false \
-            --latest
+            --latest=false

@@ -1371,8 +1371,12 @@ def recover_workbench_runs(*, settings=None, client_factory=OneXMImageClient, po
             if not (run.get('task_id') or run.get('poll_url')):
                 with _workbench_job_lock(uid):
                     if (uid, run_uid) not in _WORKBENCH_ACTIVE_SUBMISSIONS:
-                        _update_workbench_run(uid, run_uid,
-                            _unknown_submission_patch('后端重启前未保存远端提交回执'), expected_run=run)
+                        if run.get('provider_status') == 'pending_submission' and not run.get('submitted_at'):
+                            patch = {'status': 'failed', 'provider_status': 'interrupted',
+                                     'error_code': 'SUBMISSION_INTERRUPTED', 'error': '后端重启前尚未提交，可以重试'}
+                        else:
+                            patch = _unknown_submission_patch('后端重启前未保存远端提交回执')
+                        _update_workbench_run(uid, run_uid, patch, expected_run=run)
                 continue
             try:
                 resolved = settings

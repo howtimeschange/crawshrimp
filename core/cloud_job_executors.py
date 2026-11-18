@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from core import runtime_paths
-from core.execution_checkpoint import execution_checkpoint
+from core.execution_checkpoint import check_execution, execution_checkpoint
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
 
 MATERIAL_IMPORT_DETAIL_CHUNK_SIZE = 1000
@@ -117,7 +117,7 @@ class CloudJobExecutor:
         self._renew(job)
 
         module = self._tmall_module()
-        batch = self._regeneration_batch(job, payload, task_dir, reference_paths)
+        batch = self._regeneration_batch(job, payload, task_dir, reference_paths, rejected_asset_uid or asset_uid)
         self._progress(job, "regenerating", "本地重新生图")
         asset = self._run_with_lease_keeper(
             job,
@@ -231,7 +231,7 @@ class CloudJobExecutor:
             raise ValueError("submit_tmall_material_test payload is missing")
         task_dir = self._task_dir(job)
         self._progress(job, "downloading_assets", "下载已确认图片")
-        batch = self._submit_batch(job, submit_plan, task_dir)
+        batch = self._run_with_lease_keeper(job, lambda: self._submit_batch(job, submit_plan, task_dir))
         self._renew(job)
 
         module = self._tmall_module()
@@ -435,10 +435,9 @@ class CloudJobExecutor:
         keeper.raise_if_failed()
         return result
 
-    def _regeneration_batch(self, job: Mapping[str, Any], payload: Mapping[str, Any], task_dir: Path, reference_paths: list[str]) -> dict:
+    def _regeneration_batch(self, job: Mapping[str, Any], payload: Mapping[str, Any], task_dir: Path, reference_paths: list[str], rejected_asset_uid: str) -> dict:
         batch_uid = str(payload.get("batch_uid") or job.get("batch_uid") or "")
         style_id = payload.get("style_id")
-        asset_uid = str(payload.get("asset_uid") or "")
         return {
             "batch_id": batch_uid,
             "task_run_uid": _job_uid(job),
@@ -448,7 +447,7 @@ class CloudJobExecutor:
                 "id": str(style_id or ""),
                 "style_id": style_id,
                 "assets": [{
-                    "id": asset_uid,
+                    "id": rejected_asset_uid,
                     "kind": "ai",
                     "status": "rejected",
                     "prompt": str(payload.get("prompt_text") or ""),
@@ -522,25 +521,29 @@ class CloudJobExecutor:
                 continue
             style_id = _positive_int(asset.get("style_id"))
             style = styles_by_id.get(style_id, {})
+            check_execution()
             local_path = self._download_asset(job, str(asset.get("asset_uid") or ""), task_dir / "approved")
             source_asset = source_by_style.get(style_id)
             if not source_asset:
                 raise ValueError(f"approved style {style_id or 'unknown'} is missing a source asset for submit origin")
-            origin_path = str(self._download_asset(job, str(source_asset.get("asset_uid") or ""), task_dir / "origins"))
-            item = items_by_style.setdefault(style_id, {
-                "id": str(style.get("style_uid") or style_id),
-                "style_id": style_id,
-                "style_code": str(style.get("style_code") or ""),
-                "item_id": str(style.get("item_id") or ""),
-                "origin_path": origin_path,
-                "workflow": {
-                    "row_no": style.get("row_no", ""),
+            item = items_by_style.get(style_id)
+            if item is None:
+                check_execution()
+                origin_path = str(self._download_asset(job, str(source_asset.get("asset_uid") or ""), task_dir / "origins"))
+                item = items_by_style[style_id] = {
+                    "id": str(style.get("style_uid") or style_id),
+                    "style_id": style_id,
                     "style_code": str(style.get("style_code") or ""),
                     "item_id": str(style.get("item_id") or ""),
-                },
-                "semir_data": {},
-                "assets": [],
-            })
+                    "origin_path": origin_path,
+                    "workflow": {
+                        "row_no": style.get("row_no", ""),
+                        "style_code": str(style.get("style_code") or ""),
+                        "item_id": str(style.get("item_id") or ""),
+                    },
+                    "semir_data": {},
+                    "assets": [],
+                }
             item["assets"].append({
                 "id": str(asset.get("asset_uid") or ""),
                 "kind": "ai",

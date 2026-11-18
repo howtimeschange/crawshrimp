@@ -744,6 +744,7 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
     if (activeJob?.job_type === 'submit_tmall_material_test') {
       return completeSubmitJobWithLease(env, machine, activeJob, leaseId, body, result, eventType)
     }
+    if (!activeJob) return completedSubmitReceipt(env, jobUid, leaseId, machine.machine_id)
   }
   const allowedStatuses = status === 'cancelled'
     ? ['leased', 'running', 'uploading_results', 'cancel_requested']
@@ -833,105 +834,101 @@ async function completeSubmitJobWithLease(
   result: Record<string, unknown>,
   eventType: string,
 ): Promise<Response> {
-  const stagedAt = nowIso()
-  const staged = await env.DB.prepare(
-    `UPDATE dispatch_jobs
-     SET status = ?, result_json = ?, updated_at = ?
-     WHERE job_uid = ?
-       AND lease_id = ?
-       AND assigned_machine_id = ?
-       AND status IN ('leased', 'running', 'uploading_results')
-       AND lease_expires_at > ?`,
-  )
-    .bind('uploading_results', toJson(result), stagedAt, job.job_uid, leaseId, machine.machine_id, stagedAt)
-    .run()
-  if (Number(staged.meta.changes ?? 0) === 0) return forbidden('Stale lease')
-
-  await persistSubmitCompletion(env, { ...job, status: 'uploading_results', result_json: toJson(result), updated_at: stagedAt }, result)
-
-  const finishedStatus: DispatchStatus = 'succeeded'
-  const finishedAt = nowIso()
-  const finished = await env.DB.prepare(
-    `UPDATE dispatch_jobs
-     SET status = ?, result_json = ?, updated_at = ?
-     WHERE job_uid = ?
-       AND lease_id = ?
-       AND assigned_machine_id = ?
-       AND status = 'uploading_results'
-       AND lease_expires_at > ?`,
-  )
-    .bind(finishedStatus, toJson(result), finishedAt, job.job_uid, leaseId, machine.machine_id, finishedAt)
-    .run()
-  if (Number(finished.meta.changes ?? 0) === 0) return forbidden('Stale lease')
-
-  await env.DB.prepare('UPDATE task_machines SET current_job_id = NULL, health = ?, updated_at = ? WHERE machine_id = ?')
-    .bind('online_idle', nowIso(), machine.machine_id)
-    .run()
-  await recordJobEvent(env, job.job_uid, machine.machine_id, leaseId, eventType, redactSensitiveText(body.message), { status: finishedStatus, result })
-  return json({ ok: true, status: finishedStatus })
-}
-
-async function persistSubmitCompletion(env: Env, job: DispatchJobRow, result: Record<string, unknown>): Promise<void> {
-  const payload = objectValue(fromJsonObject(job.payload_json))
-  const submitPlan = objectValue(payload.submit_plan)
-  const planBatchUid = stringValue(submitPlan.batch_uid) || job.batch_uid
-  if (!planBatchUid || planBatchUid !== job.batch_uid) return
-  const planAssets = Array.isArray(submitPlan.assets) ? submitPlan.assets.map(objectValue).filter((asset) => Object.keys(asset).length > 0) : []
-  const submittedAiAssets = planAssets
-    .filter((asset) => stringValue(asset.kind) === 'ai')
-    .map((asset) => ({
-      assetUid: stringValue(asset.asset_uid),
-      styleId: Number(asset.style_id),
-    }))
-    .filter((asset) => asset.assetUid && Number.isFinite(asset.styleId) && asset.styleId > 0)
-  if (submittedAiAssets.length === 0) return
-  const approvedAssets = await currentApprovedAiAssets(env, job.batch_uid)
-  if (!matchesPlannedAiAssets(submittedAiAssets, approvedAssets)) return
+  const plan = objectValue(fromJsonObject(job.payload_json).submit_plan)
+  const planAssets = Array.isArray(plan.assets) ? plan.assets.map(objectValue) : []
+  const byStyle = new Map<number, string[]>()
+  const plannedAssets = planAssets
+    .filter((asset) => asset.kind === 'ai')
+    .map((asset) => ({ uid: stringValue(asset.asset_uid), style: Number(asset.style_id) }))
+    .filter((asset) => asset.uid && Number.isInteger(asset.style) && asset.style > 0)
+  const validPlan = (!plan.batch_uid || plan.batch_uid === job.batch_uid)
+    && plannedAssets.length > 0 && new Set(plannedAssets.map((asset) => asset.uid)).size === plannedAssets.length
 
   const now = nowIso()
-  await env.DB.prepare("UPDATE ai_image_batches SET status = 'submitted', updated_at = ? WHERE batch_uid = ?")
-    .bind(now, job.batch_uid)
-    .run()
+  // These markers exist only inside this transaction. A failed lease check leaves
+  // every subsequent statement without a matching marker.
+  const completionMarker = toJson(randomToken('submit'))
+  const skipMarker = toJson(randomToken('stale_plan'))
+  const claimed = 'EXISTS (SELECT 1 FROM dispatch_jobs WHERE job_uid = ? AND result_json = ?)'
+  const eligibleStatus = "(a.status = 'approved' OR (a.status = 'submitted' AND b.status = 'submitted'))"
+  const assetsInBatch = `FROM ai_image_assets a JOIN ai_image_batches b USING (batch_uid)
+    WHERE a.batch_uid = ? AND a.kind = 'ai' AND ${eligibleStatus}`
+  const statements = [
+    env.DB.prepare(
+      `UPDATE dispatch_jobs
+       SET status = 'uploading_results', result_json = CASE WHEN
+         (SELECT COUNT(*) ${assetsInBatch}) = ?
+         AND (SELECT COUNT(*) FROM json_each(?) p
+              JOIN ai_image_assets a ON a.asset_uid = json_extract(p.value, '$.uid')
+                AND a.style_id = json_extract(p.value, '$.style')
+              JOIN ai_image_batches b ON b.batch_uid = a.batch_uid
+              WHERE a.batch_uid = ? AND a.kind = 'ai' AND ${eligibleStatus}) = ?
+         THEN ? ELSE ? END, updated_at = ?
+       WHERE job_uid = ? AND lease_id = ? AND assigned_machine_id = ?
+         AND status IN ('leased', 'running', 'uploading_results')
+         AND cancel_requested = 0 AND lease_expires_at > ?`,
+    ).bind(job.batch_uid, validPlan ? plannedAssets.length : -1, toJson(plannedAssets), job.batch_uid,
+      plannedAssets.length, completionMarker, skipMarker, now, job.job_uid, leaseId, machine.machine_id, now),
+  ]
+  if (validPlan) {
+    statements.push(env.DB.prepare(
+      `UPDATE ai_image_batches SET status = 'submitted', updated_at = ?
+       WHERE batch_uid = ? AND ${claimed}`,
+    ).bind(now, job.batch_uid, job.job_uid, completionMarker))
 
-  const assetPlaceholders = approvedAssets.map(() => '?').join(', ')
-  await env.DB.prepare(`UPDATE ai_image_assets SET status = 'submitted', updated_at = ? WHERE batch_uid = ? AND kind = 'ai' AND status = 'approved' AND asset_uid IN (${assetPlaceholders})`)
-    .bind(now, job.batch_uid, ...approvedAssets.map((asset) => asset.assetUid))
-    .run()
+    // D1 accepts 100 bindings per statement. Four are reserved for the batch and lease guard.
+    const assetsPerStatement = 96
+    for (let offset = 0; offset < plannedAssets.length; offset += assetsPerStatement) {
+      const uids = plannedAssets.slice(offset, offset + assetsPerStatement).map((asset) => asset.uid)
+      statements.push(env.DB.prepare(
+        `UPDATE ai_image_assets SET status = 'submitted', updated_at = ?
+         WHERE batch_uid = ? AND kind = 'ai' AND status = 'approved'
+           AND ${claimed} AND asset_uid IN (${uids.map(() => '?').join(', ')})`,
+      ).bind(now, job.batch_uid, job.job_uid, completionMarker, ...uids))
+    }
+    for (const asset of plannedAssets) {
+      const uids = byStyle.get(asset.style) || []
+      uids.push(asset.uid)
+      byStyle.set(asset.style, uids)
+    }
+    statements.push(env.DB.prepare(
+      `UPDATE ai_image_styles SET status = 'submitted',
+         submit_summary_json = json_object('job_uid', ?, 'submitted_at', ?,
+           'submitted_asset_uids', json_extract(planned.value, '$.uids'), 'result', json(?))
+       FROM json_each(?) AS planned
+       WHERE batch_uid = ? AND ai_image_styles.id = json_extract(planned.value, '$.styleId') AND ${claimed}`,
+    ).bind(job.job_uid, now, toJson(result), toJson([...byStyle].map(([styleId, uids]) => ({ styleId, uids }))),
+      job.batch_uid, job.job_uid, completionMarker))
+  }
 
-  const byStyle = new Map<number, string[]>()
-  for (const asset of approvedAssets) {
-    byStyle.set(asset.styleId, [...(byStyle.get(asset.styleId) || []), asset.assetUid])
-  }
-  for (const [styleId, submittedAssetUids] of byStyle.entries()) {
-    await env.DB.prepare("UPDATE ai_image_styles SET status = 'submitted', submit_summary_json = ? WHERE batch_uid = ? AND id = ?")
-      .bind(toJson({
-        job_uid: job.job_uid,
-        submitted_at: now,
-        submitted_asset_uids: submittedAssetUids,
-        result,
-      }), job.batch_uid, styleId)
-      .run()
-  }
+  statements.push(
+    env.DB.prepare(
+      `UPDATE task_machines SET current_job_id = NULL, health = 'online_idle', updated_at = ?
+       WHERE machine_id = ? AND (current_job_id IS NULL OR current_job_id = ?)
+         AND EXISTS (SELECT 1 FROM dispatch_jobs WHERE job_uid = ? AND result_json IN (?, ?))`,
+    ).bind(now, machine.machine_id, job.job_uid, job.job_uid, completionMarker, skipMarker),
+    env.DB.prepare(
+      `INSERT INTO dispatch_job_events (job_uid, machine_id, lease_id, event_type, message, payload_json, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM dispatch_jobs WHERE job_uid = ? AND result_json IN (?, ?))`,
+    ).bind(job.job_uid, machine.machine_id, leaseId, eventType, redactSensitiveText(body.message),
+      toJson({ status: 'succeeded', result }), now, job.job_uid, completionMarker, skipMarker),
+    env.DB.prepare(
+      `UPDATE dispatch_jobs SET status = 'succeeded', result_json = ?, updated_at = ?
+       WHERE job_uid = ? AND result_json IN (?, ?)`,
+    ).bind(toJson(result), now, job.job_uid, completionMarker, skipMarker),
+  )
+
+  const [staged] = await env.DB.batch(statements)
+  if (Number(staged.meta.changes ?? 0) === 0) return completedSubmitReceipt(env, job.job_uid, leaseId, machine.machine_id)
+  return json({ ok: true, status: 'succeeded' })
 }
 
-function matchesPlannedAiAssets(planned: Array<{ assetUid: string }>, approved: Array<{ assetUid: string }>): boolean {
-  const plannedSet = new Set(planned.map((asset) => asset.assetUid))
-  const approvedSet = new Set(approved.map((asset) => asset.assetUid))
-  if (plannedSet.size !== planned.length || approvedSet.size !== approved.length) return false
-  if (plannedSet.size !== approvedSet.size) return false
-  for (const assetUid of plannedSet) {
-    if (!approvedSet.has(assetUid)) return false
-  }
-  return true
-}
-
-async function currentApprovedAiAssets(env: Env, batchUid: string): Promise<Array<{ assetUid: string; styleId: number }>> {
-  const { results } = await env.DB.prepare("SELECT asset_uid, style_id FROM ai_image_assets WHERE batch_uid = ? AND kind = 'ai' AND status = 'approved'")
-    .bind(batchUid)
-    .all<{ asset_uid: string; style_id: number }>()
-  return results
-    .map((row) => ({ assetUid: row.asset_uid, styleId: Number(row.style_id) }))
-    .filter((asset) => asset.assetUid && Number.isFinite(asset.styleId) && asset.styleId > 0)
+async function completedSubmitReceipt(env: Env, jobUid: string, leaseId: string, machineId: string): Promise<Response> {
+  const job = await jobForLease(env, jobUid, leaseId, machineId)
+  return job?.job_type === 'submit_tmall_material_test' && job.status === 'succeeded'
+    ? json({ ok: true, status: 'succeeded' })
+    : forbidden('Stale lease')
 }
 
 function failStatusFromBody(body: Record<string, unknown>): DispatchStatus {

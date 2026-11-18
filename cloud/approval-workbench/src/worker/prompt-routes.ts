@@ -478,7 +478,7 @@ export async function resolvePrompts(request: Request, env: Env): Promise<Respon
     .all<PromptTemplateRow>()
 
   const enabledTemplates = templates.filter((template) => Boolean(template.enabled))
-  const latestVersions = await latestVersionsByTemplate(env, enabledTemplates.map((template) => template.id))
+  const latestVersions = await latestVersionsByTemplate(env, libraryId)
   if (enabledTemplates.some((template) => !latestVersions.has(template.id))) {
     return json({ error: 'published prompt library has enabled templates without a version', code: 'prompt_library_version_incomplete' }, { status: 409 })
   }
@@ -670,17 +670,17 @@ function snapshotFor(template: PromptTemplateRow, versionNo: number, scenario: s
   }
 }
 
-async function latestVersionsByTemplate(env: Env, templateIds: number[]): Promise<Map<number, PromptTemplateVersionRow>> {
+async function latestVersionsByTemplate(env: Env, libraryId: number): Promise<Map<number, PromptTemplateVersionRow>> {
   const latest = new Map<number, PromptTemplateVersionRow>()
-  if (templateIds.length === 0) return latest
-  const placeholders = templateIds.map(() => '?').join(', ')
   const { results } = await env.DB.prepare(
-    `SELECT id, template_id, version_no, snapshot_json, created_at, created_by
-     FROM prompt_template_versions
-     WHERE template_id IN (${placeholders})
-     ORDER BY template_id, version_no DESC, id DESC`,
+    `SELECT v.id, v.template_id, v.version_no, v.snapshot_json, v.created_at, v.created_by
+     FROM prompt_template_versions v
+     JOIN prompt_templates t ON t.id = v.template_id
+     WHERE t.library_id = ? AND t.enabled != 0
+       AND v.id = (SELECT id FROM prompt_template_versions
+                   WHERE template_id = t.id ORDER BY version_no DESC, id DESC LIMIT 1)`,
   )
-    .bind(...templateIds)
+    .bind(libraryId)
     .all<PromptTemplateVersionRow>()
   for (const version of results) {
     if (!latest.has(version.template_id)) latest.set(version.template_id, version)

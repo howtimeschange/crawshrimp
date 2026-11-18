@@ -46,12 +46,16 @@ export async function handleRequest(request, env = {}) {
       service: 'crawshrimp-one-xm-proxy',
       upstream: upstreamBaseUrl(env),
       auth_mode: stringValue(env.ONE_XM_API_KEY) ? 'worker-secret' : 'pass-through',
-      token_required: Boolean(stringValue(env.ONE_XM_PROXY_TOKEN)),
+      token_required: Boolean(stringValue(env.ONE_XM_API_KEY) || stringValue(env.ONE_XM_PROXY_TOKEN)),
     })
   }
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders(request, env) })
+  }
+
+  if (stringValue(env.ONE_XM_API_KEY) && !stringValue(env.ONE_XM_PROXY_TOKEN)) {
+    return jsonError(503, 'Hosted upstream credentials require a configured 1XM proxy token.', request, env)
   }
 
   if (route.path === '/v1/proxy-image' || route.path === '/proxy-image') {
@@ -163,10 +167,44 @@ async function rewriteJsonResponseIfSmall(response, request, route, env) {
     && contentType.toLowerCase().includes('application/json')
     && (!contentLengthHeader || (Number.isFinite(contentLength) && contentLength <= maxBytes))
   ) {
-    const text = await response.text()
+    const reader = response.body.getReader()
+    const chunks = []
+    let size = 0
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      size += value.byteLength
+      if (size > maxBytes) {
+        headers.delete('content-length')
+        // Replay the prefix, then read upstream at the downstream consumer's pace.
+        let index = 0
+        const body = new ReadableStream({
+          async pull(controller) {
+            if (index < chunks.length) {
+              controller.enqueue(chunks[index])
+              chunks[index++] = null
+              return
+            }
+            const next = await reader.read()
+            if (next.done) controller.close()
+            else controller.enqueue(next.value)
+          },
+          cancel: (reason) => reader.cancel(reason),
+        })
+        return new Response(body, { status: response.status, statusText: response.statusText, headers })
+      }
+    }
+
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
     try {
       const rewritten = rewriteUpstreamJsonUrls(
-        JSON.parse(text),
+        JSON.parse(new TextDecoder().decode(bytes)),
         upstreamBaseUrl(env),
         publicBaseUrl(request.url, route),
         env,
@@ -179,12 +217,7 @@ async function rewriteJsonResponseIfSmall(response, request, route, env) {
         headers,
       })
     } catch {
-      headers.delete('content-length')
-      return new Response(text, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      })
+      return new Response(bytes, { status: response.status, statusText: response.statusText, headers })
     }
   }
 

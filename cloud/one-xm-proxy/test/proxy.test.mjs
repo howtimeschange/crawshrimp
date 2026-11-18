@@ -192,3 +192,37 @@ test('passes through the local Authorization header when no Worker secret is con
     globalThis.fetch = originalFetch
   }
 })
+
+test('refuses upstream forwarding when the hosted account lacks a proxy token', async t => {
+  const upstream = t.mock.method(globalThis, 'fetch', async () => assert.fail('unexpected upstream request'))
+  const response = await handleRequest(new Request('https://proxy.example/v1/images/tasks', {
+    method: 'POST',
+    headers: { authorization: 'Bearer local-test' },
+    body: '{}',
+  }), { ONE_XM_API_KEY: 'worker-test', ONE_XM_PROXY_TOKEN: '   ' })
+  assert.equal(response.status, 503)
+  assert.equal(upstream.mock.callCount(), 0)
+})
+
+test('streams oversized JSON byte-for-byte once chunked input crosses the byte limit', async t => {
+  const text = JSON.stringify({ url: 'https://img.1xm.ai/fixture.png', padding: '图'.repeat(600) })
+  const bytes = new TextEncoder().encode(text)
+  let sent = 0
+  let releaseLastChunk
+  const gate = new Promise(resolve => { releaseLastChunk = resolve })
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+    async pull(controller) {
+      if (sent === 2) await gate
+      const start = sent++ * 600
+      controller.enqueue(bytes.subarray(start, start + 600))
+      if (start + 600 >= bytes.length) controller.close()
+    },
+  }), { headers: { 'content-type': 'application/json' } }))
+  const response = await handleRequest(new Request('https://proxy.example/v1/images/tasks/fixture', {
+    headers: { authorization: 'Bearer test-local' },
+  }), { MAX_JSON_REWRITE_BYTES: '1024' })
+  assert.ok(sent <= 2)
+  assert.equal(response.headers.get('content-length'), null)
+  releaseLastChunk()
+  assert.equal(await response.text(), text)
+})

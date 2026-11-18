@@ -384,8 +384,8 @@ test('desktop workflow updates desktop-latest in place and verifies its moved ta
   const existingReleaseUploadIndex = rollingJob.indexOf('gh release upload desktop-latest')
   const newReleaseCreateIndex = rollingJob.indexOf('gh release create desktop-latest')
   const finalAssetValidationIndex = rollingJob.indexOf('Unexpected desktop-latest GitHub updater bridge asset set')
-  const tagMovementIndex = rollingJob.indexOf('git push --force origin "${RELEASE_SHA}:refs/tags/desktop-latest"')
-  const tagReadbackIndex = rollingJob.indexOf('git ls-remote --refs origin refs/tags/desktop-latest')
+  const tagMovementIndex = rollingJob.indexOf('git push --force-with-lease="refs/tags/desktop-latest:${previous_tag_sha}" origin "${RELEASE_SHA}:refs/tags/desktop-latest"')
+  const tagReadbackIndex = rollingJob.indexOf('REMOTE_DESKTOP_LATEST_SHA=$(git ls-remote --refs origin refs/tags/desktop-latest')
 
   assert.match(rollingJob, /gh release view desktop-latest/)
   assert.match(rollingJob, /gh release upload desktop-latest[\s\S]*--clobber/)

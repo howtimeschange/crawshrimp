@@ -1,4 +1,4 @@
-import { recordAudit } from './audit'
+import { prepareAudit, recordAudit } from './audit'
 import { fromJsonObject, nowIso, toJson } from './db'
 import type { Env } from './env'
 import { badRequest, forbidden, json, readJsonObject } from './http'
@@ -12,9 +12,12 @@ import {
   dataUrlToBytes,
   extensionForMime,
   mimeFromDataUrl,
+  OneXmTaskFailed,
+  oneXmTaskReceipt,
+  type OneXmImageTaskResult,
   settleOneXmImageTask,
 } from './one-xm-image'
-import { redactSensitiveJson } from './security/redact'
+import { redactSensitiveJson, redactSensitiveText } from './security/redact'
 import { randomToken, sha256Hex } from './security/tokens'
 
 interface BatchRow {
@@ -155,6 +158,7 @@ const GENERATION_SIZES = new Set(['1:1', '3:4', '4:3', '16:9', '9:16', '1024x102
 const GENERATION_QUALITIES = new Set(['auto', 'low', 'medium', 'high', 'standard', '1K', '2K', '4K'])
 const GENERATION_FORMATS = new Set(['png', 'jpeg', 'jpg', 'webp'])
 const SECRET_FIELD_PATTERN = /(^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret|authorization)$/i
+const DIRECT_GENERATION_LEASE_MS = 5 * 60_000
 const MAX_DIRECT_GENERATION_INPUT_IMAGES = 8
 const MAX_DIRECT_GENERATION_INPUT_BYTES = 10 * 1024 * 1024
 const MAX_DIRECT_GENERATION_TOTAL_INPUT_BYTES = 32 * 1024 * 1024
@@ -325,9 +329,14 @@ export async function saveAssetDecision(request: Request, env: Env): Promise<Res
   if (asset.status === 'submitted') return json({ error: 'submitted AI assets cannot be reviewed again' }, { status: 409 })
   if (await hasActiveSubmitJob(env, batchUid)) return json({ error: 'review decisions are locked while a submit job is active' }, { status: 409 })
   const now = nowIso()
-  await env.DB.prepare("UPDATE ai_image_assets SET status = ?, updated_at = ? WHERE asset_uid = ? AND batch_uid = ? AND kind = 'ai'")
-    .bind(decision, now, assetUid, batchUid)
-    .run()
+  const updated = await env.DB.prepare(
+    `UPDATE ai_image_assets SET status = ?, updated_at = ?
+     WHERE asset_uid = ? AND batch_uid = ? AND kind = 'ai' AND status != 'submitted'
+       AND NOT EXISTS (SELECT 1 FROM ai_image_batches WHERE batch_uid = ? AND status = 'submitted')
+       AND NOT EXISTS (SELECT 1 FROM dispatch_jobs WHERE batch_uid = ? AND job_type = 'submit_tmall_material_test'
+                       AND status IN ('queued', 'leased', 'running', 'uploading_results', 'cancel_requested'))`,
+  ).bind(decision, now, assetUid, batchUid, batchUid, batchUid).run()
+  if (Number(updated.meta.changes ?? 0) === 0) return json({ error: 'review decision is locked' }, { status: 409 })
   await appendApprovalEvent(env, batchUid, asset.style_id, assetUid, `asset.${decision}`, actor.user.id, { decision, note: stringValue(body.note), prompt_template_version_id: asset.prompt_template_version_id, prompt_text: asset.prompt_text }, now)
   const state = await recomputeReviewState(env, batchUid)
   await recordAudit(env, { userId: actor.user.id }, 'batches.asset_decision.save', 'ai_image_asset', assetUid, { batch_uid: batchUid, decision }, request)
@@ -615,6 +624,27 @@ export async function createDirectGeneration(request: Request, env: Env): Promis
   if (!GENERATION_QUALITIES.has(quality)) return badRequest('unsupported generation quality')
   if (!GENERATION_FORMATS.has(outputFormat)) return badRequest('unsupported output_format')
   if (!Number.isInteger(count) || count < 1 || count > 8) return badRequest('count must be an integer from 1 to 8')
+  const clientRequestId = body.client_request_id
+  if (clientRequestId !== undefined && (typeof clientRequestId !== 'string' || !/^[a-zA-Z0-9_-]{16,80}$/.test(clientRequestId))) {
+    return badRequest('invalid client_request_id')
+  }
+  const requestUid = clientRequestId
+    ? `gen_${await sha256Hex(toJson([actor.user.id, batchUid, clientRequestId]))}`
+    : randomToken('gen')
+  const requestMeta = { mode: 'direct_cloud', model, size, quality, output_format: outputFormat, count }
+  const requestHash = await sha256Hex(toJson([styleId, sourceAssetUid, referenceAssetUids, promptTemplateVersionId, promptText, requestMeta]))
+  const readExistingRequest = async (row?: GenerationRequestRow) => {
+    const existing = row ?? await loadDirectGenerationRequest(env, requestUid)
+    if (!existing || existing.created_by !== actor.user.id || existing.batch_uid !== batchUid
+      || fromJsonObject(existing.request_meta_json).request_hash !== requestHash) {
+      return json({ error: 'client_request_id was already used for a different generation' }, { status: 409 })
+    }
+    return directGenerationResponse(env, requestUid, existing)
+  }
+  if (clientRequestId) {
+    const existing = await loadDirectGenerationRequest(env, requestUid)
+    if (existing) return readExistingRequest(existing)
+  }
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
   const submittedGuard = submittedBatchGuard(batch)
@@ -631,17 +661,8 @@ export async function createDirectGeneration(request: Request, env: Env): Promis
     return badRequest(`direct cloud generation supports at most ${MAX_DIRECT_GENERATION_INPUT_IMAGES} source/reference images`)
   }
 
-  const requestUid = randomToken('gen')
-  const requestMeta = {
-    mode: 'direct_cloud',
-    model,
-    size,
-    quality,
-    output_format: outputFormat,
-    count,
-  }
   const now = nowIso()
-  await insertDirectGenerationRequest(env, {
+  const inserted = await insertDirectGenerationRequest(env, {
     requestUid,
     batchUid,
     styleId,
@@ -650,15 +671,23 @@ export async function createDirectGeneration(request: Request, env: Env): Promis
     promptTemplateVersionId,
     promptText,
     status: 'running',
-    requestMeta,
+    requestMeta: { ...requestMeta, request_hash: requestHash },
     actorUserId: actor.user.id,
     now,
   })
+  if (!inserted) return readExistingRequest()
 
+  const details = { requestUid, batchUid, style, sourceAssetUid, promptTemplateVersionId,
+    promptText, model, size, quality, outputFormat, userId: actor.user.id }
+  const audit = directGenerationAudit(env, request, actor.user.id, details, false)
+  let receivedHandle = false
+  let startedSubmission = false
+  let result: OneXmImageTaskResult
   try {
     const generationAssets = generationAssetUids.map((assetUid) => assets.find((asset) => asset.asset_uid === assetUid)).filter((asset): asset is AssetRow => Boolean(asset))
     const imageDataUrls = await assetsToDataUrls(env, generationAssets)
-    const result = await createAndPollOneXmImageTask(env, {
+    startedSubmission = true
+    result = await createAndPollOneXmImageTask(env, {
       model,
       prompt: buildDirectGenerationPrompt(promptText, generationAssets, size, quality),
       imageDataUrls,
@@ -667,38 +696,29 @@ export async function createDirectGeneration(request: Request, env: Env): Promis
       outputFormat,
       count,
       idempotencyKey: requestUid,
+      onTaskCreated: async (task) => {
+        if (task.id || task.poll_url) {
+          await updateRunningDirectGeneration(env, requestUid, { ...task, status: 'queued' }, '')
+          receivedHandle = true
+        }
+      },
     })
-    if (result.status === 'running') {
-      await updateDirectGenerationRequest(env, requestUid, 'running', result.task, [], result.error || '')
-      await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.direct_pending', 'ai_generation_request', requestUid, { batch_uid: batchUid, style_id: styleId, model }, request)
-      return json({ status: 'running', request_uid: requestUid, next_poll_after_ms: result.nextPollAfterMs }, { status: 202 })
-    }
-
-    const storedAssets = await completeDirectGenerationRequest(env, {
-      requestUid,
-      batchUid,
-      style,
-      sourceAssetUid,
-      promptTemplateVersionId,
-      promptText,
-      model,
-      size,
-      quality,
-      outputFormat,
-      dataUrls: result.dataUrls.slice(0, count),
-      upstreamTask: result.task,
-      userId: actor.user.id,
-      now: nowIso(),
-    })
-    await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.direct_complete', 'ai_generation_request', requestUid, { batch_uid: batchUid, style_id: styleId, asset_count: storedAssets.length, model }, request)
-    return json({ status: 'completed', request_uid: requestUid, assets: storedAssets }, { status: 201 })
   } catch (error) {
-    const status = error && typeof error === 'object' && typeof (error as { status?: unknown }).status === 'number' ? (error as { status: number }).status : 502
-    const message = String(error instanceof Error ? error.message : 'Cloud generation failed')
-    await updateDirectGenerationRequest(env, requestUid, 'failed', {}, [], message)
-    await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.direct_failed', 'ai_generation_request', requestUid, { batch_uid: batchUid, style_id: styleId, error: message }, request)
+    const status = directGenerationErrorStatus(error)
+    const reason = directGenerationErrorMessage(error)
+    const uncertain = startedSubmission && !receivedHandle && !(error instanceof OneXmTaskFailed) && status >= 500
+    const message = uncertain ? `生成提交回执未知，请先核对上游任务。 ${reason}` : reason
+    const updated = await saveDirectGenerationError(env, requestUid, message, audit, !receivedHandle || error instanceof OneXmTaskFailed)
+    if (!updated) return directGenerationResponse(env, requestUid)
     return json({ error: message, request_uid: requestUid }, { status })
   }
+
+  if (result.status === 'running') {
+    const updated = await updateRunningDirectGeneration(env, requestUid, oneXmTaskReceipt(result.task), result.error || '', audit)
+    if (!updated) return directGenerationResponse(env, requestUid)
+    return json({ status: 'running', request_uid: requestUid, next_poll_after_ms: result.nextPollAfterMs }, { status: 202 })
+  }
+  return finalizeDirectGeneration(env, details, audit, oneXmTaskReceipt(result.task), result.dataUrls.slice(0, count))
 }
 
 export async function pollDirectGeneration(request: Request, env: Env): Promise<Response> {
@@ -709,80 +729,80 @@ export async function pollDirectGeneration(request: Request, env: Env): Promise<
   if (!batchUid || !requestUid) return badRequest('batch_uid and request_uid are required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
-  const generationRequest = await env.DB.prepare('SELECT * FROM ai_generation_requests WHERE request_uid = ? LIMIT 1')
-    .bind(requestUid)
-    .first<GenerationRequestRow>()
+  const generationRequest = await loadDirectGenerationRequest(env, requestUid)
   if (!generationRequest || generationRequest.batch_uid !== batchUid) return json({ error: 'Not found' }, { status: 404 })
-  if (generationRequest.status !== 'completed') {
-    const submittedGuard = submittedBatchGuard(batch)
-    if (submittedGuard) return submittedGuard
-  }
   if (generationRequest.dispatch_job_uid) return json({ error: 'generation request is not a direct cloud generation request' }, { status: 409 })
-  if (generationRequest.status === 'completed') {
-    return json({
-      status: 'completed',
-      request_uid: requestUid,
-      assets: await directGenerationResultAssets(env, generationRequest),
-    })
+  if (!['queued', 'running', 'finalizing'].includes(generationRequest.status)) {
+    return directGenerationResponse(env, requestUid, generationRequest)
   }
-  if (generationRequest.status === 'finalizing') {
-    return json({ status: 'finalizing', request_uid: requestUid, next_poll_after_ms: 500 }, { status: 202 })
-  }
-  if (!['queued', 'running'].includes(generationRequest.status)) {
-    return json({ error: `generation request is ${generationRequest.status}` }, { status: 409 })
+  const submittedGuard = submittedBatchGuard(batch)
+  if (submittedGuard) return submittedGuard
+
+  const leaseCutoff = new Date(Date.now() - DIRECT_GENERATION_LEASE_MS).toISOString()
+  const isFinalizing = generationRequest.status === 'finalizing'
+  if (isFinalizing && generationRequest.updated_at > leaseCutoff) {
+    return directGenerationResponse(env, requestUid, generationRequest)
   }
   const style = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1')
     .bind(generationRequest.style_id, batchUid)
     .first<StyleRow>()
   if (!style) return json({ error: 'generation request style was not found' }, { status: 409 })
   const requestMeta = fromJsonObject(generationRequest.request_meta_json)
-  const model = canonicalOneXmModel(stringValue(requestMeta.model) || 'gpt-image-2')
-  const size = stringValue(requestMeta.size) || '1:1'
-  const quality = stringValue(requestMeta.quality) || 'auto'
-  const outputFormat = normalizeOutputFormat(stringValue(requestMeta.output_format) || 'png')
-  const count = normalizeGenerationCount(requestMeta.count)
+  const details = {
+    requestUid,
+    batchUid,
+    style,
+    sourceAssetUid: generationRequest.source_asset_uid,
+    promptTemplateVersionId: generationRequest.prompt_template_version_id,
+    promptText: generationRequest.prompt_text,
+    model: canonicalOneXmModel(stringValue(requestMeta.model) || 'gpt-image-2'),
+    size: stringValue(requestMeta.size) || '1:1',
+    quality: stringValue(requestMeta.quality) || 'auto',
+    outputFormat: normalizeOutputFormat(stringValue(requestMeta.output_format) || 'png'),
+    userId: generationRequest.created_by ?? actor.user.id,
+  }
+  const audit = directGenerationAudit(env, request, actor.user.id, details, true)
   const upstreamTask = fromJsonObject(generationRequest.upstream_task_json)
 
   try {
-    const result = await settleOneXmImageTask(env, upstreamTask, model)
+    if (isFinalizing) {
+      const checkpoint = await env.ASSETS.get(directGenerationCheckpointKey(details))
+      if (checkpoint) {
+        return await finalizeDirectGeneration(env, details, audit, upstreamTask, [], await checkpoint.json<StagedDirectAsset[]>())
+      }
+    }
+    const receipt = oneXmTaskReceipt(upstreamTask)
+    if (!receipt.id && !receipt.poll_url && !isFinalizing) {
+      if (generationRequest.updated_at <= leaseCutoff) {
+        await saveDirectGenerationError(env, requestUid, '生成提交回执未知，请核对上游任务后再发起新的生成。', audit, true, generationRequest)
+        return directGenerationResponse(env, requestUid)
+      }
+      return directGenerationResponse(env, requestUid, generationRequest)
+    }
+    if (isFinalizing && !receipt.id && !receipt.poll_url) {
+      await saveDirectGenerationError(env, requestUid, '生成结果未能保存，请核对上游后再发起新的生成。', audit, true, generationRequest)
+      return directGenerationResponse(env, requestUid)
+    }
+    const result = await settleOneXmImageTask(env, upstreamTask, details.model)
     if (result.status === 'running') {
-      await updateDirectGenerationRequest(env, requestUid, 'running', result.task, [], result.error || '')
-      await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.direct_poll_pending', 'ai_generation_request', requestUid, { batch_uid: batchUid, style_id: generationRequest.style_id, model }, request)
-      return json({ status: 'running', request_uid: requestUid, next_poll_after_ms: result.nextPollAfterMs }, { status: 202 })
+      if (!isFinalizing) {
+        const updated = await updateRunningDirectGeneration(env, requestUid, oneXmTaskReceipt(result.task), result.error || '', audit, generationRequest)
+        if (updated) return json({ status: 'running', request_uid: requestUid, next_poll_after_ms: result.nextPollAfterMs }, { status: 202 })
+      }
+      return directGenerationResponse(env, requestUid)
     }
 
-    const claimedFinalization = await claimDirectGenerationFinalization(env, requestUid)
-    if (!claimedFinalization) {
-      const current = await loadDirectGenerationRequest(env, requestUid)
-      if (current?.status === 'completed') {
-        return json({ status: 'completed', request_uid: requestUid, assets: await directGenerationResultAssets(env, current) })
-      }
-      return json({ status: current?.status || 'finalizing', request_uid: requestUid, next_poll_after_ms: 500 }, { status: 202 })
-    }
-    const storedAssets = await completeDirectGenerationRequest(env, {
-      requestUid,
-      batchUid,
-      style,
-      sourceAssetUid: generationRequest.source_asset_uid,
-      promptTemplateVersionId: generationRequest.prompt_template_version_id,
-      promptText: generationRequest.prompt_text,
-      model,
-      size,
-      quality,
-      outputFormat,
-      dataUrls: result.dataUrls.slice(0, count),
-      upstreamTask: result.task,
-      userId: actor.user.id,
-      now: nowIso(),
-    })
-    await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.direct_poll_complete', 'ai_generation_request', requestUid, { batch_uid: batchUid, style_id: generationRequest.style_id, asset_count: storedAssets.length, model }, request)
-    return json({ status: 'completed', request_uid: requestUid, assets: storedAssets }, { status: 201 })
+    return await finalizeDirectGeneration(env, details, audit, oneXmTaskReceipt(result.task), result.dataUrls.slice(0, normalizeGenerationCount(requestMeta.count)))
   } catch (error) {
-    const status = error && typeof error === 'object' && typeof (error as { status?: unknown }).status === 'number' ? (error as { status: number }).status : 502
-    const message = String(error instanceof Error ? error.message : 'Cloud generation poll failed')
-    await failDirectGenerationRequest(env, requestUid, upstreamTask, message)
-    await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.direct_poll_failed', 'ai_generation_request', requestUid, { batch_uid: batchUid, style_id: generationRequest.style_id, error: message }, request)
-    return json({ error: message, request_uid: requestUid }, { status })
+    const message = directGenerationErrorMessage(error)
+    const updated = await saveDirectGenerationError(env, requestUid, message, audit, error instanceof OneXmTaskFailed, generationRequest)
+    if (!updated) {
+      const current = await loadDirectGenerationRequest(env, requestUid)
+      if (current?.status !== generationRequest.status || current.updated_at !== generationRequest.updated_at) {
+        return directGenerationResponse(env, requestUid, current ?? undefined)
+      }
+    }
+    return json({ error: message, request_uid: requestUid }, { status: directGenerationErrorStatus(error) })
   }
 }
 
@@ -1238,12 +1258,15 @@ async function recomputeReviewState(env: Env, batchUid: string): Promise<{ ready
     const status = submitted > 0 ? 'submitted' : approved > 0 ? 'approved' : rejected > 0 && pending === 0 ? 'rejected' : 'pending_review'
     if (approved + submitted === 0) ready = false
     if (submitted === 0) allSubmitted = false
-    await env.DB.prepare('UPDATE ai_image_styles SET status = ?, review_summary_json = ? WHERE id = ? AND batch_uid = ?')
-      .bind(status, toJson({ approved, submitted, rejected, pending }), style.id, batchUid)
+    await env.DB.prepare(
+      `UPDATE ai_image_styles SET status = ?, review_summary_json = ? WHERE id = ? AND batch_uid = ?
+       AND NOT EXISTS (SELECT 1 FROM ai_image_batches WHERE batch_uid = ? AND status = 'submitted')`,
+    )
+      .bind(status, toJson({ approved, submitted, rejected, pending }), style.id, batchUid, batchUid)
       .run()
   }
   const batchStatus = ready && hasReviewableStyle ? allSubmitted ? 'submitted' : 'ready_to_submit' : 'pending_review'
-  await env.DB.prepare('UPDATE ai_image_batches SET status = ?, updated_at = ? WHERE batch_uid = ?')
+  await env.DB.prepare("UPDATE ai_image_batches SET status = ?, updated_at = ? WHERE batch_uid = ? AND status != 'submitted'")
     .bind(batchStatus, now, batchUid)
     .run()
   return { ready: batchStatus === 'ready_to_submit' || batchStatus === 'submitted', batchStatus }
@@ -1366,13 +1389,14 @@ async function insertDirectGenerationRequest(env: Env, request: {
   requestMeta: Record<string, unknown>
   actorUserId: number
   now: string
-}): Promise<void> {
-  await env.DB.prepare(
+}): Promise<boolean> {
+  const result = await env.DB.prepare(
     `INSERT INTO ai_generation_requests
        (request_uid, batch_uid, style_id, source_asset_uid, reference_asset_uids_json,
         prompt_template_version_id, prompt_text, status, dispatch_job_uid, request_meta_json,
         upstream_task_json, result_asset_uids_json, error_message, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(request_uid) DO NOTHING`,
   )
     .bind(
       request.requestUid,
@@ -1393,28 +1417,46 @@ async function insertDirectGenerationRequest(env: Env, request: {
       request.now,
     )
     .run()
+  return Number(result.meta.changes ?? 0) === 1
 }
 
-async function updateDirectGenerationRequest(env: Env, requestUid: string, status: string, upstreamTask: unknown, resultAssetUids: string[], errorMessage: string): Promise<void> {
-  await env.DB.prepare(
-    `UPDATE ai_generation_requests
-     SET status = ?, upstream_task_json = ?, result_asset_uids_json = ?, error_message = ?, updated_at = ?
-     WHERE request_uid = ?`,
+type DirectGenerationAudit = (event: 'pending' | 'complete' | 'failed', payload: Record<string, unknown>,
+  where: string, bindings: unknown[]) => D1PreparedStatement
+
+function directGenerationAudit(env: Env, request: Request, userId: number, details: DirectGenerationDetails, poll: boolean): DirectGenerationAudit {
+  return (event, payload, where, bindings) => prepareAudit(
+    env, { userId }, `jobs.generate_ai_image.direct_${poll ? 'poll_' : ''}${event}`, 'ai_generation_request',
+    details.requestUid, { batch_uid: details.batchUid, style_id: details.style.id, model: details.model, ...payload }, request,
+    { sql: `EXISTS (SELECT 1 FROM ai_generation_requests WHERE ${where})`, bindings },
   )
-    .bind(status, toJson(upstreamTask || {}), toJson(resultAssetUids), errorMessage, nowIso(), requestUid)
-    .run()
 }
 
-async function claimDirectGenerationFinalization(env: Env, requestUid: string): Promise<boolean> {
+async function updateRunningDirectGeneration(env: Env, requestUid: string, upstreamTask: unknown, errorMessage: string,
+  audit?: DirectGenerationAudit, snapshot?: GenerationRequestRow): Promise<boolean> {
+  const taskJson = toJson(upstreamTask)
+  let where = "request_uid = ? AND status IN ('queued', 'running')"
+  const bindings = [requestUid]
+  if (snapshot) {
+    where += " AND updated_at = ? AND upstream_task_json = ? AND (upstream_task_json != ? OR error_message != ? OR status != 'running')"
+    bindings.push(snapshot.updated_at, snapshot.upstream_task_json || '{}', taskJson, errorMessage)
+  }
+  const update = env.DB.prepare(
+    `UPDATE ai_generation_requests SET status = 'running', upstream_task_json = ?, error_message = ?, updated_at = ?
+     WHERE ${where}`,
+  ).bind(taskJson, errorMessage, nowIso(), ...bindings)
+  const result = audit ? (await env.DB.batch([audit('pending', {}, where, bindings), update]))[1] : await update.run()
+  return Number(result.meta.changes ?? 0) === 1
+}
+
+async function claimDirectGenerationFinalization(env: Env, requestUid: string): Promise<string | null> {
+  const now = nowIso()
   const result = await env.DB.prepare(
     `UPDATE ai_generation_requests
      SET status = 'finalizing', updated_at = ?
-     WHERE request_uid = ?
-       AND status IN ('queued', 'running')`,
-  )
-    .bind(nowIso(), requestUid)
-    .run()
-  return Number(result.meta.changes ?? 0) === 1
+     WHERE request_uid = ? AND (status IN ('queued', 'running')
+       OR (status = 'finalizing' AND updated_at <= ?))`,
+  ).bind(now, requestUid, new Date(Date.now() - DIRECT_GENERATION_LEASE_MS).toISOString()).run()
+  return Number(result.meta.changes ?? 0) === 1 ? now : null
 }
 
 function loadDirectGenerationRequest(env: Env, requestUid: string): Promise<GenerationRequestRow | null> {
@@ -1423,15 +1465,55 @@ function loadDirectGenerationRequest(env: Env, requestUid: string): Promise<Gene
     .first<GenerationRequestRow>()
 }
 
-async function failDirectGenerationRequest(env: Env, requestUid: string, upstreamTask: unknown, errorMessage: string): Promise<void> {
-  await env.DB.prepare(
-    `UPDATE ai_generation_requests
-     SET status = ?, upstream_task_json = ?, result_asset_uids_json = ?, error_message = ?, updated_at = ?
-     WHERE request_uid = ?
-       AND status != 'completed'`,
-  )
-    .bind('failed', toJson(upstreamTask || {}), toJson([]), errorMessage, nowIso(), requestUid)
-    .run()
+async function saveDirectGenerationError(env: Env, requestUid: string, message: string, audit: DirectGenerationAudit,
+  terminal: boolean, snapshot?: Pick<GenerationRequestRow, 'status' | 'updated_at' | 'upstream_task_json'>): Promise<boolean> {
+  const bindings = [requestUid]
+  let where = 'request_uid = ?'
+  if (snapshot) {
+    where += ' AND status = ? AND updated_at = ?'
+    bindings.push(snapshot.status, snapshot.updated_at)
+    if (snapshot.upstream_task_json !== undefined) {
+      where += ' AND upstream_task_json = ?'
+      bindings.push(snapshot.upstream_task_json)
+    }
+  } else {
+    where += " AND status IN ('queued', 'running')"
+  }
+  const values = [message]
+  let changes = 'error_message = ?'
+  if (terminal) {
+    changes += ", status = 'failed', updated_at = ?"
+    values.push(nowIso())
+  } else {
+    where += ' AND error_message != ?'
+    bindings.push(message)
+  }
+  const [, result] = await env.DB.batch([
+    audit('failed', { error: message }, where, bindings),
+    env.DB.prepare(`UPDATE ai_generation_requests SET ${changes} WHERE ${where}`).bind(...values, ...bindings),
+  ])
+  return Number(result.meta.changes ?? 0) === 1
+}
+
+function directGenerationErrorMessage(error: unknown): string {
+  return redactSensitiveText(error instanceof Error ? error.message : 'Cloud generation failed')
+}
+
+function directGenerationErrorStatus(error: unknown): number {
+  const status = (error as { status?: unknown } | null)?.status
+  return typeof status === 'number' && status >= 400 && status <= 599 ? status : 502
+}
+
+async function directGenerationResponse(env: Env, requestUid: string, snapshot?: GenerationRequestRow): Promise<Response> {
+  const current = snapshot ?? await loadDirectGenerationRequest(env, requestUid)
+  if (!current) return json({ error: 'Not found' }, { status: 404 })
+  if (current.status === 'completed') {
+    return json({ status: 'completed', request_uid: requestUid, assets: await directGenerationResultAssets(env, current) })
+  }
+  if (['queued', 'running', 'finalizing'].includes(current.status)) {
+    return json({ status: current.status, request_uid: requestUid, next_poll_after_ms: 3000 }, { status: 202 })
+  }
+  return json({ error: current.error_message || `generation request is ${current.status}`, request_uid: requestUid }, { status: 409 })
 }
 
 async function directGenerationResultAssets(env: Env, generationRequest: GenerationRequestRow): Promise<Array<{ asset_uid: string; object_key: string; filename: string; status: string }>> {
@@ -1452,7 +1534,7 @@ async function directGenerationResultAssets(env: Env, generationRequest: Generat
     }))
 }
 
-async function completeDirectGenerationRequest(env: Env, details: {
+interface DirectGenerationDetails {
   requestUid: string
   batchUid: string
   style: StyleRow
@@ -1463,23 +1545,87 @@ async function completeDirectGenerationRequest(env: Env, details: {
   size: string
   quality: string
   outputFormat: string
-  dataUrls: string[]
-  upstreamTask: unknown
   userId: number
-  now: string
-}): Promise<Array<{ asset_uid: string; object_key: string; filename: string; status: string }>> {
-  const storedAssets = await storeDirectGenerationAssets(env, details)
-  await updateDirectGenerationRequest(env, details.requestUid, 'completed', details.upstreamTask, storedAssets.map((asset) => asset.asset_uid), '')
-  await appendApprovalEvent(env, details.batchUid, details.style.id, null, 'asset.cloud_generate', details.userId, {
-    request_uid: details.requestUid,
-    asset_uids: storedAssets.map((asset) => asset.asset_uid),
-    model: details.model,
-    size: details.size,
-    quality: details.quality,
-    output_format: details.outputFormat,
-  }, details.now)
-  await recomputeReviewState(env, details.batchUid)
-  return storedAssets
+}
+
+interface StagedDirectAsset {
+  assetUid: string
+  objectKey: string
+  filename: string
+  contentHash: string
+}
+
+function directGenerationCheckpointKey(details: DirectGenerationDetails): string {
+  return batchObjectKey(details.batchUid, 'generation-checkpoints', `${details.requestUid}.json`)
+}
+
+async function finalizeDirectGeneration(
+  env: Env,
+  details: DirectGenerationDetails,
+  audit: DirectGenerationAudit,
+  upstreamTask: unknown,
+  dataUrls: string[],
+  checkpoint?: StagedDirectAsset[],
+): Promise<Response> {
+  const lease = await claimDirectGenerationFinalization(env, details.requestUid)
+  if (!lease) return directGenerationResponse(env, details.requestUid)
+  const checkpointKey = directGenerationCheckpointKey(details)
+  try {
+    const staged = checkpoint ?? await stageDirectGenerationAssets(env, details, checkpointKey, dataUrls)
+    const owner = await loadDirectGenerationRequest(env, details.requestUid)
+    if (owner?.status !== 'finalizing' || owner.updated_at !== lease) return directGenerationResponse(env, details.requestUid, owner ?? undefined)
+    await storeDirectGenerationAssets(env, details, staged)
+    await recomputeReviewState(env, details.batchUid)
+    const assetUids = staged.map((asset) => asset.assetUid)
+    const payload = toJson({
+      request_uid: details.requestUid,
+      asset_uids: assetUids,
+      model: details.model,
+      size: details.size,
+      quality: details.quality,
+      output_format: details.outputFormat,
+    })
+    const now = nowIso()
+    const [, , finished] = await env.DB.batch([
+      audit('complete', { asset_count: assetUids.length }, "request_uid = ? AND status = 'finalizing' AND updated_at = ?", [details.requestUid, lease]),
+      env.DB.prepare(
+        `INSERT INTO approval_events (batch_uid, style_id, asset_uid, event_type, actor, payload_json, created_at)
+         SELECT ?, ?, NULL, 'asset.cloud_generate', ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM ai_generation_requests
+                       WHERE request_uid = ? AND status = 'finalizing' AND updated_at = ?)`,
+      ).bind(details.batchUid, details.style.id, `user:${details.userId}`, payload, now, details.requestUid, lease),
+      env.DB.prepare(
+        `UPDATE ai_generation_requests SET status = ?, upstream_task_json = ?, result_asset_uids_json = ?, error_message = ?, updated_at = ?
+         WHERE request_uid = ? AND status = 'finalizing' AND updated_at = ?`,
+      ).bind('completed', toJson(upstreamTask), toJson(assetUids), '', now, details.requestUid, lease),
+    ])
+    const current = await loadDirectGenerationRequest(env, details.requestUid)
+    if (Number(finished.meta.changes ?? 0) !== 1 || !current) return directGenerationResponse(env, details.requestUid, current ?? undefined)
+    await env.ASSETS.delete(checkpointKey).catch(() => {})
+    return json({ status: 'completed', request_uid: details.requestUid, assets: await directGenerationResultAssets(env, current) }, { status: 201 })
+  } catch (error) {
+    // An expired lease can replay the checkpoint or re-read the upstream task.
+    const message = directGenerationErrorMessage(error)
+    await saveDirectGenerationError(env, details.requestUid, message, audit, false, { status: 'finalizing', updated_at: lease }).catch(() => {})
+    return json({ error: message, request_uid: details.requestUid }, { status: directGenerationErrorStatus(error) })
+  }
+}
+
+async function stageDirectGenerationAssets(
+  env: Env, details: DirectGenerationDetails, checkpointKey: string, dataUrls: string[],
+): Promise<StagedDirectAsset[]> {
+  const assets: StagedDirectAsset[] = []
+  for (const [index, dataUrl] of dataUrls.entries()) {
+    const mime = mimeFromDataUrl(dataUrl)
+    const assetUid = `cloud-gen-${details.requestUid}-${index + 1}`
+    const filename = `${assetUid}.${extensionForMime(mime, details.outputFormat)}`
+    const objectKey = batchObjectKey(details.batchUid, 'ai', filename)
+    const bytes = dataUrlToBytes(dataUrl)
+    await env.ASSETS.put(objectKey, bytes, { httpMetadata: { contentType: mime } })
+    assets.push({ assetUid, filename, objectKey, contentHash: await sha256Hex(dataUrl) })
+  }
+  await env.ASSETS.put(checkpointKey, toJson(assets), { httpMetadata: { contentType: 'application/json' } })
+  return assets
 }
 
 async function assetsToDataUrls(env: Env, assets: AssetRow[]): Promise<string[]> {
@@ -1513,40 +1659,16 @@ async function assetToDataUrl(env: Env, asset: AssetRow): Promise<{ dataUrl: str
   }
 }
 
-async function storeDirectGenerationAssets(env: Env, details: {
-  requestUid: string
-  batchUid: string
-  style: StyleRow
-  sourceAssetUid: string
-  promptTemplateVersionId: number | null
-  promptText: string
-  model: string
-  size: string
-  quality: string
-  outputFormat: string
-  dataUrls: string[]
-  userId: number
-  now: string
-}): Promise<Array<{ asset_uid: string; object_key: string; filename: string; status: string }>> {
-  const storedAssets: Array<{ asset_uid: string; object_key: string; filename: string; status: string }> = []
-  for (let index = 0; index < details.dataUrls.length; index += 1) {
-    const dataUrl = details.dataUrls[index]
-    const mime = mimeFromDataUrl(dataUrl)
-    const extension = extensionForMime(mime, details.outputFormat)
-    const assetUid = `cloud-gen-${details.requestUid}-${index + 1}`
-    const filename = `${assetUid}.${extension}`
-    const objectKey = batchObjectKey(details.batchUid, 'ai', filename)
-    const bytes = dataUrlToBytes(dataUrl)
-    await env.ASSETS.put(objectKey, bytes, {
-      httpMetadata: { contentType: mime },
-    })
-    const contentHash = await sha256Hex(dataUrl)
+async function storeDirectGenerationAssets(env: Env, details: DirectGenerationDetails, assets: StagedDirectAsset[]): Promise<void> {
+  const now = nowIso()
+  for (const { assetUid, filename, objectKey, contentHash } of assets) {
     await upsertAsset(env, {
       assetUid,
       batchUid: details.batchUid,
       styleId: details.style.id,
       kind: 'ai',
       status: 'pending',
+      statusPolicy: 'preserve-existing',
       objectKey,
       filename,
       contentHash,
@@ -1563,7 +1685,7 @@ async function storeDirectGenerationAssets(env: Env, details: {
         output_format: details.outputFormat,
         direct_cloud_generation: true,
       },
-      now: details.now,
+      now: now,
     })
     await upsertGeneratedImageResource(env, details.style, {
       assetUid,
@@ -1572,11 +1694,9 @@ async function storeDirectGenerationAssets(env: Env, details: {
       filename,
       contentHash,
       userId: details.userId,
-      now: details.now,
+      now: now,
     })
-    storedAssets.push({ asset_uid: assetUid, object_key: objectKey, filename, status: 'pending' })
   }
-  return storedAssets
 }
 
 async function upsertGeneratedImageResource(env: Env, style: StyleRow, asset: {

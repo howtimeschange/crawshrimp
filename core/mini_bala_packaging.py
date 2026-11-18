@@ -69,8 +69,9 @@ def read_copy(source):
         for row in records:
             skc = text(row.get('款色号'))
             match = re.fullmatch(code + r'-(\d{5})', skc)
-            color = match.group(1) if match else text(row.get('颜色编码')).removesuffix('.0').zfill(5)
-            if re.fullmatch(r'\d{5}', color):
+            color = match.group(1) if match else text(row.get('颜色编码')).removesuffix('.0')
+            if re.fullmatch(r'[0-9]{1,5}', color):
+                color = color.zfill(5)
                 name = text(row.get('颜色'))
                 if color in colors and name and colors[color] != name:
                     conflicts.append('同色号颜色名称冲突：' + color)

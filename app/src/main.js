@@ -1240,8 +1240,7 @@ const launchChrome = createSingleFlightRecovery(performLaunchChrome)
 function apiCall(method, urlPath, body = null, options = {}) {
   return requestBackendApi({
     http,
-    port: apiPort,
-    token: getApiToken(),
+    getConnection: () => ({ port: apiPort, token: getApiToken() }),
     tokenHeader: API_TOKEN_HEADER,
     method,
     urlPath,

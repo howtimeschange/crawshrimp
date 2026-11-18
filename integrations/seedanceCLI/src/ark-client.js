@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { dirname } from "node:path";
 import { Readable } from "node:stream";
@@ -112,7 +113,13 @@ export async function downloadFile(url, outputPath, { fetchImpl = globalThis.fet
   }
 
   await mkdir(dirname(outputPath), { recursive: true });
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(outputPath));
+  const temporaryPath = `${outputPath}.${randomUUID()}.part`;
+  try {
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(temporaryPath, { flags: "wx" }));
+    await rename(temporaryPath, outputPath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 export function isTerminalStatus(status) {

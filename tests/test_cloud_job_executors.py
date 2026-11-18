@@ -276,6 +276,36 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertTrue(all(body["lease_id"] == "lease-1" for body in progress_bodies + renew_bodies))
         self.assertEqual(result["result"]["asset_uid"], "regen-job-1")
 
+    def test_cloud_regeneration_uses_real_tmall_lookup_with_distinct_parent_and_result_ids(self):
+        from core.cloud_job_executors import CloudJobExecutor, _load_tmall_module
+
+        module = _load_tmall_module()
+        client = FakeCloudClient(allowed_asset_uids={"result-ai"})
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", tmall_module=module)
+        job = {
+            "job_uid": "regen-distinct", "lease_id": "lease-regenerate", "job_type": "regenerate_ai_image",
+            "payload": {"batch_uid": "batch-real", "style_id": 10, "asset_uid": "result-ai",
+                        "rejected_asset_uid": "rejected-ai", "prompt_text": "new prompt",
+                        "reference_asset_uids": ["source"],
+                        "generation_row": {"完整Prompt": "old prompt", "款号": "208326100202"}},
+        }
+
+        def download(row, artifact_dir):
+            self.assertEqual(row["完整Prompt"], "new prompt")
+            path = artifact_dir / "regenerated.png"
+            path.write_bytes(b"local simulated output")
+            return [str(path)]
+
+        with (patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": "unit-key-4k"}),
+              patch.object(module, "run_one_xm_generation_row", side_effect=lambda row, *_: {**row, "任务ID": "local-task"}),
+              patch.object(module, "download_generated_images", side_effect=download)):
+            result = executor.execute(job)
+
+        self.assertEqual(result["result"]["asset_uid"], "result-ai")
+        presign = next(call["body"] for call in client.calls if call["path"] == "/api/assets/presign")
+        self.assertEqual(presign["parent_asset_uid"], "rejected-ai")
+        self.assertEqual(presign["asset_uid"], "result-ai")
+
     def test_generate_ai_image_downloads_source_and_references_uploads_allowed_result_assets(self):
         from core.cloud_job_executors import CloudJobExecutor
 
@@ -460,6 +490,53 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(item["assets"][0]["status"], "approved")
         self.assertTrue(Path(item["assets"][0]["path"]).is_relative_to(Path(self.tmp.name) / "cloud-jobs" / "job-submit"))
         self.assertTrue(any(call["path"] == "/api/jobs/job-submit/progress" for call in client.calls))
+
+    def test_submit_renews_while_downloading_and_reuses_origin_per_style(self):
+        from core.cloud_job_executors import CloudJobCancelled, CloudJobExecutor, _load_tmall_module
+
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                renewed = threading.Event()
+
+                class DownloadClient(FakeCloudClient):
+                    def request_json(self, method, path, body=None, **kwargs):
+                        response = super().request_json(method, path, body, **kwargs)
+                        if path.endswith("/renew"):
+                            renewed.set()
+                            return {"cancel_requested": cancel}
+                        return response
+
+                    def download_asset(self, asset_uid, *args, **kwargs):
+                        if not self.downloads and not renewed.wait(timeout=2):
+                            raise AssertionError("lease was not renewed during the blocked download")
+                        return super().download_asset(asset_uid, *args, **kwargs)
+
+                client = DownloadClient()
+                module = _load_tmall_module()
+                executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", tmall_module=module, lease_renew_interval=0.01)
+                job = {
+                    "job_uid": "slow-download", "lease_id": "local-lease", "job_type": "submit_tmall_material_test",
+                    "payload": {"submit_plan": {"batch_uid": "slow-batch", "styles": [{"id": 1, "item_id": "1001"}], "assets": [
+                        {"asset_uid": "source", "style_id": 1, "kind": "source", "status": "uploaded"},
+                        {"asset_uid": "ai-1", "style_id": 1, "kind": "ai", "status": "approved"},
+                        {"asset_uid": "ai-2", "style_id": 1, "kind": "ai", "status": "approved"},
+                    ]}},
+                }
+
+                async def submit(batch):
+                    plan = module.selected_upload_plan_from_approval_batch(batch)
+                    self.assertEqual(len(plan[0]["generated_paths"]), 2)
+                    return {"status": "created", "submitted": 2}
+
+                with patch.object(module, "upload_approved_tmall_batch", side_effect=submit) as upload:
+                    if cancel:
+                        with self.assertRaises(CloudJobCancelled):
+                            executor.execute(job)
+                        upload.assert_not_called()
+                    else:
+                        self.assertEqual(executor.execute(job)["result"]["submitted"], 2)
+                        self.assertEqual([entry["asset_uid"] for entry in client.downloads], ["ai-1", "source", "ai-2"])
+                        upload.assert_awaited_once()
 
     def test_submit_tmall_material_test_cloud_batch_is_accepted_by_legacy_upload_planner(self):
         from core.cloud_job_executors import CloudJobExecutor, _load_tmall_module

@@ -16,9 +16,10 @@ IMAGE_SUFFIXES={'.jpg','.jpeg','.png','.webp','.bmp','.tif','.tiff'}
 
 def fingerprint(path):
     with Image.open(path) as im:
-        im=ImageOps.exif_transpose(im).convert('RGB')
-        im.thumbnail((96,96))
-        return hashlib.sha256(im.tobytes()).hexdigest()
+        rgba = ImageOps.exif_transpose(im).convert('RGBA')
+        digest = hashlib.sha256(f'{rgba.width}x{rgba.height}:'.encode())
+        digest.update(rgba.tobytes())
+        return digest.hexdigest()
 
 
 def perceptual_hash(path):

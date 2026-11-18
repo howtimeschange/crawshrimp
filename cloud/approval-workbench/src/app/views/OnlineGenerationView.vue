@@ -78,6 +78,8 @@ const message = ref('')
 const error = ref('')
 const submitting = ref(false)
 let promptLoadSequence = 0
+let isMounted = true
+const pendingSubmissions = new Map<string, string>()
 const generationPollTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 const styles = computed(() => batch.value?.styles ?? [])
@@ -105,13 +107,16 @@ const selectableResources = computed<SelectableResource[]>(() => {
 })
 const generationRequests = computed(() => batch.value?.generation_requests ?? [])
 const selectedStyleRequests = computed(() => generationRequests.value.filter((item) => String(item.style_id) === String(selectedStyle.value?.id ?? '') && item.status !== 'completed'))
-const canSubmit = computed(() => Boolean(batch.value && selectedStyle.value && sourceAssetUid.value && promptText.value.trim() && !submitting.value))
+const canSubmit = computed(() => Boolean(batch.value && batch.value.status !== 'submitted' && selectedStyle.value && sourceAssetUid.value && promptText.value.trim() && !submitting.value))
 const selectedTemplateVersionId = computed(() => {
   const template = promptTemplates.value.find((item) => templateKey(item) === selectedTemplateKey.value)
   return Number(template?.version_id ?? template?.id) || null
 })
 
 watch(batchUid, () => {
+  clearGenerationPollTimers()
+  batch.value = null
+  selectedStyleId.value = null
   void loadBatch()
 })
 
@@ -141,14 +146,20 @@ async function loadBatches() {
 }
 
 async function loadBatch() {
-  if (!batchUid.value) return
-  error.value = ''
+  const requestedBatchUid = batchUid.value
+  if (!requestedBatchUid) return
   try {
+    const data = await apiGet<{ batch: BatchDetail }>(`/api/ai-image-batches/${encodeURIComponent(requestedBatchUid)}`)
+    if (!isMounted || batchUid.value !== requestedBatchUid) return
     const previousStyleId = selectedStyleId.value
-    const data = await apiGet<{ batch: BatchDetail }>(`/api/ai-image-batches/${encodeURIComponent(batchUid.value)}`)
     batch.value = data.batch
     selectedStyleId.value = data.batch.styles.some((style) => style.id === previousStyleId) ? previousStyleId : data.batch.styles[0]?.id ?? null
-    resetMaterialSelection()
+    const validMaterials = new Set(selectableResources.value.map((resource) => resource.asset_uid))
+    if (previousStyleId !== selectedStyleId.value || !validMaterials.has(sourceAssetUid.value)) {
+      resetMaterialSelection()
+    } else {
+      referenceAssetUids.value = referenceAssetUids.value.filter((uid) => validMaterials.has(uid))
+    }
     schedulePendingGenerationPolls()
   } catch (caught) {
     error.value = (caught as ApiError).message
@@ -282,47 +293,75 @@ function generationRequestSummary(item: GenerationRequest): string {
 }
 
 async function submitGeneration() {
-  if (!batch.value || !selectedStyle.value || !sourceAssetUid.value || !promptText.value.trim()) return
+  const currentBatch = batch.value
+  if (!canSubmit.value || !currentBatch || !selectedStyle.value || currentBatch.batch_uid !== batchUid.value) return
+  const path = `/api/ai-image-batches/${encodeURIComponent(currentBatch.batch_uid)}/generate-direct`
+  const payload = {
+    style_id: selectedStyle.value.id,
+    source_asset_uid: sourceAssetUid.value,
+    reference_asset_uids: [...referenceAssetUids.value],
+    prompt_template_version_id: selectedTemplateVersionId.value,
+    prompt_text: promptText.value.trim(),
+    model: model.value,
+    size: size.value,
+    quality: quality.value,
+    output_format: outputFormat.value,
+    count: Math.max(1, Math.min(8, Number(count.value) || 1)),
+  }
   error.value = ''
   message.value = ''
   submitting.value = true
+  let storageKey = ''
   try {
-    const result = await apiPost<DirectGenerationResponse>(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generate-direct`, {
-      style_id: selectedStyle.value.id,
-      source_asset_uid: sourceAssetUid.value,
-      reference_asset_uids: referenceAssetUids.value,
-      prompt_template_version_id: selectedTemplateVersionId.value,
-      prompt_text: promptText.value.trim(),
-      model: model.value,
-      size: size.value,
-      quality: quality.value,
-      output_format: outputFormat.value,
-      count: Math.max(1, Math.min(8, Number(count.value) || 1)),
-    })
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([path, payload])))
+    storageKey = 'cloud-generation:' + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+    let requestId = pendingSubmissions.get(storageKey)
+    try { requestId ||= sessionStorage.getItem(storageKey) || undefined } catch { /* storage can be disabled */ }
+    requestId ||= crypto.randomUUID()
+    pendingSubmissions.set(storageKey, requestId)
+    try { sessionStorage.setItem(storageKey, requestId) } catch { /* keep the in-memory ID */ }
+
+    const result = await apiPost<DirectGenerationResponse>(path, { ...payload, client_request_id: requestId })
+    if (typeof result?.request_uid !== 'string' || !result.request_uid || !['queued', 'running', 'finalizing', 'completed'].includes(result.status)) {
+      throw new Error('生成回执未能读取，重试时会查询本次生成。')
+    }
+    forgetPendingSubmission(storageKey)
+    if (batchUid.value !== currentBatch.batch_uid) return
     message.value = result.status === 'completed'
       ? `云端直接生成完成，新增 ${result.assets?.length ?? 0} 张 AI 图`
       : '云端正在生成，完成后会自动追加到当前款式'
-    await loadBatch()
     if (result.status !== 'completed') scheduleGenerationPoll(result.request_uid, result.next_poll_after_ms)
+    await loadBatch()
   } catch (caught) {
-    error.value = (caught as ApiError).message
+    const failure = caught as ApiError
+    if (failure.requestUid && failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.status !== 429) {
+      forgetPendingSubmission(storageKey)
+    }
+    error.value = failure.message
   } finally {
     submitting.value = false
   }
 }
 
+function forgetPendingSubmission(key: string) {
+  if (!key) return
+  pendingSubmissions.delete(key)
+  try { sessionStorage.removeItem(key) } catch { /* storage can be disabled */ }
+}
+
 function schedulePendingGenerationPolls() {
+  if (batch.value?.status === 'submitted') return
   for (const item of generationRequests.value) {
     if (isPollableGenerationRequest(item)) scheduleGenerationPoll(item.request_uid)
   }
 }
 
 function isPollableGenerationRequest(item: GenerationRequest): boolean {
-  return ['queued', 'running'].includes(item.status) && !item.dispatch_job_uid
+  return ['queued', 'running', 'finalizing'].includes(item.status) && !item.dispatch_job_uid
 }
 
 function scheduleGenerationPoll(requestUid: string, delayMs?: number) {
-  if (!requestUid || generationPollTimers.has(requestUid)) return
+  if (!isMounted || !requestUid || generationPollTimers.has(requestUid)) return
   const delay = normalizePollDelay(delayMs)
   const timer = setTimeout(() => {
     generationPollTimers.delete(requestUid)
@@ -338,19 +377,25 @@ function normalizePollDelay(value: unknown): number {
 }
 
 async function pollGenerationRequest(requestUid: string) {
-  if (!batch.value) return
+  const polledBatchUid = batch.value?.batch_uid
+  if (!polledBatchUid || polledBatchUid !== batchUid.value) return
   try {
-    const result = await apiPost<DirectGenerationResponse>(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generation-requests/${encodeURIComponent(requestUid)}/poll`)
+    const result = await apiPost<DirectGenerationResponse>(`/api/ai-image-batches/${encodeURIComponent(polledBatchUid)}/generation-requests/${encodeURIComponent(requestUid)}/poll`)
+    if (!isMounted || polledBatchUid !== batchUid.value) return
+    error.value = ''
     if (result.status === 'completed') {
       message.value = `云端直接生成完成，新增 ${result.assets?.length ?? 0} 张 AI 图`
       await loadBatch()
       return
     }
-    await loadBatch()
     scheduleGenerationPoll(requestUid, result.next_poll_after_ms)
-  } catch (caught) {
-    error.value = (caught as ApiError).message
     await loadBatch()
+  } catch (caught) {
+    if (polledBatchUid !== batchUid.value) return
+    const failure = caught as ApiError
+    error.value = failure.message
+    if (!failure.status || failure.status >= 500 || failure.status === 429) scheduleGenerationPoll(requestUid, 5000)
+    else await loadBatch()
   }
 }
 
@@ -365,6 +410,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  isMounted = false
   clearGenerationPollTimers()
 })
 </script>

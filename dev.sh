@@ -26,13 +26,18 @@ import secrets
 print(secrets.token_hex(32))
 PY
 )"
-    printf '%s' "$CRAWSHRIMP_API_TOKEN" > "$TOKEN_FILE"
-    chmod 600 "$TOKEN_FILE" 2>/dev/null || true
+    (
+      token_tmp="$(mktemp "$TOKEN_FILE.XXXXXX")"
+      trap 'rm -f "$token_tmp"' EXIT
+      chmod 600 "$token_tmp"
+      printf '%s' "$CRAWSHRIMP_API_TOKEN" > "$token_tmp"
+      mv -f "$token_tmp" "$TOKEN_FILE"
+    )
   fi
   export CRAWSHRIMP_API_TOKEN
 fi
 
 echo "[start] crawshrimp API on http://127.0.0.1:18765"
 echo "[docs]  http://127.0.0.1:18765/docs"
-echo "[auth]  use header: X-Crawshrimp-Token: $CRAWSHRIMP_API_TOKEN"
+echo "[auth]  X-Crawshrimp-Token header configured"
 PYTHONPATH=. venv/bin/python3 core/api_server.py

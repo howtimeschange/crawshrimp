@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { applyWorkflowMigrations, createD1MigrationTestDatabase, type D1MigrationTestDatabase } from './migration-test-helper'
 import worker from '../worker/index'
 import { sha256Hex } from '../worker/security/tokens'
 
@@ -154,7 +155,6 @@ interface FakeState {
   claimRaceMachineHealth?: string
   claimRaceMachineCapabilitiesJson?: string
   cancelRaceStatus?: string
-  batchSubmittedWhileJobStatus?: string
 }
 
 class FakeD1Statement {
@@ -620,42 +620,6 @@ class FakeD1Statement {
       request.updated_at = String(this.params[1])
       return result(1)
     }
-    if (normalized.startsWith("update ai_image_batches set status = 'submitted'")) {
-      const batch = this.state.batches.find((row) => row.batch_uid === String(this.params[1]))
-      if (!batch) return result(0)
-      batch.status = 'submitted'
-      batch.updated_at = String(this.params[0])
-      this.state.batchSubmittedWhileJobStatus = this.state.jobs.find((job) => job.batch_uid === batch.batch_uid && job.job_type === 'submit_tmall_material_test')?.status
-      return result(1)
-    }
-    if (normalized.startsWith("update ai_image_assets set status = 'submitted'")) {
-      const now = String(this.params[0])
-      const batchUid = String(this.params[1])
-      const assetUids = new Set(this.params.slice(2).map(String))
-      let changes = 0
-      for (const asset of this.state.assets) {
-        if (asset.batch_uid === batchUid && asset.kind === 'ai' && assetUids.has(asset.asset_uid)) {
-          asset.status = 'submitted'
-          asset.updated_at = now
-          changes += 1
-        }
-      }
-      return result(changes)
-    }
-    if (normalized.startsWith("update ai_image_styles set status = 'submitted'")) {
-      const summary = String(this.params[0])
-      const batchUid = String(this.params[1])
-      const styleIds = new Set([Number(this.params[2])])
-      let changes = 0
-      for (const style of this.state.styles) {
-        if (style.batch_uid === batchUid && styleIds.has(style.id)) {
-          style.status = 'submitted'
-          style.submit_summary_json = summary
-          changes += 1
-        }
-      }
-      return result(changes)
-    }
     return result(1)
   }
 }
@@ -666,6 +630,43 @@ class FakeD1Database {
   prepare(sql: string): FakeD1Statement {
     return new FakeD1Statement(this.state, sql)
   }
+}
+
+async function withSubmitDatabase<T>(state: FakeState, callback: (db: D1MigrationTestDatabase) => Promise<T>): Promise<T> {
+  const db = await createD1MigrationTestDatabase()
+  try {
+    await applyWorkflowMigrations(db)
+    const groups = [
+      ['task_machines', state.machines],
+      ['machine_tokens', state.machineTokens],
+      ['dispatch_jobs', state.jobs],
+      ['ai_image_batches', state.batches.map(row => ({ ...row, title: row.batch_uid, created_at: row.updated_at }))],
+      ['ai_image_styles', state.styles],
+      ['ai_image_assets', state.assets.map(row => ({ ...row, filename: row.asset_uid, object_key: row.asset_uid, created_at: row.updated_at }))],
+    ] as const
+    for (const [table, rows] of groups) {
+      if (rows.length === 0) continue
+      await db.batch(rows.map(row => {
+        const columns = Object.keys(row)
+        return db.prepare(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
+          .bind(...Object.values(row))
+      }))
+    }
+    return await callback(db)
+  } finally {
+    await db.dispose()
+  }
+}
+
+async function submitCompletionOnD1(state: FakeState, request: Request): Promise<Response> {
+  return withSubmitDatabase(state, async db => {
+    const response = await fetchWorker(request, { ...fakeEnv(state), DB: db.database })
+    state.jobs = (await db.prepare('SELECT * FROM dispatch_jobs ORDER BY id').all<DispatchJobRow>()).results
+    state.batches = (await db.prepare('SELECT * FROM ai_image_batches ORDER BY id').all<BatchRow>()).results
+    state.styles = (await db.prepare('SELECT * FROM ai_image_styles ORDER BY id').all<StyleRow>()).results
+    state.assets = (await db.prepare('SELECT * FROM ai_image_assets ORDER BY id').all<AssetRow>()).results
+    return response
+  })
 }
 
 function normalizeSql(sql: string): string {
@@ -1855,19 +1856,17 @@ describe('machine routes', () => {
       }),
     }))
 
-    const response = await fetchWorker(
+    const response = await submitCompletionOnD1(state,
       new Request('https://example.test/api/jobs/job-submit/complete', {
         method: 'POST',
         headers: bearer(machineToken),
         body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
       }),
-      fakeEnv(state),
     )
 
     expect(response.status).toBe(200)
     expect(state.jobs[0].status).toBe('succeeded')
     expect(state.batches[0].status).toBe('submitted')
-    expect(state.batchSubmittedWhileJobStatus).toBe('uploading_results')
     expect(state.assets.map((asset) => [asset.asset_uid, asset.status])).toEqual([
       ['source-1', 'uploaded'],
       ['ai-approved-1', 'submitted'],
@@ -1877,6 +1876,57 @@ describe('machine routes', () => {
     expect(JSON.parse(state.styles[0].submit_summary_json)).toMatchObject({
       job_uid: 'job-submit',
       submitted_asset_uids: ['ai-approved-1'],
+    })
+  })
+
+  it.each([98, 99, 201])('atomically finalizes %i approved assets and replays a lost completion receipt', async count => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, { allowed_capabilities_json: '["submit_tmall_material_test"]' })
+    const machineToken = await enrollMachine(state, token, ['submit_tmall_material_test'])
+    Object.assign(state.machines[0], { auth_status: 'active', health: 'online_busy', current_job_id: 'job-large' })
+    const now = new Date().toISOString()
+    // Exercise a pre-fix partial completion for the 99-image case.
+    state.batches.push({ id: 1, batch_uid: 'batch-large', status: count === 99 ? 'submitted' : 'ready_to_submit', updated_at: now })
+    const styleCount = count === 201 ? count : 2
+    for (let id = 1; id <= styleCount; id += 1) {
+      state.styles.push({ id, batch_uid: 'batch-large', style_code: `style-${id}`, status: 'approved', submit_summary_json: '{}' })
+    }
+    for (let index = 1; index <= count; index += 1) {
+      state.assets.push({
+        id: index, asset_uid: `ai-${index}`, batch_uid: 'batch-large', style_id: (index - 1) % styleCount + 1,
+        kind: 'ai', status: count === 99 && index === 1 ? 'submitted' : 'approved', updated_at: now,
+      })
+    }
+    state.jobs.push(jobRow({
+      job_uid: 'job-large', batch_uid: 'batch-large', job_type: 'submit_tmall_material_test',
+      lease_id: 'lease-large', assigned_machine_id: 'machine-1',
+      status: count === 99 ? 'uploading_results' : 'running',
+      payload_json: JSON.stringify({ submit_plan: { batch_uid: 'batch-large', assets: state.assets } }),
+    }))
+    const complete = (env: ReturnType<typeof fakeEnv>, leaseId = 'lease-large') =>
+      fetchWorker(new Request('https://example.test/api/jobs/job-large/complete', {
+        method: 'POST', headers: bearer(machineToken), body: JSON.stringify({ lease_id: leaseId, result: { submitted: count } }),
+      }), env)
+    await withSubmitDatabase(state, async db => {
+      const env = { ...fakeEnv(state), DB: db.database }
+      expect((await complete(env, 'wrong-lease')).status).toBe(403)
+      if (count === 201) {
+        await db.exec("CREATE TRIGGER deny_submit BEFORE UPDATE ON ai_image_styles BEGIN SELECT RAISE(ABORT, 'simulated style write failure'); END")
+        await expect(complete(env)).rejects.toThrow('simulated style write failure')
+        expect(await db.prepare('SELECT status FROM dispatch_jobs').first('status')).toBe('running')
+        expect(await db.prepare('SELECT status FROM ai_image_batches').first('status')).toBe('ready_to_submit')
+        expect(await db.prepare("SELECT COUNT(*) AS total FROM ai_image_assets WHERE status = 'approved'").first('total')).toBe(count)
+        expect(await db.prepare('SELECT COUNT(*) AS total FROM dispatch_job_events').first('total')).toBe(0)
+        await db.exec('DROP TRIGGER deny_submit')
+      }
+      const replies = await Promise.all([complete(env), complete(env)])
+      expect(replies.map(reply => reply.status)).toEqual([200, 200])
+      expect(await db.prepare('SELECT status FROM dispatch_jobs').first('status')).toBe('succeeded')
+      expect(await db.prepare('SELECT status FROM ai_image_batches').first('status')).toBe('submitted')
+      expect(await db.prepare("SELECT COUNT(*) AS total FROM ai_image_assets WHERE status = 'submitted'").first('total')).toBe(count)
+      expect(await db.prepare("SELECT COUNT(*) AS total FROM ai_image_styles WHERE status = 'submitted'").first('total')).toBe(styleCount)
+      expect(await db.prepare('SELECT COUNT(*) AS total FROM dispatch_job_events').first('total')).toBe(1)
+      expect(await db.prepare('SELECT current_job_id FROM task_machines').first('current_job_id')).toBeNull()
     })
   })
 
@@ -1914,13 +1964,12 @@ describe('machine routes', () => {
       }),
     }))
 
-    const response = await fetchWorker(
+    const response = await submitCompletionOnD1(state,
       new Request('https://example.test/api/jobs/job-submit-stale/complete', {
         method: 'POST',
         headers: bearer(machineToken),
         body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
       }),
-      fakeEnv(state),
     )
 
     expect(response.status).toBe(200)
@@ -1975,13 +2024,12 @@ describe('machine routes', () => {
       }),
     }))
 
-    const response = await fetchWorker(
+    const response = await submitCompletionOnD1(state,
       new Request('https://example.test/api/jobs/job-submit-partial-stale/complete', {
         method: 'POST',
         headers: bearer(machineToken),
         body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
       }),
-      fakeEnv(state),
     )
 
     expect(response.status).toBe(200)
@@ -2038,13 +2086,12 @@ describe('machine routes', () => {
       }),
     }))
 
-    const response = await fetchWorker(
+    const response = await submitCompletionOnD1(state,
       new Request('https://example.test/api/jobs/job-submit-extra-approved/complete', {
         method: 'POST',
         headers: bearer(machineToken),
         body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
       }),
-      fakeEnv(state),
     )
 
     expect(response.status).toBe(200)
@@ -2099,13 +2146,12 @@ describe('machine routes', () => {
       }),
     }))
 
-    const response = await fetchWorker(
+    const response = await submitCompletionOnD1(state,
       new Request('https://example.test/api/jobs/job-submit-duplicate-plan/complete', {
         method: 'POST',
         headers: bearer(machineToken),
         body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
       }),
-      fakeEnv(state),
     )
 
     expect(response.status).toBe(200)

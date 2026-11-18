@@ -120,3 +120,26 @@ def test_reference_review_keeps_downloaded_report_originals_in_final_package(tmp
     refs=package_images(data_rows=rows,run_params={'reference_dir':str(reference.parent)},runtime_artifact_dir=str(tmp_path/'run'),analyzer=lambda *args:{},log=lambda _:None)
     final=Path(refs[0]);assert len(list((final/CODE/'检测报告原件').glob('*.pdf')))==1
     assert (final/'检测报告探查.json').is_file()
+
+
+def test_copy_without_color_preserves_text_without_creating_a_color(tmp_path):
+    source = {'款号': CODE, '详情页面料标题1': '触感', '详情页面料描述1': '柔软'}
+    rows = [source, {**source, '颜色编码': ''}, {**source, '颜色编码': 'unknown'}]
+    without_color = read_copy(rows)[CODE]
+    assert without_color['colors'] == {}
+    assert without_color['fabric_count'] == 1
+    assert read_copy(rows + [{**source, '颜色编码': 13.0, '颜色': '白黄'}])[CODE]['colors'] == {'00013': '白黄'}
+
+    label = tmp_path / 'label.png'
+    Image.new('RGB', (100, 100), 'white').save(label)
+    package_rows = [{'款号': CODE, '下载结果': '已下载', '本地文件': str(label),
+                     '文件名': label.name, '素材类型': 'still', '云盘路径': f'{CODE}/label.png'}]
+    roots = package_images(
+        data_rows=package_rows, run_params={'copy_file': rows}, runtime_artifact_dir=str(tmp_path / 'run'),
+        analyzer=lambda entries, *_: {entry['id']: {'role': 'hang_tag', 'label_style_code': CODE} for entry in entries},
+        log=lambda _: None,
+    )
+    root = Path(roots[0])
+    assert (root / CODE / '待确认颜色' / '原图').is_dir()
+    assert not list(root.rglob('*00000*'))
+    assert '标签色号待确认' in (root / '待复核.csv').read_text('utf-8-sig')

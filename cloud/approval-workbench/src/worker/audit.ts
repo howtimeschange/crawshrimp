@@ -16,7 +16,20 @@ export async function recordAudit(
   payload: unknown,
   request: Request,
 ): Promise<void> {
-  await env.DB.prepare(
+  await prepareAudit(env, actor, action, resourceType, resourceId, payload, request).run()
+}
+
+export function prepareAudit(
+  env: Env,
+  actor: AuditActor | null,
+  action: string,
+  resourceType: string,
+  resourceId: string,
+  payload: unknown,
+  request: Request,
+  condition?: { sql: string; bindings: unknown[] },
+): D1PreparedStatement {
+  return env.DB.prepare(
     `INSERT INTO audit_logs (
       actor_user_id,
       actor_machine_id,
@@ -27,7 +40,7 @@ export async function recordAudit(
       ip_address,
       user_agent,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?${condition ? ` WHERE ${condition.sql}` : ''}`,
   )
     .bind(
       actor?.userId ?? null,
@@ -39,6 +52,6 @@ export async function recordAudit(
       request.headers.get('cf-connecting-ip') || '',
       request.headers.get('user-agent') || '',
       nowIso(),
+      ...(condition?.bindings || []),
     )
-    .run()
 }

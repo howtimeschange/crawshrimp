@@ -182,8 +182,11 @@ class FakeD1Statement {
       return { results: this.state.templates.filter((template) => template.library_id === libraryId) as T[] }
     }
     if (normalized.includes('from prompt_template_versions')) {
-      const templateIds = new Set(this.params.map((param) => Number(param)))
-      return { results: this.state.versions.filter((version) => templateIds.has(version.template_id)) as T[] }
+      const templates = this.state.templates.filter((template) => template.library_id === Number(this.params[0]) && template.enabled)
+      const latest = templates.flatMap((template) => this.state.versions
+        .filter((version) => version.template_id === template.id)
+        .sort((a, b) => b.version_no - a.version_no || b.id - a.id).slice(0, 1))
+      return { results: latest as T[] }
     }
     return { results: [] }
   }

@@ -218,6 +218,7 @@ function requestBackendApi({
   http,
   port,
   token,
+  getConnection = () => ({ port, token }),
   tokenHeader,
   method,
   urlPath,
@@ -231,38 +232,60 @@ function requestBackendApi({
   const timeoutMs = Math.max(0, Number(options.timeoutMs || 0))
 
   const doRequest = () => new Promise((resolve, reject) => {
+    let deadline
+    let settled = false
+    const finish = (error, payload) => {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      if (error) reject(error)
+      else resolve(payload)
+    }
+    const connection = getConnection()
     const bodyStr = body ? JSON.stringify(body) : null
+    const interrupted = (cause) => {
+      const error = new Error('Backend response interrupted', { cause })
+      error.code = 'ERR_BACKEND_RESPONSE_INTERRUPTED'
+      finish(error)
+    }
     const opts = {
       hostname: '127.0.0.1',
-      port,
+      port: connection.port,
       path: urlPath,
       method,
       headers: {
         'Content-Type': 'application/json',
-        [tokenHeader]: token,
+        [tokenHeader]: connection.token,
         ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
       },
     }
     const req = http.request(opts, (res) => {
       let data = ''
+      res.setEncoding('utf8')
       res.on('data', d => data += d)
+      res.on('aborted', () => interrupted())
+      res.on('error', interrupted)
+      res.on('close', () => {
+        if (!res.complete) interrupted()
+      })
       res.on('end', () => {
         const statusCode = Number(res.statusCode || 0)
         const payload = parsePayload(data)
         if (statusCode >= 400) {
-          reject(backendErrorFromResponse(statusCode, res.statusMessage, payload))
+          finish(backendErrorFromResponse(statusCode, res.statusMessage, payload))
           return
         }
-        resolve(payload)
+        finish(null, payload)
       })
     })
-    req.on('error', reject)
+    req.on('error', error => finish(error))
     if (timeoutMs > 0) {
-      req.setTimeout(timeoutMs, () => {
+      deadline = setTimeout(() => {
         const error = new Error(`Request timed out after ${timeoutMs}ms`)
         error.code = 'ETIMEDOUT'
-        req.destroy(error)
-      })
+        finish(error)
+        req.destroy()
+      }, timeoutMs)
     }
     if (bodyStr) req.write(bodyStr)
     req.end()

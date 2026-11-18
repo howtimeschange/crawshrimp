@@ -8488,6 +8488,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
     # 任务执行前重扫一次适配包，确保磁盘上的 manifest 改动立即生效
     adapter_loader.scan_all()
+    _require_enabled_adapter(adapter_id)
     m = adapter_loader.get_adapter(adapter_id)
     if not m:
         raise ValueError(f"Adapter not found: {adapter_id}")
@@ -12785,7 +12786,8 @@ def install_adapter(req: InstallRequest):
             raise HTTPException(400, "Provide 'path' or 'zip_base64'")
 
         # Register scheduler jobs for newly installed adapter
-        sched_module.register_adapter(m, _run_scheduled_task)
+        if adapter_loader.is_enabled(m.id):
+            sched_module.register_adapter(m, _run_scheduled_task)
         adapter_meta = adapter_loader.get_install_metadata(m.id)
         return {
             "ok": True,
@@ -13264,6 +13266,11 @@ def _refresh_task_schedule_registration(schedule: dict) -> None:
     sched_module.register_task_schedule(schedule, _run_task_schedule)
 
 
+def _require_enabled_adapter(adapter_id: str) -> None:
+    if adapter_loader.is_disabled(adapter_id):
+        raise HTTPException(409, f"适配包已停用：{adapter_id}")
+
+
 def _create_instance_for_task_schedule(schedule_uid: str) -> dict:
     schedule = data_sink.get_task_schedule_detail(schedule_uid)
     if not schedule or int(schedule.get("archived") or 0) == 1:
@@ -13271,6 +13278,7 @@ def _create_instance_for_task_schedule(schedule_uid: str) -> dict:
     if int(schedule.get("enabled") or 0) != 1:
         raise HTTPException(409, "定时任务已停用，无法运行")
 
+    _require_enabled_adapter(str(schedule.get("adapter_id") or ""))
     params = _normalize_schedule_params(
         str(schedule.get("adapter_id") or ""),
         str(schedule.get("task_id") or ""),
@@ -13648,7 +13656,10 @@ async def _run_scheduled_task(adapter_id: str, task_id: str):
         logger.warning("Skip scheduled task %s because a run is already active", jid)
         return
 
-    await _run_scheduled_controlled_task(adapter_id, task_id, {})
+    try:
+        await _run_scheduled_controlled_task(adapter_id, task_id, {})
+    except HTTPException as exc:
+        logger.warning("Skip scheduled task %s: %s", jid, exc.detail)
 
 
 async def _run_task_schedule(schedule_uid: str):
@@ -13676,9 +13687,13 @@ async def _run_task_schedule(schedule_uid: str):
         )
         return
 
-    await _run_scheduled_controlled_task(
-        adapter_id, task_id, dict(schedule_run.get("run_params") or {}),
-    )
+    try:
+        await _run_scheduled_controlled_task(
+            adapter_id, task_id, dict(schedule_run.get("run_params") or {}),
+        )
+    except HTTPException as exc:
+        data_sink.update_task_instance(schedule_run["instance_uid"], status="failed", summary={"error": str(exc.detail)})
+        data_sink.record_task_schedule_run(schedule_uid, instance_uid=schedule_run["instance_uid"], status="skipped", error=str(exc.detail))
 
 
 async def _run_scheduled_controlled_task(adapter_id: str, task_id: str, params: dict):
@@ -13742,6 +13757,7 @@ async def _run_task_background(
 
 
 def _create_task_run_handle(adapter_id: str, task_id: str, params: dict, runtime_options: dict) -> asyncio.Task:
+    _require_enabled_adapter(adapter_id)
     run_params = dict(params or {})
     instance_uid = str(run_params.get("__task_instance_uid") or "").strip()
     control_jids = _run_jids(adapter_id, task_id, instance_uid)
@@ -13820,6 +13836,7 @@ async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] 
     m = adapter_loader.get_adapter(adapter_id)
     if not m:
         raise HTTPException(404, f"Adapter not found: {adapter_id}")
+    _require_enabled_adapter(adapter_id)
     if not any(t.id == task_id for t in m.tasks):
         raise HTTPException(404, f"Task not found: {task_id}")
 

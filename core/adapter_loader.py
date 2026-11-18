@@ -272,8 +272,7 @@ def scan_all() -> List[AdapterManifest]:
         _adapter_dirs = current_adapter_dirs
         _install_meta = current_install_meta
         for adapter_id in _adapters:
-            if adapter_id not in _enabled:
-                _enabled[adapter_id] = True
+            _enabled[adapter_id] = current_install_meta[adapter_id].get("enabled") is not False
         for adapter_id in list(_enabled.keys()):
             if adapter_id not in _adapters:
                 _enabled.pop(adapter_id, None)
@@ -301,8 +300,15 @@ def is_enabled(adapter_id: str) -> bool:
     return _enabled.get(adapter_id, False)
 
 
+def is_disabled(adapter_id: str) -> bool:
+    return _enabled.get(adapter_id) is False
+
+
 def set_enabled(adapter_id: str, enabled: bool) -> None:
-    _enabled[adapter_id] = enabled
+    with _scan_lock:
+        metadata = get_install_metadata(adapter_id)
+        _write_install_metadata(adapter_id, {**metadata, "enabled": enabled})
+        _enabled[adapter_id] = enabled
 
 
 def install_from_dir(source_dir: str, install_mode: str = "copy", preserve_existing_link: bool = False) -> AdapterManifest:
@@ -326,7 +332,7 @@ def _install_from_dir_locked(source_dir: str, install_mode: str, preserve_existi
         if dest.exists() or dest.is_symlink():
             _adapter_dirs[linked_manifest.id] = dest
         _install_meta[linked_manifest.id] = existing_meta
-        _enabled[linked_manifest.id] = True
+        _enabled[linked_manifest.id] = existing_meta.get("enabled") is not False
         logger.info("保留 link 安装的适配包: %s", linked_manifest.id)
         return linked_manifest
 
@@ -335,6 +341,7 @@ def _install_from_dir_locked(source_dir: str, install_mode: str, preserve_existi
         if existing_manifest and _version_key(existing_manifest.version) > _version_key(m.version):
             metadata = {
                 "adapter_id": existing_manifest.id,
+                "enabled": existing_meta.get("enabled") is not False,
                 "install_mode": "copy",
                 "runtime_path": _safe_realpath(dest),
                 "source_path": _safe_realpath(dest),
@@ -342,7 +349,7 @@ def _install_from_dir_locked(source_dir: str, install_mode: str, preserve_existi
             _write_install_metadata(existing_manifest.id, metadata)
             _adapters[existing_manifest.id] = existing_manifest
             _adapter_dirs[existing_manifest.id] = dest
-            _enabled[existing_manifest.id] = True
+            _enabled[existing_manifest.id] = metadata["enabled"]
             logger.info(
                 "保留较新的已安装适配包: %s v%s >= built-in v%s",
                 existing_manifest.id,
@@ -365,6 +372,7 @@ def _install_from_dir_locked(source_dir: str, install_mode: str, preserve_existi
     switched = False
     metadata = {
         "adapter_id": m.id,
+        "enabled": existing_meta.get("enabled") is not False,
         "install_mode": install_mode,
         "runtime_path": str(src) if install_mode == "link" else str(dest.parent.resolve() / dest.name),
         "source_path": _safe_realpath(src),
@@ -400,7 +408,7 @@ def _install_from_dir_locked(source_dir: str, install_mode: str, preserve_existi
             shutil.rmtree(transaction_dir, ignore_errors=True)
     _adapters[m.id] = m
     _adapter_dirs[m.id] = dest
-    _enabled[m.id] = True
+    _enabled[m.id] = metadata["enabled"]
     logger.info("适配包已安装: %s v%s (%s)", m.id, m.version, install_mode)
     return m
 
