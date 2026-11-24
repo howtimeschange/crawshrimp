@@ -203,6 +203,22 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
         })
         self.assertNotIn("ratio", i2v["parameters"])
 
+    def test_seedance_variants_reach_cli_payload_with_their_own_limits(self):
+        for model, info in svc.SEEDANCE_MODELS.items():
+            with self.subTest(model=model):
+                provider, resolved = svc.resolve_model("seedance", info.id)
+                self.assertEqual(resolved, model)
+                params = svc.normalize_parameters(provider, resolved, {"duration": info.max_duration})
+                payload = svc.build_provider_payload({
+                    "provider": provider, "model": resolved, "prompt": "an orange boat", "parameters": params,
+                })
+                self.assertEqual((payload["model"], payload["duration"]), (model, info.max_duration))
+                with self.assertRaises(svc.AiVideoError):
+                    svc.normalize_parameters(provider, resolved, {"duration": info.max_duration + 1})
+                if "1080p" not in info.resolutions:
+                    with self.assertRaises(svc.AiVideoError):
+                        svc.normalize_parameters(provider, resolved, {"resolution": "1080p"})
+
     def test_provider_and_model_must_match_exactly(self):
         self.assertEqual(
             svc.resolve_model("seedance", "seedance-2.0"),
@@ -441,6 +457,18 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
             },
             "parameters": {"resolution": "720P", "watermark": False},
         })
+
+    def test_semir_generation_key_is_scoped_to_its_gateway_for_uploads(self):
+        video = {"bailian_api_key": "gateway-key", "bailian_base_url": "https://ai-aigw.semir.com/bailian-vedio/api/v1"}
+        with patch.object(svc, "load_config", return_value={"ai": {"video": video}}):
+            self.assertEqual(svc.bailian_upload_api_key(), "")
+            video["bailian_uploads_url"] = video["bailian_base_url"] + "/uploads"
+            self.assertEqual(svc.bailian_upload_api_key(), "gateway-key")
+
+    def test_gateway_rate_limit_is_actionable(self):
+        code, message = svc.map_provider_error("seedance", "Ark API request failed with HTTP 429: Too many requests")
+        self.assertEqual(code, "PROVIDER_RATE_LIMITED")
+        self.assertIn("429", message)
 
     def test_bailian_temp_upload_prefers_dedicated_upload_key(self):
         image = self._write_image("kling-first-frame.jpg")

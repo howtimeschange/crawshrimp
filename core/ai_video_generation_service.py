@@ -19,7 +19,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, NamedTuple, Optional
 from uuid import uuid4
 
 from cryptography.exceptions import InvalidTag
@@ -45,7 +45,24 @@ EDITABLE_STATUSES = frozenset({"draft", "needs_config", "failed", "expired"})
 ACTIVE_STATUSES = frozenset({"queued", "running", "downloading"})
 DELETE_BLOCKED_STATUSES = frozenset({"queued", "running", "downloading"})
 
+
+class SeedanceModel(NamedTuple):
+    id: str
+    label: str
+    max_duration: int
+    resolutions: tuple[str, ...]
+
+
 SEEDANCE_MODEL = "doubao-seedance-2-0-260128"
+_SEEDANCE_HD = ("480p", "720p", "1080p")
+_SEEDANCE_720 = ("480p", "720p")
+SEEDANCE_MODELS = {
+    SEEDANCE_MODEL: SeedanceModel("seedance-2.0", "Seedance 2.0", 15, _SEEDANCE_HD),
+    "doubao-seedance-2-5-260628": SeedanceModel("seedance-2.5", "Seedance 2.5", 30, _SEEDANCE_HD),
+    "doubao-seedance-2-5-flash-261115": SeedanceModel("seedance-2.5-flash", "Seedance 2.5 Flash", 30, _SEEDANCE_720),
+    "doubao-seedance-2-0-fast-260128": SeedanceModel("seedance-2.0-fast", "Seedance 2.0 Fast", 15, _SEEDANCE_720),
+    "doubao-seedance-2-0-mini-260615": SeedanceModel("seedance-2.0-mini", "Seedance 2.0 Mini", 15, _SEEDANCE_720),
+}
 KLING_V3_MODEL = "kling/kling-v3-video-generation"
 KLING_OMNI_MODEL = "kling/kling-v3-omni-video-generation"
 PIXVERSE_MOTIONCONTROL_MODEL = "pixverse/pixverse-motioncontrol"
@@ -62,7 +79,7 @@ BAILIAN_GATEWAY_MODELS = frozenset({
 })
 BAILIAN_MODEL_IDS = frozenset(set(HAPPYHORSE_MODELS.keys()) | set(BAILIAN_GATEWAY_MODELS))
 UI_MODEL_IDS = {
-    "seedance-2.0": {"provider": "seedance", "model": SEEDANCE_MODEL},
+    **{info.id: {"provider": "seedance", "model": model} for model, info in SEEDANCE_MODELS.items()},
     "happyhorse-1.1-t2v": {"provider": "happyhorse", "model": "happyhorse-1.1-t2v"},
     "happyhorse-1.1-i2v": {"provider": "happyhorse", "model": "happyhorse-1.1-i2v"},
     "happyhorse-1.1-r2v": {"provider": "happyhorse", "model": "happyhorse-1.1-r2v"},
@@ -434,6 +451,21 @@ def bailian_upload_policy_url() -> str:
     return configured or env_value or BAILIAN_TEMP_UPLOAD_POLICY_URL
 
 
+def bailian_upload_api_key() -> str:
+    secrets = provider_secrets()
+    if secrets.get("bailian_upload"):
+        return secrets["bailian_upload"]
+    base = _compact(_nested_config_value(load_config(), "ai.video.bailian_base_url"))
+    generation = urllib.parse.urlsplit(base or BAILIAN_TEMP_UPLOAD_POLICY_URL)
+    uploads = urllib.parse.urlsplit(bailian_upload_policy_url())
+    same_origin = (generation.scheme, generation.netloc) == (uploads.scheme, uploads.netloc)
+    official_hosts = all(
+        url.scheme == "https" and (url.hostname or "").endswith(".aliyuncs.com")
+        for url in (generation, uploads)
+    )
+    return secrets.get("happyhorse", "") if same_origin or official_hosts else ""
+
+
 def provider_status() -> dict:
     cfg = load_config()
     secrets = provider_secrets()
@@ -456,6 +488,7 @@ def provider_status() -> dict:
             "pricingEstimateAvailable": not bailian_uses_semir_gateway,
         },
         "bailianUpload": {
+            "available": bool(bailian_upload_api_key()),
             "configured": bool(secrets["bailian_upload"]),
             "source": source_for("ai.video.bailian_upload_api_key"),
             "policyUrlConfigured": bool(_compact(_nested_config_value(cfg, "ai.video.bailian_uploads_url"))),
@@ -705,10 +738,9 @@ def _with_bailian_temp_uploaded_assets(normalized: Mapping[str, Any]) -> dict:
     assets = [dict(asset) for asset in (normalized.get("assets") or []) if isinstance(asset, Mapping)]
     if not assets:
         return dict(normalized)
-    secrets = provider_secrets()
-    api_key = secrets.get("bailian_upload") or secrets.get("happyhorse") or ""
+    api_key = bailian_upload_api_key()
     if not api_key:
-        raise AiVideoError("百炼 OSS 上传 API Key 未配置，无法上传本地素材", code="CREDENTIAL_MISSING")
+        raise AiVideoError("使用本地素材需配置百炼 OSS 上传 Key，也可直接填写素材 URL", code="CREDENTIAL_MISSING")
     prepared = dict(normalized)
     params = dict(prepared.get("parameters") or {})
     if model in KLING_MODELS:
@@ -827,7 +859,7 @@ def _run_cli(
         raise AiVideoError(
             mapped or detail,
             code=code,
-            retryable=code in {"PROVIDER_TIMEOUT", "PROVIDER_REJECTED"},
+            retryable=code in {"PROVIDER_TIMEOUT", "PROVIDER_REJECTED", "PROVIDER_RATE_LIMITED"},
             provider_message=detail,
             safe_suggestion=_safe_suggestion_for(code),
             http_status=500,
@@ -843,6 +875,8 @@ def _run_cli(
 
 def map_provider_error(provider: str, text: str) -> tuple[str, str]:
     raw = str(text or "")
+    if "HTTP 429" in raw:
+        return "PROVIDER_RATE_LIMITED", "视频网关限流（HTTP 429），请稍后重试"
     if "ModelNotOpen" in raw:
         return "NEEDS_CONFIG", "模型未开通，请到设置或方舟控制台开通后重试"
     if "SetLimitExceeded" in raw:
@@ -864,6 +898,7 @@ def _safe_suggestion_for(code: str) -> str:
         "CREDENTIAL_MISSING": "到设置中的 AI 能力配置对应密钥",
         "NEEDS_CONFIG": "配置后可继续提交当前 Job",
         "UNKNOWN_SUBMIT_RESULT": "为避免重复扣费，本次不会自动重提；请确认后复用参数新建任务",
+        "PROVIDER_RATE_LIMITED": "请稍后重试，或向网关管理员核对当前 Key 的限额",
         "PROVIDER_REJECTED": "查看原因后调整素材或 Prompt",
         "PRIVACY_BLOCKED": "不绕过平台保护，可改用商品图和原创人物描述重试",
         "PROVIDER_TIMEOUT": "可稍后恢复查询或复用参数新建任务",
@@ -883,9 +918,9 @@ def resolve_model(provider: str, model: str) -> tuple[str, str]:
             raise AiVideoError("provider 与 model 不匹配")
         return provider_value, meta["model"]
     if provider_value == "seedance":
-        if model_value != SEEDANCE_MODEL:
-            raise AiVideoError("Seedance 模型必须是 doubao-seedance-2-0-260128")
-        return "seedance", SEEDANCE_MODEL
+        if model_value not in SEEDANCE_MODELS:
+            raise AiVideoError("不支持的 Seedance 视频模型")
+        return "seedance", model_value
     if provider_value == "happyhorse":
         if model_value not in BAILIAN_MODEL_IDS:
             raise AiVideoError("百炼视频模型必须是 HappyHorse、Kling v3、Kling Omni 或 PixVerse Motion Control")
@@ -897,6 +932,8 @@ def model_short(model: str) -> str:
     value = _compact(model)
     if value == SEEDANCE_MODEL:
         return "seedance2"
+    if value in SEEDANCE_MODELS:
+        return SEEDANCE_MODELS[value].id
     if value.startswith("happyhorse-"):
         return value.replace("happyhorse-", "hh-")
     if value == KLING_V3_MODEL:
@@ -1121,14 +1158,15 @@ def normalize_parameters(provider: str, model: str, parameters: Optional[Mapping
         if ratio not in SEEDANCE_RATIOS:
             raise AiVideoError("Seedance ratio 不在允许枚举内")
         resolution = _compact(source.get("resolution")) or "720p"
-        if resolution not in {"480p", "720p", "1080p"}:
-            raise AiVideoError("Seedance resolution 仅支持 480p/720p/1080p")
+        info = SEEDANCE_MODELS[model]
+        if resolution not in info.resolutions:
+            raise AiVideoError(f"{info.label} 清晰度仅支持 {'/'.join(info.resolutions)}")
         try:
             duration = int(source.get("duration") if source.get("duration") is not None else 5)
         except Exception as exc:
             raise AiVideoError("duration 必须是整数") from exc
-        if not 4 <= duration <= 15:
-            raise AiVideoError("Seedance duration 必须是 4-15 的整数")
+        if not 4 <= duration <= info.max_duration:
+            raise AiVideoError(f"{info.label} 时长需为 4-{info.max_duration} 秒的整数")
         generate_audio = source.get("generateAudio")
         if generate_audio is None:
             generate_audio = source.get("generate_audio", True)
@@ -1463,7 +1501,7 @@ def build_seedance_payload(normalized: Mapping[str, Any]) -> dict:
         })
     params = normalized["parameters"]
     return {
-        "model": SEEDANCE_MODEL,
+        "model": normalized["model"],
         "content": content,
         "generate_audio": bool(params.get("generateAudio", True)),
         "ratio": params.get("ratio") or "9:16",
@@ -2264,11 +2302,13 @@ def get_config() -> dict:
         "data": {
             "providers": status,
             "models": [
-                {
-                    "id": "seedance-2.0",
+                *({
+                    "id": info.id,
                     "provider": "seedance",
-                    "model": SEEDANCE_MODEL,
-                    "label": "Seedance 2.0",
+                    "model": model,
+                    "label": info.label,
+                    "maxDuration": info.max_duration,
+                    "resolutions": list(info.resolutions),
                     "defaults": {
                         "ratio": "9:16",
                         "resolution": "720p",
@@ -2277,7 +2317,7 @@ def get_config() -> dict:
                         "watermark": False,
                     },
                     "configured": status["seedance"]["configured"],
-                },
+                } for model, info in SEEDANCE_MODELS.items()),
                 {
                     "id": "happyhorse-1.1-t2v",
                     "provider": "happyhorse",

@@ -61,7 +61,10 @@ class AiVideoGenerationApiTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         models = result["data"]["models"]
         self.assertEqual(models[0]["id"], "seedance-2.0")
-        self.assertEqual(len(models), 7)
+        self.assertEqual(
+            {item["label"] for item in models if item["provider"] == "seedance"},
+            {"Seedance 2.0", "Seedance 2.5", "Seedance 2.5 Flash", "Seedance 2.0 Fast", "Seedance 2.0 Mini"},
+        )
         self.assertIn("kling/kling-v3-video-generation", {item["id"] for item in models})
         self.assertIn("pixverse/pixverse-motioncontrol", {item["id"] for item in models})
 

@@ -26,6 +26,18 @@ after(async () => {
   await vite?.close()
 })
 
+function videoConfig(seedance = true, bailian = true) {
+  return {
+    providers: { seedance: { configured: seedance, cliReady: true }, happyhorse: { configured: bailian, cliReady: true } },
+    models: [
+      { id: 'seedance-2.0', model: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0', provider: 'seedance', configured: seedance },
+      { id: 'seedance-2.5', model: 'doubao-seedance-2-5-260628', label: 'Seedance 2.5', provider: 'seedance', configured: seedance },
+      ...['happyhorse-1.1-t2v', 'kling/kling-v3-video-generation', 'kling/kling-v3-omni-video-generation', 'pixverse/pixverse-motioncontrol']
+        .map(model => ({ model, provider: 'happyhorse', configured: bailian })),
+    ],
+  }
+}
+
 async function setupWorkbench(cs = {}, { localStorage, onOpenSettings, windowOverrides } = {}) {
   globalThis.window = {
     cs,
@@ -47,6 +59,8 @@ async function setupWorkbench(cs = {}, { localStorage, onOpenSettings, windowOve
     },
   }
   await renderToString(createSSRApp(CapturingWorkbench, { onOpenSettings }))
+  bindings.config.value = videoConfig()
+  bindings.selectProvider('seedance-2.5', false)
   return bindings
 }
 
@@ -85,6 +99,8 @@ function setupLiveWorkbench(cs = {}) {
   } finally {
     console.warn = originalWarn
   }
+  bindings.config.value = videoConfig()
+  bindings.selectProvider('seedance-2.5', false)
   return { workbench: bindings, stop: () => scope.stop() }
 }
 
@@ -190,30 +206,34 @@ test('needs-config jobs remain editable and retryable after credentials are conf
   assert.equal(workbench.canRetry(job), false)
 })
 
-test('unready provider configuration exposes the existing settings recovery event', async () => {
+test('settings changes refresh the model picker, its default and its empty state', async () => {
+  let config = videoConfig(false, false)
   let openSettingsCalls = 0
-  const workbench = await setupWorkbench({}, {
+  const workbench = await setupWorkbench({ async getAiVideoConfig() { return { data: config } } }, {
     onOpenSettings() { openSettingsCalls += 1 },
   })
-  workbench.config.value = {
-    providers: {
-      seedance: { configured: false, cliReady: true },
-      happyhorse: { configured: true, cliReady: true },
-    },
-  }
-
-  assert.match(workbench.configHint.value, /凭据未配置/)
+  await workbench.loadConfig()
+  assert.deepEqual(workbench.modelOptions.value, [])
+  assert.equal(workbench.activeMeta.value, undefined)
   workbench.openVideoSettings()
   assert.equal(openSettingsCalls, 1)
 
-  workbench.config.value.providers.seedance.configured = true
-  assert.equal(workbench.configHint.value, '')
+  config = videoConfig(false, true)
+  await workbench.loadConfig()
+  assert.equal(workbench.form.provider, 'happyhorse')
+  assert.equal(workbench.modelOptions.value.length, 4)
 
-  const source = fs.readFileSync(
-    path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
-    'utf8',
-  )
-  assert.match(source, /v-if="configHint"[\s\S]*@click="openVideoSettings"/)
+  config = videoConfig(true, true)
+  await workbench.loadConfig()
+  assert.equal(workbench.form.provider, 'seedance-2.5')
+  workbench.selectProvider('kling-v3')
+  await workbench.loadConfig()
+  assert.equal(workbench.form.provider, 'kling-v3')
+
+  config = videoConfig(true, false)
+  await workbench.loadConfig()
+  assert.equal(workbench.form.provider, 'seedance-2.5')
+  assert.deepEqual(workbench.modelOptions.value.map(item => item.id), ['seedance', 'seedance-2.5'])
 })
 
 test('KeepAlive activation refreshes state and deactivation stops background polling', async () => {
@@ -595,22 +615,26 @@ test('model selection uses the current model card as an expandable dropdown', as
   assert.doesNotMatch(source, /v-model="form\.provider"/)
 })
 
-test('provider-specific media sections keep advanced URL inputs collapsed by default', async () => {
+test('provider-specific media sections expand URL inputs when local uploads are unavailable', async () => {
   const source = fs.readFileSync(
     path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
     'utf8',
   )
   assert.match(source, /v-if="showPromptInput"/)
   assert.match(source, /<section v-if="!isPixVerse" class="avg-section">/)
-  assert.match(source, /<details class="avg-advanced-panel">/)
+  assert.match(source, /<details class="avg-advanced-panel" :open="!localUploadAvailable">/)
   assert.match(source, /Kling 素材 URL/)
   assert.match(source, /URL \/ oss URL 输入/)
-  assert.doesNotMatch(source, /<details[^>]*open/)
+  const workbench = await setupWorkbench()
+  assert.equal(workbench.localUploadAvailable.value, true)
+  workbench.config.value = { providers: { bailianUpload: { available: false } } }
+  assert.equal(workbench.localUploadAvailable.value, false)
 })
 
 test('Semir Bailian gateway hides local cost estimate', async () => {
   const workbench = await setupWorkbench()
   workbench.config.value = {
+    ...videoConfig(),
     providers: {
       happyhorse: {
         configured: true,
@@ -1500,17 +1524,17 @@ test('modal and history surfaces make background and hidden drawer controls iner
   assert.match(source, /class="avg-drawer"[\s\S]*?:inert="openHistory \? undefined : true"/)
 })
 
-test('video task covers use a fixed 3:4 portrait frame', () => {
+test('video task cards constrain the preview to the available column width', () => {
   const source = fs.readFileSync(
     path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
     'utf8',
   )
 
-  assert.match(source, /\.avg-thumb\s*\{[\s\S]*?aspect-ratio:\s*3\s*\/\s*4;/)
+  assert.match(source, /\.avg-thumb\s*\{[\s\S]*?aspect-ratio:\s*16\s*\/\s*10;/)
   assert.doesNotMatch(source, /\.avg-thumb\s*\{[\s\S]*?height:\s*168px;/)
 })
 
-test('task cards omit duplication and keep actions in one horizontal row', () => {
+test('task cards omit duplication and let actions wrap inside the card', () => {
   const source = fs.readFileSync(
     path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
     'utf8',
@@ -1520,6 +1544,22 @@ test('task cards omit duplication and keep actions in one horizontal row', () =>
   assert.match(source, /@click\.stop="requestDeleteJob\(job\)"/)
   assert.match(source, /@click="confirmDeleteJob\(false\)"[\s\S]*?仅删除记录/)
   assert.match(source, /@click="confirmDeleteJob\(true\)"[\s\S]*?删除本地文件/)
-  assert.match(source, /\.avg-task-actions\s*\{[\s\S]*?flex-wrap:\s*nowrap;/)
-  assert.match(source, /\.avg-task-actions\s*\{[\s\S]*?overflow-x:\s*auto;/)
+  assert.match(source, /\.avg-task-actions\s*\{[\s\S]*?flex-wrap:\s*wrap;/)
+})
+
+test('Seedance variants retain their model and parameter limits when reusing a job', async () => {
+  const workbench = await setupWorkbench()
+  const model = 'doubao-seedance-2-5-flash-261115'
+  workbench.config.value = { models: [
+    { id: 'seedance-2.0', provider: 'seedance', configured: true, model: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0' },
+    { id: 'seedance-2.5-flash', provider: 'seedance', configured: true, model, label: 'Seedance 2.5 Flash',
+      maxDuration: 30, resolutions: ['480p', '720p'] },
+  ] }
+  workbench.reuseParams({ provider: 'seedance', model, prompt: 'an orange boat', parameters: { duration: 25 } })
+  assert.equal(workbench.resolvedModelId.value, model)
+  assert.equal(workbench.form.duration, 25)
+  assert.equal(workbench.durationOptions.value.at(-1), 30)
+  assert.deepEqual(workbench.resolutionOptions.value, ['480p', '720p'])
+  assert.equal(workbench.modelLabel(model), 'Seedance 2.5 Flash')
+  assert.equal(workbench.showCostEstimate.value, false)
 })

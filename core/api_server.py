@@ -10442,13 +10442,8 @@ def _bala_is_provider_media_url(value: object) -> bool:
     return parsed.scheme == "oss" and bool(parsed.netloc) and bool(parsed.path.strip("/"))
 
 
-def _bala_bailian_upload_api_key() -> str:
-    secrets = ai_video_generation_service.provider_secrets()
-    return str(secrets.get("bailian_upload") or secrets.get("happyhorse") or "").strip()
-
-
 def _upload_bala_bailian_asset(*, model: str, path: Path, provider_label: str) -> str:
-    api_key = _bala_bailian_upload_api_key()
+    api_key = ai_video_generation_service.bailian_upload_api_key()
     if not api_key:
         raise HTTPException(400, f"{provider_label} 本地素材上传需要先在 AI 能力配置 OSS 上传百炼 key")
     try:

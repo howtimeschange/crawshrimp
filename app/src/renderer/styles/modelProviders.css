@@ -1,0 +1,84 @@
+/* Shared provider list and editor skin for text, image and video settings. */
+.model-provider-settings { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.model-provider-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); }
+.model-provider-toolbar p { margin: 0; color: var(--text2); font-size: 12px; line-height: 1.65; max-width: 70ch; }
+.model-provider-toolbar button { flex-shrink: 0; }
+.model-provider-list { display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--border); }
+.model-provider-row { display: flex; align-items: center; gap: 14px; padding: 18px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; min-height: 100px; background: transparent; }
+.model-provider-content { display: flex; align-items: flex-start; gap: 12px; min-width: 0; flex: 1; }
+.model-provider-logo { width: 76px; height: 36px; flex: 0 0 76px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 6px; padding: 0; background: var(--bg3); color: var(--text); font-size: 13px; font-weight: 600; letter-spacing: 0; overflow: hidden; }
+.model-provider-logo img { display: block; max-width: 68px; width: auto; height: 28px; object-fit: contain; }
+.model-provider-main { min-width: 0; flex: 1; }
+.model-provider-heading { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.model-provider-heading h4, .model-provider-heading .model-provider-name { font-size: 14px; font-weight: 600; line-height: 1.5; margin: 0; color: var(--text); }
+.model-provider-status, .model-provider-tag { padding: 2px 6px; border-radius: 5px; font-size: 11px; line-height: 1.5; font-weight: 500; color: var(--text2); background: var(--bg3); }
+.model-provider-status.ready { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+.model-provider-endpoint { font-size: 12px; line-height: 1.6; color: var(--text2); margin: 7px 0 0; overflow-wrap: anywhere; }
+.model-provider-endpoint code { color: var(--text2); font: inherit; user-select: text; }
+.model-provider-models { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.model-provider-models > span { font-size: 11px; line-height: 1.5; font-weight: 400; border-radius: 4px; background: var(--bg2); border: 0; padding: 2px 6px; color: var(--text2); overflow-wrap: anywhere; }
+.model-provider-actions { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; flex-wrap: wrap; max-width: 200px; flex-shrink: 0; }
+.model-provider-actions > small { width: 100%; text-align: right; font-size: 11px; font-weight: 400; line-height: 1.5; color: var(--text2); }
+.model-provider-actions button, .model-provider-toolbar button { min-height: 36px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 12px; font-weight: 500; line-height: 1.5; cursor: pointer; }
+.model-provider-toolbar button.primary, .model-provider-toolbar button.btn-orange { background: var(--settings-primary-bg, var(--orange)); border-color: transparent; color: var(--on-orange); }
+.model-provider-actions button:hover, .model-provider-toolbar button:hover { background: var(--bg3); }
+.model-provider-toolbar button.primary:hover:not(:disabled), .model-provider-toolbar button.btn-orange:hover:not(:disabled) { background: var(--settings-primary-hover, var(--orange-hover)); }
+.model-provider-note { font-size: 12px; line-height: 1.65; color: var(--text2); margin: 0; }
+.model-provider-auxiliary { margin-top: 8px; }
+.model-provider-auxiliary > h4 { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+.model-config-backdrop { z-index: var(--settings-modal-layer, 40); background: var(--scrim); backdrop-filter: none; }
+.model-config-dialog { margin: auto; width: min(var(--model-dialog-width, 760px), calc(100vw - 32px)); max-width: calc(100vw - 32px); max-height: min(780px, calc(100vh - 40px)); padding: 0; color: var(--text); background: var(--bg2); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: none; overflow: hidden; }
+.model-config-dialog::backdrop { background: var(--scrim); }
+.model-config-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px 24px; border-bottom: 1px solid var(--border); }
+.model-config-header h3 { font-size: 20px; font-weight: 600; line-height: 1.4; margin: 0; }
+.model-config-dialog .model-config-header p { color: var(--text2); font-size: 12px; line-height: 1.5; margin: 0 0 5px; }
+.model-config-body { display: flex; flex-direction: column; gap: 20px; padding: 24px; min-height: 0; overflow-y: auto; }
+.model-config-body label { display: flex; flex-direction: column; gap: 8px; color: var(--text); font-size: 13px; line-height: 1.5; }
+.model-config-body input, .model-config-body textarea, .model-config-body select { min-height: 40px; width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; line-height: 1.5; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+.model-config-body input::placeholder, .model-config-body textarea::placeholder { color: var(--text2); opacity: 1; }
+.model-config-body .help, .model-config-body .field-hint { font-size: 12px; line-height: 1.65; color: var(--text2); margin: 0; overflow-wrap: anywhere; }
+.model-config-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; background: var(--bg2); border-top: 1px solid var(--border); }
+.model-config-dialog button { min-height: 36px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; font-size: 12px; font-weight: 500; line-height: 1.5; cursor: pointer; }
+.model-config-dialog button.primary, .model-config-dialog button.btn-orange { background: var(--settings-primary-bg, var(--orange)); color: var(--on-orange); border-color: transparent; }
+.model-config-dialog button:disabled { opacity: .5; cursor: default; }
+.model-config-dialog button:focus-visible, .model-config-body :is(input,textarea,select):focus-visible, .model-provider-settings button:focus-visible { outline: 2px solid var(--orange); outline-offset: 3px; }
+@container (max-width: 680px) {
+  .model-provider-toolbar { flex-wrap: wrap; }
+  .model-provider-row { flex-wrap: wrap; }
+  .model-provider-content { flex: 1 0 100%; width: 100%; }
+  .model-provider-actions { max-width: none; margin-left: 88px; align-items: center; justify-content: flex-start; }
+  .model-provider-actions > small { width: auto; text-align: left; }
+}
+@media (max-width: 680px) {
+  .model-config-header { padding: 16px 18px; }
+  .model-config-body { padding: 18px; }
+  .model-config-footer { padding: 14px 18px; }
+  .model-provider-row { flex-wrap: wrap; }
+  .model-provider-content { flex: 1 0 100%; width: 100%; }
+  .model-provider-actions { max-width: none; margin-left: 88px; align-items: center; justify-content: flex-start; }
+  .model-provider-actions > small { width: auto; text-align: left; }
+}
+
+.model-config-dialog .model-config-body .help { color: var(--text2); }
+
+:global(:root[data-theme="light"]) .model-config-dialog { --settings-primary-bg: var(--orange-strong); --settings-primary-hover: var(--orange-text); }
+:global(:root[data-theme="dark"]) .model-config-dialog { --settings-primary-bg: var(--orange); --settings-primary-hover: var(--orange-hover); }
+.model-config-dialog:not(dialog), dialog.model-config-dialog[open] { display: flex; flex-direction: column; }
+.model-config-dialog > form { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.model-config-dialog .model-config-header { flex-shrink: 0; padding: 20px 24px; }
+.model-config-dialog .model-config-body { flex: 1; padding: 24px; }
+.model-config-dialog .model-config-footer { flex-shrink: 0; position: static; padding: 16px 24px; }
+@media (max-width: 680px) {
+  .model-config-dialog .model-config-header { padding: 16px 18px; }
+  .model-config-dialog .model-config-body { padding: 18px; }
+  .model-config-dialog .model-config-footer { padding: 14px 18px; }
+}
+
+.model-config-dialog button.primary:hover:not(:disabled), .model-config-dialog button.btn-orange:hover:not(:disabled) { background: var(--settings-primary-hover, var(--orange-hover)); }
+
+/* Keep native dialogs centered even after the app-wide margin reset. */
+dialog.model-config-dialog { inset: 0; margin: auto; height: fit-content; }
+.model-config-dialog .model-config-header > button { display: inline-flex; align-items: center; justify-content: center; }
+.model-config-dialog[open] { animation: model-dialog-enter 180ms cubic-bezier(.16, 1, .3, 1); }
+@keyframes model-dialog-enter { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .model-config-dialog[open] { animation: none; } }

@@ -450,134 +450,17 @@
 
         </section>
 
-        <section v-else-if="activePanelId === 'ai-video'" key="ai-video" class="panel">
+        <section v-else-if="activePanelId === 'ai-video'" key="ai-video" class="panel video-provider-panel">
           <div class="panel-head">
             <div>
-              <p class="panel-kicker">AI 视频</p>
-              <h3>视频模型 Provider</h3>
+              <h3>视频模型</h3>
+              <p class="panel-description">按服务商管理视频生成连接与素材上传配置。</p>
             </div>
-            <span :class="['badge', hasAnyFieldConfigured(aiVideoKeyFields) ? 'on' : 'off']">
-              {{ hasAnyFieldConfigured(aiVideoKeyFields) ? '已配置' : '未配置' }}
+            <span :class="['badge', hasAnyFieldConfigured(videoGenerationKeys) ? 'on' : 'off']">
+              {{ hasAnyFieldConfigured(videoGenerationKeys) ? '已配置' : '未配置' }}
             </span>
           </div>
-
-          <div class="panel-layout">
-            <div class="form-stack">
-              <div class="split-fields">
-                <div class="field">
-                  <label>Seedance API Key</label>
-                  <input
-                    v-model="cfg['ai.video.seedance_api_key']"
-                    class="input"
-                    type="password"
-                    autocomplete="new-password"
-                    placeholder="sk-..."
-                    @focus="selectInputText"
-                  />
-                </div>
-                <div class="field">
-                  <label>Seedance Base URL</label>
-                  <input
-                    v-model="cfg['ai.video.seedance_base_url']"
-                    class="input"
-                    :placeholder="aiVideoConnectionPlaceholder('ai.video.seedance_base_url')"
-                  />
-                  <p class="field-hint">{{ aiVideoConnectionHint('ai.video.seedance_base_url') }}</p>
-                </div>
-              </div>
-              <div class="split-fields">
-                <div class="field">
-                  <label>百炼 API key（HappyHorse、Kling、PixVerse）</label>
-                  <input
-                    v-model="cfg['ai.video.bailian_api_key']"
-                    class="input"
-                    type="password"
-                    autocomplete="new-password"
-                    placeholder="sk-..."
-                    @focus="selectInputText"
-                  />
-                </div>
-                <div class="field">
-                  <label>百炼 Base URL（可选）</label>
-                  <input
-                    v-model="cfg['ai.video.bailian_base_url']"
-                    class="input"
-                    :placeholder="aiVideoConnectionPlaceholder('ai.video.bailian_base_url')"
-                  />
-                  <p class="field-hint">{{ aiVideoConnectionHint('ai.video.bailian_base_url') }}</p>
-                </div>
-              </div>
-
-              <details class="settings-advanced-panel">
-                <summary>
-                  <span>更多 Provider 配置</span>
-                  <small>业务空间 ID / 区域</small>
-                </summary>
-                <div class="settings-advanced-body split-fields">
-                  <div class="field">
-                    <label>百炼业务空间 ID</label>
-                    <input
-                      v-model="cfg['ai.video.bailian_workspace_id']"
-                      class="input"
-                      placeholder="可选：留空使用区域默认 endpoint"
-                    />
-                    <p class="field-hint">填写后百炼默认 endpoint 会按业务空间 ID + 区域自动生成。</p>
-                  </div>
-                  <div class="field">
-                    <label>百炼区域</label>
-                    <input
-                      v-model="cfg['ai.video.bailian_region']"
-                      class="input"
-                      :placeholder="aiVideoConnectionPlaceholder('ai.video.bailian_region')"
-                    />
-                    <p class="field-hint">{{ aiVideoConnectionHint('ai.video.bailian_region') }}</p>
-                  </div>
-                </div>
-              </details>
-
-              <section class="settings-subsection">
-                <header>
-                  <div>
-                    <strong>OSS 上传配置</strong>
-                    <span>仅用于把本地素材上传为百炼临时 OSS 地址，不参与视频生成网关调用。</span>
-                  </div>
-                  <span :class="['key-pill', isFieldConfigured('ai.video.bailian_upload_api_key') ? 'on' : 'off']">OSS</span>
-                </header>
-                <div class="split-fields">
-                  <div class="field">
-                    <label>百炼 OSS 上传 API Key</label>
-                    <input
-                      v-model="cfg['ai.video.bailian_upload_api_key']"
-                      class="input"
-                      type="password"
-                      autocomplete="new-password"
-                      placeholder="sk-..."
-                      @focus="selectInputText"
-                    />
-                  </div>
-                  <div class="field">
-                    <label>百炼 OSS 上传 Base URL</label>
-                    <input
-                      v-model="cfg['ai.video.bailian_uploads_url']"
-                      class="input"
-                      :placeholder="aiVideoConnectionPlaceholder('ai.video.bailian_uploads_url')"
-                    />
-                    <p class="field-hint">{{ aiVideoConnectionHint('ai.video.bailian_uploads_url') }}</p>
-                  </div>
-                </div>
-              </section>
-              <PanelActions panel-id="ai-video" @save="savePanel('ai-video')" />
-            </div>
-            <div class="side-note">
-              <strong>本机凭据</strong>
-              <div class="key-states">
-                <span :class="['key-pill', isFieldConfigured('ai.video.seedance_api_key') ? 'on' : 'off']">S</span>
-                <span :class="['key-pill', isFieldConfigured('ai.video.bailian_api_key') ? 'on' : 'off']">B</span>
-                <span :class="['key-pill', isFieldConfigured('ai.video.bailian_upload_api_key') ? 'on' : 'off']">OSS</span>
-              </div>
-              <p>密钥只保存在本机抓虾配置中，运行视频任务时注入共享能力进程；工作流页面、任务参数和日志不会展示密钥。</p>
-            </div>
-          </div>
+          <VideoProviderSettings :config="cfg" :save="saveVideoProviderConfig" />
         </section>
 
         <section v-else-if="activePanelId === 'cloud-approval'" key="cloud-approval" class="panel">
@@ -682,15 +565,14 @@
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 import LlmProviderSettings from '../components/LlmProviderSettings.vue'
+import VideoProviderSettings from '../components/VideoProviderSettings.vue'
 import ImageProviderSettings from '../components/ImageProviderSettings.vue'
 import { configureAiImageProviders, CUSTOM_IMAGE_PROVIDERS_FIELD } from '../utils/aiImageModels.js'
 import {
-  AI_VIDEO_CONNECTION_DEFAULTS,
   AI_VIDEO_CREDENTIAL_FIELDS,
   AI_VIDEO_MASKED_CREDENTIAL_VALUE,
   AI_VIDEO_WRITE_ONLY_FIELDS,
   buildWriteOnlyAiVideoPatch,
-  clearWrittenAiVideoFields,
   isAiVideoCredentialConfigured,
 } from '../utils/aiVideoSettings.mjs'
 import {
@@ -761,19 +643,9 @@ const ai1xmKeyFields = [
   'ai.1xm.gemini_3_1_flash_image_preview_key',
   'ai.1xm.gemini_3_pro_image_preview_key',
 ]
-const aiVideoKeyFields = [
-  'ai.video.seedance_api_key',
-  'ai.video.bailian_api_key',
-  'ai.video.bailian_upload_api_key',
-]
+const videoGenerationKeys = ['ai.video.seedance_api_key', 'ai.video.bailian_api_key']
+const aiVideoKeyFields = AI_VIDEO_CREDENTIAL_FIELDS
 const llmKeyFields = [LLM_API_KEY_FIELD, DEEPSEEK_API_KEY_FIELD, GLM_API_KEY_FIELD]
-const aiVideoConnectionHints = {
-  'ai.video.seedance_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.seedance_base_url']}；森马网关可填 https://ai-aigw.semir.com/doubao-seedance/api/v3。`,
-  'ai.video.bailian_region': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_region']}；输入新值才会覆盖。`,
-  'ai.video.bailian_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_base_url']}；有业务空间 ID 时会按空间和区域自动生成 endpoint。`,
-  'ai.video.bailian_uploads_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_uploads_url']}；仅用于本地素材临时 OSS 上传。`,
-}
-
 const saveState = reactive({})
 
 const themeOptions = [
@@ -838,7 +710,7 @@ const menuGroups = [
     children: [
       { id: 'ai-1xm', label: '图片模型供应商', statusKeys: ai1xmKeyFields },
       { id: 'ai-llm', label: '文本大模型', statusKeys: llmKeyFields },
-      { id: 'ai-video', label: '视频模型', statusKeys: aiVideoKeyFields },
+      { id: 'ai-video', label: '视频模型', statusKeys: videoGenerationKeys },
     ],
   },
   {
@@ -858,7 +730,6 @@ const panelFields = {
   'sync-odps': ['odps.app_code'],
   'ai-1xm': [CUSTOM_IMAGE_PROVIDERS_FIELD, ...imageProviderFields, 'ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
   'ai-llm': [...LLM_PANEL_FIELDS],
-  'ai-video': ['ai.video.seedance_api_key', 'ai.video.seedance_base_url', 'ai.video.bailian_api_key', 'ai.video.bailian_workspace_id', 'ai.video.bailian_region', 'ai.video.bailian_base_url', 'ai.video.bailian_upload_api_key', 'ai.video.bailian_uploads_url'],
   'cloud-approval': ['cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
 }
 
@@ -1024,10 +895,6 @@ function focusPanel(panelId) {
   activePanelId.value = panelId
 }
 
-function selectInputText(event) {
-  event?.target?.select?.()
-}
-
 function isFieldConfigured(key) {
   if (key === CUSTOM_IMAGE_PROVIDERS_FIELD) return (cfg.value[key] || []).some(provider => Boolean(provider.api_key))
   if (aiVideoKeyFields.includes(key)) return isAiVideoCredentialConfigured(cfg.value, key)
@@ -1035,15 +902,6 @@ function isFieldConfigured(key) {
   if (key === DEEPSEEK_API_KEY_FIELD) return isDeepSeekConfigured(cfg.value)
   if (key === GLM_API_KEY_FIELD) return isGlmConfigured(cfg.value)
   return String(cfg.value[key] || '').trim().length > 0
-}
-
-function aiVideoConnectionPlaceholder(key) {
-  const value = AI_VIDEO_CONNECTION_DEFAULTS[key]
-  return value ? `默认：${value}` : '留空保持后端当前配置'
-}
-
-function aiVideoConnectionHint(key) {
-  return aiVideoConnectionHints[key] || '留空使用默认或后端已有配置，输入新值才会覆盖。'
 }
 
 function hasAnyFieldConfigured(keys) {
@@ -1061,7 +919,6 @@ async function browseDir() {
 }
 
 function buildPatch(panelId) {
-  if (panelId === 'ai-video') return buildWriteOnlyAiVideoPatch(cfg.value)
   if (panelId === 'ai-llm') return buildLlmSettingsPatch(cfg.value)
   const keys = panelFields[panelId] || []
   return keys.reduce((patch, key) => {
@@ -1085,6 +942,17 @@ function selectedCloudCapabilities() {
   const capabilities = normalizeCloudCapabilities(cfg.value['cloud_approval.capabilities'])
   cfg.value['cloud_approval.capabilities'] = capabilities
   return capabilities
+}
+
+async function saveVideoProviderConfig(values) {
+  const patch = buildWriteOnlyAiVideoPatch(values)
+  const result = await window.cs.patchSettings(patch)
+  if (result?.error || result?.ok === false) throw new Error(result.error || '视频模型配置保存失败')
+  const readback = normalizedSettings(await window.cs.getSettings())
+  for (const key of Object.keys(readback).filter(key => key.startsWith('ai.video.'))) {
+    cfg.value[key] = readback[key]
+    savedCfg.value[key] = readback[key]
+  }
 }
 
 async function saveImageProviderConfig(patch) {
@@ -1128,10 +996,7 @@ async function savePanel(panelId, options = {}) {
       ? await window.cs.patchSettings(patch)
       : await window.cs.saveSettings({ ...savedCfg.value, ...patch })
 
-    if (panelId === 'ai-video') {
-      clearWrittenAiVideoFields(cfg.value, patch)
-      clearWrittenAiVideoFields(savedCfg.value, patch)
-    } else if (panelId === 'ai-llm') {
+    if (panelId === 'ai-llm') {
       clearWrittenLlmSettings(cfg.value, patch)
       clearWrittenLlmSettings(savedCfg.value, patch)
       savedCfg.value = { ...savedCfg.value, ...patch }
@@ -1336,6 +1201,19 @@ watch(activePanelId, panelId => {
 </script>
 
 <style scoped>
+.panel.video-provider-panel {
+  container-type: inline-size;
+  width: min(100%, 940px);
+  margin-inline: auto;
+  padding: clamp(12px, 2vw, 30px);
+  background: transparent;
+  border: 0;
+  gap: 26px;
+}
+.video-provider-panel .panel-head { border: 0; padding-bottom: 0; }
+.video-provider-panel .panel-head h3 { font-size: 23px; }
+.video-provider-panel .panel-description { color: var(--text2); font-size: 13px; margin-top: 8px; }
+
 .view {
   height: 100%;
   display: flex;
