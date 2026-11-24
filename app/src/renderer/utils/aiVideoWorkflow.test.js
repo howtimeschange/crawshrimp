@@ -33,13 +33,20 @@ test('AI video workflow clears a missing persisted workspace and asks for a repl
   assert.match(source, /if \(clearMissingWorkspacePath\(targetWorkspace, error\)\) return false/)
 })
 
-test('AI video settings keep provider advanced fields folded and expose dedicated OSS upload config', () => {
+test('AI video settings expose Bailian generation and OSS upload fields in separate editors', () => {
   const settings = readView('SettingsPage.vue')
+  const providerSettings = readView('../components/VideoProviderSettings.vue')
+  const bailian = providerSettings.slice(providerSettings.indexOf("id: 'bailian'"), providerSettings.indexOf('const upload ='))
+  const upload = providerSettings.slice(providerSettings.indexOf('const upload ='), providerSettings.indexOf('const dialog ='))
 
-  assert.match(settings, /<details class="settings-advanced-panel">[\s\S]*百炼业务空间 ID[\s\S]*百炼区域[\s\S]*<\/details>/)
-  assert.match(settings, /OSS 上传配置/)
-  assert.match(settings, /ai\.video\.bailian_upload_api_key/)
-  assert.match(settings, /ai\.video\.bailian_uploads_url/)
+  assert.match(settings, /<VideoProviderSettings :config="cfg" :save="saveVideoProviderConfig"/)
+  assert.match(providerSettings, /<dialog[\s\S]*?v-for="field in selected.fields"/)
+  assert.match(bailian, /key: 'ai\.video\.bailian_workspace_id'/)
+  assert.match(bailian, /key: 'ai\.video\.bailian_region'/)
+  assert.doesNotMatch(bailian, /ai\.video\.bailian_upload/)
+  assert.match(providerSettings, /@click="openEditor\('upload', \$event\)"/)
+  assert.match(upload, /key: 'ai\.video\.bailian_upload_api_key'/)
+  assert.match(upload, /key: 'ai\.video\.bailian_uploads_url'/)
 })
 
 test('AI video workflow review local upload menu opens the desktop image picker', () => {
