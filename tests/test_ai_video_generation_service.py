@@ -465,6 +465,29 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
             video["bailian_uploads_url"] = video["bailian_base_url"] + "/uploads"
             self.assertEqual(svc.bailian_upload_api_key(), "gateway-key")
 
+    def test_failed_poll_saves_chinese_reason_from_each_provider(self):
+        cases = [
+            ("seedance", {"status": "failed", "error": {
+                "code": "OutputVideoSensitiveContentDetected.PolicyViolation",
+                "message": "The output video may be related to copyright restrictions.",
+            }}, "COPYRIGHT_BLOCKED", "版权限制"),
+            ("happyhorse", {"output": {"task_status": "FAILED", "code": "DataInspectionFailed",
+                                       "message": "Data inspection failed."}}, "CONTENT_BLOCKED", "内容审核"),
+            ("seedance", {"status": "failed"}, "PROVIDER_REJECTED", "具体原因暂时无法确认"),
+        ]
+        for provider, response, category, reason in cases:
+            with self.subTest(provider=provider, category=category):
+                run = {"id": "run-1", "provider": provider, "providerTaskId": "task-1"}
+                with patch.object(data_sink, "get_ai_video_run", return_value=run), patch.object(
+                    svc, "_run_cli", return_value={"objects": [response]},
+                ), patch.object(data_sink, "update_ai_video_run") as update:
+                    svc._poll_until_terminal_or_once("run-1", once=True)
+                saved = update.call_args.args[1]
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(saved["error"]["code"], category)
+                self.assertIn(reason, saved["error"]["message"])
+                self.assertEqual(saved["error"]["providerCode"], (response.get("error") or response.get("output") or {}).get("code"))
+
     def test_gateway_rate_limit_is_actionable(self):
         code, message = svc.map_provider_error("seedance", "Ark API request failed with HTTP 429: Too many requests")
         self.assertEqual(code, "PROVIDER_RATE_LIMITED")

@@ -875,21 +875,48 @@ def _run_cli(
 
 def map_provider_error(provider: str, text: str) -> tuple[str, str]:
     raw = str(text or "")
-    if "HTTP 429" in raw:
-        return "PROVIDER_RATE_LIMITED", "视频网关限流（HTTP 429），请稍后重试"
+    lower = raw.lower()
+    if "copyright" in lower or "版权" in raw:
+        if "outputvideo" in lower or "output video" in lower:
+            return "COPYRIGHT_BLOCKED", "生成的视频可能涉及版权限制，未通过审核。"
+        return "COPYRIGHT_BLOCKED", "视频服务判定内容可能涉及版权限制，未通过审核。"
+    if "HTTP 429" in raw or "throttling" in lower:
+        return "PROVIDER_RATE_LIMITED", "视频服务当前请求过多，请稍后再试（429）。"
     if "ModelNotOpen" in raw:
-        return "NEEDS_CONFIG", "模型未开通，请到设置或方舟控制台开通后重试"
-    if "SetLimitExceeded" in raw:
-        return "PROVIDER_REJECTED", "额度或推理限制已触发，请稍后重试"
-    if "PrivacyInformation" in raw or "InputImageSensitiveContentDetected" in raw:
-        return "PRIVACY_BLOCKED", "触发隐私保护拦截，请改用商品图和原创虚构人物描述"
-    if "PolicyViolation" in raw or "OutputVideoSensitiveContentDetected" in raw:
-        return "PROVIDER_REJECTED", "输出策略拦截，请调整 Prompt 或素材后重试"
-    if "api key" in raw.lower() or "not configured" in raw.lower() or "Missing required env" in raw:
-        return "CREDENTIAL_MISSING", "请先在设置中的 AI 能力配置对应密钥"
-    if provider == "happyhorse":
-        return "PROVIDER_REJECTED", f"百炼返回失败：{raw[:240]}"
-    return "PROVIDER_REJECTED", raw[:240] or "provider 拒绝请求"
+        return "NEEDS_CONFIG", "当前账号还没有开通这个视频模型。"
+    if "SetLimitExceeded" in raw or "insufficientquota" in lower:
+        return "PROVIDER_REJECTED", "当前账号已达到视频生成用量上限。"
+    if "PrivacyInformation" in raw or "privacy" in lower:
+        return "PRIVACY_BLOCKED", "视频服务判定内容可能涉及个人隐私，未通过审核。"
+    if "InputImageSensitiveContentDetected" in raw:
+        return "CONTENT_BLOCKED", "参考图片未通过视频服务的内容审核。"
+    if "OutputVideoSensitiveContentDetected" in raw:
+        return "CONTENT_BLOCKED", "生成的视频未通过内容审核。"
+    if "PolicyViolation" in raw or "datainspectionfailed" in lower:
+        return "CONTENT_BLOCKED", "这次生成未通过平台的内容审核。"
+    if "api key" in lower or "not configured" in lower or "Missing required env" in raw or "HTTP 401" in raw:
+        return "CREDENTIAL_MISSING", "视频服务无法验证当前密钥，请在设置中核对。"
+    if "invalidparameter" in lower or "invalid_parameter" in lower:
+        return "INVALID_VIDEO_PARAMETERS", "视频服务不支持本次提交的参数。"
+    return "PROVIDER_REJECTED", "视频服务未能完成本次请求，具体原因暂时无法确认。"
+
+
+def _terminal_provider_error(provider: str, snapshot: Mapping[str, Any], status: str, secrets: list[str]) -> dict:
+    if status == "cancelled":
+        return AiVideoError("视频任务已取消。", code="CANCELLED").as_dict()
+    if status == "expired":
+        return AiVideoError("视频任务已过期。", code="EXPIRED").as_dict()
+    # Ark nests errors under error; DashScope task queries report them under output.
+    nested = snapshot.get("error" if provider == "seedance" else "output")
+    detail = nested if isinstance(nested, Mapping) else {}
+    code = redact_text(detail.get("code") or snapshot.get("code"), secrets)[:160]
+    message = redact_text(detail.get("message") or snapshot.get("message") or
+                          (nested if isinstance(nested, str) else ""), secrets)[:1000]
+    category, reason = map_provider_error(provider, f"{code} {message}")
+    return AiVideoError(
+        reason, code=category, provider_code=code, provider_message=message,
+        safe_suggestion=_safe_suggestion_for(category),
+    ).as_dict()
 
 
 def _safe_suggestion_for(code: str) -> str:
@@ -899,8 +926,11 @@ def _safe_suggestion_for(code: str) -> str:
         "NEEDS_CONFIG": "配置后可继续提交当前 Job",
         "UNKNOWN_SUBMIT_RESULT": "为避免重复扣费，本次不会自动重提；请确认后复用参数新建任务",
         "PROVIDER_RATE_LIMITED": "请稍后重试，或向网关管理员核对当前 Key 的限额",
-        "PROVIDER_REJECTED": "查看原因后调整素材或 Prompt",
-        "PRIVACY_BLOCKED": "不绕过平台保护，可改用商品图和原创人物描述重试",
+        "PROVIDER_REJECTED": "如需进一步排查，请将任务 ID 提供给管理员。",
+        "COPYRIGHT_BLOCKED": "可以改用原创场景或已获授权的素材，修改提示词后再生成。",
+        "CONTENT_BLOCKED": "请调整提示词或更换参考素材后再生成。",
+        "PRIVACY_BLOCKED": "请检查提示词和素材中的个人信息，再提交生成。",
+        "INVALID_VIDEO_PARAMETERS": "请核对所选模型支持的时长、清晰度和素材格式。",
         "PROVIDER_TIMEOUT": "可稍后恢复查询或复用参数新建任务",
         "DOWNLOAD_FAILED": "当前视频待归档，可点击重新归档",
         "ARCHIVE_WRITE_FAILED": "重新选择有写入权限的输出目录",
@@ -2708,10 +2738,7 @@ def _poll_until_terminal_or_once(run_id: str, *, once: bool = False) -> None:
                 "status": mapped,
                 "providerStatus": provider_status_value,
                 "completedAt": _now_iso(),
-                "error": AiVideoError(
-                    f"provider 状态：{provider_status_value}",
-                    code="PROVIDER_REJECTED" if mapped == "failed" else mapped.upper(),
-                ).as_dict(),
+                "error": _terminal_provider_error(provider, snapshot, mapped, result.get("secret_values") or []),
             })
             return
 

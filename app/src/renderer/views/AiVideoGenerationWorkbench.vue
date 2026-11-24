@@ -448,7 +448,7 @@
                   <strong>加载封面</strong>
                 </div>
                 <div v-else class="avg-thumb-fallback">
-                  <strong>{{ job.displayStatus || statusLabel(job.status) }}</strong>
+                  <strong>{{ job.status === 'failed' ? '失败原因' : job.displayStatus || statusLabel(job.status) }}</strong>
                   <span>{{ stageNote(job) }}</span>
                 </div>
                 <button
@@ -470,7 +470,7 @@
                   @click.stop="stopInlineVideo(job)"
                 >×</button>
                 <span class="avg-status-chip" :class="job.status">{{ job.displayStatus || statusLabel(job.status) }}</span>
-                <span v-if="!isInlinePlaying(job)" class="avg-stage-note">{{ stageNote(job) }}</span>
+                <span v-if="!isInlinePlaying(job) && (job.status !== 'failed' || jobCoverSrc(job))" class="avg-stage-note">{{ stageNote(job) }}</span>
               </div>
               <div class="avg-task-body">
                 <div class="avg-task-title">
@@ -685,7 +685,7 @@
               <div class="avg-kv"><span>任务 ID</span><strong>{{ detailJob.id }}</strong></div>
               <div class="avg-kv"><span>模型</span><strong>{{ modelLabel(detailJob.model) }}</strong></div>
               <div class="avg-kv"><span>创建时间</span><strong>{{ formatTime(detailJob.createdAt) }}</strong></div>
-              <div class="avg-kv"><span>任务阶段</span><strong>{{ stageNote(detailJob) }}</strong></div>
+              <div class="avg-kv" v-if="detailJob.status !== 'failed'"><span>任务阶段</span><strong>{{ stageNote(detailJob) }}</strong></div>
             </div>
             <div class="avg-detail-section">
               <span>完整 Prompt</span>
@@ -700,9 +700,9 @@
               <p>{{ archiveDisplay(detailJob) }}</p>
             </div>
             <div v-if="detailJob.currentRun?.error?.message" class="avg-detail-section">
-              <span>错误摘要</span>
-              <p>{{ detailJob.currentRun.error.message }}</p>
-              <p v-if="detailJob.currentRun.error.safeSuggestion">{{ detailJob.currentRun.error.safeSuggestion }}</p>
+              <span>{{ detailJob.status === 'failed' ? '失败原因' : '任务提示' }}</span>
+              <p>{{ detailJob.status === 'failed' ? stageNote(detailJob) : detailJob.currentRun.error.message }}</p>
+              <p v-if="detailJob.currentRun.error.safeSuggestion && detailJob.currentRun.error.safeSuggestion !== detailJob.currentRun.error.message">{{ detailJob.currentRun.error.safeSuggestion }}</p>
             </div>
             <div class="avg-detail-actions">
               <button class="avg-btn primary" type="button" @click="reuseParams(detailJob); closeDetail()">复用参数</button>
@@ -1670,7 +1670,11 @@ function stageNote(job) {
   if (status === 'queued') return '等待后台 worker 提交'
   if (status === 'needs_config') return '等待配置凭据后继续'
   if (status === 'failed' && job?.displayStatus === '待归档') return 'provider 已成功 · 本地待归档'
-  if (status === 'failed') return job?.currentRun?.error?.message || '真实错误摘要已保留'
+  if (status === 'failed') {
+    const reason = job?.currentRun?.error?.message
+    return reason && !/^provider 状态[：:]\s*failed$/i.test(reason)
+      ? reason : '这次视频生成失败，记录中没有具体原因。'
+  }
   if (status === 'cancelled') return '任务已取消'
   if (status === 'expired') return '查询有效期已过'
   return job?.displayStatus || statusLabel(status)
