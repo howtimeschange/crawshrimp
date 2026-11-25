@@ -68,6 +68,45 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    async def test_semir_classifier_requires_task_token_and_cloud_drive_origin(self):
+        from core.semir_still_image_classifier import RGB_BYTES
+
+        class ThumbnailRequest(FakeRequest):
+            async def stream(self):
+                yield b"\0" * RGB_BYTES
+
+        path = api_server.SEMIR_SCREEN_PATH
+        origin = api_server.SEMIR_DRIVE_ORIGIN
+        token = "semir-task-token"
+        headers = {
+            "origin": origin,
+            "x-crawshrimp-token": token,
+            "content-type": "application/octet-stream",
+            "content-length": str(RGB_BYTES),
+        }
+
+        async def downstream(_):
+            return PlainTextResponse("unexpected")
+
+        with patch.object(api_server, "_semir_screen_tokens", {token}):
+            self.assertEqual((await api_server.require_local_api_token(
+                FakeRequest(path, {"origin": origin}, "OPTIONS"), downstream,
+            )).status_code, 204)
+            self.assertEqual((await api_server.require_local_api_token(
+                FakeRequest(path, {"origin": "https://other.example"}, "OPTIONS"), downstream,
+            )).status_code, 403)
+            self.assertEqual((await api_server.classify_semir_still_images(
+                ThumbnailRequest(path, {**headers, "x-crawshrimp-token": "expired"}, "POST"),
+            )).status_code, 401)
+            self.assertEqual((await api_server.classify_semir_still_images(
+                ThumbnailRequest(path, {**headers, "content-length": str(RGB_BYTES * 9)}, "POST"),
+            )).status_code, 400)
+            with patch("core.semir_still_image_classifier.classify_rgb_batch", return_value=[[.7, .2, .1]]) as inference:
+                response = await api_server.classify_semir_still_images(ThumbnailRequest(path, headers, "POST"))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers["access-control-allow-origin"], origin)
+                self.assertEqual(len(inference.call_args.args[0]), RGB_BYTES)
+
     async def test_adapter_asset_private_network_preflight_bypasses_global_cors(self):
         async def call_next(_request):
             return PlainTextResponse("should not reach downstream cors")

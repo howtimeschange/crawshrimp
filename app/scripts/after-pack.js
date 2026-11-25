@@ -15,6 +15,7 @@
 
 const fs   = require('fs')
 const path = require('path')
+const crypto = require('crypto')
 
 const REQUIRED_BACKEND_IMPORTS = [
   'fastapi',
@@ -140,7 +141,6 @@ function requirePythonScriptsBundle(resourcesPath) {
 }
 
 function requireShoeModelBundle(resourcesPath) {
-  const crypto = require('crypto')
   const root = path.join(resourcesPath, 'python-scripts', 'core', 'shoe_specialist', 'assets')
   for (const name of ['worker.py', 'identity.py', 'ocr.py', 'electronic_labels.py']) {
     if (!fs.existsSync(path.join(root, '..', name))) {
@@ -153,6 +153,15 @@ function requireShoeModelBundle(resourcesPath) {
     const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, name))).digest('hex')
     if (digest !== manifest.files[name]) throw new Error(`[after-pack] shoe model integrity failure: ${name}`)
   }
+}
+
+function requireSemirStillModelBundle(resourcesPath) {
+  const core = path.join(resourcesPath, 'python-scripts', 'core')
+  const assets = path.join(core, 'semir_still_image_assets')
+  fs.accessSync(path.join(core, 'semir_still_image_classifier.py'), fs.constants.R_OK)
+  const { sha256 } = JSON.parse(fs.readFileSync(path.join(assets, 'model.json'), 'utf8'))
+  const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(assets, 'pp-lcnetv2-int8.onnx'))).digest('hex')
+  if (digest !== sha256) throw new Error('[after-pack] Semir still-image model integrity failure')
 }
 
 async function afterPack(context) {
@@ -189,6 +198,7 @@ async function afterPack(context) {
 
   requirePythonScriptsBundle(resourcesPath)
   requireShoeModelBundle(resourcesPath)
+  requireSemirStillModelBundle(resourcesPath)
 
   const destPython = path.join(resourcesPath, 'python')
   console.log(`[after-pack] Copying Python ${srcKey} → ${destPython}`)
@@ -229,3 +239,4 @@ exports.REQUIRED_BACKEND_IMPORTS = REQUIRED_BACKEND_IMPORTS
 exports.REQUIRED_VIDEO_INTEGRATION_FILES = REQUIRED_VIDEO_INTEGRATION_FILES
 
 exports.requireShoeModelBundle = requireShoeModelBundle
+exports.requireSemirStillModelBundle = requireSemirStillModelBundle

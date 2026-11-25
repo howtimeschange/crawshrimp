@@ -16,6 +16,7 @@ from openpyxl.utils.cell import get_column_letter, range_boundaries
 
 
 STILL_REPORT_HEADERS = ('缺吊牌', '缺洗唛', '款号是否一致', '备注')
+STILL_REPORT_MISSING_RED = 'FFFF0000'
 
 
 def still_ocr_host_hardware():
@@ -47,60 +48,85 @@ def _still_key(batch, style, skc, color, date):
         return unicodedata.normalize('NFKC', str(value if value is not None else '')).strip().upper()
 
     style = normalize(style)
+    batch = normalize(batch)
+    batch_parts = re.fullmatch(r'([0-9]{2}Q[1-4])\s*(?:第\s*([0-9]{1,2})\s*批|([0-9]{1,2})\s*P)', batch)
+    if batch_parts and (number := int(batch_parts[2] or batch_parts[3])) > 0:
+        batch = f'{batch_parts[1]}第{number}批'
     skc = normalize(skc).replace('-', '')
     color = normalize(color) or skc[-5:]
     date = normalize(date)
     parts = re.match(r'^(\d{4})[-/年]?(\d{1,2})[-/月]?(\d{1,2})(?=$|[日T\s])', date)
     if parts:
         date = f'{parts[1]}-{int(parts[2]):02d}-{int(parts[3]):02d}'
-    return normalize(batch), style, skc, color.zfill(5), date
+    return batch, style, skc, color.zfill(5), date
 
 
 def _still_report_values(row):
-    package_state = row.get('整理结果', '')
-    if '登录超时' in package_state or '登录超时' in (row.get('备注') or ''):
-        unavailable = '登录超时'
-    elif package_state in ('缺图包', '缺款色图包', '缺款色文件夹', '已取消', '上架计划待确认'):
-        unavailable = package_state
-    else:
-        unavailable = '待核验'
+    package_state = row.get('整理结果') or ''
+    raw_notes = (row.get('备注') or '').split('；')
+    notes = []
+    if any(note.startswith('款色与款号拼色号不一致') for note in raw_notes):
+        notes.append('表格款色与款号冲突，按款号和色号核验')
 
-    def missing(status):
-        if status in ('一致', '识别到不一致款号，待复核', '已识别类型，款号未读出'):
-            return '否'
-        if status == '无图片':
-            return '是'
-        if status == '未检出，待复核':
-            return '是（OCR未检出）'
-        if status in ('部分图片识别失败，待复核', '有候选图片，类型待复核', '候选图片未检出，待复核'):
-            return '待复核'
-        return unavailable
-
-    statuses = [row.get(kind + '结果', '') for kind in ('吊牌', '洗唛')]
-    missing_flags = [missing(status) for status in statuses]
-    if '识别到不一致款号，待复核' in statuses:
+    kinds = ('吊牌', '洗唛')
+    statuses = [row.get(kind + '结果') for kind in kinds]
+    missing = [status in ('无图片', '未检出，待复核') for status in statuses]
+    mismatch = '识别到不一致款号，待复核'
+    if mismatch in statuses:
         consistency = '不一致'
     elif statuses == ['一致', '一致']:
         consistency = '一致'
-    elif missing_flags == [unavailable, unavailable]:
-        consistency = '待核验'
     else:
-        consistency = '待复核'
+        consistency = '未核验'
 
-    notes = []
-    if row.get('整理结果') not in ('已复制并核验', '已核验已有图包', '预览'):
-        notes.append(row.get('整理结果'))
-    for kind, status in zip(('吊牌', '洗唛'), statuses):
-        if status and status not in ('缺款色文件夹', '未扫描'):
-            files = '、'.join(str(row.get(kind + '图片') or '').splitlines())
+    login_expired = any('登录超时' in value or '等待森马云盘登录' in value for value in (package_state, *raw_notes))
+    if login_expired:
+        notes.append('云盘登录超时')
+    elif package_state and package_state not in ('已复制并核验', '已核验已有图包', '预览'):
+        notes.append({
+            '缺图包': '未找到图包',
+            '缺款色图包': '未找到款色图包',
+            '缺款色文件夹': '未找到款色文件夹',
+            '来源待选择': '有多个来源，请确认图包',
+            '整款待复核': '同款表格数据有冲突',
+        }.get(package_state, package_state))
+    if package_state in ('表格字段异常', '表格字段冲突'):
+        notes.extend(note for note in raw_notes if note in (
+            '请核对款号、色号、色名和性别', '色名末尾编码与色号不一致', '同款分类或同款色命名冲突',
+        ))
+
+    if statuses == ['无图片', '无图片']:
+        notes.append('图包无可用图片')
+    elif missing[0] and '仅有手写样卡' in raw_notes:
+        notes.append('仅有手写样卡')
+    elif missing[0] and any(note.startswith('供应商样品卡或表单不计作吊牌：') or note == '仅有供应商样卡' for note in raw_notes):
+        notes.append('仅有供应商样卡')
+    elif any(missing):
+        notes.append('需补拍' + '和'.join(kind for kind, absent in zip(kinds, missing) if absent))
+
+    issues = {
+        '已识别类型，款号未读出': '款号读不清',
+        '款号后缀未读出，待复核': '款号后缀读不清',
+        '款号识别结果冲突，待复核': '款号识别有冲突',
+        '有候选图片，类型待复核': '图片类型待确认',
+        '候选图片未检出，待复核': '图片类型待确认',
+    }
+    for kind, status in zip(kinds, statuses):
+        if status == mismatch:
             codes = row.get(kind + '识别款号')
-            evidence = '，'.join(str(value) for value in (status, codes, files) if value)
-            notes.append(f'{kind}{evidence}')
-    if row.get('备注'):
-        for note in row['备注'].split('；'):
-            if note != '已确认所需两类图片，结束该款色扫描':
-                notes.append(note)
-    return (*missing_flags, consistency, '；'.join(dict.fromkeys(filter(None, notes))))
+            notes.append(f'{kind}款号不符（识别为 {codes}）' if codes else f'{kind}款号不符')
+        elif status in issues:
+            notes.append(kind + issues[status])
+    partial_failure = '部分图片识别失败，待复核' in statuses
+    if not login_expired and consistency != '一致':
+        if partial_failure:
+            notes.append('部分图片识别失败')
+        elif any(note.startswith('OCR失败：') for note in raw_notes):
+            notes.append('图片识别失败')
+    if not notes and consistency == '未核验':
+        notes.append('核验未完成')
+    hangtag, wash = ('缺' if absent else None for absent in missing)
+    return hangtag, wash, consistency, '；'.join(notes) or None
 
 
 def write_still_package_report(*, data_rows, source, output):
@@ -113,7 +139,7 @@ def write_still_package_report(*, data_rows, source, output):
         key = _still_key(*(row.get(col) for col in ('批次', '款号', '款色', '色号', '上市日期')))
         values = _still_report_values(row)
         if key in index and values != index[key]:
-            values = ('待核验', '待核验', '待复核', '同一款色对应多个结果，请核对原表重复或冲突记录')
+            values = (None, None, '未核验', '同一款色的核验结果冲突')
         index[key] = values
 
     workbook = load_workbook(source)
@@ -143,21 +169,31 @@ def write_still_package_report(*, data_rows, source, output):
             existing = tuple(sheet.cell(1, col).value for col in range(last - 3, last + 1)) == STILL_REPORT_HEADERS
             start = last - 3 if existing else last + 1
             body_style_col = headers['批次']
-            for index_col, (header, width) in enumerate(zip(STILL_REPORT_HEADERS, (18, 18, 19, 105)), start):
+            for index_col, (header, width) in enumerate(zip(STILL_REPORT_HEADERS, (12, 12, 18, 54)), start):
                 cell = sheet.cell(1, index_col, header)
                 if not existing:
                     cell._style = copy(sheet.cell(1, body_style_col)._style)
                     sheet.column_dimensions[get_column_letter(index_col)].width = width
             for row_number, values in receipts:
                 for col, value in enumerate(values, start):
-                    cell = sheet.cell(row_number, col, value)
-                    cell.data_type = 's'
+                    cell = sheet.cell(row_number, col)
+                    cell.value = value
+                    if value is not None:
+                        cell.data_type = 's'
                     if not existing:
                         cell._style = copy(sheet.cell(row_number, body_style_col)._style)
                         if col == start + 3:
                             alignment = copy(cell.alignment)
                             alignment.wrap_text = True
                             cell.alignment = alignment
+                    if col < start + 2:
+                        font = copy(cell.font)
+                        if value == '缺':
+                            font.color = STILL_REPORT_MISSING_RED
+                            cell.font = font
+                        elif font.color and font.color.type == 'rgb' and font.color.rgb[-6:] == 'FF0000':
+                            font.color = copy(sheet.cell(row_number, body_style_col).font.color)
+                            cell.font = font
             if not existing and sheet.auto_filter.ref:
                 first_col, first_row, final_col, final_row = range_boundaries(sheet.auto_filter.ref)
                 if first_row == 1 and final_col == last:

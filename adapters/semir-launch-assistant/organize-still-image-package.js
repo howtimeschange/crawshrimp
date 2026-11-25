@@ -8,13 +8,21 @@
   const TARGET_MOUNT = '森马bu-森马商品'
   const TARGET_ROOT = '3-商品上新/3-01季度上新/2026年/26Q3/静物图/测试'
   const OCR_ASSETS = '/adapter-assets/tmall-ops-assistant/vendor/tesseract/'
-  const ID = /^[A-Z0-9]{12}$/
+  const ID = /^[A-Z0-9]{12}[A-Z]?$/
   const COLOR = /^[A-Z0-9]{5}$/
   const IMAGE = /\.(jpe?g|png|webp|bmp|gif|tiff?|heic|avif)$/i
+  const SCREEN_SIZE = 224
+  const SCREEN_BATCH = 8
+  const SCREEN_WINDOW = SCREEN_BATCH * 2
+  const OTHER_THRESHOLD = 0.995
   const TYPE_WORDS = {
-    吊牌: /吊牌|执行标准|产品标准|安全技术类别|质量等级|检验员|建议零售价|零售价|\bRMB\b|[¥￥]\s*\d/i,
-    洗唛: /洗[唛标]|水洗标|洗[涤滌]说明|洗[涤滌]方法|维护方法|不可漂白|不可干洗|不可熨烫|印花部位|浸泡时间|WASH(?:ING)?\s*INSTRUC|CARE\s*INSTRUC|DO\s*NOT\s*BLEACH/i,
+    吊牌候选: /吊牌|合格证|执行标准|产品标准|安全技术类别|质量等级|检验员|零售价|条形码|\bEAN(?:-?13)?\b/i,
+    洗唛: /洗[唛标]|水洗标|洗[涤滌][说說][明朋]|洗[涤滌]方法|维护方法|不可漂白|不可干洗|不可熨烫|印花部位|浸泡时间|WASH(?:ING)?\s*INSTRUC|CARE\s*INSTRUC|CARA\s*MENCUC|DO\s*NOT\s*BLEACH/i,
   }
+  const RETAIL_PRICE = /(?:零售价|\bRMB\b|[¥￥])[ \t:：¥￥]*\d{1,5}(?:[.,]\d{2})?(?![\dA-Z-])/i
+  const RETAIL_IDENTITY = /400\s*[-–—]?\s*8877\s*[-–—]?\s*588|浙江森马服饰股份有限公司/i
+  const SUPPLIER_SAMPLE = /(?:样衣|样品)(?:卡|确认|资料|信息|编号|记录|工艺)|(?:封样|确认样)(?:卡|确认|单|表|记录|资料)|[样樣][版板]卡|供应商(?:送样|自制|资料表|信息表)|(?:打样|送样)(?:单|日期|记录)|(?:制版|版型|面辅料)确认表|办评语卡|拍照样|齐色办|订货样|(?:上装|下装)办卡/
+  const ABSENCE_CARD = /^(?:本款)?(?:无|無|没有|未附|暂缺|缺)(?:吊牌|(?:水)?洗[唛标嘜標]|水唛)[。.!！]*$/i
 
   const clean = value => String(value ?? '').normalize('NFKC').trim()
   const isDir = item => [1, '1', true].includes(item.dir)
@@ -33,6 +41,12 @@
     return date && !Number.isNaN(Date.parse(date)) && new Date(date).toISOString().slice(0, 10) === date ? date : ''
   }
 
+  function parseBatch(value) {
+    const match = clean(value).toUpperCase().match(/^(?:第\s*([0-9]{1,2})\s*批|([0-9]{1,2})\s*P)$/)
+    const number = Number(match?.[1] || match?.[2])
+    return number > 0 ? { label: `第${number}批`, folder: `${number}P` } : null
+  }
+
   function batchRows(input, subset) {
     const tables = Object.values(input?.sheets || {})
     const rows = tables.length ? tables.flatMap(sheet => sheet.rows || []) : input?.rows || []
@@ -41,7 +55,8 @@
     let selected = 0
     for (const row of rows) {
       const seasonKey = Object.keys(row).find(key => /^Q季|^季度$|^上新季$|^上市季$/.test(key))
-      const season = clean(row[seasonKey]).toUpperCase(), batch = clean(row.批次)
+      const season = clean(row[seasonKey]).toUpperCase(), rawBatch = clean(row.批次)
+      const parsedBatch = parseBatch(rawBatch), batch = parsedBatch?.label || rawBatch
       const rawDate = row.电商上市日期 || row.上市日期
       const date = dateOf(rawDate)
       const style = clean(row.款号).toUpperCase(), skc = clean(row.款色).toUpperCase().replace(/-/g, '')
@@ -53,11 +68,11 @@
       const group = { 女: '女', 男: '男', 中性: '男' }[gender]
       const detail = { 批次: season + batch, 款号: style, 款色: skc, 色号: color, 色名: name, 性别: gender, 上市日期: date || clean(rawDate) }
       const key = detail.批次 + '/' + style
-      if (/取消/.test(batch)) {
+      if (/取消/.test(rawBatch)) {
         errors.push({ ...detail, 整理结果: '已取消', 备注: '表格批次标记为取消' })
         continue
       }
-      if (!/^\d{2}Q[1-4]$/.test(season) || !/^第\d{1,2}批$/.test(batch) || !date) {
+      if (!/^\d{2}Q[1-4]$/.test(season) || !parsedBatch || !date) {
         errors.push({ ...detail, 整理结果: '上架计划待确认', 备注: '请核对季度、批次和上市日期' })
         continue
       }
@@ -76,7 +91,7 @@
       }
       const target = nameCode === color ? name : name + color
       if (target !== name) notes.push('色名未含色号，已补齐')
-      const job = styles.get(key) || { style, season, batch, group, colors: [] }
+      const job = styles.get(key) || { style, season, batch, batchFolder: parsedBatch.folder, group, colors: [] }
       const prior = job.colors.find(item => item.色号 === color)
       if (job.group !== group || (prior && (prior.target !== target || prior.款色 !== skc))) {
         errors.push({ ...detail, 整理结果: '表格字段冲突', 备注: '同款分类或同款色命名冲突' })
@@ -259,6 +274,12 @@
     return path
   }
 
+  async function batchDirectory(target, folder) {
+    const existing = (await list(target.mountId, target.root)).filter(item => item.filename.toUpperCase() === folder)
+    if (existing.length > 1 || existing.some(item => !isDir(item))) throw new Error('批次目录命名冲突：' + folder)
+    return existing[0]?.fullpath || mkdir(target, target.root, folder)
+  }
+
   function colorPlans(job, items) {
     return job.colors.map(row => {
       const sourceName = job.style + '-' + row.色号
@@ -267,6 +288,11 @@
       if (matches.length > 1 || !isDir(matches[0])) return { row, issue: '款色文件夹命名冲突' }
       return { row, original: matches[0].filename }
     })
+  }
+
+  function canCopyWholeStyle(items, plans) {
+    const selected = new Set(plans.filter(plan => plan.original && !plan.path && !plan.issue).map(plan => plan.original))
+    return selected.size > 0 && items.every(item => !isDir(item) || selected.has(item.filename))
   }
 
   function equivalent(sourceTree, targetTree, source, target, plans, requireRenamed = false) {
@@ -373,8 +399,8 @@
   }
 
   async function copyAndRename(state, source, job, sourceTree, plans) {
-    const { target: destination, season, batch } = state
-    const batchPath = await mkdir(destination, destination.root, season + batch)
+    const destination = state.target
+    const batchPath = await batchDirectory(destination, job.batchFolder)
     const parent = await mkdir(destination, batchPath, job.group)
     const copied = await copyPackage(state, job, source, sourceTree, parent, job.style, job.style, plans)
     const { target } = copied
@@ -388,8 +414,8 @@
   }
 
   async function copyStandalone(state, job, plan, sourceTree) {
-    const { target: destination, season, batch } = state
-    const batchPath = await mkdir(destination, destination.root, season + batch)
+    const destination = state.target
+    const batchPath = await batchDirectory(destination, job.batchFolder)
     const genderPath = await mkdir(destination, batchPath, job.group)
     const parent = await mkdir(destination, genderPath, job.style)
     const copied = await copyPackage(state, job, plan, sourceTree, parent, plan.original, plan.row.target)
@@ -401,35 +427,88 @@
     return { target, result: copied.result }
   }
 
+  function hasRetailBarcode(text, styleCodes) {
+    const styleBases = new Set(styleCodes.map(code => code.slice(0, 12)))
+    const matches = text.matchAll(/(?:^|[^A-Z0-9])(?:商品条码|条形码|条码|\bEAN(?:-?13)?)?[ \t:：]*((?:\d[ \t]*){13})(?![ \t]*[A-Z0-9])/gm)
+    for (const [, raw] of matches) {
+      const digits = raw.replace(/\s/g, '')
+      if (/^(\d)\1+$/.test(digits) || styleBases.has(digits.slice(0, 12))) continue
+      const sum = Array.from(digits).reduce((total, digit, index) => total + Number(digit) * (index % 2 ? 3 : 1), 0)
+      if (sum % 10 === 0) return true
+    }
+    return false
+  }
+
+  function readStyleCodes(text) {
+    const codes = new Set()
+    for (const line of text.split(/\n/)) {
+      for (const match of line.matchAll(/(?<![A-Z0-9])(1[ \t]*0[ \t]*[A-Z0-9](?:[ \t]*\d){9})([A-Z0-9]*)/g)) {
+        const [full, base, tail] = match
+        const spacedSuffix = line.slice(match.index + full.length)
+          .match(/^(?:[ \t]*[-–—][ \t]*|[ \t]+)([A-Z])(?=[ \t]*(?:$|[-–—:/：\u3400-\u9fff])|[ \t]*[A-Z0-9]{5}\b)/)?.[1]
+        let suffix = ''
+        if (!tail) suffix = spacedSuffix || ''
+        else if (/^[A-Z]([A-Z0-9]{5})?$/.test(tail)) suffix = tail[0]
+        else if (!COLOR.test(tail)) continue
+        codes.add(base.replace(/[ \t]/g, '') + suffix)
+      }
+    }
+    return [...codes]
+  }
+
   function ocrEvidence(file, text, expected) {
     const normalized = clean(text).toUpperCase()
     const compact = normalized.replace(/(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, '')
-    const codes = [...new Set(normalized.split(/\n/).flatMap(line => {
-      const combined = line.replace(/(?<=[A-Z0-9])\s+(?=[A-Z0-9])/g, '')
-      return [...combined.matchAll(/(?:^|[^A-Z0-9])(10[A-Z0-9]\d{9})(?=$|[^A-Z0-9]|[A-Z0-9]{5}(?:$|[^A-Z0-9]))/g)].map(match => match[1])
-    }))]
-    const hasHang = TYPE_WORDS.吊牌.test(compact)
-    const hasWash = TYPE_WORDS.洗唛.test(compact)
+    const codes = readStyleCodes(normalized)
+    const absenceCard = ABSENCE_CARD.test(compact.replace(/\s/g, ''))
+    const supplierCompany = /(?:服饰|服装)(?:股份)?有限公司/.test(compact) && !RETAIL_IDENTITY.test(compact)
+    const supplierSample = SUPPLIER_SAMPLE.test(compact) ||
+      /设计编号/.test(compact) && /码数/.test(compact) && /克重/.test(compact) ||
+      /版[师師]|裁版|车版/.test(compact) && /[设設][计計][师師]/.test(compact) ||
+      supplierCompany && /版[师師]|裁版|车版|[设設][计計][师師]/.test(compact) ||
+      /\b(?:PROTO|PRE-PROD)\b/.test(compact) && /\b(?:APPROVAL|SHIPMENT)\b/.test(compact) ||
+      /\bSTYLE\s*NO\b/.test(compact) && /\bGAUGE\b/.test(compact) && /\b(?:LOT\s*NO|REMARKS)\b/.test(compact)
+    const hangCandidate = /吊牌|合格证/.test(compact) ||
+      /执行标准|产品标准/.test(compact) && /安全技术类别|质量等级|检验员/.test(compact)
+    const retailFields = TYPE_WORDS.吊牌候选.test(compact) || codes.length > 0
+    const hasHang = !supplierSample && !absenceCard && (
+      retailFields && (RETAIL_PRICE.test(compact) || hasRetailBarcode(compact, [expected, ...codes])) ||
+      codes.length > 0 && RETAIL_IDENTITY.test(compact) && /款[号號]|色[号號]|合格证|执行标准/.test(compact))
+    const washComposition = /(?:中国制造|MADE\s+IN\s+CHINA)/i.test(compact) &&
+      /成[分份]|COMPOSITION|BAHAN/i.test(compact) && /\d\s*%/.test(compact) && codes.length > 0
+    const hasWash = !supplierSample && !absenceCard && (TYPE_WORDS.洗唛.test(compact) || !hasHang && washComposition)
     const kinds = hasWash && (hasHang ? /水洗标|洗唛|洗标|洗涤说明|WASH(?:ING)?\s*INSTRUC/i.test(compact) : true) ?
       (hasHang ? ['待区分'] : ['洗唛']) : hasHang ? ['吊牌'] : []
-    return { file, kinds, codes, matched: codes.includes(expected) }
+    return { file, kinds, codes, matched: codes.includes(expected), supplierSample, absenceCard, hangCandidate }
   }
 
   function summarizeLabel(evidence, kind, style, failed) {
     const candidates = evidence.filter(item => item.kinds.includes(kind))
-    const uncertain = evidence.filter(item => item.kinds.includes('待区分') || (!item.kinds.length && item.codes.length))
-    const otherCodes = candidates.flatMap(item => item.codes.filter(code => code !== style))
+    const parent = style.length === 13 ? style.slice(0, -1) : ''
+    const uncertain = evidence.filter(item => {
+      if (item.supplierSample || item.absenceCard) return false
+      return item.kinds.includes('待区分') ||
+        (!item.kinds.length && (item.codes.some(code => code === style || parent && code.startsWith(parent)) ||
+          kind === '吊牌' && item.hangCandidate))
+    })
+    const confirmed = candidates.filter(item => item.matched && !item.codeConflict)
+    const mismatched = candidates.filter(item => !item.codeConflict && item.codes.some(code => code !== style && code !== parent))
     let status = '未检出，待复核'
-    if (otherCodes.length) status = '识别到不一致款号，待复核'
-    else if (candidates.some(item => item.matched)) status = '一致'
+    if (mismatched.length) status = '识别到不一致款号，待复核'
+    else if (confirmed.length) status = '一致'
+    else if (candidates.some(item => item.codeConflict)) status = '款号识别结果冲突，待复核'
+    else if (parent && candidates.some(item => item.codes.includes(parent))) status = '款号后缀未读出，待复核'
     else if (candidates.length) status = '已识别类型，款号未读出'
     else if (failed) status = '部分图片识别失败，待复核'
     else if (uncertain.length) status = '有候选图片，类型待复核'
-    const matches = candidates.length ? candidates : uncertain
-    return {
+    const matches = status === '一致' ? confirmed : mismatched.length ? mismatched : candidates.length ? candidates : uncertain
+    const result = {
       status, files: matches.map(item => item.file).join('\n'),
       codes: [...new Set(matches.flatMap(item => item.codes))].join('、'),
     }
+    if (kind === '吊牌') result.excludedFiles = evidence.filter(item => item.supplierSample).map(item => item.file)
+    result.absenceCardFiles = evidence.filter(item => item.absenceCard).map(item => item.file)
+    return result
   }
 
   function ocrWorkerLimit(threads, memoryGb) {
@@ -447,10 +526,14 @@
     return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
   }
 
-  async function browserWorker(runtime) {
+  function localApiOrigin() {
     const raw = new URL(params.__crawshrimp_api_base_url || 'http://127.0.0.1:18765')
-    if (raw.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(raw.hostname)) throw new Error('OCR 需要本机抓虾运行时')
-    const base = raw.origin + OCR_ASSETS
+    if (raw.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(raw.hostname)) throw new Error('图片核验需要本机抓虾运行时')
+    return raw.origin
+  }
+
+  async function browserWorker(runtime) {
+    const base = localApiOrigin() + OCR_ASSETS
     runtime.run.tesseract ??= (async () => {
       const response = await fetch(base + 'tesseract.min.js', { signal: AbortSignal.timeout(8000), credentials: 'omit' })
       if (!response.ok) throw new Error('Tesseract OCR 资源不可用')
@@ -474,7 +557,58 @@
     }
   }
 
-  async function recognize(worker, mountId, item) {
+  function cropLabelCanvas(bitmap, layout, retry) {
+    const focused = layout !== 'full'
+    const lower = layout === 'lower'
+    const detail = layout === 'detail'
+    const labelBottom = layout === 'labelBottom'
+    const width = Math.max(1, Math.round(bitmap.width * (detail ? 0.24 : lower ? 0.28 : focused ? 0.384 : 1)))
+    const height = Math.max(1, Math.round(bitmap.height * (detail ? 0.60 : lower ? 0.42 : labelBottom ? 0.45 : focused ? 0.81 : 1)))
+    const limit = retry ? 1150 : detail || lower ? 1550 : focused ? 1450 : 1600
+    const scale = Math.min(1, limit / Math.max(width, height))
+    const canvas = new OffscreenCanvas(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)))
+    const ctx = canvas.getContext('2d', { willReadFrequently: focused })
+    const y = labelBottom ? Math.round(bitmap.height * 0.52) :
+      Math.round((bitmap.height - height) * (detail ? 0.58 : lower ? 0.89 : 0.5))
+    ctx.drawImage(bitmap, Math.round((bitmap.width - width) / 2), y, width, height, 0, 0, canvas.width, canvas.height)
+    if (!focused) return canvas
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const histogram = new Uint32Array(256)
+    const rgba = pixels.data
+    for (let i = 0; i < rgba.length; i += 4) {
+      const value = Math.round(0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2])
+      rgba[i] = value
+      histogram[value]++
+    }
+    const cutoff = rgba.length / 400
+    let low = 0, high = 255, dark = histogram[0], light = histogram[255]
+    while (low < high && dark < cutoff) dark += histogram[++low]
+    while (high > low && light < cutoff) light += histogram[--high]
+    const contrast = 255 / Math.max(1, high - low)
+    for (let i = 0; i < rgba.length; i += 4) {
+      rgba[i] = (rgba[i] - low) * contrast
+      rgba[i + 1] = rgba[i + 2] = rgba[i]
+    }
+    ctx.putImageData(pixels, 0, 0)
+    return canvas
+  }
+
+  function combineOcrViews(file, first, second, expected, ...additional) {
+    const views = [first, second, ...additional].filter(Boolean)
+    const combined = ocrEvidence(file, views.join('\n'), expected)
+    if (!combined.kinds.length && views.some(view => ABSENCE_CARD.test(clean(view).replace(/\s/g, '')))) {
+      return { ...combined, absenceCard: true }
+    }
+    const codes = views.map(view => readStyleCodes(clean(view).toUpperCase())).filter(items => items.length)
+    if (codes.length > 1) {
+      const agreed = combined.codes.filter(code => codes.filter(items => items.includes(code)).length > 1)
+      if (agreed.length) return { ...combined, codes: agreed, matched: agreed.includes(expected) }
+      return { ...combined, matched: false, codeConflict: true }
+    }
+    return combined
+  }
+
+  async function recognize(worker, mountId, item, style, focused, attempt = 0) {
     const info = await request('/2/file/info', {
       mount_id: mountId, fullpath: item.fullpath, ignores: 'tag,favorite,lock,preview,thumbnail',
     })
@@ -484,24 +618,40 @@
     const image = await fetch(url, {
       credentials: url.origin === location.origin ? 'same-origin' : 'omit', cache: 'no-store', signal: AbortSignal.timeout(45000),
     })
+    if (image.status === 401 && url.origin === location.origin) throw sessionExpired()
     if (!image.ok) throw new Error('读取图片失败 HTTP ' + image.status)
     const bitmap = await createImageBitmap(await image.blob())
-    let blob
     try {
-      const scale = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height))
-      const canvas = new OffscreenCanvas(Math.round(bitmap.width * scale), Math.round(bitmap.height * scale))
-      canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-      blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.94 })
+      async function view(layout, psm = '11') {
+        const canvas = cropLabelCanvas(bitmap, layout, attempt > 0)
+        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.95 })
+        const options = { tessedit_pageseg_mode: psm }
+        return (await ocrDeadline(worker.recognize(blob, options), 35000, '单张图片 OCR 超时')).data.text
+      }
+      const first = await view(focused ? 'label' : 'full')
+      const evidence = ocrEvidence(item.filename, first, style)
+      const typed = evidence.kinds.some(kind => kind === '吊牌' || kind === '洗唛')
+      const other = evidence.codes.some(code => code !== style && !(style.length === 13 && code === style.slice(0, -1)))
+      if (evidence.supplierSample || evidence.absenceCard || typed && evidence.matched && !other) return evidence
+      if (!focused && !typed) return evidence
+      const second = await view(focused ? 'labelBottom' : 'label')
+      const combined = combineOcrViews(item.filename, first, second, style)
+      if (combined.supplierSample || combined.absenceCard || combined.matched && combined.kinds.length) return combined
+      const third = await view('detail', '6')
+      const rescued = combineOcrViews(item.filename, first, second, style, third)
+      if (rescued.supplierSample || rescued.absenceCard || rescued.matched && rescued.kinds.length) return rescued
+      if (!rescued.kinds.length && !rescued.codes.length && !focused) return rescued
+      const fourth = await view('lower')
+      return combineOcrViews(item.filename, first, second, style, third, fourth)
     } finally {
       bitmap.close()
     }
-    return (await ocrDeadline(worker.recognize(blob), 35000, '单张图片 OCR 超时')).data.text
   }
 
   async function retryTimedOutImage(read, onTimeout) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await read()
+        return await read(attempt)
       } catch (error) {
         if (!error.ocrTimeout && error.name !== 'TimeoutError') throw error
         onTimeout(error, attempt === 0)
@@ -510,25 +660,111 @@
     }
   }
 
-  async function scanColor(runtime, mountId, files, style) {
+  async function thumbnailRgb(file) {
+    if (!file.thumbnail) return null
+    try {
+      const url = new URL(file.thumbnail, location.href)
+      const sameOrigin = url.origin === location.origin
+      if (url.protocol !== 'https:' || !(sameOrigin || url.hostname.endsWith('.semirapp.com'))) return null
+      const response = await fetch(url, { credentials: sameOrigin ? 'same-origin' : 'omit', signal: AbortSignal.timeout(3500) })
+      if (response.status === 401 && sameOrigin) throw sessionExpired()
+      if (!response.ok) return null
+      const bitmap = await createImageBitmap(await response.blob())
+      try {
+        const canvas = new OffscreenCanvas(SCREEN_SIZE, SCREEN_SIZE)
+        const ctx = canvas.getContext('2d')
+        const scale = SCREEN_SIZE / Math.max(bitmap.width, bitmap.height)
+        const width = Math.max(1, Math.round(bitmap.width * scale))
+        const height = Math.max(1, Math.round(bitmap.height * scale))
+        ctx.fillStyle = '#fff'
+        ctx.fillRect(0, 0, SCREEN_SIZE, SCREEN_SIZE)
+        ctx.drawImage(bitmap, (SCREEN_SIZE - width) / 2, (SCREEN_SIZE - height) / 2, width, height)
+        const rgba = ctx.getImageData(0, 0, SCREEN_SIZE, SCREEN_SIZE).data
+        const rgb = new Uint8Array(SCREEN_SIZE * SCREEN_SIZE * 3)
+        for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+          rgb[j] = rgba[i]
+          rgb[j + 1] = rgba[i + 1]
+          rgb[j + 2] = rgba[i + 2]
+        }
+        return rgb
+      } finally {
+        bitmap.close()
+      }
+    } catch (error) {
+      if (error.sessionExpired) throw error
+      return null
+    }
+  }
+
+  function screenOrder(files, scores) {
+    const deferred = files.filter(file => (scores.get(file)?.[2] || 0) >= OTHER_THRESHOLD)
+    const candidates = files.filter(file => !deferred.includes(file))
+    const ranked = [0, 1].map(kind => candidates.filter(file => scores.has(file))
+      .sort((a, b) => scores.get(b)[kind] - scores.get(a)[kind]).slice(0, 2))
+    const priority = [...new Set([ranked[0][0], ranked[1][0], ranked[0][1], ranked[1][1]].filter(Boolean))]
+    return { priority: [...priority, ...candidates.filter(file => !priority.includes(file))], deferred }
+  }
+
+  async function prioritizeOcr(runtime, sorted, scoresByFile) {
+    const credential = params.__crawshrimp_semir_screen_token
+    if (!credential || runtime.run.screenUnavailable) return sorted
+    const first = sorted.slice(0, SCREEN_WINDOW)
+    for (let offset = 0; offset < first.length; offset += SCREEN_BATCH) {
+      const batch = first.slice(offset, offset + SCREEN_BATCH)
+      const inputs = (await Promise.all(batch.map(async file => ({ file, pixels: await thumbnailRgb(file) }))))
+        .filter(item => item.pixels)
+      if (!inputs.length) continue
+      const body = new Uint8Array(inputs.length * SCREEN_SIZE * SCREEN_SIZE * 3)
+      inputs.forEach(({ pixels }, index) => body.set(pixels, index * pixels.length))
+      try {
+        const response = await fetch(localApiOrigin() + '/semir-still-images/classify', {
+          method: 'POST', credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(3500),
+          headers: { 'Content-Type': 'application/octet-stream', 'X-Crawshrimp-Token': credential }, body,
+        })
+        if (!response.ok) throw new Error('本机图片分类不可用')
+        const { scores } = await response.json()
+        if (!Array.isArray(scores) || scores.length !== inputs.length ||
+            scores.some(row => !Array.isArray(row) || row.length !== 3 || row.some(value => !Number.isFinite(value) || value < 0 || value > 1))) {
+          throw new Error('本机图片分类结果无效')
+        }
+        inputs.forEach(({ file }, index) => scoresByFile.set(file, scores[index]))
+      } catch {
+        runtime.run.screenUnavailable = true
+        break
+      }
+    }
+    const ordered = screenOrder(first, scoresByFile)
+    return [...ordered.priority, ...sorted.slice(SCREEN_WINDOW), ...ordered.deferred]
+  }
+
+  function isNamedProductView(file, style, color) {
+    const name = clean(file.filename).toUpperCase().replace(/\.(?:JPG|PNG)$/, '')
+    if (!color || name === clean(file.filename).toUpperCase()) return false
+    const sku = style + '-' + color
+    return name === sku || name.startsWith(sku + '-') && /^[1-7]$/.test(name.slice(sku.length + 1))
+  }
+
+  async function scanColor(runtime, mountId, files, style, color) {
     const evidence = [], failed = []
-    // Camera filenames usually place label shots near the end. This only changes scan order.
-    const sorted = [...files].sort((a, b) => {
+    // Start with the last camera shots, where captures of the two labels usually appear.
+    const sorted = files.filter(file => !isNamedProductView(file, style, color)).sort((a, b) => {
       const product = item => item.filename.startsWith(style + '-')
       const namedLabel = item => /吊牌|洗唛|洗标|水洗|hang.?tag|wash.?label/i.test(item.filename)
       return Number(namedLabel(b)) - Number(namedLabel(a)) || Number(product(a)) - Number(product(b)) ||
         b.filename.localeCompare(a.filename, 'en', { numeric: true })
     })
+    const scoresByFile = new Map()
     let scanned = 0, retried = 0
-    for (const file of sorted) {
+    for (const file of await prioritizeOcr(runtime, sorted.length ? sorted : files, scoresByFile)) {
       let initializing = false
       try {
-        const text = await retryTimedOutImage(async () => {
+        const read = await retryTimedOutImage(async attempt => {
           if (runtime.run.sessionExpired) throw sessionExpired()
           initializing = !runtime.worker
           const worker = runtime.worker ??= await browserWorker(runtime)
           initializing = false
-          return recognize(worker, mountId, file)
+          const scores = scoresByFile.get(file)
+          return recognize(worker, mountId, file, style, !!scores && Math.max(scores[0], scores[1]) >= 0.75, attempt)
         }, (error, retrying) => {
           if (retrying) retried++
           if (error.ocrTimeout && runtime.worker) {
@@ -536,7 +772,7 @@
             runtime.worker = null
           }
         })
-        evidence.push(ocrEvidence(file.filename, text, style))
+        evidence.push(read)
         scanned++
       } catch (error) {
         failed.push(file.filename + '：' + (error.name === 'TypeError' ? '图片请求失败' : error.message))
@@ -574,7 +810,8 @@
       const fallback = source.standalone[index]
       return plan.issue === '缺款色文件夹' && (fallback.path || fallback.alternatives) ? fallback : plan
     }) : source.standalone
-    const sourceTree = source.path ? await tree(source.mountId, source.path, source.items) : []
+    const wholeStyle = state.mode === 'organize' && source.path && canCopyWholeStyle(source.items, plans)
+    const sourceTree = wholeStyle ? await tree(source.mountId, source.path, source.items) : []
     const runWrite = action => {
       if (!navigator.locks) throw new Error('当前浏览器不支持云盘写入互斥锁')
       return navigator.locks.request('crawshrimp-semir-still-package:' + state.target.mountId, () => {
@@ -583,7 +820,7 @@
       })
     }
     let target = { result: '预览' }
-    if (state.mode === 'organize' && source.path) {
+    if (wholeStyle) {
       runtime.stage = '复制并核验图包'
       try {
         target = await runWrite(() => copyAndRename(state, source, job, sourceTree, plans))
@@ -598,16 +835,20 @@
       runtime.target = job.style + ' / ' + row.色号
       const folder = plan.path || (source.path && original ? source.path + '/' + original : '')
       const origin = plan.path ? plan : source
-      const assets = plan.path ? await tree(origin.mountId, plan.path) : sourceTree.filter(item => item.fullpath.startsWith(folder + '/'))
+      const separate = !!folder && (plan.path || !target.target)
+      let assets = []
+      if (folder) assets = wholeStyle && !plan.path
+        ? sourceTree.filter(item => item.fullpath.startsWith(folder + '/')) : await tree(origin.mountId, folder)
       const files = assets.filter(item => !isDir(item) && IMAGE.test(item.filename))
       let colorTarget = !plan.path && original && target.target && target.target + '/' + row.target
       let result = target.result, error = target.error
-      if (state.mode === 'organize' && plan.path) {
+      if (state.mode === 'organize' && separate) {
         runtime.stage = '复制并核验图包'
         try {
-          const copied = await runWrite(() => copyStandalone(state, job, plan, assets))
+          const copied = await runWrite(() => copyStandalone(state, job, { ...origin, path: folder, original, row }, assets))
           colorTarget = copied.target
           result = copied.result
+          error = ''
         } catch (e) {
           if (e.sessionExpired) throw e
           result = '整理未完成'
@@ -633,10 +874,13 @@
   async function auditColor(item, runtime) {
     const { row, folder, mountId, labelStatus, result } = item
     const files = folder ? (await tree(mountId, folder)).filter(item => !isDir(item) && IMAGE.test(item.filename)) : []
-    const audit = files.length ? await scanColor(runtime, mountId, files, row.款号) : null
+    const audit = files.length ? await scanColor(runtime, mountId, files, row.款号, row.色号) : null
     const note = [result.备注]
     if (audit?.retried) note.push(`${audit.retried} 张图片超时后已自动重试`)
     if (audit?.failed.length) note.push('OCR失败：' + audit.failed.join('、'))
+    if (audit?.hang.excludedFiles.length) note.push('供应商样品卡或表单不计作吊牌：' + audit.hang.excludedFiles.join('、'))
+    if (audit?.hang.absenceCardFiles?.length) note.push('手写缺项说明不计作标签')
+    if (audit && runtime.run.screenUnavailable) note.push('缩略图模型不可用，已回退到完整 OCR')
     return resultRows(row, {
       ...result, 已识别图片数: audit?.scanned || 0, OCR失败数: audit?.failed.length || 0,
       吊牌结果: audit?.hang.status || (folder ? '无图片' : labelStatus), 吊牌图片: audit?.hang.files, 吊牌识别款号: audit?.hang.codes,
@@ -689,7 +933,7 @@
   }
 
   if (window.__CRAWSHRIMP_EXPORTS__) Object.assign(window.__CRAWSHRIMP_EXPORTS__, {
-    batchRows, colorPlans, equivalent, ocrEvidence, summarizeLabel, requireTarget, parseAddress, ocrWorkerLimit, nextPending, retryTimedOutImage,
+    batchRows, colorPlans, equivalent, ocrEvidence, summarizeLabel, requireTarget, parseAddress, ocrWorkerLimit, nextPending, retryTimedOutImage, screenOrder, parseBatch, batchDirectory, combineOcrViews, isNamedProductView, canCopyWholeStyle, prepareStyle,
   })
   if (phase === '__exports__') return { success: true, data: [] }
 
@@ -767,7 +1011,7 @@
         const job = run.jobs[index]
         const runtime = { run, target: job.style }
         queueOperation(run, index, runtime,
-          () => prepareStyle({ ...shared, season: job.season, batch: job.batch }, job, runtime),
+          () => prepareStyle({ ...shared, season: job.season }, job, runtime),
           items => { run.prepared[index] = items },
           error => job.colors.map(row => ({ row, labelStatus: '待核验',
             result: { 整理结果: '处理失败', 备注: [...row.notes, error.message].join('；') } })),

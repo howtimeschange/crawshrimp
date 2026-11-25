@@ -1,0 +1,16 @@
+{
+  "architecture": "PP-LCNetV2-base SSLD",
+  "authors": "PaddlePaddle Authors (PaddleClas)",
+  "source": "https://github.com/PaddlePaddle/PaddleClas/tree/release/2.6",
+  "pretrained": "https://paddle-imagenet-models-name.bj.bcebos.com/dygraph/legendary_models/PPLCNetV2_base_ssld_pretrained.pdparams",
+  "license": "Apache-2.0",
+  "sha256": "ab5725948c63ab5e62d966145a2fa09b70ade77cb8fd09a265a427db3cbf0578",
+  "version": "semir-labels-26q3-expanded-int8-1",
+  "input": "NCHW RGB, 224 × 224, white letterbox, ImageNet normalization",
+  "classes": [
+    "hangtag",
+    "washlabel",
+    "other"
+  ],
+  "training": "26Q2/26Q3, type-labeled seed with lower-weight two-model consensus; supplier-card hard negatives tracked separately in OCR evaluation"
+}

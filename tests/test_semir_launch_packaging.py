@@ -8,7 +8,8 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
-from core.semir_launch_packaging import package_materials, still_ocr_host_hardware, write_still_package_report
+from openpyxl.styles import Font
+from core.semir_launch_packaging import _still_report_values, package_materials, still_ocr_host_hardware, write_still_package_report
 
 class PackagingTests(unittest.TestCase):
     def test_lossless_conflicts_traversal_and_formula_safe(self):
@@ -41,6 +42,40 @@ class InvalidContentTests(unittest.TestCase):
 
 
 class StillPackageReportTests(unittest.TestCase):
+    def test_a_label_with_an_unread_style_suffix_stays_present_and_requires_review(self):
+        hangtag, wash, consistency, notes = _still_report_values({
+            '整理结果': '预览',
+            '吊牌结果': '一致',
+            '洗唛结果': '款号后缀未读出，待复核',
+            '洗唛识别款号': '101525127011',
+        })
+        self.assertEqual((hangtag, wash, consistency, notes), (None, None, '未核验', '洗唛款号后缀读不清'))
+
+    def test_report_uses_short_notes_for_business_exceptions(self):
+        cases = [
+            ('未检出，待复核', '一致', '供应商样品卡或表单不计作吊牌：IMG_1234.jpg', ('缺', None, '未核验', '仅有供应商样卡')),
+            ('未检出，待复核', '一致', '仅有手写样卡', ('缺', None, '未核验', '仅有手写样卡')),
+            ('一致', '未检出，待复核', '', (None, '缺', '未核验', '需补拍洗唛')),
+            ('未检出，待复核', '未检出，待复核', '', ('缺', '缺', '未核验', '需补拍吊牌和洗唛')),
+            ('无图片', '无图片', '', ('缺', '缺', '未核验', '图包无可用图片')),
+            ('部分图片识别失败，待复核', '一致', '1 张图片超时后已自动重试；OCR失败：IMG_1234.jpg：超时',
+             (None, None, '未核验', '部分图片识别失败')),
+            ('有候选图片，类型待复核', '一致', '', (None, None, '未核验', '吊牌图片类型待确认')),
+            ('一致', '一致', '款色与款号拼色号不一致，按独立款号和色号查找，需复核表格',
+             (None, None, '一致', '表格款色与款号冲突，按款号和色号核验')),
+            ('一致', '一致', '缩略图模型不可用，已回退到完整 OCR；1 张图片超时后已自动重试',
+             (None, None, '一致', None)),
+        ]
+        for hangtag, wash, note, expected in cases:
+            with self.subTest(hangtag=hangtag, wash=wash, note=note):
+                self.assertEqual(_still_report_values({
+                    '整理结果': '已复制并核验', '吊牌结果': hangtag, '洗唛结果': wash, '备注': note,
+                }), expected)
+
+        self.assertEqual(_still_report_values({'整理结果': '缺图包'}), (None, None, '未核验', '未找到图包'))
+        self.assertEqual(_still_report_values({'整理结果': '预览', '备注': 'OCR失败：云盘登录超时'}),
+                         (None, None, '未核验', '云盘登录超时'))
+
     def test_windows_hardware_reads_system_memory_structure(self):
         def fill_memory_status(pointer):
             status = pointer._obj
@@ -63,7 +98,7 @@ class StillPackageReportTests(unittest.TestCase):
             workbook = Workbook()
             sheet = workbook.active
             sheet.append(['上新季', '批次', '款号', '款色', '色号', '电商上市日期', '备注'])
-            for batch in ('第7批', '第8批'):
+            for batch in ('第7批', '8P'):
                 sheet.append(['26Q3', batch, '107526100170', '10752610017000316', '00316', date(2026, 7, 30), '原始备注'])
             sheet.auto_filter.ref = 'A1:G3'
             workbook.save(source)
@@ -81,7 +116,43 @@ class StillPackageReportTests(unittest.TestCase):
             sheet = checked.active
             self.assertEqual([c.value for c in sheet[1]][-4:], ['缺吊牌', '缺洗唛', '款号是否一致', '备注'])
             self.assertEqual([c.value for c in sheet[2]][-4:], [None] * 4)
-            self.assertEqual([c.value for c in sheet[3]][6:10], ['原始备注', '否', '待复核', '不一致'])
-            self.assertIn('104526100003', sheet['K3'].value)
+            self.assertEqual(sheet['B3'].value, '8P')
+            self.assertEqual([c.value for c in sheet[3]][6:], [
+                '原始备注', None, None, '不一致', '吊牌款号不符（识别为 104526100003）；洗唛图片类型待确认',
+            ])
             self.assertEqual(sheet.auto_filter.ref, 'A1:K3')
             checked.close()
+
+    def test_missing_is_red_and_reexport_clears_previous_values_and_color(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source, first, second = (root / name for name in ('source.xlsx', 'first.xlsx', 'second.xlsx'))
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(['上新季', '批次', '款号', '款色', '色号', '电商上市日期'])
+            sheet.append(['26Q3', '第8批', '107526100170', '10752610017000316', '00316', date(2026, 7, 30)])
+            sheet['B2'].font = Font(name='Arial', bold=True, color='FF222222')
+            workbook.save(source)
+            workbook.close()
+            row = {
+                '批次': '26Q3第8批', '款号': '107526100170', '款色': '10752610017000316', '色号': '00316',
+                '上市日期': '2026-07-30', '整理结果': '已复制并核验', '吊牌结果': '一致',
+                '洗唛结果': '未检出，待复核',
+            }
+            write_still_package_report(data_rows=[row], source=source, output=first)
+            workbook = load_workbook(first)
+            sheet = workbook.active
+            self.assertEqual([cell.value for cell in sheet[2]][-4:], [None, '缺', '未核验', '需补拍洗唛'])
+            self.assertEqual(sheet['H2'].font.color.rgb, 'FFFF0000')
+            self.assertEqual(sheet['G2'].font.color.rgb, 'FF222222')
+            self.assertTrue(sheet['H2'].font.bold)
+            workbook.close()
+
+            write_still_package_report(data_rows=[{**row, '洗唛结果': '一致'}], source=first, output=second)
+            workbook = load_workbook(second)
+            sheet = workbook.active
+            self.assertEqual(sheet.max_column, 10)
+            self.assertEqual([cell.value for cell in sheet[2]][-4:], [None, None, '一致', None])
+            self.assertEqual(sheet['H2'].font.color.rgb, 'FF222222')
+            self.assertTrue(sheet['H2'].font.bold)
+            workbook.close()

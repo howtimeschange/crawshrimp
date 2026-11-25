@@ -88,7 +88,9 @@ logger = logging.getLogger(__name__)
 
 API_VERSION = "1.4.16"
 API_TOKEN_HEADER = "x-crawshrimp-token"
-PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
+SEMIR_SCREEN_PATH = "/semir-still-images/classify"
+SEMIR_DRIVE_ORIGIN = "https://fmp.semirapp.com"
+PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect", SEMIR_SCREEN_PATH}
 PRIVATE_API_PATHS = {"/bala-ai-video-materials/api/from-rows"}
 PUBLIC_API_PREFIXES = (
     "/adapter-assets/",
@@ -104,6 +106,7 @@ _run_status: dict = {} # job_id -> {'status', 'run_id', 'records'}
 _run_controls: dict = {}  # job_id -> {'task', 'pause_requested', 'stop_requested', 'resume_event', ...}
 _task_locks: dict[str, asyncio.Lock] = {}
 _task_run_queues: dict[str, list[dict]] = {}
+_semir_screen_tokens: set[str] = set()
 
 ACTIVE_LIVE_STATUSES = {"running", "pausing", "paused", "stopping"}
 TMALL_OPS_ADAPTER_ID = "tmall-ops-assistant"
@@ -8525,6 +8528,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     data = []
     output_files = []
     runtime_artifact_dir = data_sink.prepare_artifact_dir(adapter_id, task_id, run_id, "runtime")
+    semir_screen_token = None
 
     try:
         log(f"[{adapter_id}/{task_id}] Starting...")
@@ -8612,9 +8616,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             if workbook_path.suffix.lower() != '.xlsx' or not workbook_path.is_file():
                 raise ValueError('请上传原始 .xlsx 上架明细表，核验结果将回填在表格末尾')
             run_params['__crawshrimp_api_base_url'] = _current_local_api_base_url()
+            semir_screen_token = secrets.token_urlsafe(32)
+            _semir_screen_tokens.add(semir_screen_token)
+            run_params['__crawshrimp_semir_screen_token'] = semir_screen_token
             hardware = still_ocr_host_hardware()
             run_params['__crawshrimp_ocr_hardware'] = hardware
             log(f"OCR 本机配置：{hardware['threads']} 个逻辑核，{hardware['memory_gb']:g} GiB 内存")
+            log("静物图核验：PP-LCNetV2 缩略图筛选 + 浏览器 OCR")
         for pk, pv in run_params.items():
             if isinstance(pv, dict) and pv.get('path') and not pv.get('rows'):
                 log(f"Resolving Excel rows for param '{pk}' from path: {pv['path']}")
@@ -9820,6 +9828,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             )
         raise
     finally:
+        if semir_screen_token is not None:
+            _semir_screen_tokens.discard(semir_screen_token)
         if run_control is not None:
             run_control['task'] = None
             run_control['pause_requested'] = False
@@ -9924,6 +9934,10 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_local_api_token(request: Request, call_next):
+    if request.method == "OPTIONS" and request.url.path == SEMIR_SCREEN_PATH:
+        if request.headers.get("origin") != SEMIR_DRIVE_ORIGIN:
+            return Response(status_code=403)
+        return Response(status_code=204, headers=_semir_screen_headers())
     if request.method == "OPTIONS" and str(request.url.path or "").startswith("/adapter-assets/"):
         return Response(status_code=204, headers=_adapter_asset_headers())
     if request.method == "OPTIONS" or _is_public_api_path(request.url.path):
@@ -10017,6 +10031,47 @@ def _adapter_asset_headers() -> dict[str, str]:
         "Cross-Origin-Resource-Policy": "cross-origin",
         "Cache-Control": "public, max-age=31536000, immutable",
     }
+
+
+def _semir_screen_headers() -> dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": SEMIR_DRIVE_ORIGIN,
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Crawshrimp-Token",
+        "Access-Control-Allow-Private-Network": "true",
+        "Cache-Control": "no-store",
+        "Vary": "Origin",
+    }
+
+
+@app.post(SEMIR_SCREEN_PATH, include_in_schema=False)
+async def classify_semir_still_images(request: Request):
+    from core.semir_still_image_classifier import MAX_BATCH, RGB_BYTES, classify_rgb_batch
+
+    if request.headers.get("origin") != SEMIR_DRIVE_ORIGIN:
+        return Response(status_code=403)
+    headers = _semir_screen_headers()
+    if request.headers.get(API_TOKEN_HEADER) not in _semir_screen_tokens:
+        return Response(status_code=401, headers=headers)
+    length = request.headers.get("content-length", "")
+    if (request.headers.get("content-type") != "application/octet-stream" or
+            not re.fullmatch(r"[0-9]{1,7}", length) or
+            not 0 < int(length) <= RGB_BYTES * MAX_BATCH or int(length) % RGB_BYTES):
+        return Response(status_code=400, headers=headers)
+    expected_size = int(length)
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > expected_size:
+            return Response(status_code=400, headers=headers)
+        data.extend(chunk)
+    if len(data) != expected_size:
+        return Response(status_code=400, headers=headers)
+    try:
+        scores = await asyncio.to_thread(classify_rgb_batch, bytes(data))
+    except Exception:
+        logger.warning("Semir thumbnail classification unavailable", exc_info=True)
+        return Response(status_code=503, headers=headers)
+    return JSONResponse({"scores": scores}, headers=headers)
 
 
 @app.options("/adapter-assets/{adapter_id}/{asset_path:path}")

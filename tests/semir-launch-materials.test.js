@@ -78,18 +78,19 @@ test('still packages use explicit SKU fields and keep cloud writes inside the te
  const {box} = await run('organize-still-image-package')
  const row = {上新季:'26Q3', 批次:'第8批', 款号:'101526116122', 款色:'10T52611612200040',
    色号:'00040', 色名:'灰白色调', 性别:'中性', 电商上市日期:'2026-07-30 00:00:00'}
- const {jobs, errors} = box.batchRows({rows:[row,row,{...row,批次:'第7批'},
+ const {jobs, errors} = box.batchRows({rows:[row,{...row,批次:'8P'},{...row,批次:'第7批'},
    {...row,上新季:'26Q4',批次:'第2批',电商上市日期:'2026-09-01'}]}, new Set())
  assert.equal(errors.length, 0)
  assert.equal(jobs.length, 3)
  assert.equal(jobs[1].batch, '第7批')
+ assert.equal(jobs[0].batchFolder, '8P')
  assert.equal(jobs[2].season, '26Q4')
  assert.equal(jobs[0].group, '男')
  assert.equal(jobs[0].colors.length, 1)
  assert.equal(jobs[0].colors[0].target, '灰白色调00040')
  assert.match(jobs[0].colors[0].notes[0], /需复核/)
  const root = '3-商品上新/3-01季度上新/2026年/26Q3/静物图/测试'
- assert.doesNotThrow(() => box.requireTarget(root + '/26Q3第8批/男', root))
+ assert.doesNotThrow(() => box.requireTarget(root + '/8P/男', root))
  for (const other of [root, root + '/..', root + '备份/男', root.replace('测试', '男') + '/1p']) {
   assert.throws(() => box.requireTarget(other, root), /超出所选目标目录/)
  }
@@ -101,6 +102,26 @@ test('still packages use explicit SKU fields and keep cloud writes inside the te
  assert.throws(() => box.parseAddress('森马视觉//静物/../其他'), /具体云盘目录/)
 })
 
+test('batch folders are canonical uppercase and existing case variants are reused safely', async () => {
+ const root = '允许的测试目录'
+ const paths = ['8p']
+ const {box} = await run('organize-still-image-package', '__exports__', {}, {
+  fetch: async url => {
+   assert.ok(url.startsWith('/fengcloud/1/file/ls?'))
+   return {ok:true,json:async()=>({count:paths.length,list:paths.map(filename=>({filename,fullpath:root+'/'+filename,mount_id:2021,dir:1}))})}
+  },
+ })
+ for (const input of ['第8批','第 8 批','8P','８ｐ','08P']) {
+  assert.equal(box.parseBatch(input).folder, '8P')
+  assert.equal(box.parseBatch(input).label, '第8批')
+ }
+ assert.equal(box.parseBatch('0P'), null)
+ assert.equal(box.parseBatch('第8批/取消'), null)
+ assert.equal(await box.batchDirectory({root,mountId:'2021'}, '8P'), root+'/8p')
+ paths.push('8P')
+ await assert.rejects(box.batchDirectory({root,mountId:'2021'}, '8P'), /批次目录命名冲突/)
+})
+
 test('still package retries only accept complete source file hashes and mapped folder names', async () => {
  const {box} = await run('organize-still-image-package')
  const sourceTree = [{fullpath:'source/original',dir:1},{fullpath:'source/original/file.jpg',filehash:'abc',filesize:10}]
@@ -109,6 +130,72 @@ test('still package retries only accept complete source file hashes and mapped f
  assert.equal(box.equivalent(sourceTree, renamed, 'source', 'target', plans, true), true)
  assert.equal(box.equivalent(sourceTree, renamed.slice(0, 1), 'source', 'target', plans, true), false)
  assert.equal(box.equivalent(sourceTree, [renamed[0],{...renamed[1],filehash:'bad'}], 'source', 'target', plans, true), false)
+})
+
+test('a style copy requires every source subfolder to be selected for the current run', async () => {
+ const {box} = await run('organize-still-image-package')
+ const selected = {original:'107526101004-80900',row:{target:'冰蓝80900'}}
+ const others = [{filename:'107526101004-00502',dir:1},{filename:'107526101004-10301',dir:1}]
+ const listing = [{filename:selected.original,dir:1}, ...others, {filename:'readme.txt',dir:0}]
+ assert.equal(box.canCopyWholeStyle(listing,[selected]),false)
+ assert.equal(box.canCopyWholeStyle(listing,[selected,...others.map(item=>({original:item.filename,row:{}}))]),true)
+ assert.equal(box.canCopyWholeStyle(listing,[{...selected,path:'another/source'}]),false)
+})
+
+test('organizing one selected color sends only that source folder to the copy endpoint', async () => {
+ const style = '107526101004', source = '当季/静物', target = '允许的测试目录'
+ const dirs = new Map(), copies = []
+ const item = (mount_id, fullpath, dir=1) => ({mount_id,fullpath,dir,filename:fullpath.split('/').at(-1),filehash:dir?'':'hash',filesize:dir?0:100})
+ const key = (mount,path) => mount+'//'+path
+ const sourceStyle = source+'/'+style
+ const sourceFolders = ['00502','10301','80900'].map(color=>item('3283',sourceStyle+'/'+style+'-'+color))
+ dirs.set(key('3283',sourceStyle),sourceFolders)
+ for(const f of sourceFolders) dirs.set(key('3283',f.fullpath),[item('3283',f.fullpath+'/a.jpg',0)])
+ dirs.set(key('2021',target),[])
+ const add = (mount,fullpath,contents=[])=>{
+  const f=item(mount,fullpath)
+  dirs.get(key(mount,fullpath.slice(0,fullpath.lastIndexOf('/')))).push(f)
+  dirs.set(key(mount,fullpath),contents)
+  return f
+ }
+ const {box} = await run('organize-still-image-package','__exports__',{},{
+  navigator:{locks:{request:async(_,write)=>write()}},
+  fetch:async(url,options)=>{
+   const route=new URL(url,'https://fmp.semirapp.com')
+   const body=options.body&&JSON.parse(options.body)
+   let out
+   if(route.pathname.endsWith('/search')) out={total:1,list:[item('3283',sourceStyle)]}
+   else if(route.pathname.endsWith('/ls')){
+    const rows=dirs.get(key(route.searchParams.get('mount_id'),route.searchParams.get('fullpath')))
+    assert.ok(rows,url)
+    out={list:rows,count:rows.length}
+   }else if(route.pathname.endsWith('/create_folder')) out=add(body.mount_id,body.fullpath)
+   else if(route.pathname.endsWith('/copy')){
+    const sourcePath=decodeURIComponent(body.fullpaths.slice(0,-1))
+    copies.push(sourcePath)
+    const dest=body.target_fullpath+'/'+sourcePath.split('/').at(-1)
+    out=[add('2021',dest,[item('2021',dest+'/a.jpg',0)])]
+   }else if(route.pathname.endsWith('/rename')){
+    const parent=body.fullpath.slice(0,body.fullpath.lastIndexOf('/'))
+    const index=dirs.get(key('2021',parent)).findIndex(x=>x.fullpath===body.fullpath)
+    assert.notEqual(index,-1)
+    const desired=parent+'/'+body.newname
+    dirs.get(key('2021',parent))[index]=item('2021',desired)
+    dirs.delete(key('2021',body.fullpath))
+    dirs.set(key('2021',desired),[item('2021',desired+'/a.jpg',0)])
+    out={}
+   }else assert.fail(url)
+   return {ok:true,json:async()=>out}
+  },
+ })
+ const row={色号:'80900',target:'冰蓝80900',notes:[]}
+ const received=await box.prepareStyle(
+  {mode:'organize',season:'26Q3',sources:[{root:source,mountId:'3283',mount:'来源'}],target:{root:target,mountId:'2021',mount:'目标'}},
+  {style,group:'女',batchFolder:'6P',colors:[row]},{run:{}},
+ )
+ assert.deepEqual(copies,[sourceStyle+'/'+style+'-80900'])
+ assert.equal(received[0].result.整理结果,'已复制并核验')
+ assert.deepEqual(dirs.get(key('2021',target+'/6P/女/'+style)).map(x=>x.filename),['冰蓝80900'])
 })
 
 test('still package OCR separates hangtag, wash label, wrong style and unresolved text', async () => {
@@ -123,6 +210,108 @@ test('still package OCR separates hangtag, wash label, wrong style and unresolve
  assert.equal(box.summarizeLabel([wash, wrong], '洗唛', code, 0).status, '识别到不一致款号，待复核')
  assert.equal(box.summarizeLabel([illegible], '洗唛', code, 0).status, '已识别类型，款号未读出')
  assert.equal(box.summarizeLabel([], '吊牌', code, 1).status, '部分图片识别失败，待复核')
+})
+
+test('sample cards, supplier forms and compliance text do not count as retail hangtags', async () => {
+ const {box} = await run('organize-still-image-package')
+ const code = '101526108131'
+ const handwritten = box.ocrEvidence('IMG_0666.jpg', '101526108131\n00355', code)
+ const supplier = box.ocrEvidence('IMG_1860.jpg', 'SEMIR\n样衣确认表\n款号 101526108131\n执行标准\n零售价：159', code)
+ const sticker = box.ocrEvidence('IMG_1332.jpg', '森马 SEMIR\n合格证\n执行标准\n安全技术类别\n款号 101526108131', code)
+ for (const evidence of [handwritten, supplier, sticker]) assert.equal(evidence.kinds.includes('吊牌'), false)
+ const rejected = box.summarizeLabel([supplier], '吊牌', code, 0)
+ assert.equal(rejected.status, '未检出，待复核')
+ assert.equal(rejected.excludedFiles.join(','), 'IMG_1860.jpg')
+ assert.equal(box.summarizeLabel([handwritten], '吊牌', code, 0).status, '有候选图片，类型待复核')
+ const retail = box.ocrEvidence('IMG_2006.jpg', '款号 101526108131\n合格证\n商品条码 4006381333931', code)
+ assert.equal(box.summarizeLabel([supplier, retail], '吊牌', code, 0).status, '一致')
+ assert.equal(box.summarizeLabel([supplier, retail], '吊牌', code, 0).files, 'IMG_2006.jpg')
+ const invalidBarcode = box.ocrEvidence('IMG_1332.jpg', '合格证\n商品条码 4006381333930\n款号 101526108131', code)
+ assert.equal(invalidBarcode.kinds.includes('吊牌'), false)
+ for (const title of ['森马（拍照样）办评语卡','森马（齐色办）办评语卡','森马（订货样）办评语卡','上装、下装办卡','设计编号\n码数\n克重']) {
+  const card = box.ocrEvidence('sample.jpg', title+'\n款号 '+code+'\n洗涤说明\n零售价 159', code)
+  assert.equal(card.supplierSample, true)
+  assert.equal(card.kinds.length, 0)
+ }
+ for (const text of ['樣 版 卡\n款號 '+code, '版師：\n設計師：\n款号 '+code,
+  'Style No: '+code+'\nGauge\nLot No\nRemarks', 'Pre-Prod\nShipment\n款号 '+code]) {
+  const card = box.ocrEvidence('sample.jpg', text, code)
+  assert.equal(card.supplierSample, true)
+  assert.equal(card.kinds.length, 0)
+ }
+ const note = box.ocrEvidence('note.jpg', '無 洗 嘜', code)
+ assert.equal(note.absenceCard, true)
+ assert.equal(note.kinds.length, 0)
+ assert.equal(box.summarizeLabel([note], '洗唛', code, 0).status, '未检出，待复核')
+ const plain = box.ocrEvidence('handwritten.jpg', '¥'+code+'\n70537', code)
+ assert.equal(plain.kinds.length, 0)
+ assert.equal(box.ocrEvidence('retail.jpg', '合格证\n款号 '+code+'\n400-8877-588', code).kinds[0], '吊牌')
+ assert.equal(box.ocrEvidence('wash.jpg', 'Composition 100% cotton\nCARA MENCUCI\nMade in China\n'+code, code).kinds[0], '洗唛')
+ const ambiguousB = '103526124004B'
+ const wash = box.ocrEvidence('wash.jpg', 'Washing instructions\nComposition 66.6% cotton\nMade in China\n1035261240048\n'+ambiguousB, ambiguousB)
+ assert.equal(wash.kinds.join(','), '洗唛')
+ assert.equal(wash.matched, true)
+})
+
+test('suffix styles remain distinct from their parent, siblings and color suffixes', async () => {
+ const {box} = await run('organize-still-image-package')
+ const base = '101525127011'
+ const style = base + 'A'
+ const row = {上新季:'26Q3', 批次:'第1批', 款号:style, 款色:style+'00411', 色号:'00411',
+   色名:'咖色00411', 性别:'女', 电商上市日期:'2026-07-30'}
+ const {jobs,errors} = box.batchRows({rows:[row,{...row,款号:base+'B',款色:base+'B00411'}]}, new Set())
+ assert.equal(errors.length, 0)
+ assert.equal(jobs[0].style, style)
+ assert.equal(jobs[0].colors[0].款色, style+'00411')
+ assert.equal(jobs[1].style, base+'B')
+ for (const value of [style, style+'-00411', style+'00411', base+' A 00411', base+' A00411', base+'-A-00411', 'XL '+style, '101 525 127 011 A']) {
+  const tag = box.ocrEvidence('a.jpg', '款号 '+value+'\n建议零售价 ¥159', style)
+  assert.equal(box.summarizeLabel([tag], '吊牌', style, 0).status, '一致', value)
+ }
+ const readWash = value => box.ocrEvidence('b.jpg','洗涤说明\n款号：'+value,style)
+ for (const value of [base,base+'00411',base+'A0411',base+'-A0411']) {
+  assert.equal(box.summarizeLabel([readWash(value)],'洗唛',style,0).status,'款号后缀未读出，待复核',value)
+ }
+ for (const value of [base+'B',base+' B-00411','104526100003A']) {
+  assert.equal(box.summarizeLabel([readWash(value)],'洗唛',style,0).status,'识别到不一致款号，待复核',value)
+ }
+ assert.equal(readWash('09101525127011A').codes.length, 0)
+})
+
+test('PP-LCNetV2 defers only confident other images and keeps unscored photos eligible', async () => {
+ const {box} = await run('organize-still-image-package')
+ const files = ['other','unscored','wash','hang','uncertain']
+ const ranking = box.screenOrder(files, new Map([
+  ['other',[.001,.001,.998]], ['wash',[.04,.94,.02]], ['hang',[.99,.005,.005]], ['uncertain',[.1,.1,.8]],
+ ]))
+ assert.equal(ranking.priority[0], 'hang')
+ assert.equal(ranking.priority[1], 'wash')
+ assert.equal(ranking.priority.includes('unscored'), true)
+ assert.equal(ranking.priority.includes('uncertain'), true)
+ assert.equal(ranking.deferred.join(','), 'other')
+ assert.equal(new Set([...ranking.priority,...ranking.deferred]).size, files.length)
+})
+
+test('label view disagreement stays for review and product names require exact style and color', async () => {
+ const {box} = await run('organize-still-image-package')
+ const code = '101525127112B'
+ const wrong = '101525127412B'
+ const a = box.combineOcrViews('22922.jpg','洗涤说明\n'+wrong,'洗涤说明\n'+code,code)
+ assert.equal(a.codeConflict, true)
+ assert.equal(box.summarizeLabel([a],'洗唛',code,0).status,'款号识别结果冲突，待复核')
+ const b = box.ocrEvidence('23922.jpg','Washing instructions\n'+code,code)
+ const confirmed = box.summarizeLabel([a,b],'洗唛',code,0)
+ assert.equal(confirmed.status,'一致')
+ assert.equal(confirmed.codes,code)
+ assert.equal(confirmed.files,'23922.jpg')
+ const unrelated = box.ocrEvidence('fabric.jpg','JEAN\n104526100003',code)
+ assert.equal(box.summarizeLabel([unrelated],'吊牌',code,0).status,'未检出，待复核')
+ for (const name of [code+'-40952.jpg',code+'-40952-1.png',code.toLowerCase()+'-40952-7.JPG']) {
+  assert.equal(box.isNamedProductView({filename:name},code,'40952'),true)
+ }
+ for (const name of [code+'-40952-洗唛.jpg',code+'-90001.jpg',code+'-40952-8.png','IMG_2180.jpg']) {
+  assert.equal(box.isNamedProductView({filename:name},code,'40952'),false)
+ }
 })
 
 test('Semir Cloud Drive login uses the live drive session before the app DOM loads', async () => {
@@ -148,7 +337,8 @@ test('a timed-out image is retried in the same task and login errors are left to
  const timedOut = Object.assign(new Error('OCR 超时'), {ocrTimeout:true})
  let attempts = 0
  let recoveries = []
- const result = await box.retryTimedOutImage(async () => {
+ const result = await box.retryTimedOutImage(async attempt => {
+  assert.equal(attempt, attempts)
   if (++attempts === 1) throw timedOut
   return '107526100170'
  }, (_error, retrying) => recoveries.push(retrying))

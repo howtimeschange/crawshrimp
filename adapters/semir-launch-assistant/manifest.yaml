@@ -36,7 +36,7 @@ tasks:
     templates:
     - file: templates/森马静物图上架明细模板.xlsx
       label: 下载上架明细模板
-    hint: 上传本次要处理的 .xlsx。季度、批次和上市日期从表格读取，核验结果写入表格末尾。
+    hint: 上传本次要处理的 .xlsx。「第8批」和「8P」均可，核验结果写入表格末尾。
   - id: source_paths
     type: textarea
     rows: 4
@@ -49,7 +49,7 @@ tasks:
     ui_span: full
     required: true
     default: 森马bu-森马商品//3-商品上新/3-01季度上新/2026年/26Q3/静物图/测试/
-    hint: 填写已存在的云盘文件夹。整理结果按「季度批次/男或女/款号」写入该目录。
+    hint: 填写已存在的云盘文件夹。整理结果按「8P/男或女/款号」写入该目录。
   - id: style_filter
     type: textarea
     label: 仅处理指定款号
