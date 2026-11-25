@@ -13,12 +13,16 @@ on:
         description: Completed tag build to resume publishing
         type: string
         required: false
+      macos_dmg_backfill_tag:
+        description: Current release tag whose DMGs should be copied to R2
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-desktop-${{ inputs.release_run_id && format('recovery-{0}', inputs.release_run_id) || github.ref }}
+  group: build-desktop-${{ inputs.macos_dmg_backfill_tag && format('dmg-backfill-{0}', inputs.macos_dmg_backfill_tag) || inputs.release_run_id && format('recovery-{0}', inputs.release_run_id) || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -27,7 +31,7 @@ env:
 jobs:
   release-source:
     name: Resolve release source
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_run_id != '')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_run_id != '' && inputs.macos_dmg_backfill_tag == '')
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -70,7 +74,7 @@ jobs:
           printf 'tag=%s\nsha=%s\nrun_id=%s\n' "${tag}" "${sha}" "${run_id}" >> "${GITHUB_OUTPUT}"
 
   test:
-    if: github.event_name != 'workflow_dispatch' || inputs.release_run_id == ''
+    if: github.event_name != 'workflow_dispatch' || (inputs.release_run_id == '' && inputs.macos_dmg_backfill_tag == '')
     name: Test
     runs-on: ubuntu-latest
 
@@ -615,6 +619,61 @@ jobs:
           check_pointers
           gh release edit "${RELEASE_TAG}" --latest
 
+  backfill-macos-dmgs:
+    name: Backfill macOS DMGs to Cloudflare R2
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.macos_dmg_backfill_tag != '' && inputs.release_run_id == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: desktop-r2-update-mirror
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ inputs.macos_dmg_backfill_tag }}
+      GH_TOKEN: ${{ github.token }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      CLOUDFLARE_R2_S3_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_S3_ENDPOINT }}
+      CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+    steps:
+      - name: Copy and verify the published installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          origin=https://updates.crawshrimp.com
+          query="verify=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          current_version=$(curl --fail --silent --show-error --max-time 20 \
+            "${origin}/latest-release.json?${query}" | jq -er '.version')
+          [ "v${current_version}" = "${RELEASE_TAG}" ]
+          manifest=$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets,isDraft,isPrerelease)
+          jq -e '(.isDraft or .isPrerelease) | not' <<< "${manifest}" >/dev/null
+          files=("crawshrimp-${RELEASE_TAG}-mac-arm64.dmg" "crawshrimp-${RELEASE_TAG}-mac-x64.dmg")
+          workdir=$(mktemp -d)
+          cd "${workdir}"
+          for file in "${files[@]}"; do
+            digest=$(jq -er --arg name "${file}" '.assets[] | select(.name == $name) | .digest' <<< "${manifest}")
+            [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
+            printf '%s  %s\n' "${digest#sha256:}" "${file}" >> SHA256SUMS
+          done
+          gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${files[0]}" --pattern "${files[1]}"
+          sha256sum --check SHA256SUMS
+          for file in "${files[@]}"; do
+            aws s3api put-object --bucket "${CLOUDFLARE_R2_BUCKET}" --key "${file}" --body "${file}" \
+              --endpoint-url "${CLOUDFLARE_R2_S3_ENDPOINT}" --content-type application/x-apple-diskimage \
+              --content-disposition "attachment; filename=\"${file}\"" \
+              --cache-control 'public, max-age=31536000, immutable' >/dev/null
+          done
+          while read -r digest file; do
+            actual=$(curl --fail --silent --show-error --max-time 240 "${origin}/${file}?${query}" | sha256sum)
+            [ "${actual%% *}" = "${digest}" ]
+            echo "Verified the public SHA-256 for ${file}"
+          done < SHA256SUMS
+
   publish-cloudflare-r2:
     name: Publish Cloudflare R2 Update Mirror
     runs-on: ubuntu-latest
@@ -766,11 +825,15 @@ jobs:
             local file="$1"
             local cache_control="$2"
             local name="${file##*/}"
-            local content_type="application/octet-stream"
+            local content_type="application/octet-stream" download_headers=()
+            if [[ "${name}" == *.dmg ]]; then
+              download_headers=(--content-disposition "attachment; filename=\"${name}\"")
+            fi
             case "${name}" in
               *.yml) content_type="application/x-yaml" ;;
               *.json) content_type="application/json; charset=utf-8" ;;
               *.md) content_type="text/markdown; charset=utf-8" ;;
+              *.dmg) content_type="application/x-apple-diskimage" ;;
               *.zip) content_type="application/zip" ;;
               *.exe) content_type="application/vnd.microsoft.portable-executable" ;;
             esac
@@ -780,6 +843,7 @@ jobs:
               --body "${file}" \
               --endpoint-url "${CLOUDFLARE_R2_S3_ENDPOINT}" \
               --content-type "${content_type}" \
+              "${download_headers[@]}" \
               --cache-control "${cache_control}" >/dev/null
           }
 
@@ -787,7 +851,7 @@ jobs:
             upload_object "${file}" 'public, max-age=31536000, immutable'
           done < <(
             {
-              find release-assets/macos -type f \( -name '*.zip' -o -name '*.zip.blockmap' \)
+              find release-assets/macos -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.zip.blockmap' \)
               find release-assets/windows -type f \( -name '*.exe' -o -name '*.exe.blockmap' \)
             } | sort
           )
@@ -856,17 +920,22 @@ jobs:
           verify_metadata latest-release.json cloudflare-latest-release.json
           verify_metadata latest-release.md cloudflare-release-notes.md
 
+          verify_package() {
+            local asset="$1" expected_size actual_size
+            expected_size=$(stat --format='%s' "release-assets/${asset}")
+            actual_size=$(curl --fail --silent --show-error --head --max-time 20 --retry 3 --retry-all-errors \
+              "${origin}/${asset##*/}?${query}" | awk 'tolower($1) == "content-length:" { size = $2 } END { sub(/\r$/, "", size); print size }')
+            if [ "${actual_size}" != "${expected_size}" ]; then
+              echo "::error::Public release asset size mismatch: ${asset##*/}"
+              return 1
+            fi
+          }
+
           for arch in arm64 x64; do
+            verify_package "macos/crawshrimp-v${APP_VERSION}-mac-${arch}.dmg"
             for package in "macos/crawshrimp-v${APP_VERSION}-mac-${arch}.zip" "windows/crawshrimp-v${APP_VERSION}-win-${arch}.exe"; do
-              for asset in "${package}" "${package}.blockmap"; do
-                expected_size=$(stat --format='%s' "release-assets/${asset}")
-                actual_size=$(curl --fail --silent --show-error --head --max-time 20 --retry 3 --retry-all-errors \
-                  "${origin}/${asset##*/}?${query}" | awk 'tolower($1) == "content-length:" { size = $2 } END { sub(/\r$/, "", size); print size }')
-                if [ "${actual_size}" != "${expected_size}" ]; then
-                  echo "::error::Public update asset size mismatch: ${asset##*/}"
-                  exit 1
-                fi
-              done
+              verify_package "${package}"
+              verify_package "${package}.blockmap"
             done
           done
 
