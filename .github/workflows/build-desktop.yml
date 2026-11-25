@@ -825,25 +825,22 @@ jobs:
             local file="$1"
             local cache_control="$2"
             local name="${file##*/}"
-            local content_type="application/octet-stream" download_headers=()
-            if [[ "${name}" == *.dmg ]]; then
-              download_headers=(--content-disposition "attachment; filename=\"${name}\"")
-            fi
+            local content_type="application/octet-stream"
+            local object_args=(--bucket "${CLOUDFLARE_R2_BUCKET}" --key "${name}" --body "${file}")
             case "${name}" in
               *.yml) content_type="application/x-yaml" ;;
               *.json) content_type="application/json; charset=utf-8" ;;
               *.md) content_type="text/markdown; charset=utf-8" ;;
-              *.dmg) content_type="application/x-apple-diskimage" ;;
+              *.dmg)
+                content_type="application/x-apple-diskimage"
+                object_args+=(--content-disposition "attachment; filename=\"${name}\"")
+                ;;
               *.zip) content_type="application/zip" ;;
               *.exe) content_type="application/vnd.microsoft.portable-executable" ;;
             esac
-            aws s3api put-object \
-              --bucket "${CLOUDFLARE_R2_BUCKET}" \
-              --key "${name}" \
-              --body "${file}" \
+            aws s3api put-object "${object_args[@]}" \
               --endpoint-url "${CLOUDFLARE_R2_S3_ENDPOINT}" \
               --content-type "${content_type}" \
-              "${download_headers[@]}" \
               --cache-control "${cache_control}" >/dev/null
           }
 
