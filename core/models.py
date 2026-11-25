@@ -130,6 +130,7 @@ class TaskDefinition(BaseModel):
     validation_only_label: Optional[str] = None  # 可选：仅校验按钮文案
     auto_precheck_note: Optional[str] = None  # 可选：执行按钮旁提示文案
     entry_url: Optional[str] = None   # 可选：覆盖 adapter 级入口，适用于同 adapter 下的不同站点
+    login_url: Optional[str] = None   # 可选：覆盖 adapter 级登录入口
     tab_match_prefixes: Optional[List[str]] = None  # 可选：current 模式下用于匹配已有标签页的 URL 前缀
     skip_auth: bool = False           # 可选：跳过 adapter 级 auth_check
     params: List[TaskParam] = []       # 脚本声明的 UI 输入参数

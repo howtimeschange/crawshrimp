@@ -713,3 +713,15 @@ test('temu AI wash label create falls back to generic task progress while SKU co
   assert.equal(summary.completed, 3)
   assert.equal(summary.targetText, '当前 SKU 6942749193145')
 })
+
+test('still-package progress distinguishes waiting for login from completed SKCs', () => {
+  const task = {adapterId:'semir-launch-assistant',taskId:'organize_still_image_package',isRunning:true}
+  const waiting = buildTaskRunnerProgressSummary({...task,live:{phase:'auth_wait'}})
+  assert.equal(waiting.main, '等待森马云盘登录')
+  assert.equal(waiting.percentValue, null)
+  const active = buildTaskRunnerProgressSummary({...task,live:{total:134,organize_completed:134,current:67,
+    store:'OCR 核验吊牌与洗唛',buyer_id:'107526100170 / 00316'}})
+  assert.equal(active.percentValue, 75)
+  assert.equal(active.main, '图包整理 134 / 134 · OCR 67 / 134')
+  assert.equal(active.sub, 'OCR 核验吊牌与洗唛')
+})

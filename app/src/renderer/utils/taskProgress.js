@@ -323,6 +323,28 @@ function buildClassicTaskRunnerProgress(live = {}, isRunning = false) {
   }
 }
 
+function buildStillPackageProgress(live, liveStatus, isRunning) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live.status)) return null
+  const total = Math.max(0, Number(live.total) || 0)
+  const completed = Math.min(total, Math.max(0, Number(live.current) || 0))
+  const organized = Math.min(total, Math.max(0, Number(live.organize_completed) || 0))
+  const percentValue = total ? Math.round(50 * (organized + completed) / total) : null
+  const stage = ({ paused: '已暂停', pausing: '正在暂停', stopping: '正在停止' })[liveStatus] ||
+    (live.phase === 'auth_wait' ? '等待森马云盘登录' : live.store || '准备云盘环境')
+  const targetText = live.buyer_id ? `款色 ${live.buyer_id}` : ''
+  const main = total ? `图包整理 ${organized} / ${total} · OCR ${completed} / ${total}` : stage
+  return {
+    title: '静物图分包进度',
+    main,
+    percentValue,
+    percentLabel: percentValue === null ? '' : `${percentValue}%`,
+    targetText,
+    sub: total ? stage : '',
+    ariaLabel: '静物图分包进度',
+    ariaText: [total ? main : '', stage, targetText].filter(Boolean).join('，'),
+  }
+}
+
 function buildEnhancedTaskRunnerProgress(live = {}, liveStatus = '', isRunning = false) {
   if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
 
@@ -2105,6 +2127,9 @@ export function buildTaskRunnerProgressSummary({
   liveStatus = '',
   isRunning = false,
 } = {}) {
+  if (normalizeKeyPart(adapterId) === 'semir-launch-assistant' && normalizeKeyPart(taskId) === 'organize_still_image_package') {
+    return buildStillPackageProgress(live, liveStatus, isRunning)
+  }
   const config = resolveTaskProgressConfig(adapterId, taskId)
   if (config.mode === 'enhanced' && isSemirBatchImageDownloadTask(adapterId, taskId)) {
     return buildSemirBatchImageDownloadProgress(live, liveStatus, isRunning)

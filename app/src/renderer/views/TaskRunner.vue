@@ -719,12 +719,12 @@
         <div v-else-if="progressSummary" class="progress-strip" aria-live="polite">
           <div class="progress-strip-head">
             <div class="progress-strip-main">
-              <span class="progress-strip-title">批处理进度</span>
+              <span class="progress-strip-title">{{ progressSummary.title }}</span>
               <span class="progress-strip-value">{{ progressSummary.main }}</span>
               <span class="progress-strip-percent">{{ progressSummary.percentLabel }}</span>
             </div>
             <div class="progress-strip-meta">
-              <span>已完成 {{ progressSummary.completed }} 条</span>
+              <span v-if="progressSummary.completedText">{{ progressSummary.completedText }}</span>
               <span v-if="progressSummary.batchText">{{ progressSummary.batchText }}</span>
               <span v-if="progressSummary.rowText">{{ progressSummary.rowText }}</span>
               <span v-if="progressSummary.targetText">{{ progressSummary.targetText }}</span>
@@ -739,7 +739,10 @@
             aria-valuemax="100"
             :aria-valuetext="progressSummary.ariaText"
           >
-            <div class="progress-strip-bar-fill" :style="{ width: `${progressSummary.percentValue}%` }"></div>
+            <div
+              :class="['progress-strip-bar-fill', { indeterminate: progressSummary.percentValue === null }]"
+              :style="{ width: `${progressSummary.percentValue ?? 24}%` }"
+            ></div>
           </div>
           <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
         </div>

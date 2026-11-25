@@ -1,12 +1,175 @@
 """Lossless, local-only Semir source packages; no guessed channel naming rules."""
+import ctypes
 import hashlib
 import json
+import os
 import re
 import shutil
+import sys
+import unicodedata
 import zipfile
+from copy import copy
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils.cell import get_column_letter, range_boundaries
+
+
+STILL_REPORT_HEADERS = ('缺吊牌', '缺洗唛', '款号是否一致', '备注')
+
+
+def still_ocr_host_hardware():
+    """Read the local desktop's logical processors and physical memory."""
+    memory = 0
+    try:
+        if sys.platform == 'win32':
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [
+                    ('length', ctypes.c_uint32), ('load', ctypes.c_uint32),
+                    ('total_physical', ctypes.c_uint64), ('available_physical', ctypes.c_uint64),
+                    ('total_page_file', ctypes.c_uint64), ('available_page_file', ctypes.c_uint64),
+                    ('total_virtual', ctypes.c_uint64), ('available_virtual', ctypes.c_uint64),
+                    ('available_extended_virtual', ctypes.c_uint64),
+                ]
+
+            status = MemoryStatus(length=ctypes.sizeof(MemoryStatus))
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                memory = status.total_physical
+        else:
+            memory = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+    except (AttributeError, OSError, ValueError):
+        pass
+    return {'threads': os.cpu_count() or 0, 'memory_gb': max(0, memory) / 2**30}
+
+
+def _still_key(batch, style, skc, color, date):
+    def normalize(value):
+        return unicodedata.normalize('NFKC', str(value if value is not None else '')).strip().upper()
+
+    style = normalize(style)
+    skc = normalize(skc).replace('-', '')
+    color = normalize(color) or skc[-5:]
+    date = normalize(date)
+    parts = re.match(r'^(\d{4})[-/年]?(\d{1,2})[-/月]?(\d{1,2})(?=$|[日T\s])', date)
+    if parts:
+        date = f'{parts[1]}-{int(parts[2]):02d}-{int(parts[3]):02d}'
+    return normalize(batch), style, skc, color.zfill(5), date
+
+
+def _still_report_values(row):
+    package_state = row.get('整理结果', '')
+    if '登录超时' in package_state or '登录超时' in (row.get('备注') or ''):
+        unavailable = '登录超时'
+    elif package_state in ('缺图包', '缺款色图包', '缺款色文件夹', '已取消', '上架计划待确认'):
+        unavailable = package_state
+    else:
+        unavailable = '待核验'
+
+    def missing(status):
+        if status in ('一致', '识别到不一致款号，待复核', '已识别类型，款号未读出'):
+            return '否'
+        if status == '无图片':
+            return '是'
+        if status == '未检出，待复核':
+            return '是（OCR未检出）'
+        if status in ('部分图片识别失败，待复核', '有候选图片，类型待复核', '候选图片未检出，待复核'):
+            return '待复核'
+        return unavailable
+
+    statuses = [row.get(kind + '结果', '') for kind in ('吊牌', '洗唛')]
+    missing_flags = [missing(status) for status in statuses]
+    if '识别到不一致款号，待复核' in statuses:
+        consistency = '不一致'
+    elif statuses == ['一致', '一致']:
+        consistency = '一致'
+    elif missing_flags == [unavailable, unavailable]:
+        consistency = '待核验'
+    else:
+        consistency = '待复核'
+
+    notes = []
+    if row.get('整理结果') not in ('已复制并核验', '已核验已有图包', '预览'):
+        notes.append(row.get('整理结果'))
+    for kind, status in zip(('吊牌', '洗唛'), statuses):
+        if status and status not in ('缺款色文件夹', '未扫描'):
+            files = '、'.join(str(row.get(kind + '图片') or '').splitlines())
+            codes = row.get(kind + '识别款号')
+            evidence = '，'.join(str(value) for value in (status, codes, files) if value)
+            notes.append(f'{kind}{evidence}')
+    if row.get('备注'):
+        for note in row['备注'].split('；'):
+            if note != '已确认所需两类图片，结束该款色扫描':
+                notes.append(note)
+    return (*missing_flags, consistency, '；'.join(dict.fromkeys(filter(None, notes))))
+
+
+def write_still_package_report(*, data_rows, source, output):
+    """Append the four audit fields to a copy of the supplied listing workbook."""
+    source, output = Path(source).expanduser(), Path(output)
+    if source.suffix.lower() != '.xlsx' or source.resolve() == output.resolve():
+        raise ValueError('需要原始 .xlsx 上架表，并另存核验结果')
+    index = {}
+    for row in data_rows:
+        key = _still_key(*(row.get(col) for col in ('批次', '款号', '款色', '色号', '上市日期')))
+        values = _still_report_values(row)
+        if key in index and values != index[key]:
+            values = ('待核验', '待核验', '待复核', '同一款色对应多个结果，请核对原表重复或冲突记录')
+        index[key] = values
+
+    workbook = load_workbook(source)
+    matched = set()
+    try:
+        for sheet in workbook.worksheets:
+            headers = {str(cell.value or '').strip(): cell.column for cell in sheet[1]}
+            season = next((col for name, col in headers.items() if name.startswith('Q季') or name in ('季度', '上新季', '上市季')), None)
+            launch = headers.get('电商上市日期') or headers.get('上市日期')
+            if not season or not launch or not all(key in headers for key in ('款号', '款色', '批次')):
+                continue
+            receipts = []
+            for row_number in range(2, sheet.max_row + 1):
+                def value(col):
+                    return sheet.cell(row_number, col).value if col else None
+
+                batch = str(value(season) or '').strip() + str(value(headers['批次']) or '').strip()
+                date = value(launch) or value(headers.get('上市日期'))
+                key = _still_key(batch, value(headers['款号']), value(headers['款色']), value(headers.get('色号')), date)
+                if key in index:
+                    receipts.append((row_number, index[key]))
+                    matched.add(key)
+            if not receipts:
+                continue
+
+            last = sheet.max_column
+            existing = tuple(sheet.cell(1, col).value for col in range(last - 3, last + 1)) == STILL_REPORT_HEADERS
+            start = last - 3 if existing else last + 1
+            body_style_col = headers['批次']
+            for index_col, (header, width) in enumerate(zip(STILL_REPORT_HEADERS, (18, 18, 19, 105)), start):
+                cell = sheet.cell(1, index_col, header)
+                if not existing:
+                    cell._style = copy(sheet.cell(1, body_style_col)._style)
+                    sheet.column_dimensions[get_column_letter(index_col)].width = width
+            for row_number, values in receipts:
+                for col, value in enumerate(values, start):
+                    cell = sheet.cell(row_number, col, value)
+                    cell.data_type = 's'
+                    if not existing:
+                        cell._style = copy(sheet.cell(row_number, body_style_col)._style)
+                        if col == start + 3:
+                            alignment = copy(cell.alignment)
+                            alignment.wrap_text = True
+                            cell.alignment = alignment
+            if not existing and sheet.auto_filter.ref:
+                first_col, first_row, final_col, final_row = range_boundaries(sheet.auto_filter.ref)
+                if first_row == 1 and final_col == last:
+                    sheet.auto_filter.ref = f'{get_column_letter(first_col)}1:{get_column_letter(start + 3)}{final_row}'
+
+        if not matched or matched != set(index):
+            raise ValueError(f'有 {len(set(index) - matched)} 条核验结果无法准确回填原始上架表')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        workbook.save(output)
+    finally:
+        workbook.close()
+    return str(output)
 
 
 def safe_name(value):

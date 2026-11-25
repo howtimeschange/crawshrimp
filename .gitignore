@@ -27,6 +27,7 @@ logs/
 !adapters/mop-ops-assistant/templates/search-recommend-material-template.xlsx
 !adapters/bala-ai-video-assistant/templates/tmall-video-copy-template.xlsx
 !adapters/vipshop-ops-assistant/templates/vipshop-package-main-image-replace-template.xlsx
+!adapters/semir-launch-assistant/templates/森马静物图上架明细模板.xlsx
 *.log
 .env
 AuthKey_*.p8

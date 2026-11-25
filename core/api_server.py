@@ -826,6 +826,8 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
         for key in organize_keys:
             if key in payload:
                 run_control[key] = payload.get(key)
+            elif key in incoming_shared:
+                run_control[key] = incoming_shared[key]
     total_rows = _int_from_mapping(shared_state, 'total_rows', _int_from_mapping(run_control, 'total_rows') if run_control else 0)
     current_exec_no = _int_from_mapping(shared_state, 'current_exec_no')
     current_row_no = _int_from_mapping(shared_state, 'current_row_no')
@@ -8603,6 +8605,16 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             return latest_tab
 
         # 自动解析 file_excel 参数：如果传了 path 但没有 rows，就在后台读出来注入
+        if (adapter_id, task_id) == ("semir-launch-assistant", "organize_still_image_package"):
+            from core.semir_launch_packaging import still_ocr_host_hardware
+
+            workbook_path = Path(_task_file_param_path(run_params, 'input_file')).expanduser()
+            if workbook_path.suffix.lower() != '.xlsx' or not workbook_path.is_file():
+                raise ValueError('请上传原始 .xlsx 上架明细表，核验结果将回填在表格末尾')
+            run_params['__crawshrimp_api_base_url'] = _current_local_api_base_url()
+            hardware = still_ocr_host_hardware()
+            run_params['__crawshrimp_ocr_hardware'] = hardware
+            log(f"OCR 本机配置：{hardware['threads']} 个逻辑核，{hardware['memory_gb']:g} GiB 内存")
         for pk, pv in run_params.items():
             if isinstance(pv, dict) and pv.get('path') and not pv.get('rows'):
                 log(f"Resolving Excel rows for param '{pk}' from path: {pv['path']}")
@@ -8872,6 +8884,17 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 await asyncio.sleep(1)
 
         async def export_outputs(data_rows):
+            if (adapter_id, task_id) == ("semir-launch-assistant", "organize_still_image_package") and data_rows:
+                from core.semir_launch_packaging import write_still_package_report
+
+                path = await asyncio.to_thread(
+                    write_still_package_report,
+                    data_rows=data_rows,
+                    source=workbook_path,
+                    output=Path(runtime_artifact_dir) / '森马静物图分包核验.xlsx',
+                )
+                log(f"静物图核验已回填原表：{path}")
+                return [path]
             files = []
             filename_vars = await _build_export_filename_context(adapter_id, task_id, run_params, runner)
             for out in task.output:
@@ -9271,7 +9294,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         logged_in = bool((auth_result.data[0] or {}).get('logged_in'))
 
                 if not logged_in:
-                    login_url = (
+                    login_url = task.login_url or (
                         target_entry_url
                         if adapter_id == 'mop-ops-assistant' and target_entry_url.startswith('https://fmp.semirapp.com/')
                         else (m.auth.login_url or target_entry_url)
@@ -9287,7 +9310,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         log(f"检测到未登录，请在当前页面完成 {platform_name} 登录…")
                     wait_seconds = 300
                     for i in range(wait_seconds):
-                        await wait_for_control({"records": 0})
+                        await wait_for_control({
+                            "records": 0,
+                            **({"phase": "auth_wait"} if task.login_url else {}),
+                        })
                         auth_result = await runner.evaluate(auth_path.read_text(encoding='utf-8'))
                         ok = False
                         if auth_result.success:
@@ -9366,7 +9392,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 "control_hook": wait_for_control,
                 # PLM 尺码表下载仅查询页面内的 RequestHandler；若 Chrome
                 # CDP 短暂断连，安全重放尚未返回结果的当前款号阶段。
-                "retry_transient_cdp_errors": adapter_id in ("plm-ops-assistant", "semir-launch-assistant", "mini-bala-launch-assistant") and task_id == "size_chart_downloader",
+                "retry_transient_cdp_errors": (
+                    (adapter_id in ("plm-ops-assistant", "semir-launch-assistant", "mini-bala-launch-assistant") and task_id == "size_chart_downloader")
+                    or (adapter_id, task_id) == ("semir-launch-assistant", "organize_still_image_package")
+                ),
             }
             if _is_mop_search_recommend_material_publish(adapter_id, task_id):
                 # 搜推发布把 POST 和回执保存在页面内。允许恢复 Runtime.evaluate

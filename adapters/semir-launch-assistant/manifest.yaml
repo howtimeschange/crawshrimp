@@ -10,8 +10,90 @@ auth:
   check_script: auth_check.js
   login_url: https://smplm.semirapp.com/WebAccess/
 tasks:
+- id: organize_still_image_package
+  name: 静物图云盘分包与吊牌洗唛核验
+  description: 按批次从配置的云盘目录搜索静物图包，复制到所选目标目录并按色名整理，浏览器 OCR 核验吊牌、洗唛与款号。
+  script: organize-still-image-package.js
+  entry_url: https://fmp.semirapp.com/web/index#/home/file
+  login_url: https://fmp.semirapp.com/web/index#/home/file
+  tab_match_prefixes:
+  - https://fmp.semirapp.com/
+  skip_auth: false
+  params:
+  - id: mode
+    type: radio
+    label: 打开方式
+    default: new
+    options:
+    - value: current
+      label: 当前登录页面
+    - value: new
+      label: 新开页面
+  - id: input_file
+    type: file_excel
+    label: 上架明细 Excel
+    required: true
+    templates:
+    - file: templates/森马静物图上架明细模板.xlsx
+      label: 下载上架明细模板
+    hint: 上传本次要处理的 .xlsx。季度、批次和上市日期从表格读取，核验结果写入表格末尾。
+  - id: source_paths
+    type: textarea
+    rows: 4
+    label: 来源目录
+    placeholder: 森马视觉//01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物
+    hint: 一行一个云盘文件夹地址，支持「库名//目录」或云盘网页地址。留空时搜索森马视觉的上市年份和前一年。
+  - id: target_path
+    type: text
+    label: 整理目标目录
+    ui_span: full
+    required: true
+    default: 森马bu-森马商品//3-商品上新/3-01季度上新/2026年/26Q3/静物图/测试/
+    hint: 填写已存在的云盘文件夹。整理结果按「季度批次/男或女/款号」写入该目录。
+  - id: style_filter
+    type: textarea
+    label: 仅处理指定款号
+    rows: 3
+    hint: 可选。留空处理表格中的全部有效款号。每行一个款号。
+  - id: operation
+    type: radio
+    label: 执行方式
+    default: organize
+    options:
+    - value: preview
+      label: 仅核对
+    - value: organize
+      label: 云盘复制并改名
+    hint: 云盘复制并改名只写入所选目标目录内。
+  trigger:
+    type: manual
+  output:
+  - type: excel
+    filename: 森马静物图分包核验_{timestamp}.xlsx
+    columns:
+    - 批次
+    - 款号
+    - 款色
+    - 色号
+    - 色名
+    - 性别
+    - 上市日期
+    - 整理结果
+    - 来源路径
+    - 目标路径
+    - 目录命名
+    - 图片数
+    - 已识别图片数
+    - OCR失败数
+    - 吊牌结果
+    - 吊牌图片
+    - 吊牌识别款号
+    - 洗唛结果
+    - 洗唛图片
+    - 洗唛识别款号
+    - 备注
 - id: size_chart_downloader
-  name: 森马 PLM 尺码表批量导出
+  name: PLM 尺码表批量导出
   description: 按款号读取森马 PLM 尺寸表当前修订版，输出宽表和长表；业务阶段需人工确认。
   script: size-chart-downloader.js
   entry_url: https://smplm.semirapp.com/WebAccess/home.html
@@ -178,7 +260,7 @@ tasks:
       - 备注
       - 抓取时间
 - id: prepare_image_package
-  name: 森马批次图包下载整理
+  name: 批次图包下载整理
   description: 在指定批次目录按款号下载原始素材，保留款色及子目录、输出分款ZIP与SHA256清单。
   script: prepare-image-package.js
   entry_url: https://fmp.semirapp.com/web/index#/home/file
@@ -250,7 +332,7 @@ tasks:
     - 下载结果
     - 备注
 - id: wash_hangtag_batch_download
-  name: 森马 SCM 洗唛吊牌下载
+  name: SCM 洗唛吊牌下载
   description: 完整分页读取款色洗唛、吊牌与中英文成分；保留当前页面其它筛选，缺件单独列出。
   script: scm-material-download.js
   entry_url: https://scm.semir.com/scm-quality-mgm/index/scm-qc-wash-appr-index
@@ -274,7 +356,7 @@ tasks:
     filename: 森马 SCM 洗唛吊牌下载_{timestamp}.xlsx
     columns: *id007
 - id: quality_report_download
-  name: 森马 SCM 三方检测报告下载
+  name: SCM 三方检测报告下载
   description: 完整分页下载报告原件并保留检测项目、颜色和机构。保留页面筛选，功能/羽绒适用性需复核。
   script: scm-material-download.js
   entry_url: https://scm.semir.com/scm-quality-mgm/index/scm-qc-third-test-report-index
