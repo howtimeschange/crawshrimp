@@ -31,7 +31,7 @@ function videoConfig(seedance = true, bailian = true) {
     providers: { seedance: { configured: seedance, cliReady: true }, happyhorse: { configured: bailian, cliReady: true } },
     models: [
       { id: 'seedance-2.0', model: 'doubao-seedance-2-0-260128', label: 'Seedance 2.0', provider: 'seedance', configured: seedance },
-      { id: 'seedance-2.5', model: 'doubao-seedance-2-5-260628', label: 'Seedance 2.5', provider: 'seedance', configured: seedance },
+      { id: 'seedance-2.5', model: 'doubao-seedance-2-5-260628', label: 'Seedance 2.5', maxImages: 30, provider: 'seedance', configured: seedance },
       ...['happyhorse-1.1-t2v', 'kling/kling-v3-video-generation', 'kling/kling-v3-omni-video-generation', 'pixverse/pixverse-motioncontrol']
         .map(model => ({ model, provider: 'happyhorse', configured: bailian })),
     ],
@@ -1562,4 +1562,23 @@ test('Seedance variants retain their model and parameter limits when reusing a j
   assert.deepEqual(workbench.resolutionOptions.value, ['480p', '720p'])
   assert.equal(workbench.modelLabel(model), 'Seedance 2.5 Flash')
   assert.equal(workbench.showCostEstimate.value, false)
+})
+
+test('Seedance 2.5 picker and draft reuse preserve 30 references and long prompts', async () => {
+  const assets = Array.from({ length: 30 }, (_, index) => ({ fileToken: String(index + 1) }))
+  const workbench = await setupWorkbench({
+    selectAiVideoMedia: async ({ maxCount }) => {
+      assert.equal(maxCount, 30)
+      return { items: assets }
+    },
+  })
+  await workbench.chooseImages()
+  assert.equal(workbench.form.assets.length, 30)
+  const prompt = '镜头'.repeat(2500)
+  workbench.reuseParams({ provider: 'seedance', model: workbench.resolvedModelId.value, assets, prompt })
+  workbench.validateLocal()
+  assert.equal(workbench.errors.prompt, '')
+  assert.equal(workbench.errors.assets, '')
+  assert.deepEqual(workbench.form.assets.map(asset => asset.fileToken), assets.map(asset => asset.fileToken))
+  assert.equal(workbench.form.prompt, prompt)
 })

@@ -88,11 +88,10 @@
               <textarea
                 v-model="form.prompt"
                 class="avg-prompt-input"
-                maxlength="4000"
                 placeholder="描述画面主体、动作、镜头和风格…"
               ></textarea>
               <div class="avg-error-text">{{ errors.prompt }}</div>
-              <p class="avg-hint">{{ promptHint }}</p>
+              <p class="avg-hint">{{ promptHint }} <span v-if="isHappyHorse">中文最多 2500 字，非中文最多 5000 字符，超长部分由接口截断。</span>已输入 {{ Array.from(form.prompt || '').length }} 字符</p>
             </div>
           </section>
 
@@ -771,7 +770,7 @@ const defaultModelOptions = [
     label: 'Seedance 2.0',
     model: SEEDANCE_MODEL,
     provider: 'seedance',
-    hint: '统一入口：Prompt + 可选 0-4 张参考图。',
+    hint: '支持文生视频和多图参考。',
     mark: volcengineMark,
   },
   {
@@ -974,6 +973,7 @@ const modelCatalog = computed(() => {
   const variants = rows.filter(item => item.provider === 'seedance').map(item => ({
     ...defaultModelOptions[0],
     ...item,
+    hint: `可添加最多 ${item.maxImages || 9} 张参考图。`,
     id: item.model === SEEDANCE_MODEL ? 'seedance' : item.id,
   }))
   const bailian = defaultModelOptions.slice(1).map(option => ({
@@ -1054,7 +1054,7 @@ const shortModelLabel = computed(() => {
   return `HH · ${happyHorseModeLabel(happyHorseMode.value)}`
 })
 const assetMax = computed(() => {
-  if (isSeedance.value) return 4
+  if (isSeedance.value) return activeMeta.value.maxImages || 9
   if (isHappyHorse.value) return 9
   if (form.provider === 'kling-v3') return 2
   if (form.provider === 'kling-omni') return 7
@@ -1094,7 +1094,7 @@ const referenceTitle = computed(() => {
   return '参考图'
 })
 const referencePolicy = computed(() => {
-  if (isSeedance.value) return '可选 0-4 张'
+  if (isSeedance.value) return `可选 0-${assetMax.value} 张`
   if (form.provider === 'kling-v3') return '可选 0-2 张首/尾帧'
   if (form.provider === 'kling-omni') return '可选图片/视频素材'
   if (isPixVerse.value) return '改用 URL 输入'
@@ -1108,7 +1108,7 @@ const referenceEmptyText = computed(() => {
   return 'JPEG / PNG / WEBP · 单张 ≤ 20MB · 用上方按钮添加'
 })
 const modeAutoHint = computed(() => {
-  if (isSeedance.value) return 'Seedance：0 张纯文生，1-4 张作为 reference_image。'
+  if (isSeedance.value) return `不加图时按提示词生成，可添加 1–${assetMax.value} 张参考图。`
   if (isKling.value) return 'Kling：本地素材会转成百炼临时 oss:// URL；v3 仅支持首帧/尾帧，Omni 还支持参考图/视频。'
   if (isPixVerse.value) return 'PixVerse：输出动作由动作视频 URL 决定，角色由角色图 URL 决定。'
   if (happyHorseMode.value === 't2v') return '当前 0 张图 → 自动调用文生视频（t2v）。'
@@ -1117,8 +1117,8 @@ const modeAutoHint = computed(() => {
 })
 const promptHint = computed(() => {
   if (isPixVerse.value) return 'PixVerse 不使用 Prompt；这里可留空，主要填写角色图 URL 和动作视频 URL。'
-  if (isSeedance.value) return '描述画面主体、动作和镜头。可添加参考图。'
-  if (isKling.value) return 'Kling Prompt 必填；请写清主体、场景、动作、镜头和风格。'
+  if (isSeedance.value) return '可用“图1、图2”指定包包、服装或背景。官方建议中文 500 字以内、英文 1000 词以内。'
+  if (isKling.value) return 'Kling 提示词最多 2500 字符。'
   if (isHappyHorse.value && happyHorseMode.value === 'r2v') {
     if (/\[Image\s*\d+\]/i.test(form.prompt)) return '已检测到 Image 引用。'
     return '参考生视频可点击图片旁插入 [Image n] 写入 Prompt。'
@@ -1215,7 +1215,6 @@ function applyProviderDefaults() {
     form.generateAudio = true
     form.klingMode = 'std'
     form.watermark = false
-    if (form.assets.length > 4) form.assets = form.assets.slice(0, 4)
     return
   }
   if (isKling.value) {
@@ -2085,9 +2084,11 @@ function validateLocal() {
   formError.value = ''
   const prompt = String(form.prompt || '').trim()
   if (!isPixVerse.value && !prompt) errors.prompt = 'Prompt 必填。'
-  if (prompt.length > 4000) errors.prompt = 'Prompt 不能超过 4000 字符'
-  if (isSeedance.value && form.assets.length > 4) {
-    errors.assets = 'Seedance 最多支持 4 张参考图。'
+  const length = Array.from(prompt).length
+  if (isKling.value && length > 2500) errors.prompt = 'Kling Prompt 最多 2500 字符'
+  if (isHappyHorse.value && length > 5000) errors.prompt = 'HappyHorse Prompt 最多 5000 个非中文字符或 2500 个中文字符'
+  if (isSeedance.value && form.assets.length > assetMax.value) {
+    errors.assets = `${activeMeta.value.label} 最多支持 ${assetMax.value} 张参考图。`
   }
   if (isHappyHorse.value && form.assets.length > 9) {
     errors.assets = 'HappyHorse 参考生最多 9 张图。'
@@ -2104,7 +2105,10 @@ function validateLocal() {
     const lastCount = klingMediaRoles.filter(role => role === 'last_frame').length
     const featureCount = klingMediaRoles.filter(role => role === 'feature').length
     const baseCount = klingMediaRoles.filter(role => role === 'base').length
-    if (form.provider === 'kling-v3' && klingMediaRoles.some(role => !['first_frame', 'last_frame'].includes(role))) {
+    const referenceMax = featureCount || baseCount ? 4 : 7
+    if (klingMediaRoles.filter(role => role === 'refer').length > referenceMax) {
+      errors.assets = `当前素材组合最多 ${referenceMax} 张参考图。`
+    } else if (form.provider === 'kling-v3' && klingMediaRoles.some(role => !['first_frame', 'last_frame'].includes(role))) {
       errors.assets = 'Kling v3 素材仅支持首帧图 / 尾帧图。'
     } else if (lastCount && firstCount !== 1) {
       errors.assets = 'Kling 尾帧图必须与 1 张首帧图配对。'

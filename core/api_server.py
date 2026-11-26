@@ -10558,6 +10558,10 @@ def _build_seedance_payload(req: BalaSeedanceVideoRequest) -> dict:
     prompt = str(req.prompt or "").strip()
     if not prompt:
         raise HTTPException(400, "Seedance 任务需要填写 Prompt")
+    model = str(req.model or BALA_SEEDANCE_DEFAULT_MODEL).strip() or BALA_SEEDANCE_DEFAULT_MODEL
+    info = ai_video_generation_service.SEEDANCE_MODELS.get(model)
+    if info and sum(bool(str(path or "").strip()) for path in req.image_paths) > info.max_images:
+        raise HTTPException(400, f"{info.label} 参考图最多 {info.max_images} 张")
     content: list[dict] = [{"type": "text", "text": prompt}]
     for raw_path in req.image_paths or []:
         value = str(raw_path or "").strip()
@@ -10573,7 +10577,7 @@ def _build_seedance_payload(req: BalaSeedanceVideoRequest) -> dict:
     if resolution not in {"480p", "720p", "1080p"}:
         raise HTTPException(400, "Seedance 清晰度仅支持 480p / 720p / 1080p")
     return {
-        "model": str(req.model or BALA_SEEDANCE_DEFAULT_MODEL).strip() or BALA_SEEDANCE_DEFAULT_MODEL,
+        "model": model,
         "content": content,
         "generate_audio": bool(req.generate_audio),
         "ratio": str(req.ratio or "9:16").strip() or "9:16",

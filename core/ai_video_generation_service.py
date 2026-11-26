@@ -51,17 +51,18 @@ class SeedanceModel(NamedTuple):
     label: str
     max_duration: int
     resolutions: tuple[str, ...]
+    max_images: int
 
 
 SEEDANCE_MODEL = "doubao-seedance-2-0-260128"
 _SEEDANCE_HD = ("480p", "720p", "1080p")
 _SEEDANCE_720 = ("480p", "720p")
 SEEDANCE_MODELS = {
-    SEEDANCE_MODEL: SeedanceModel("seedance-2.0", "Seedance 2.0", 15, _SEEDANCE_HD),
-    "doubao-seedance-2-5-260628": SeedanceModel("seedance-2.5", "Seedance 2.5", 30, _SEEDANCE_HD),
-    "doubao-seedance-2-5-flash-261115": SeedanceModel("seedance-2.5-flash", "Seedance 2.5 Flash", 30, _SEEDANCE_720),
-    "doubao-seedance-2-0-fast-260128": SeedanceModel("seedance-2.0-fast", "Seedance 2.0 Fast", 15, _SEEDANCE_720),
-    "doubao-seedance-2-0-mini-260615": SeedanceModel("seedance-2.0-mini", "Seedance 2.0 Mini", 15, _SEEDANCE_720),
+    SEEDANCE_MODEL: SeedanceModel("seedance-2.0", "Seedance 2.0", 15, _SEEDANCE_HD, 9),
+    "doubao-seedance-2-5-260628": SeedanceModel("seedance-2.5", "Seedance 2.5", 30, _SEEDANCE_HD, 30),
+    "doubao-seedance-2-5-flash-261115": SeedanceModel("seedance-2.5-flash", "Seedance 2.5 Flash", 30, _SEEDANCE_720, 10),
+    "doubao-seedance-2-0-fast-260128": SeedanceModel("seedance-2.0-fast", "Seedance 2.0 Fast", 15, _SEEDANCE_720, 9),
+    "doubao-seedance-2-0-mini-260615": SeedanceModel("seedance-2.0-mini", "Seedance 2.0 Mini", 15, _SEEDANCE_720, 9),
 }
 KLING_V3_MODEL = "kling/kling-v3-video-generation"
 KLING_OMNI_MODEL = "kling/kling-v3-omni-video-generation"
@@ -1123,6 +1124,10 @@ def _validate_kling_media(media: list[Mapping[str, Any]], *, model: str) -> None
             raise AiVideoError(f"{model_short(model)} 不支持 media 类型：{media_type or index}")
         if media_type in counts:
             counts[media_type] += 1
+    reference_count = sum(item.get("type") == "refer" for item in media)
+    reference_max = 4 if counts["base"] or counts["feature"] else 7
+    if reference_count > reference_max:
+        raise AiVideoError(f"Kling Omni 当前素材组合最多 {reference_max} 张参考图")
     if counts["last_frame"] and counts["first_frame"] != 1:
         raise AiVideoError("Kling last_frame 必须与且仅与 1 个 first_frame 配对")
     if counts["first_frame"] > 1 or counts["last_frame"] > 1 or counts["base"] > 1 or counts["feature"] > 1:
@@ -1281,8 +1286,10 @@ def _validate_input(payload: Mapping[str, Any], *, trusted_paths: bool) -> dict:
     prompt = _compact(payload.get("prompt"))
     if model != PIXVERSE_MOTIONCONTROL_MODEL and not prompt:
         raise AiVideoError("Prompt 不能为空")
-    if len(prompt) > 4000:
-        raise AiVideoError("Prompt 不能超过 4000 字符")
+    if model in KLING_MODELS and len(prompt) > 2500:
+        raise AiVideoError("Kling Prompt 最多 2500 字符")
+    if model in HAPPYHORSE_MODELS and len(prompt) > 5000:
+        raise AiVideoError("HappyHorse Prompt 最多 5000 个非中文字符或 2500 个中文字符")
     parameters = normalize_parameters(provider, model, payload.get("parameters") if isinstance(payload.get("parameters"), Mapping) else {})
     if trusted_paths:
         raw_output_dir = _compact(payload.get("outputDir") or payload.get("output_dir"))
@@ -1335,8 +1342,9 @@ def _validate_input(payload: Mapping[str, Any], *, trusted_paths: bool) -> dict:
         assets.append(inspected)
 
     if provider == "seedance":
-        if len(assets) > 4:
-            raise AiVideoError("Seedance v1 参考图最多 4 张")
+        info = SEEDANCE_MODELS[model]
+        if len(assets) > info.max_images:
+            raise AiVideoError(f"{info.label} 参考图最多 {info.max_images} 张")
     elif model in KLING_MODELS:
         media_sources = list(parameters.get("media") or [])
         media_sources.extend({"type": asset.get("role")} for asset in assets)
@@ -1589,7 +1597,7 @@ def build_bailian_payload(normalized: Mapping[str, Any]) -> dict:
             "audio": bool(params.get("audio", False)),
             "watermark": bool(params.get("watermark", False)),
         }
-        if not media:
+        if all(item.get("type") in {"feature", "refer"} for item in media):
             parameters["aspect_ratio"] = params.get("aspect_ratio") or "16:9"
         return {
             "model": model,
@@ -2338,6 +2346,7 @@ def get_config() -> dict:
                     "model": model,
                     "label": info.label,
                     "maxDuration": info.max_duration,
+                    "maxImages": info.max_images,
                     "resolutions": list(info.resolutions),
                     "defaults": {
                         "ratio": "9:16",

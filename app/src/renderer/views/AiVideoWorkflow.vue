@@ -7966,7 +7966,7 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
   const payload = {
     style_code: task.styleCode,
     prompt,
-    image_paths: videoTaskImagePaths(task).slice(0, 4),
+    image_paths: videoTaskImagePaths(task),
     output_dir: task.outputDir || videoOutputDir.value,
     ratio: gen.ratio || '9:16',
     resolution: gen.resolution || '720p',
@@ -8740,11 +8740,8 @@ function resetVideoTaskDraftAssets() {
   }
   // 默认勾选第一步已选原图和第二步保留的 AI 图；其余素材保留为手动选择。
   videoTaskDraft.assetIds = assets.filter(asset => asset.selectable && asset.selected).map(asset => asset.id)
-  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.assetIds.length > 9) {
+  if (['happyhorse', 'seedance'].includes(videoTaskDraft.provider) && videoTaskDraft.assetIds.length > 9) {
     videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 9)
-  }
-  if (videoTaskDraft.provider === 'seedance' && videoTaskDraft.assetIds.length > 4) {
-    videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 4)
   }
   if (isKlingVideoProvider(videoTaskDraft.provider) && videoTaskDraft.assetIds.length > 2) {
     videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 2)
@@ -8909,13 +8906,13 @@ function toggleVideoTaskDraftAsset(asset) {
     syncHappyHorseModeFromAssetCount()
     return
   }
-  // Seedance 最多 4 张；HappyHorse 最多 9 张；Kling/PixVerse 按模型角色限制
+  // Seedance 2.0 最多 9 张；HappyHorse 最多 9 张；Kling/PixVerse 按模型角色限制
   if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.assetIds.length >= 9) {
     videoTaskDraftError.value = 'HappyHorse 最多选择 9 张图片'
     return
   }
-  if (videoTaskDraft.provider === 'seedance' && videoTaskDraft.assetIds.length >= 4) {
-    videoTaskDraftError.value = 'Seedance 最多选择 4 张参考图'
+  if (videoTaskDraft.provider === 'seedance' && videoTaskDraft.assetIds.length >= 9) {
+    videoTaskDraftError.value = 'Seedance 最多选择 9 张参考图'
     return
   }
   if (isKlingVideoProvider(videoTaskDraft.provider) && videoTaskDraft.assetIds.length >= 2) {
@@ -8931,8 +8928,7 @@ function toggleVideoTaskDraftAsset(asset) {
 }
 
 function videoTaskAssetLimitForProvider(provider = videoTaskDraft.provider) {
-  if (provider === 'seedance') return 4
-  if (provider === 'happyhorse') return 9
+  if (provider === 'seedance' || provider === 'happyhorse') return 9
   if (isKlingVideoProvider(provider)) return 2
   if (isPixVerseVideoProvider(provider)) return 1
   return Number.POSITIVE_INFINITY

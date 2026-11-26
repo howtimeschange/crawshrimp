@@ -1346,7 +1346,7 @@ function aiVideoPublicFileItem(rawPath, { scope = 'input', relativePath = '', al
 }
 
 async function selectAiVideoFiles(opts = {}) {
-  const maxCount = Math.max(1, Math.min(Number(opts?.maxCount || 9) || 9, 9))
+  const maxCount = Math.max(1, Math.min(Number(opts?.maxCount || 9) || 9, 30))
   const requestedKind = String(opts?.mediaKind || opts?.kind || 'image').trim()
   const allowedKinds = requestedKind === 'video'
     ? ['video']

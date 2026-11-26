@@ -219,6 +219,22 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
                     with self.assertRaises(svc.AiVideoError):
                         svc.normalize_parameters(provider, resolved, {"resolution": "1080p"})
 
+    def test_seedance_reference_and_prompt_boundaries(self):
+        token = self._capability("file", "input", self._write_image("reference.jpg"))
+        output = self._capability("directory", "output", self.output_dir)
+        for model, info in svc.SEEDANCE_MODELS.items():
+            with self.subTest(model=model):
+                request = {
+                    "provider": "seedance", "model": model, "prompt": "镜头" * 2500,
+                    "outputDirToken": output, "assets": [{"fileToken": token}] * info.max_images,
+                }
+                content = svc.build_provider_payload(svc.validate_input(request))["content"]
+                self.assertEqual(content[0]["text"], request["prompt"])
+                self.assertEqual([item["role"] for item in content[1:]], ["reference_image"] * info.max_images)
+                request["assets"].append({"fileToken": token})
+                with self.assertRaisesRegex(svc.AiVideoError, f"最多 {info.max_images} 张"):
+                    svc.validate_input(request)
+
     def test_provider_and_model_must_match_exactly(self):
         self.assertEqual(
             svc.resolve_model("seedance", "seedance-2.0"),
