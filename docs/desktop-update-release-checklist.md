@@ -2,6 +2,12 @@
 
 This checklist is the required evidence record before claiming desktop updater release readiness. Keep blank values as `PENDING`; do not fill them from assumptions or DMG-only manual installs.
 
+## Release Identity · v2.5.19
+
+- 版本等级为 `PATCH`。森马上新助手增加静物图包整理与核验，视频模型限制及 R2 镜像调整均沿用现有功能。
+- 目标版本为 `v2.5.19`，更新路径为 `v2.5.18` → `v2.5.19`。
+- Packaged update acceptance: `PENDING`
+
 ## Release Identity · v2.5.17
 
 - 版本等级为 `PATCH`。从 `v2.5.16` 升至 `v2.5.17`，修复现有云端审批、生图、桌面任务和更新流程中的问题。
