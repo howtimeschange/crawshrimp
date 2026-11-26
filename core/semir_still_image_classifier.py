@@ -8,6 +8,7 @@ from pathlib import Path
 THUMBNAIL_SIZE = 224
 RGB_BYTES = THUMBNAIL_SIZE * THUMBNAIL_SIZE * 3
 MAX_BATCH = 8
+CLASSES = ("hangtag", "washlabel", "other", "supplier")
 ASSETS = Path(__file__).with_name("semir_still_image_assets")
 _session = None
 _session_lock = threading.Lock()
@@ -22,6 +23,8 @@ def _get_session():
 
             model = ASSETS / "pp-lcnetv2-int8.onnx"
             manifest = json.loads((ASSETS / "model.json").read_text(encoding="utf-8"))
+            if tuple(manifest.get("classes", ())) != CLASSES:
+                raise RuntimeError("静物图分类模型类别不匹配")
             with model.open("rb") as binary:
                 if hashlib.file_digest(binary, "sha256").hexdigest() != manifest["sha256"]:
                     raise RuntimeError("静物图分类模型校验失败")
@@ -47,7 +50,7 @@ def classify_rgb_batch(data: bytes) -> list[list[float]]:
 
     with _inference_slots:
         scores, = _get_session().run(["scores"], {"image": pixels})
-    if (scores.shape != (batch, 3) or not np.isfinite(scores).all() or
+    if (scores.shape != (batch, len(CLASSES)) or not np.isfinite(scores).all() or
             np.any(scores < 0) or np.any(scores > 1) or not np.allclose(scores.sum(axis=1), 1, atol=1e-3)):
         raise RuntimeError("静物图分类模型返回无效分数")
     return scores.tolist()

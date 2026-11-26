@@ -158,7 +158,9 @@ function requireShoeModelBundle(resourcesPath) {
 function requireSemirStillModelBundle(resourcesPath) {
   const core = path.join(resourcesPath, 'python-scripts', 'core')
   const assets = path.join(core, 'semir_still_image_assets')
-  fs.accessSync(path.join(core, 'semir_still_image_classifier.py'), fs.constants.R_OK)
+  for (const name of ['semir_still_image_classifier.py', 'semir_still_image_ocr.py']) {
+    fs.accessSync(path.join(core, name), fs.constants.R_OK)
+  }
   const { sha256 } = JSON.parse(fs.readFileSync(path.join(assets, 'model.json'), 'utf8'))
   const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(assets, 'pp-lcnetv2-int8.onnx'))).digest('hex')
   if (digest !== sha256) throw new Error('[after-pack] Semir still-image model integrity failure')

@@ -300,10 +300,9 @@ test('label view disagreement stays for review and product names require exact s
  assert.equal(a.codeConflict, true)
  assert.equal(box.summarizeLabel([a],'洗唛',code,0).status,'款号识别结果冲突，待复核')
  const b = box.ocrEvidence('23922.jpg','Washing instructions\n'+code,code)
- const confirmed = box.summarizeLabel([a,b],'洗唛',code,0)
- assert.equal(confirmed.status,'一致')
- assert.equal(confirmed.codes,code)
- assert.equal(confirmed.files,'23922.jpg')
+ const withAnotherMatch = box.summarizeLabel([a,b],'洗唛',code,0)
+ assert.equal(withAnotherMatch.status,'款号识别结果冲突，待复核')
+ assert.match(withAnotherMatch.files,/22922\.jpg/)
  const unrelated = box.ocrEvidence('fabric.jpg','JEAN\n104526100003',code)
  assert.equal(box.summarizeLabel([unrelated],'吊牌',code,0).status,'未检出，待复核')
  for (const name of [code+'-40952.jpg',code+'-40952-1.png',code.toLowerCase()+'-40952-7.JPG']) {
@@ -312,6 +311,103 @@ test('label view disagreement stays for review and product names require exact s
  for (const name of [code+'-40952-洗唛.jpg',code+'-90001.jpg',code+'-40952-8.png','IMG_2180.jpg']) {
   assert.equal(box.isNamedProductView({filename:name},code,'40952'),false)
  }
+})
+
+test('four-class supplier evidence excludes handwriting but keeps a covered retail tag present', async () => {
+ const {box} = await run('organize-still-image-package')
+ const style = '109526124102'
+ const whiteCard = box.mergeLabelViews(['合格证 SEMIR\n浙江森马服饰股份有限公司\n400-8877-588', style+'\n88401'], style, .91)
+ assert.equal(whiteCard.handwrittenCertificate, true)
+ assert.equal(whiteCard.kind, null)
+ const covered = box.mergeLabelViews(['合格证 SEMIR\n浙江森马服饰股份有限公司\n400-8877-588\n到样时间\nFAB\n上市日\n'+style], style, .91)
+ assert.equal(covered.kind, 'hangtag')
+ assert.equal(covered.matched, false)
+ assert.equal(covered.codes.length, 0)
+ const handwritten = '湖北着墨\n款号：102526108106\n色号：70537'
+ assert.equal(box.isRepeatedWorkshopCard([handwritten, handwritten], '102526108106'), true)
+ assert.equal(box.isRepeatedWorkshopCard([handwritten], '102526108106'), false)
+ assert.equal(box.isRepeatedWorkshopCard([handwritten, '湖北着墨\n号：102526108106\n色号：70537'], '102526108106'), true)
+ assert.equal(box.isRepeatedWorkshopCard(['号102526108006\n色号00366','102526108006\n00366'], '102526108006'), true)
+ assert.equal(box.isRepeatedWorkshopCard(['102526108006\n00366','102526108006\n00366'], '102526108006'), false)
+ assert.equal(box.isRepeatedWorkshopCard([handwritten, handwritten.replace('湖北着墨','森马成分')], '102526108106'), false)
+ const knownLabel = {filename: '洗唛.jpg'}
+ const sample = {filename: 'IMG_007.jpg'}
+ const order = box.screenOrder([knownLabel, sample], new Map([[knownLabel,[.001,.002,.997,0]], [sample,[.001,.002,.2,.797]]]))
+ assert.equal(order.priority[0], knownLabel)
+ assert.equal(order.deferred[0], sample)
+})
+
+test('a third label can expose a mismatch and trigger more crops on a deferred SKU-only sample', async () => {
+ const style = '104526100109'
+ const styleOnWrongWash = '102526116104'
+ const source = 'test/104526100109/10101'
+ const files = ['IMG_004.jpg','IMG_003.jpg','IMG_002.jpg','IMG_001.jpg'].map(filename => ({
+  filename, fullpath: source + '/' + filename, thumbnail: 'https://images.semirapp.com/' + filename,
+ }))
+ const texts = new Map([
+  [files[0].filename, '合格证\n款号 '+style+'\n零售价 159.00'],
+  [files[1].filename, '洗涤说明\n'+style],
+  [files[2].filename, '洗涤说明\n'+styleOnWrongWash],
+  [files[3].filename, '样品车间\n款号：'+style+'\n色号：10101'],
+ ])
+ const calls = []
+ let failNextImage = false
+ let imageLookups = 0
+ class Canvas {
+  getContext() {
+   return {
+    drawImage: bitmap => { this.filename = bitmap.filename },
+    getImageData: () => ({data:new Uint8Array(4)}), putImageData() {},
+    fillRect() {}, translate() {}, rotate() {},
+   }
+  }
+  async convertToBlob() { return {filename:this.filename} }
+ }
+ const {box} = await run('organize-still-image-package','__exports__',{}, {
+  params:{__crawshrimp_api_base_url:'http://127.0.0.1:18986',__crawshrimp_semir_screen_token:'test'},
+  location:{origin:'https://fmp.semirapp.com',href:'https://fmp.semirapp.com/web/index'},
+  OffscreenCanvas:Canvas, createImageBitmap: async blob => ({width:1200,height:900,filename:blob.filename,close(){}}),
+  fetch: async (url, options) => {
+   url = String(url)
+   if (url.endsWith('/classify')) return {ok:true,json:async()=>({scores:[
+    [.97,.01,.01,.01], [.01,.97,.01,.01], [.01,.97,.01,.01], [.001,.001,.986,.012],
+   ]})}
+   if (url.includes('/read-label?')) {
+    calls.push(options.body.filename)
+    return {ok:true,json:async()=>({text:url.endsWith('barcode')?'':texts.get(options.body.filename)})}
+   }
+   if (String(url).startsWith('/fengcloud/2/file/info?')) {
+    imageLookups++
+    const fullpath = new URL(url,'https://fmp.semirapp.com').searchParams.get('fullpath')
+    return {ok:true,json:async()=>({fullpath,mount_id:'2021',uri:'https://images.semirapp.com/'+fullpath.split('/').at(-1)})}
+   }
+   if (failNextImage) {
+    failNextImage = false
+    throw new TypeError('Failed to fetch')
+   }
+   return {ok:true,blob:async()=>({filename:new URL(url).pathname.slice(1)})}
+  },
+ })
+ const worker = {recognize:async blob => {
+  calls.push(blob.filename)
+  return {data:{text:texts.get(blob.filename)}}
+ }}
+ const result = await box.scanColor({run:{},worker},'2021',files,style,'10101')
+ assert.equal(result.scanned,4)
+ assert.equal(result.hang.status,'一致')
+ assert.equal(result.wash.status,'识别到不一致款号，待复核')
+ assert.equal(result.wash.codes,styleOnWrongWash)
+ assert.equal(result.hang.handwrittenFiles.join(), files[3].filename)
+ assert.ok(calls.filter(filename => filename === files[3].filename).length > 1)
+
+ const withoutThumbnails = [{...files[0], thumbnail:undefined}]
+ const earlierLookups = imageLookups
+ failNextImage = true
+ const fallback = await box.scanColor({run:{},worker},'2021',withoutThumbnails,style,'10101')
+ assert.equal(imageLookups - earlierLookups,2)
+ assert.equal(fallback.failed.length,0)
+ assert.equal(fallback.hang.status,'一致')
+ assert.equal(fallback.wash.status,'未检出，待复核')
 })
 
 test('Semir Cloud Drive login uses the live drive session before the app DOM loads', async () => {

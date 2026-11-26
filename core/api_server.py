@@ -89,8 +89,9 @@ logger = logging.getLogger(__name__)
 API_VERSION = "1.4.16"
 API_TOKEN_HEADER = "x-crawshrimp-token"
 SEMIR_SCREEN_PATH = "/semir-still-images/classify"
+SEMIR_LABEL_READ_PATH = "/semir-still-images/read-label"
 SEMIR_DRIVE_ORIGIN = "https://fmp.semirapp.com"
-PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect", SEMIR_SCREEN_PATH}
+PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect", SEMIR_SCREEN_PATH, SEMIR_LABEL_READ_PATH}
 PRIVATE_API_PATHS = {"/bala-ai-video-materials/api/from-rows"}
 PUBLIC_API_PREFIXES = (
     "/adapter-assets/",
@@ -8622,7 +8623,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             hardware = still_ocr_host_hardware()
             run_params['__crawshrimp_ocr_hardware'] = hardware
             log(f"OCR 本机配置：{hardware['threads']} 个逻辑核，{hardware['memory_gb']:g} GiB 内存")
-            log("静物图核验：PP-LCNetV2 缩略图筛选 + 浏览器 OCR")
+            log("静物图核验：PP-LCNetV2 四分类 + 本机 PP-OCRv4 + 浏览器 OCR 复核")
         for pk, pv in run_params.items():
             if isinstance(pv, dict) and pv.get('path') and not pv.get('rows'):
                 log(f"Resolving Excel rows for param '{pk}' from path: {pv['path']}")
@@ -9934,7 +9935,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_local_api_token(request: Request, call_next):
-    if request.method == "OPTIONS" and request.url.path == SEMIR_SCREEN_PATH:
+    if request.method == "OPTIONS" and request.url.path in (SEMIR_SCREEN_PATH, SEMIR_LABEL_READ_PATH):
         if request.headers.get("origin") != SEMIR_DRIVE_ORIGIN:
             return Response(status_code=403)
         return Response(status_code=204, headers=_semir_screen_headers())
@@ -10044,6 +10045,21 @@ def _semir_screen_headers() -> dict[str, str]:
     }
 
 
+async def _semir_image_body(request: Request, content_type: str, limit: int, alignment: int = 1):
+    length = request.headers.get("content-length", "")
+    if (request.headers.get("content-type") != content_type or
+            not re.fullmatch(r"[0-9]{1,7}", length) or
+            not 0 < int(length) <= limit or int(length) % alignment):
+        return None
+    expected_size = int(length)
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > expected_size:
+            return None
+        data.extend(chunk)
+    return bytes(data) if len(data) == expected_size else None
+
+
 @app.post(SEMIR_SCREEN_PATH, include_in_schema=False)
 async def classify_semir_still_images(request: Request):
     from core.semir_still_image_classifier import MAX_BATCH, RGB_BYTES, classify_rgb_batch
@@ -10053,25 +10069,40 @@ async def classify_semir_still_images(request: Request):
     headers = _semir_screen_headers()
     if request.headers.get(API_TOKEN_HEADER) not in _semir_screen_tokens:
         return Response(status_code=401, headers=headers)
-    length = request.headers.get("content-length", "")
-    if (request.headers.get("content-type") != "application/octet-stream" or
-            not re.fullmatch(r"[0-9]{1,7}", length) or
-            not 0 < int(length) <= RGB_BYTES * MAX_BATCH or int(length) % RGB_BYTES):
-        return Response(status_code=400, headers=headers)
-    expected_size = int(length)
-    data = bytearray()
-    async for chunk in request.stream():
-        if len(data) + len(chunk) > expected_size:
-            return Response(status_code=400, headers=headers)
-        data.extend(chunk)
-    if len(data) != expected_size:
+    data = await _semir_image_body(request, "application/octet-stream", RGB_BYTES * MAX_BATCH, RGB_BYTES)
+    if data is None:
         return Response(status_code=400, headers=headers)
     try:
-        scores = await asyncio.to_thread(classify_rgb_batch, bytes(data))
+        scores = await asyncio.to_thread(classify_rgb_batch, data)
     except Exception:
         logger.warning("Semir thumbnail classification unavailable", exc_info=True)
         return Response(status_code=503, headers=headers)
     return JSONResponse({"scores": scores}, headers=headers)
+
+
+@app.post(SEMIR_LABEL_READ_PATH, include_in_schema=False)
+async def read_semir_still_image_label(request: Request):
+    from core.semir_still_image_ocr import MAX_IMAGE_BYTES, read_semir_label_crop
+
+    if request.headers.get("origin") != SEMIR_DRIVE_ORIGIN:
+        return Response(status_code=403)
+    headers = _semir_screen_headers()
+    if request.headers.get(API_TOKEN_HEADER) not in _semir_screen_tokens:
+        return Response(status_code=401, headers=headers)
+    mode = request.query_params.get("mode", "text")
+    if mode not in ("text", "barcode"):
+        return Response(status_code=400, headers=headers)
+    data = await _semir_image_body(request, "image/jpeg", MAX_IMAGE_BYTES)
+    if data is None:
+        return Response(status_code=400, headers=headers)
+    try:
+        evidence = await asyncio.to_thread(read_semir_label_crop, data, mode)
+    except ValueError:
+        return Response(status_code=400, headers=headers)
+    except Exception:
+        logger.warning("Semir printed label OCR unavailable", exc_info=True)
+        return Response(status_code=503, headers=headers)
+    return JSONResponse(evidence, headers=headers)
 
 
 @app.options("/adapter-assets/{adapter_id}/{asset_path:path}")

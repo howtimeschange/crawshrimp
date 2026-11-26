@@ -13,16 +13,8 @@
   const IMAGE = /\.(jpe?g|png|webp|bmp|gif|tiff?|heic|avif)$/i
   const SCREEN_SIZE = 224
   const SCREEN_BATCH = 8
-  const SCREEN_WINDOW = SCREEN_BATCH * 2
   const OTHER_THRESHOLD = 0.995
-  const TYPE_WORDS = {
-    吊牌候选: /吊牌|合格证|执行标准|产品标准|安全技术类别|质量等级|检验员|零售价|条形码|\bEAN(?:-?13)?\b/i,
-    洗唛: /洗[唛标]|水洗标|洗[涤滌][说說][明朋]|洗[涤滌]方法|维护方法|不可漂白|不可干洗|不可熨烫|印花部位|浸泡时间|WASH(?:ING)?\s*INSTRUC|CARE\s*INSTRUC|CARA\s*MENCUC|DO\s*NOT\s*BLEACH/i,
-  }
-  const RETAIL_PRICE = /(?:零售价|\bRMB\b|[¥￥])[ \t:：¥￥]*\d{1,5}(?:[.,]\d{2})?(?![\dA-Z-])/i
-  const RETAIL_IDENTITY = /400\s*[-–—]?\s*8877\s*[-–—]?\s*588|浙江森马服饰股份有限公司/i
-  const SUPPLIER_SAMPLE = /(?:样衣|样品)(?:卡|确认|资料|信息|编号|记录|工艺)|(?:封样|确认样)(?:卡|确认|单|表|记录|资料)|[样樣][版板]卡|供应商(?:送样|自制|资料表|信息表)|(?:打样|送样)(?:单|日期|记录)|(?:制版|版型|面辅料)确认表|办评语卡|拍照样|齐色办|订货样|(?:上装|下装)办卡/
-  const ABSENCE_CARD = /^(?:本款)?(?:无|無|没有|未附|暂缺|缺)(?:吊牌|(?:水)?洗[唛标嘜標]|水唛)[。.!！]*$/i
+  const namedLabel = /吊牌|洗[唛标]|水洗|hang.?tag|(?:wash|care).?label/i
 
   const clean = value => String(value ?? '').normalize('NFKC').trim()
   const isDir = item => [1, '1', true].includes(item.dir)
@@ -123,8 +115,10 @@
     const data = await response.json().catch(() => null)
     if (!response.ok || !data || data.error_code || data.error || data.success === false) {
       const error = new Error(`云盘 ${path} HTTP ${response.status}${data?.error_msg ? ' ' + data.error_msg : ''}`)
+      error.httpStatus = response.status
       error.busy = response.status === 403 && /空间正在被操作中/.test(data?.error_msg || '')
-      error.sessionExpired = response.status === 401
+      error.sessionExpired = response.status === 401 || response.redirected ||
+        Number(data?.error_code) === 40106 || /登录超时|登录失效|请重新登录/.test(data?.error_msg || '')
       throw error
     }
     return data
@@ -427,76 +421,264 @@
     return { target, result: copied.result }
   }
 
+  // Label evidence rules from Listingify b03b920 (Semir still life).
+  const washInstructions = /洗[唛标]|水洗标|洗[涤滌][说說][明朋]|洗[涤滌]方法|维护方法|不可漂白|不可干洗|不可熨烫|印花部位|浸泡时间|WASH(?:ING)?\s*INSTRUC|\bCARE\s*INSTRUC|CARA\s*MENCUC|DO\s*NOT\s*BLEACH/i;
+  const RETAIL_PRICE = /(?:吊牌价|零售价|\b(?:RMB|CNY)\b|[¥￥])[ \t:：¥￥]*\d{1,5}(?:[.,]\d{2})?(?![\dA-Z-])/i;
+  const RETAIL_IDENTITY = /400\s*[-–—]?\s*8877\s*[-–—]?\s*588|浙江森马服饰股份有限公司/i;
+  const SUPPLIER_SAMPLE = /(?:样衣|样品)(?:吊卡|卡|确认|资料|信息|编号|记录|工艺)|(?:封样|确认样)(?:卡|确认|单|表|记录|资料)|[样樣][版板](?:信息)?卡|供应商(?:送样|自制|资料表|信息表)|(?:打样|送样)(?:单|日期|记录)|(?:制版|版型|面辅料)确认表|[办辦][评評][语語]卡|拍照样|齐色办|订货样|(?:上装|下装)办卡/;
+  const ABSENCE_CARD = /^(?:本款)?(?:无|無|没有|未附|暂缺|缺)(?:吊牌|(?:水)?洗[唛标嘜標]|水唛)[。.!！]*$/i;
   function hasRetailBarcode(text, styleCodes) {
-    const styleBases = new Set(styleCodes.map(code => code.slice(0, 12)))
-    const matches = text.matchAll(/(?:^|[^A-Z0-9])(?:商品条码|条形码|条码|\bEAN(?:-?13)?)?[ \t:：]*((?:\d[ \t]*){13})(?![ \t]*[A-Z0-9])/gm)
+    const styleBases = new Set(styleCodes.map(code => code.slice(0, 12)));
+    const matches = text.matchAll(/(?:^|[^A-Z0-9])(?:商品条码|条形码|条码|\bEAN(?:-?13)?)?[ \t:：]*((?:\d[ \t]*){13})(?![ \t]*[A-Z0-9])/gm);
     for (const [, raw] of matches) {
-      const digits = raw.replace(/\s/g, '')
-      if (/^(\d)\1+$/.test(digits) || styleBases.has(digits.slice(0, 12))) continue
-      const sum = Array.from(digits).reduce((total, digit, index) => total + Number(digit) * (index % 2 ? 3 : 1), 0)
-      if (sum % 10 === 0) return true
+      const digits = raw.replace(/\s/g, "");
+      if (/^(\d)\1+$/.test(digits) || styleBases.has(digits.slice(0, 12)))
+        continue;
+      const sum = Array.from(digits).reduce((total, digit, index) => total + Number(digit) * (index % 2 ? 3 : 1), 0);
+      if (sum % 10 === 0)
+        return true;
     }
-    return false
+    return false;
   }
-
   function readStyleCodes(text) {
-    const codes = new Set()
+    const codes = new Set();
     for (const line of text.split(/\n/)) {
       for (const match of line.matchAll(/(?<![A-Z0-9])(1[ \t]*0[ \t]*[A-Z0-9](?:[ \t]*\d){9})([A-Z0-9]*)/g)) {
-        const [full, base, tail] = match
+        const [full, base, tail] = match;
         const spacedSuffix = line.slice(match.index + full.length)
-          .match(/^(?:[ \t]*[-–—][ \t]*|[ \t]+)([A-Z])(?=[ \t]*(?:$|[-–—:/：\u3400-\u9fff])|[ \t]*[A-Z0-9]{5}\b)/)?.[1]
-        let suffix = ''
-        if (!tail) suffix = spacedSuffix || ''
-        else if (/^[A-Z]([A-Z0-9]{5})?$/.test(tail)) suffix = tail[0]
-        else if (!COLOR.test(tail)) continue
-        codes.add(base.replace(/[ \t]/g, '') + suffix)
+          .match(/^(?:[ \t]*[-–—][ \t]*|[ \t]+)([A-Z])(?=[ \t]*(?:$|[-–—:/：\u3400-\u9fff])|[ \t]*[A-Z0-9]{5}\b)/)?.[1];
+        let suffix = "";
+        if (!tail)
+          suffix = spacedSuffix || "";
+        else if (/^[A-Z]([A-Z0-9]{5})?$/.test(tail))
+          suffix = tail[0];
+        else if (!/^[A-Z0-9]{5}$/.test(tail))
+          continue;
+        codes.add(base.replace(/[ \t]/g, "") + suffix);
       }
     }
-    return [...codes]
+    return [...codes];
   }
-
-  function ocrEvidence(file, text, expected) {
-    const normalized = clean(text).toUpperCase()
-    const compact = normalized.replace(/(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, '')
-    const codes = readStyleCodes(normalized)
-    const absenceCard = ABSENCE_CARD.test(compact.replace(/\s/g, ''))
-    const supplierCompany = /(?:服饰|服装)(?:股份)?有限公司/.test(compact) && !RETAIL_IDENTITY.test(compact)
-    const supplierSample = SUPPLIER_SAMPLE.test(compact) ||
+  function viewsOfSwatch(text) {
+    return /^\s*\d{2}[1-4][A-Z]\d{2}[A-Z][A-Z0-9]{3,6}\s*$/m.test(text) &&
+      /^\s*(?:XS|S|M|L|XL|XXL)\s*$/m.test(text);
+  }
+  function labelEvidence(text, expected) {
+    const normalized = text.normalize("NFKC").trim().toUpperCase();
+    const compact = normalized.replace(/(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, "");
+    const codes = readStyleCodes(normalized);
+    const absenceCard = ABSENCE_CARD.test(compact.replace(/\s/g, ""));
+    const supplierCompany = /(?:服饰|服装)(?:股份)?有限公司/.test(compact) && !RETAIL_IDENTITY.test(compact);
+    const patternRoomCard = /车版[师師]/.test(compact) && /完成日期/.test(compact) && /款[号號]/.test(compact);
+    const supplierSample = patternRoomCard || /^\s*(?:[版板]单号|[版板]單號)\s*$/m.test(normalized) && !/合格证|检验员|成[分份]|洗涤说明/.test(compact) || /试样单|工艺(?:制单|资料|单号|单|表)|生产工单|样衣单|样品单|供应商样卡/.test(compact) || SUPPLIER_SAMPLE.test(compact) ||
+      /标[准準]尺寸|標準尺寸/.test(compact) && /相差|度法/.test(compact) && /部位|袖口|胸[围圍]/.test(compact) ||
       /设计编号/.test(compact) && /码数/.test(compact) && /克重/.test(compact) ||
       /版[师師]|裁版|车版/.test(compact) && /[设設][计計][师師]/.test(compact) ||
       supplierCompany && /版[师師]|裁版|车版|[设設][计計][师師]/.test(compact) ||
       /\b(?:PROTO|PRE-PROD)\b/.test(compact) && /\b(?:APPROVAL|SHIPMENT)\b/.test(compact) ||
-      /\bSTYLE\s*NO\b/.test(compact) && /\bGAUGE\b/.test(compact) && /\b(?:LOT\s*NO|REMARKS)\b/.test(compact)
+      /\bSTYLE\s*NO\b/.test(compact) && /\bGAUGE\b/.test(compact) && /\b(?:LOT\s*NO|REMARKS)\b/.test(compact);
     const hangCandidate = /吊牌|合格证/.test(compact) ||
-      /执行标准|产品标准/.test(compact) && /安全技术类别|质量等级|检验员/.test(compact)
-    const retailFields = TYPE_WORDS.吊牌候选.test(compact) || codes.length > 0
-    const hasHang = !supplierSample && !absenceCard && (
-      retailFields && (RETAIL_PRICE.test(compact) || hasRetailBarcode(compact, [expected, ...codes])) ||
-      codes.length > 0 && RETAIL_IDENTITY.test(compact) && /款[号號]|色[号號]|合格证|执行标准/.test(compact))
+      /执行标准|产品标准/.test(compact) && /安全技术类别|质量等级|检验员/.test(compact);
+    // The removable fabric-care insert describes the fabric finish and daily
+    // wear. Its English heading also contains the words "care instructions".
+    const lyocellCareInsert = /KINDLY\s*REMINDER/.test(normalized) && /LYOCELL/.test(normalized) &&
+      /FOLLOWING\s*CARE\s*INSTRUCTIONS/.test(normalized) && /SMOOTH\s*TEXTURE|SURFACE\s*ABRASION/.test(normalized);
+    const snaggingInsert = /特殊的工艺处理/.test(compact) && /松散组织结构/.test(compact) && /勾纱/.test(compact) &&
+      !codes.length && !/成[分份]|洗涤说明|执行标准|中国制造/.test(compact);
+    const fabricCareInsert = snaggingInsert || lyocellCareInsert || /HARD\s*SHELL\s*CARE\s*INSTRUC/.test(normalized) ||
+      /TREATED\s*WITH\s*A\s*SPECIAL\s*PROCESS/.test(normalized) && /DAILY\s*WEAR|FOLLOW\s*THESE\s*TIPS/.test(normalized);
+    // Sewing samples can carry just a workshop reference, the style and a size
+    // on a handwritten strip. Keep ordinary SKU-only readings unresolved.
+    const swatchReference = viewsOfSwatch(normalized) && !hangCandidate && !washInstructions.test(compact) &&
+      !/成[分份]|面料|零售价|条码|检验员|中国制造|COMPOSITION|SEMIR/.test(compact);
+    const warrantyInsert = /质量保证卡/.test(compact) && /购买之日|原购买地点|保证范围/.test(compact);
+    const illustratedInsert = /(?:吊牌|卡片)正面产品图仅为示意图/.test(compact) && /具体款式以实物为准/.test(compact) &&
+      !codes.length && !/合格证|安全技术类别|检验员|商品条码/.test(compact) && !RETAIL_PRICE.test(compact) && !hasRetailBarcode(compact, [expected]);
+    const excluded = illustratedInsert || supplierSample || absenceCard || fabricCareInsert || swatchReference || warrantyInsert;
+    const certificateIdentity = RETAIL_IDENTITY.test(compact) || /合格证\s*SEM(?:I|\/)R\b/.test(compact);
+    const shootFields = /到样时间|拍摄备注|不拍视频/.test(compact) && /上市日|FAB|资源/.test(compact);
+    // Some shoot stickers contain only two printed lines and cover the whole
+    // product panel. Verify the official company and hotline on the exposed footer.
+    const isolatedSticker = /^1[0O][A-Z0-9]\d{9}[A-Z]?[ \t]*\n[ \t]*[-–—][ \t]*[A-Z0-9]{5}[ \t]*$/m.test(normalized) &&
+      /浙江森马服饰股份有限公司/.test(compact) && /400\s*[-–—]?\s*8877\s*[-–—]?\s*588/.test(compact) &&
+      !/执行标准|安全技术类别|品名|产品名称|检验员|质量等级/.test(compact);
+    const shootSticker = (/合格证/.test(compact) && certificateIdentity && shootFields || isolatedSticker) &&
+      !RETAIL_PRICE.test(compact) && !hasRetailBarcode(compact, [expected, ...codes]);
+    const hasHang = !excluded && (shootSticker ||
+      (codes.length > 0 || /品名|产品名称|质量等级|检验员|安全技术类别/.test(compact)) && (RETAIL_PRICE.test(compact) || hasRetailBarcode(compact, [expected, ...codes])) ||
+      /商品条码|零售条码/.test(compact) && /品名|产品名称|质量等级|检验员/.test(compact) ||
+      codes.length > 0 && RETAIL_IDENTITY.test(compact) && /款[号號]|色[号號]|合格证|执行标准/.test(compact));
     const washComposition = /(?:中国制造|MADE\s+IN\s+CHINA)/i.test(compact) &&
-      /成[分份]|COMPOSITION|BAHAN/i.test(compact) && /\d\s*%/.test(compact) && codes.length > 0
-    const hasWash = !supplierSample && !absenceCard && (TYPE_WORDS.洗唛.test(compact) || !hasHang && washComposition)
-    const kinds = hasWash && (hasHang ? /水洗标|洗唛|洗标|洗涤说明|WASH(?:ING)?\s*INSTRUC/i.test(compact) : true) ?
-      (hasHang ? ['待区分'] : ['洗唛']) : hasHang ? ['吊牌'] : []
-    return { file, kinds, codes, matched: codes.includes(expected), supplierSample, absenceCard, hangCandidate }
+      (/成[分份]|COMPOSITION|BAHAN/i.test(compact) || /面料/.test(compact) && /分开洗|洗涤|浸泡|10\s*分钟/.test(compact)) &&
+      /\d\s*%/.test(compact) && codes.length > 0;
+    const hasWash = !excluded && (washInstructions.test(compact) || !hasHang && washComposition);
+    const ambiguous = hasWash && hasHang;
+    const kind = ambiguous ? null : hasHang ? "hangtag" : hasWash ? "washlabel" : null;
+    return { kind, codes: shootSticker ? [] : codes, matched: !shootSticker && codes.includes(expected), excluded, shootSticker, supplierSample, absenceCard,
+      ambiguous, hangCandidate, conflict: false };
+  }
+  // Two readings of the same photo may disagree. Require agreement before
+  // reporting a mismatch, and retain a complete suffix when another view lost it.
+  function mergeLabelViews(views, style, supplierScore = 0) {
+    const text = views.join("\n");
+    const evidence = labelEvidence(text, style);
+    // On sample certificates the handwriting can run across the preprinted card.
+    // Require a supplier-like thumbnail, a legible certificate heading and footer,
+    // and a separate reading of the bare handwritten digits.
+    const normalized = text.normalize("NFKC").toUpperCase();
+    const blankCertificate = supplierScore >= 0.8 && !evidence.shootSticker &&
+      views.some(view => /合格证\s*SEM(?:I|\/)R/i.test(view) && RETAIL_IDENTITY.test(view)) &&
+      views.some(view => /^(?:10\d{8,10}[A-Z]?)(?:\s+\d{5})?$/i.test(view.trim())) &&
+      !/执行标准|安全技术类别|品名|产品名称|零售价|检验员|质量等级|款[号色]|洗涤|上市日|拍摄备注|到样时间|FAB|\bPRICE\b/.test(normalized) &&
+      !RETAIL_PRICE.test(normalized) && !hasRetailBarcode(normalized, [style, ...evidence.codes]);
+    if (blankCertificate)
+      return { ...evidence, kind: null, codes: [], matched: false, excluded: true, handwrittenCertificate: true };
+    if (supplierScore >= 0.99 && !evidence.kind && !evidence.hangCandidate && !evidence.excluded) {
+      const isColor = /^(?:[A-Z0-9]{5}|[\u3400-\u9fff]{0,7}[色红黄橙绿青蓝紫棕灰黑白])$/u;
+      const slips = views.filter(view => {
+        const lines = view.normalize("NFKC").toUpperCase().split(/\n/).map(line => line.replace(/\s+/g, "")).filter(Boolean);
+        return lines.includes(style) && lines.some(line => isColor.test(line)) &&
+          lines.every(line => line === style || isColor.test(line));
+      });
+      if (slips.length >= 2)
+        return { ...evidence, excluded: true };
+    }
+    if (supplierScore >= 0.85 && !evidence.kind && !evidence.hangCandidate && !evidence.excluded &&
+      !/面料|成[分份]|品名|零售|条码|SEMIR|COMPOSITION|MADE IN/.test(normalized)) {
+      const lines = views.map(view => view.trim().replace(/[ \t]+/g, "").toUpperCase());
+      for (const view of lines) {
+        const [code, color, ...extra] = view.split(/\n+/);
+        if (code === style && /^\d{5}$/.test(color ?? "") && !extra.length &&
+          lines.filter(line => line === color).length >= 2)
+          return { ...evidence, excluded: true };
+      }
+    }
+    const readings = views.map(text => readStyleCodes(text.normalize("NFKC").toUpperCase())).filter(codes => codes.length);
+    const complete = evidence.codes.filter(code => !evidence.codes.some(other => other.length === 13 && other.slice(0, 12) === code));
+    const agreed = complete.filter(code => readings.filter(codes => codes.includes(code)).length >= 2);
+    // A corrected hangtag can show a handwritten number alongside the original
+    // printed SKU above the barcode. Require the full style-color pair in two
+    // views before giving it precedence over unstructured numbers on the card.
+    const pairs = new Map();
+    if (evidence.kind === "hangtag" && complete.length > 1) {
+      for (const view of views) {
+        const matches = view.normalize("NFKC").toUpperCase()
+          .matchAll(/(?<![A-Z0-9])(10[A-Z0-9]\d{9}[A-Z]?)[ \t]*[-–—][ \t]*([A-Z0-9]{5})(?![A-Z0-9])/g);
+        for (const pair of new Set(Array.from(matches, match => match[1] + "-" + match[2]))) {
+          pairs.set(pair, (pairs.get(pair) ?? 0) + 1);
+        }
+      }
+    }
+    const [pair] = pairs.keys();
+    const codes = pairs.size === 1 && pairs.get(pair) >= 2 ? [pair.split("-")[0]] : agreed.length ? agreed : complete;
+    return { ...evidence, codes, matched: codes.includes(style), conflict: codes.length > 1 };
+  }
+  // Use the independent printed-text crops after the complete scan. Bare style
+  // references and dye-lot numbers occur on temporary cards and sewn sample strips.
+  function isHandwrittenSample(printedViews, supplierScore) {
+    const views = printedViews.map(text => text.normalize("NFKC").toUpperCase().trim()).filter(Boolean);
+    const lines = views.flatMap(view => view.split(/\n/).map(line => line.replace(/\s+/g, "")));
+    if (lines.some(line => /合格证|SEMIR|成[分份]|面料|洗涤|洗唛|制造|等级|条码|执行标准|品名|款号|FAB|PRICE|COMPOSITION|WASH|COTTON|%/.test(line)))
+      return false;
+    if (supplierScore >= 0.9 && lines.includes("拍摄样") &&
+      lines.some(line => /^10[0-9A-Z]{9,12}$/.test(line)))
+      return true;
+    const dyeCodes = lines.filter(line => /^(?:线|纱|線|紗)?色\d{3,6}$/.test(line));
+    if (dyeCodes.some(code => dyeCodes.filter(other => other === code).length >= 2) &&
+      lines.some(line => /^\d[\d/]{3}\d$/.test(line)))
+      return true;
+    // Different crops may lose digits or turn the last strokes into a slash.
+    return supplierScore >= 0.9 && views.length >= 2 && lines.some(line => /^10\d{10}[A-Z]?$/.test(line)) &&
+      lines.every(line => /^[0-9/]{1,17}[A-Z]?$/.test(line) || /^[深浅粉红蓝黑白灰米棕黄绿色]{1,4}[0-9/]{0,5}$/.test(line));
+  }
+  // A reference card can carry printed field names alongside handwritten digits.
+  // Independent crops must repeat the reference without any retail or care fields.
+  function isReferenceOnlyCard(views, style, other, supplier) {
+    const readings = views.map(view => view.normalize("NFKC").toUpperCase().replace(/[ \t]/g, "").trim()).filter(Boolean);
+    if (other < 0.98 || readings.some(view => view.length > 48 ||
+      /合格证|浙江森马|SEMIR|成[份分]|面料|维护|洗[涤唛标]|执行标准|安全|检验|产品|零售|条码|\d%|制造|PRICE|COMPOSITION/.test(view)))
+      return false;
+    const hasStyle = (line) => line.replace(/^(?:款[号號]?|[号號])?:?/, "") === style;
+    const withStyle = readings.filter(view => view.split("\n").some(hasStyle));
+    if (withStyle.length < 2)
+      return false;
+    const shortFields = readings.every(view => view.split("\n").every(line => /^(?:[\u3400-\u9fff]{0,2}|#):?[0-9/]{1,17}[A-Z]?$/.test(line) || /^(?:款|色)[号號]?$/.test(line)));
+    if (supplier >= 0.98 && shortFields && withStyle.some(view => view.split("\n").some(line => /^款/.test(line) && hasStyle(line))))
+      return true;
+    // A short workshop heading can precede the SKU and five-digit color.
+    const colors = withStyle.flatMap(view => Array.from(view.matchAll(/^色[号號]:?(\d{5})$/gm), m => m[1]));
+    return colors.some(color => colors.filter(value => value === color).length >= 2) &&
+      withStyle.every(view => view.split("\n").every(line => hasStyle(line) || /^(?:色[号號]:?)?\d{5}$/.test(line) || /^[\u3400-\u9fff]{2,6}$/.test(line)));
+  }
+  function isCompositionOnlyLabel(views, washScore) {
+    const material = /^(\d{1,3}(?:\.\d+)?)%(?:棉|羊毛|羊绒|麻|锦纶|氨纶|涤纶|聚酯纤维|粘纤|粘胶纤维|莱赛尔|莫代尔|腈纶|桑蚕丝)$/;
+    const readings = new Set();
+    for (const view of views) {
+      const lines = view.normalize("NFKC").trim().replace(/[ \t]/g, "").split(/\n+/);
+      if (/^\d{3,6}-\d{1,3}$/.test(lines[0]))
+        lines.shift();
+      if (!/^成[份分]:?$/.test(lines.shift() ?? "") || !lines.length || lines.length > 8)
+        continue;
+      const total = lines.reduce((sum, line) => sum + Number(material.exec(line)?.[1]), 0);
+      if (!(Math.abs(total - 100) < 0.1))
+        continue;
+      const composition = lines.join("\n");
+      if (washScore > 0.5 || readings.has(composition))
+        return true;
+      readings.add(composition);
+    }
+    return false;
+  }
+  function onlyShootInformation(views) {
+    const text = views.join("\n").normalize("NFKC").toUpperCase();
+    return /FAB/.test(text) && /不拍视频|拍摄备注|到样时间/.test(text) && /上市日|定位/.test(text) &&
+      !/合格证|执行标准|安全技术类别|检验员/.test(text) && !RETAIL_IDENTITY.test(text) &&
+      !RETAIL_PRICE.test(text) && !hasRetailBarcode(text, readStyleCodes(text));
+  }
+
+  function observedLabel(file, evidence) {
+    const kinds = evidence.ambiguous ? ['待区分'] :
+      evidence.kind === 'hangtag' ? ['吊牌'] : evidence.kind === 'washlabel' ? ['洗唛'] : []
+    return { ...evidence, file, kinds, codeConflict: evidence.conflict }
+  }
+
+  function isRepeatedWorkshopCard(printedViews, style) {
+    const colors = new Map()
+    for (const view of printedViews) {
+      const lines = clean(view).toUpperCase().split(/\n/).map(line => line.replace(/\s+/g, '')).filter(Boolean)
+      if (lines.length === 3 && /^[\u3400-\u9fff]{2,8}$/.test(lines[0]) &&
+          !/森马|合格证|吊牌|洗唛|洗标|成分|面料|标签/.test(lines[0])) lines.shift()
+      if (lines.length !== 2 || lines[0].replace(/^(?:款)?[号號]:?/, '') !== style) continue
+      const color = lines[1].match(/^(色[号號]:?)?([A-Z0-9]{5})$/)
+      if (!color) continue
+      const [, field, value] = color
+      const labeled = Boolean(field && lines[0] !== style)
+      if (colors.has(value) && (colors.get(value) || labeled)) return true
+      colors.set(value, labeled)
+    }
+    return false
+  }
+
+  function ocrEvidence(file, text, expected) {
+    return observedLabel(file, labelEvidence(text, expected))
   }
 
   function summarizeLabel(evidence, kind, style, failed) {
     const candidates = evidence.filter(item => item.kinds.includes(kind))
     const parent = style.length === 13 ? style.slice(0, -1) : ''
     const uncertain = evidence.filter(item => {
-      if (item.supplierSample || item.absenceCard) return false
+      if (item.excluded) return false
       return item.kinds.includes('待区分') ||
         (!item.kinds.length && (item.codes.some(code => code === style || parent && code.startsWith(parent)) ||
-          kind === '吊牌' && item.hangCandidate))
+          (item.scores?.[kind === '吊牌' ? 0 : 1] || 0) >= 0.9 ||
+          kind === '吊牌' && (item.hangCandidate || item.barcodeLocated)))
     })
     const confirmed = candidates.filter(item => item.matched && !item.codeConflict)
     const mismatched = candidates.filter(item => !item.codeConflict && item.codes.some(code => code !== style && code !== parent))
     let status = '未检出，待复核'
     if (mismatched.length) status = '识别到不一致款号，待复核'
-    else if (confirmed.length) status = '一致'
     else if (candidates.some(item => item.codeConflict)) status = '款号识别结果冲突，待复核'
+    else if (confirmed.length) status = failed ? '部分图片识别失败，待复核' : '一致'
     else if (parent && candidates.some(item => item.codes.includes(parent))) status = '款号后缀未读出，待复核'
     else if (candidates.length) status = '已识别类型，款号未读出'
     else if (failed) status = '部分图片识别失败，待复核'
@@ -506,7 +688,10 @@
       status, files: matches.map(item => item.file).join('\n'),
       codes: [...new Set(matches.flatMap(item => item.codes))].join('、'),
     }
-    if (kind === '吊牌') result.excludedFiles = evidence.filter(item => item.supplierSample).map(item => item.file)
+    if (kind === '吊牌') {
+      result.excludedFiles = evidence.filter(item => item.supplierSample).map(item => item.file)
+      result.handwrittenFiles = evidence.filter(item => item.handwrittenSample || item.handwrittenCertificate).map(item => item.file)
+    }
     result.absenceCardFiles = evidence.filter(item => item.absenceCard).map(item => item.file)
     return result
   }
@@ -594,55 +779,175 @@
   }
 
   function combineOcrViews(file, first, second, expected, ...additional) {
-    const views = [first, second, ...additional].filter(Boolean)
-    const combined = ocrEvidence(file, views.join('\n'), expected)
-    if (!combined.kinds.length && views.some(view => ABSENCE_CARD.test(clean(view).replace(/\s/g, '')))) {
-      return { ...combined, absenceCard: true }
-    }
-    const codes = views.map(view => readStyleCodes(clean(view).toUpperCase())).filter(items => items.length)
-    if (codes.length > 1) {
-      const agreed = combined.codes.filter(code => codes.filter(items => items.includes(code)).length > 1)
-      if (agreed.length) return { ...combined, codes: agreed, matched: agreed.includes(expected) }
-      return { ...combined, matched: false, codeConflict: true }
-    }
-    return combined
+    return observedLabel(file, mergeLabelViews([first, second, ...additional].filter(Boolean), expected))
   }
 
-  async function recognize(worker, mountId, item, style, focused, attempt = 0) {
+  async function readPrintedLabel(canvas, mode) {
+    const credential = params.__crawshrimp_semir_screen_token
+    if (!credential) return null
+    try {
+      const body = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.95 })
+      const response = await fetch(localApiOrigin() + '/semir-still-images/read-label?mode=' + mode, {
+        method: 'POST', credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(12000),
+        headers: { 'Content-Type': 'image/jpeg', 'X-Crawshrimp-Token': credential }, body,
+      })
+      if (!response.ok) return null
+      const result = await response.json()
+      return typeof result.text === 'string' ? result : null
+    } catch {
+      return null
+    }
+  }
+
+  function boundedLabelFrame(bitmap, edge, angle = 0) {
+    const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height))
+    const width = Math.max(1, Math.round(bitmap.width * scale))
+    const height = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = new OffscreenCanvas(angle ? height : width, angle ? width : height)
+    const context = canvas.getContext('2d')
+    context.translate(canvas.width / 2, canvas.height / 2)
+    context.rotate(angle * Math.PI / 180)
+    context.drawImage(bitmap, -width / 2, -height / 2, width, height)
+    return canvas
+  }
+
+  async function fetchOcrImage(mountId, item) {
     const info = await request('/2/file/info', {
       mount_id: mountId, fullpath: item.fullpath, ignores: 'tag,favorite,lock,preview,thumbnail',
     })
-    if (info.fullpath !== item.fullpath || String(info.mount_id) !== mountId) throw new Error('OCR 来源文件不符')
+    if (info.fullpath !== item.fullpath || String(info.mount_id) !== mountId ||
+        (item.filehash && info.filehash && item.filehash !== info.filehash)) throw new Error('OCR 来源文件不符')
     const url = new URL(info.uri || info.uris?.[0], location.href)
     if (url.protocol !== 'https:' || !url.hostname.endsWith('.semirapp.com')) throw new Error('OCR 图片地址不属于森马云盘')
     const image = await fetch(url, {
       credentials: url.origin === location.origin ? 'same-origin' : 'omit', cache: 'no-store', signal: AbortSignal.timeout(45000),
     })
-    if (image.status === 401 && url.origin === location.origin) throw sessionExpired()
-    if (!image.ok) throw new Error('读取图片失败 HTTP ' + image.status)
-    const bitmap = await createImageBitmap(await image.blob())
-    try {
-      async function view(layout, psm = '11') {
-        const canvas = cropLabelCanvas(bitmap, layout, attempt > 0)
-        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.95 })
-        const options = { tessedit_pageseg_mode: psm }
-        return (await ocrDeadline(worker.recognize(blob, options), 35000, '单张图片 OCR 超时')).data.text
+    if (image.status === 401) throw sessionExpired()
+    if (!image.ok) throw Object.assign(new Error('读取图片失败 HTTP ' + image.status), { httpStatus: image.status })
+    return image.blob()
+  }
+
+  async function loadOcrImage(mountId, item) {
+    const delays = [650, 2200, 6000]
+    for (const delay of delays) {
+      try {
+        return await fetchOcrImage(mountId, item)
+      } catch (error) {
+        const status = error.httpStatus
+        if (error.sessionExpired || !(error.name === 'TypeError' || status === 408 || status === 429 || status >= 500 && status <= 599)) throw error
+        await wait(delay)
       }
-      const first = await view(focused ? 'label' : 'full')
-      const evidence = ocrEvidence(item.filename, first, style)
-      const typed = evidence.kinds.some(kind => kind === '吊牌' || kind === '洗唛')
-      const other = evidence.codes.some(code => code !== style && !(style.length === 13 && code === style.slice(0, -1)))
-      if (evidence.supplierSample || evidence.absenceCard || typed && evidence.matched && !other) return evidence
-      if (!focused && !typed) return evidence
-      const second = await view(focused ? 'labelBottom' : 'label')
-      const combined = combineOcrViews(item.filename, first, second, style)
-      if (combined.supplierSample || combined.absenceCard || combined.matched && combined.kinds.length) return combined
-      const third = await view('detail', '6')
-      const rescued = combineOcrViews(item.filename, first, second, style, third)
-      if (rescued.supplierSample || rescued.absenceCard || rescued.matched && rescued.kinds.length) return rescued
-      if (!rescued.kinds.length && !rescued.codes.length && !focused) return rescued
-      const fourth = await view('lower')
-      return combineOcrViews(item.filename, first, second, style, third, fourth)
+    }
+    return fetchOcrImage(mountId, item)
+  }
+
+  async function recognize(worker, mountId, item, style, scores, attempt = 0) {
+    const bitmap = await createImageBitmap(await loadOcrImage(mountId, item))
+    try {
+      const supplier = scores?.[3] || 0
+      const other = (scores?.[2] || 0) + supplier
+      let focused = !scores || other < OTHER_THRESHOLD || supplier >= 0.8 || namedLabel.test(item.filename)
+      const views = [], printedViews = []
+      let evidence = labelEvidence('', style)
+      let barcodeLocated = false
+      let skuFromBarcodeRegion = ''
+      const crop = layout => cropLabelCanvas(bitmap, layout, attempt > 0)
+      const resolved = () => evidence.excluded || evidence.shootSticker ||
+        Boolean(evidence.kind && evidence.matched && !evidence.conflict)
+
+      async function read(canvas, psm = '11') {
+        if (attempt > 0 && Math.max(canvas.width, canvas.height) > 800) {
+          const scale = 800 / Math.max(canvas.width, canvas.height)
+          const resized = new OffscreenCanvas(Math.max(1, Math.round(canvas.width * scale)), Math.max(1, Math.round(canvas.height * scale)))
+          resized.getContext('2d').drawImage(canvas, 0, 0, resized.width, resized.height)
+          canvas = resized
+        }
+        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.95 })
+        return (await ocrDeadline(worker.recognize(blob, { tessedit_pageseg_mode: psm }), 35000, '单张图片 OCR 超时')).data.text
+      }
+
+      function update() {
+        evidence = mergeLabelViews(views, style, supplier)
+        if (skuFromBarcodeRegion && !evidence.excluded && !evidence.shootSticker) {
+          const codes = readStyleCodes(skuFromBarcodeRegion)
+          evidence = { ...evidence, kind: 'hangtag', ambiguous: false, codes, matched: codes.includes(style), conflict: false }
+        }
+      }
+
+      async function observe(canvas, psm = '11') {
+        const printed = await readPrintedLabel(canvas, 'text')
+        if (printed?.text.trim()) {
+          printedViews.push(printed.text)
+          views.push(printed.text)
+        } else {
+          views.push(await read(canvas, psm))
+        }
+        update()
+      }
+
+      await observe(crop(focused ? 'label' : 'full'))
+      // A deferred photo with a readable SKU may still be a handwritten sample
+      // or a formal label. Read independent crops before judging its type.
+      const deferredSku = !focused && evidence.codes.length > 0 && !resolved()
+      if (deferredSku) {
+        focused = true
+        await observe(crop('label'))
+      }
+      if (focused && !resolved() && (evidence.hangCandidate || (scores?.[0] || 0) >= 0.5)) {
+        const anchor = await readPrintedLabel(boundedLabelFrame(bitmap, attempt ? 1150 : 3200), 'barcode')
+        barcodeLocated = anchor?.barcodeLocated === true
+        if (barcodeLocated && /^10[A-Z0-9]\d{9}[A-Z]?-[A-Z0-9]{5}$/.test(anchor.text)) {
+          skuFromBarcodeRegion = anchor.text
+          views.push(anchor.text)
+          update()
+        }
+      }
+      if (!resolved() && focused) {
+        const layouts = [['labelBottom', '11'], ['detail', '6'], ['lower', '11']]
+        if (!deferredSku) layouts.unshift(['full', '11'])
+        for (const [layout, psm] of layouts) {
+          await observe(crop(layout), psm)
+          if (resolved()) break
+        }
+      }
+      if (focused && !resolved() && printedViews.length && !evidence.kind && (scores?.[1] || 0) > 0.25) {
+        for (const angle of [90, 270]) {
+          await observe(boundedLabelFrame(bitmap, attempt ? 1050 : 1400, angle))
+          if (resolved()) break
+        }
+      }
+      if (printedViews.length && evidence.hangCandidate && !evidence.excluded &&
+          !evidence.shootSticker && !barcodeLocated && supplier >= 0.8) {
+        // A green-channel crop retains more contrast for blue handwriting on the certificate.
+        const width = Math.max(1, Math.round(bitmap.width * .4))
+        const height = Math.max(1, Math.round(bitmap.height * .22))
+        const scale = Math.min(1, 1000 / width)
+        const ink = new OffscreenCanvas(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)))
+        const context = ink.getContext('2d', { willReadFrequently: true })
+        context.drawImage(bitmap, Math.round((bitmap.width - width) / 2), Math.round((bitmap.height - height) / 2),
+          width, height, 0, 0, ink.width, ink.height)
+        const image = context.getImageData(0, 0, ink.width, ink.height)
+        for (let i = 0; i < image.data.length; i += 4) image.data[i] = image.data[i + 2] = image.data[i + 1]
+        context.putImageData(image, 0, 0)
+        await observe(ink)
+      }
+      if (!resolved() && printedViews.length && (evidence.kind || evidence.codes.length || evidence.hangCandidate || barcodeLocated)) {
+        views.push(await read(crop(focused ? 'label' : 'full')))
+        update()
+      }
+      if (!evidence.kind && !evidence.hangCandidate && !evidence.excluded && !evidence.ambiguous &&
+          !barcodeLocated && isCompositionOnlyLabel(printedViews, scores?.[1] || 0)) {
+        evidence = { ...evidence, kind: 'washlabel' }
+      }
+      if (!evidence.kind && !evidence.hangCandidate && !evidence.ambiguous && !barcodeLocated && !evidence.excluded) {
+        if (isHandwrittenSample(printedViews, supplier) || isReferenceOnlyCard(printedViews, style, other, supplier) ||
+            isRepeatedWorkshopCard(printedViews, style)) {
+          evidence = { ...evidence, excluded: true, handwrittenSample: true }
+        } else if (onlyShootInformation(printedViews)) {
+          evidence = { ...evidence, excluded: true }
+        }
+      }
+      return observedLabel(item.filename, { ...evidence, barcodeLocated })
     } finally {
       bitmap.close()
     }
@@ -697,20 +1002,24 @@
   }
 
   function screenOrder(files, scores) {
-    const deferred = files.filter(file => (scores.get(file)?.[2] || 0) >= OTHER_THRESHOLD)
-    const candidates = files.filter(file => !deferred.includes(file))
-    const ranked = [0, 1].map(kind => candidates.filter(file => scores.has(file))
-      .sort((a, b) => scores.get(b)[kind] - scores.get(a)[kind]).slice(0, 2))
-    const priority = [...new Set([ranked[0][0], ranked[1][0], ranked[0][1], ranked[1][1]].filter(Boolean))]
-    return { priority: [...priority, ...candidates.filter(file => !priority.includes(file))], deferred }
+    const deferred = new Set(files.filter(file => {
+      const score = scores.get(file)
+      return score && !namedLabel.test(file.filename) && score[2] + (score[3] || 0) >= OTHER_THRESHOLD
+    }))
+    const candidates = files.filter(file => !deferred.has(file))
+    const [hang, wash] = [0, 1].map(kind => candidates
+      .filter(file => (scores.get(file)?.[kind] || 0) >= 0.5)
+      .sort((a, b) => scores.get(b)[kind] - scores.get(a)[kind]))
+    const priority = [...new Set([hang[0], wash[0], hang[1], wash[1],
+      ...candidates.filter(file => namedLabel.test(file.filename)), ...hang, ...wash, ...candidates].filter(Boolean))]
+    return { priority, deferred: [...deferred] }
   }
 
   async function prioritizeOcr(runtime, sorted, scoresByFile) {
     const credential = params.__crawshrimp_semir_screen_token
-    if (!credential || runtime.run.screenUnavailable) return sorted
-    const first = sorted.slice(0, SCREEN_WINDOW)
-    for (let offset = 0; offset < first.length; offset += SCREEN_BATCH) {
-      const batch = first.slice(offset, offset + SCREEN_BATCH)
+    if (!credential || runtime.run.screenUnavailable) return screenOrder(sorted, scoresByFile)
+    for (let offset = 0; offset < sorted.length; offset += SCREEN_BATCH) {
+      const batch = sorted.slice(offset, offset + SCREEN_BATCH)
       const inputs = (await Promise.all(batch.map(async file => ({ file, pixels: await thumbnailRgb(file) }))))
         .filter(item => item.pixels)
       if (!inputs.length) continue
@@ -724,7 +1033,8 @@
         if (!response.ok) throw new Error('本机图片分类不可用')
         const { scores } = await response.json()
         if (!Array.isArray(scores) || scores.length !== inputs.length ||
-            scores.some(row => !Array.isArray(row) || row.length !== 3 || row.some(value => !Number.isFinite(value) || value < 0 || value > 1))) {
+            scores.some(row => !Array.isArray(row) || row.length !== 4 || row.some(value => !Number.isFinite(value) || value < 0 || value > 1) ||
+              Math.abs(row.reduce((sum, value) => sum + value, 0) - 1) > 0.001)) {
           throw new Error('本机图片分类结果无效')
         }
         inputs.forEach(({ file }, index) => scoresByFile.set(file, scores[index]))
@@ -733,8 +1043,7 @@
         break
       }
     }
-    const ordered = screenOrder(first, scoresByFile)
-    return [...ordered.priority, ...sorted.slice(SCREEN_WINDOW), ...ordered.deferred]
+    return screenOrder(sorted, scoresByFile)
   }
 
   function isNamedProductView(file, style, color) {
@@ -744,45 +1053,68 @@
     return name === sku || name.startsWith(sku + '-') && /^[1-7]$/.test(name.slice(sku.length + 1))
   }
 
+  function needsDeferredReview(evidence, style, failures) {
+    const parent = style.length === 13 ? style.slice(0, 12) : ''
+    return failures > 0 || evidence.some(item => item.codeConflict ||
+      item.kinds.some(kind => kind === '吊牌' || kind === '洗唛') &&
+      item.codes.some(code => code !== style && code !== parent)) ||
+      ['吊牌', '洗唛'].some(kind => !evidence.some(item => item.kinds.includes(kind) && item.matched))
+  }
+
   async function scanColor(runtime, mountId, files, style, color) {
     const evidence = [], failed = []
     // Start with the last camera shots, where captures of the two labels usually appear.
-    const sorted = files.filter(file => !isNamedProductView(file, style, color)).sort((a, b) => {
+    const imageFiles = files.filter(file => !file.filename.startsWith('._'))
+    const sorted = imageFiles.filter(file => !isNamedProductView(file, style, color)).sort((a, b) => {
       const product = item => item.filename.startsWith(style + '-')
-      const namedLabel = item => /吊牌|洗唛|洗标|水洗|hang.?tag|wash.?label/i.test(item.filename)
-      return Number(namedLabel(b)) - Number(namedLabel(a)) || Number(product(a)) - Number(product(b)) ||
+      return Number(namedLabel.test(b.filename)) - Number(namedLabel.test(a.filename)) || Number(product(a)) - Number(product(b)) ||
         b.filename.localeCompare(a.filename, 'en', { numeric: true })
     })
     const scoresByFile = new Map()
     let scanned = 0, retried = 0
-    for (const file of await prioritizeOcr(runtime, sorted.length ? sorted : files, scoresByFile)) {
-      let initializing = false
-      try {
-        const read = await retryTimedOutImage(async attempt => {
-          if (runtime.run.sessionExpired) throw sessionExpired()
-          initializing = !runtime.worker
-          const worker = runtime.worker ??= await browserWorker(runtime)
-          initializing = false
-          const scores = scoresByFile.get(file)
-          return recognize(worker, mountId, file, style, !!scores && Math.max(scores[0], scores[1]) >= 0.75, attempt)
-        }, (error, retrying) => {
-          if (retrying) retried++
-          if (error.ocrTimeout && runtime.worker) {
-            void runtime.worker.terminate().catch(() => {})
-            runtime.worker = null
-          }
-        })
-        evidence.push(read)
-        scanned++
-      } catch (error) {
-        failed.push(file.filename + '：' + (error.name === 'TypeError' ? '图片请求失败' : error.message))
-        if (error.sessionExpired) throw error
-        if (initializing) break
+    const { priority, deferred } = await prioritizeOcr(runtime, sorted, scoresByFile)
+    async function scan(queue) {
+      for (const file of queue) {
+        let initializing = false
+        const scores = scoresByFile.get(file)
+        try {
+          const read = await retryTimedOutImage(async attempt => {
+            if (runtime.run.sessionExpired) throw sessionExpired()
+            initializing = !runtime.worker
+            const worker = runtime.worker ??= await browserWorker(runtime)
+            initializing = false
+            return recognize(worker, mountId, file, style, scores, attempt)
+          }, (error, retrying) => {
+            if (retrying) retried++
+            if (error.ocrTimeout && runtime.worker) {
+              void runtime.worker.terminate().catch(() => {})
+              runtime.worker = null
+            }
+          })
+          evidence.push({ ...read, scores })
+          scanned++
+        } catch (error) {
+          failed.push(file.filename + '：' + (error.name === 'TypeError' ? '图片请求失败' : error.message))
+          if (error.sessionExpired) throw error
+          if (initializing) return false
+        }
       }
-      if (['吊牌', '洗唛'].every(kind => evidence.some(item => item.kinds.includes(kind) && item.matched))) break
+      return true
     }
-    return { scanned, retried, failed, hang: summarizeLabel(evidence, '吊牌', style, failed.length),
-      wash: summarizeLabel(evidence, '洗唛', style, failed.length) }
+    // A third candidate can contain an incorrect printed SKU after both kinds have one match.
+    if (await scan(priority) && needsDeferredReview(evidence, style, failed.length)) await scan(deferred)
+    const complete = sorted.length > 0 && scanned === sorted.length && !failed.length
+    const canConfirmMissing = complete && (scoresByFile.size > 0 || evidence.some(item =>
+      item.kind || item.supplierSample || item.handwrittenSample || item.handwrittenCertificate || item.absenceCard))
+    function summarize(kind) {
+      const result = summarizeLabel(evidence, kind, style, failed.length)
+      if (!imageFiles.length) result.status = '无图片'
+      else if (result.status === '未检出，待复核' && !canConfirmMissing) {
+        result.status = '候选图片未检出，待复核'
+      }
+      return result
+    }
+    return { scanned, retried, failed, hang: summarize('吊牌'), wash: summarize('洗唛') }
   }
 
   function sessionExpired() {
@@ -879,6 +1211,7 @@
     if (audit?.retried) note.push(`${audit.retried} 张图片超时后已自动重试`)
     if (audit?.failed.length) note.push('OCR失败：' + audit.failed.join('、'))
     if (audit?.hang.excludedFiles.length) note.push('供应商样品卡或表单不计作吊牌：' + audit.hang.excludedFiles.join('、'))
+    if (audit?.hang.handwrittenFiles?.length && audit.hang.status === '未检出，待复核') note.push('仅有手写样卡')
     if (audit?.hang.absenceCardFiles?.length) note.push('手写缺项说明不计作标签')
     if (audit && runtime.run.screenUnavailable) note.push('缩略图模型不可用，已回退到完整 OCR')
     return resultRows(row, {
@@ -933,7 +1266,7 @@
   }
 
   if (window.__CRAWSHRIMP_EXPORTS__) Object.assign(window.__CRAWSHRIMP_EXPORTS__, {
-    batchRows, colorPlans, equivalent, ocrEvidence, summarizeLabel, requireTarget, parseAddress, ocrWorkerLimit, nextPending, retryTimedOutImage, screenOrder, parseBatch, batchDirectory, combineOcrViews, isNamedProductView, canCopyWholeStyle, prepareStyle,
+    batchRows, colorPlans, equivalent, ocrEvidence, summarizeLabel, requireTarget, parseAddress, ocrWorkerLimit, nextPending, retryTimedOutImage, screenOrder, parseBatch, batchDirectory, combineOcrViews, isNamedProductView, canCopyWholeStyle, prepareStyle, scanColor, mergeLabelViews, isRepeatedWorkshopCard,
   })
   if (phase === '__exports__') return { success: true, data: [] }
 

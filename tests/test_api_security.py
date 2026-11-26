@@ -101,11 +101,34 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await api_server.classify_semir_still_images(
                 ThumbnailRequest(path, {**headers, "content-length": str(RGB_BYTES * 9)}, "POST"),
             )).status_code, 400)
-            with patch("core.semir_still_image_classifier.classify_rgb_batch", return_value=[[.7, .2, .1]]) as inference:
+            with patch("core.semir_still_image_classifier.classify_rgb_batch", return_value=[[.7, .2, .05, .05]]) as inference:
                 response = await api_server.classify_semir_still_images(ThumbnailRequest(path, headers, "POST"))
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.headers["access-control-allow-origin"], origin)
                 self.assertEqual(len(inference.call_args.args[0]), RGB_BYTES)
+
+    async def test_semir_printed_reader_requires_same_origin_scoped_token_and_bounded_jpeg(self):
+        path = api_server.SEMIR_LABEL_READ_PATH
+        origin = api_server.SEMIR_DRIVE_ORIGIN
+        headers = {"origin": origin, "x-crawshrimp-token": "semir-run",
+                   "content-type": "image/jpeg", "content-length": "10"}
+
+        class CropRequest(FakeRequest):
+            query_params = {"mode": "barcode"}
+
+            async def stream(self):
+                yield b"test-bytes"
+
+        read = api_server.read_semir_still_image_label
+        with patch.object(api_server, "_semir_screen_tokens", {"semir-run"}):
+            self.assertEqual((await read(CropRequest(path, {**headers, "origin": "https://else.test"}, "POST"))).status_code, 403)
+            self.assertEqual((await read(CropRequest(path, {**headers, "x-crawshrimp-token": "invalid"}, "POST"))).status_code, 401)
+            self.assertEqual((await read(CropRequest(path, {**headers, "content-length": "4"}, "POST"))).status_code, 400)
+            with patch("core.semir_still_image_ocr.read_semir_label_crop", return_value={"text": "104526100109-10101"}) as reader:
+                response = await read(CropRequest(path, headers, "POST"))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers["access-control-allow-origin"], origin)
+                reader.assert_called_once_with(b"test-bytes", "barcode")
 
     async def test_adapter_asset_private_network_preflight_bypasses_global_cors(self):
         async def call_next(_request):
